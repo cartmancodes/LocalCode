@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: orchestrator
+    ports:
+      # Host port remapped to 5433 to avoid clashing with a local Postgres on 5432.
+      # Containers in this network still reach Postgres at postgres:5432.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-localcode-master}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-salt-localcode}
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/orchestrator
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OLLAMA_API_BASE: ${OLLAMA_API_BASE:-http://host.docker.internal:11434}
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  opencode:
+    image: node:20-slim
+    working_dir: /work
+    # Use the official install script — it fetches the correct prebuilt binary for
+    # the container's libc/arch. The npm package on alpine fails because the bin
+    # binary isn't shipped for musl.
+    command: >
+      bash -c "
+      apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null &&
+      curl -fsSL https://opencode.ai/install | bash &&
+      export PATH=/root/.opencode/bin:$$PATH &&
+      opencode serve --hostname 0.0.0.0 --port 4096
+      "
+    environment:
+      LITELLM_API_BASE: http://litellm:4000
+      LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-localcode-master}
+    ports:
+      - "4096:4096"
+    volumes:
+      - ./opencode:/work
+    depends_on:
+      - litellm
+
+volumes:
+  pgdata:
