@@ -39,11 +39,14 @@ class ClaudeProvider:
         return ctx.upstream_session_id or ""
 
     async def run(self, ctx: RunContext) -> AsyncIterator[Event]:
-        # Native-auth mode: don't pass env overrides — the spawned `claude` CLI
-        # will use the OAuth token from `claude login` stored under ~/.claude/.
-        # Proxied mode: route every call through LiteLLM so spend hits the budget bar.
-        env = (
-            None
+        # Native-auth mode: pass an empty env override — the spawned `claude`
+        # CLI inherits the process's env, picking up the OAuth token from
+        # `claude login` (stored in ~/.claude/ on Linux, the macOS keychain on
+        # Darwin).
+        # Proxied mode: route every call through LiteLLM so spend hits the
+        # budget bar; the SDK's virtual key authenticates the proxy.
+        env: dict[str, str] = (
+            {}
             if self._settings.claude_use_native_auth
             else {
                 "ANTHROPIC_BASE_URL": self._settings.litellm_api_base,
