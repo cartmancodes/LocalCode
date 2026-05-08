@@ -2,6 +2,8 @@
 
 Design exploration for letting one chat session use both backends, picking the right one per turn based on user preference, task type, and budget.
 
+> **Status as of 2026-05-09:** Proposal G is **shipped** ([docs/fleet.md](fleet.md), [docs/fleet-config.md](fleet-config.md)). All others remain proposals.
+
 ## Cross-cutting constraints
 
 These shape every proposal — easy-sounding ideas have hidden costs because of them.
@@ -149,39 +151,48 @@ Fire the same prompt at multiple agents simultaneously. Show their responses sid
 
 ---
 
-## Proposal G — Specialist fleet (Planner / Coder / Reviewer / Executor)
+## Proposal G — Specialist fleet (Planner / Developer / Coder / Reviewer) ✅ shipped
 
-Decompose every high-level prompt into a small DAG: a Planner (Opus) drafts steps; specialist Coder (gpt-5.3-codex or Sonnet) executes each step; a Reviewer (Haiku) gates results; an Executor runs commands. One user prompt → orchestrated multi-agent run. Composes naturally with B, C, D.
+> Implemented in [backend/app/orchestrator/fleet.py](../backend/app/orchestrator/fleet.py). Configuration UX in [docs/fleet-config.md](fleet-config.md). Picked as `fleet:default` in the model picker.
+
+Decompose every high-level prompt into a small ordered list: a Planner (Sonnet) drafts steps; an optional Developer (Opus) designs the approach; a Coder (gpt-5.3-codex) executes each step; a Reviewer (Haiku) gates results. One user prompt → orchestrated multi-agent run. Composes naturally with B, C, D.
 
 **Pros**
 
 - Mirrors how senior engineers actually work.
-- Strong cost optimization: Opus only at planning time.
-- Each role's prompt is independently tunable.
+- Strong cost optimization: Opus only at design / planning time.
+- Each role's `provider`/`model`/`system_prompt` is independently tunable via [.localcode/fleet.yaml](../.localcode/fleet.yaml.example) or `.json` — no code changes.
 - Best ceiling for hard tasks.
 
-**Cons**
+**Cons (still true after shipping v1)**
 
-- Needs a real workflow engine (DAG, retries, checkpointing).
-- Heavy prompt-engineering tax.
+- Needs a real workflow engine for parallel branches, retries, checkpointing — v1 is linear-only.
+- Heavy prompt-engineering tax (the default prompts in `fleet.py` work, but you'll want to override for project conventions).
 - Long latency per top-level prompt; bad for short questions.
 - Can *underperform* a single capable agent on tasks that don't decompose cleanly.
 
+**v1 limitations to be aware of**
+
+- Linear plans only — `depends_on` is parsed but execution is sequential.
+- Sub-step tool calls (Edit / Bash) are silent in the UI; only the step's final text surfaces.
+- Reviewer NACKs are surfaced as failed cards but don't auto-retry.
+- Per-turn state only — multi-turn chats don't replay prior fleet outputs into a new planner.
+
 ---
 
-## Recommendation
+## Status & recommended order
 
-A → B → C, in that order. Optional D later. Skip E / F / G for now.
+The original recommendation was A → B → C, skipping G. We shipped G first (the user picked it). Updated state:
 
-| Phase   | Proposal | Why now                                                                                       |
-| :------ | :------- | :-------------------------------------------------------------------------------------------- |
-| Phase 1 | A        | Per-turn switching is the missing primitive everything else needs. Hours of work, big UX win. |
-| Phase 2 | B        | Declarative routing covers ~80% of "be smart for me" with debuggable rules.                   |
-| Phase 3 | C        | Rate-limit resilience is concretely valuable on subscription auth.                            |
-| Later   | D        | Most interesting research bet — but build it *after* a week of A+B+C usage informs the design. |
-| Skip    | E        | Adds latency for unclear gain.                                                                |
-| Skip    | F        | Different product (eval harness).                                                             |
-| Skip    | G        | Needs a workflow engine; not the right scope today.                                           |
+| Status     | Proposal                                | Note                                                                                          |
+| :--------- | :-------------------------------------- | :-------------------------------------------------------------------------------------------- |
+| ✅ shipped | G — Specialist fleet                    | Planner / Developer / Coder / Reviewer. Configurable via YAML or JSON. See [fleet-config.md](fleet-config.md). |
+| ⏭ next     | A — Sticky per-turn picker              | Still the missing primitive: today the model is pinned at chat creation. Per-turn switching + slash command unlocks every other proposal. |
+| ⏭ then     | B — Declarative routing                 | Composes with G — `fleet:default` could itself become a rule target.                          |
+| ⏭ later    | C — Budget-tiered fallback              | Most useful once we have real token-meter data from A+B usage.                                |
+| 🤔 maybe   | D — Mid-turn `delegate` tool            | Build after a week of fleet usage informs whether we need agent-driven (vs rule-driven) routing. |
+| ⏸ skip     | E — Pre-flight classifier               | Latency cost for unclear gain.                                                                |
+| ⏸ skip     | F — Parallel-and-pick                   | Different product (eval harness, not chat).                                                    |
 
 ### Cross-cutting work that pays off regardless
 
