@@ -35,28 +35,10 @@ services:
       postgres:
         condition: service_healthy
 
-  opencode:
-    image: node:20-slim
-    working_dir: /work
-    # Use the official install script — it fetches the correct prebuilt binary for
-    # the container's libc/arch. The npm package on alpine fails because the bin
-    # binary isn't shipped for musl.
-    command: >
-      bash -c "
-      apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null &&
-      curl -fsSL https://opencode.ai/install | bash &&
-      export PATH=/root/.opencode/bin:$$PATH &&
-      opencode serve --hostname 0.0.0.0 --port 4096
-      "
-    environment:
-      LITELLM_API_BASE: http://litellm:4000
-      LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-localcode-master}
-    ports:
-      - "4096:4096"
-    volumes:
-      - ./opencode:/work
-    depends_on:
-      - litellm
+# OpenCode is no longer a docker service — it runs on the host so its
+# `opencode auth login` browser flow works and OAuth tokens persist at
+# ~/.local/share/opencode/. setup.sh installs it and starts `opencode serve`
+# as a backgrounded host process.
 
 volumes:
   pgdata:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -10,8 +12,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session, session_scope
 from ..models import Message, Session
 from ..orchestrator import get_provider
-from ..orchestrator.base import RunContext
+from ..orchestrator.base import Event, Provider, RunContext
 from ..schemas import CreateSessionRequest, MessageOut, SessionOut
+
+
+logger = logging.getLogger(__name__)
+
+
+async def _safe_run(provider: Provider, ctx: RunContext) -> AsyncIterator[Event]:
+    """Wrap a provider's `run` so any unexpected exception becomes an Event(error)
+    + Event(assistant.done) instead of crashing the WS receive loop, and so that
+    every turn ends with an `assistant.done` (the UI relies on that to clear its
+    "…working" indicator). Without these guarantees a single network blip would
+    close the chat and the user would have to reload."""
+    saw_done = False
+    try:
+        async for ev in provider.run(ctx):
+            if ev.type == "assistant.done":
+                saw_done = True
+            yield ev
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("provider.run raised")
+        yield Event(type="error", data={"message": str(exc) or repr(exc)})
+    if not saw_done:
+        yield Event(type="assistant.done", data={})
 
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -37,6 +61,15 @@ async def create_session(
     await db.commit()
     await db.refresh(s)
     return SessionOut.model_validate(s, from_attributes=True)
+
+
+@router.delete("", status_code=204)
+async def delete_all_sessions(db: AsyncSession = Depends(get_session)) -> None:
+    """Wipe every session (and its messages, via the cascade on Session.messages)."""
+    rows = (await db.execute(select(Session))).scalars().all()
+    for s in rows:
+        await db.delete(s)
+    await db.commit()
 
 
 @router.get("/{session_id}/messages", response_model=list[MessageOut])
@@ -135,7 +168,7 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
             duration_ms: int | None = None
             text_buf: list[str] = []
 
-            async for ev in provider.run(ctx):
+            async for ev in _safe_run(provider, ctx):
                 # Update local accumulators for persistence.
                 if ev.type == "assistant.text":
                     text_buf.append(ev.data.get("text", ""))

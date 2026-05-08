@@ -8,12 +8,16 @@ interface Props {
   session: SessionRow | null;
 }
 
+type WsState = "connecting" | "open" | "closed";
+
 export default function ChatPane({ session }: Props) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [wsState, setWsState] = useState<WsState>("closed");
   const wsRef = useRef<WebSocket | null>(null);
-  const turnsRef = useRef<ChatTurn[]>([]);
-  turnsRef.current = turns;
+  const reconnectTimer = useRef<number | null>(null);
+  const reconnectAttempt = useRef(0);
+  const pendingSend = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // Hydrate persisted messages whenever the active session changes.
@@ -44,24 +48,73 @@ export default function ChatPane({ session }: Props) {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [turns]);
 
-  // Open a fresh WS per active session.
+  // Open a fresh WS per active session, with auto-reconnect on close.
   useEffect(() => {
-    wsRef.current?.close();
-    if (!session) return;
-    const ws = openSessionSocket(session.id);
-    wsRef.current = ws;
-    ws.onmessage = (ev) => {
-      let parsed: StreamEvent;
-      try {
-        parsed = JSON.parse(ev.data);
-      } catch {
-        return;
-      }
-      handleEvent(parsed);
+    if (!session) {
+      teardown();
+      return;
+    }
+    reconnectAttempt.current = 0;
+    connect(session.id);
+    return () => {
+      teardown();
     };
-    ws.onclose = () => setStreaming(false);
-    return () => ws.close();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
+
+  function teardown() {
+    if (reconnectTimer.current != null) {
+      window.clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = null;
+    }
+    if (wsRef.current) {
+      // Strip handlers so the close doesn't trigger a reconnect.
+      wsRef.current.onclose = null;
+      wsRef.current.onerror = null;
+      wsRef.current.onmessage = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setWsState("closed");
+  }
+
+  function connect(sessionId: string) {
+    setWsState("connecting");
+    const ws = openSessionSocket(sessionId);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      reconnectAttempt.current = 0;
+      setWsState("open");
+      // If the user clicked Send while we were reconnecting, fire it now.
+      if (pendingSend.current != null) {
+        const p = pendingSend.current;
+        pendingSend.current = null;
+        ws.send(JSON.stringify({ prompt: p }));
+      }
+    };
+
+    ws.onmessage = (ev) => {
+      try {
+        handleEvent(JSON.parse(ev.data) as StreamEvent);
+      } catch {
+        /* ignore malformed frame */
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (!session || wsRef.current !== ws) return; // session changed or torn down
+      setStreaming(false);
+      setWsState("closed");
+      const delay = Math.min(1000 * 2 ** reconnectAttempt.current, 8000);
+      reconnectAttempt.current += 1;
+      reconnectTimer.current = window.setTimeout(() => connect(sessionId), delay);
+    };
+    ws.onclose = scheduleReconnect;
+    ws.onerror = () => {
+      // onerror is followed by onclose, so we let scheduleReconnect handle it.
+    };
+  }
 
   const handleEvent = (ev: StreamEvent) => {
     setTurns((prev) => {
@@ -134,13 +187,23 @@ export default function ChatPane({ session }: Props) {
   };
 
   const send = (prompt: string) => {
-    if (!session || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (!session) return;
     setTurns((prev) => [
       ...prev,
       { role: "user", blocks: [{ kind: "text", text: prompt }] },
     ]);
     setStreaming(true);
-    wsRef.current.send(JSON.stringify({ prompt }));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ prompt }));
+      return;
+    }
+    // Socket is connecting / closed: queue the send and force a reconnect now
+    // rather than waiting on backoff.
+    pendingSend.current = prompt;
+    if (wsRef.current?.readyState !== WebSocket.CONNECTING) {
+      teardown();
+      connect(session.id);
+    }
   };
 
   const headerLabel = useMemo(() => {
@@ -152,7 +215,14 @@ export default function ChatPane({ session }: Props) {
     <main className="chat-pane">
       <header className="chat-header">
         <div className="chat-title">{session?.title ?? "Pick a chat"}</div>
-        <div className="chat-sub muted">{headerLabel}</div>
+        <div className="chat-sub muted">
+          {headerLabel}
+          {session && wsState !== "open" && (
+            <span className={`ws-pill ws-${wsState}`}>
+              {wsState === "connecting" ? " · reconnecting…" : " · disconnected"}
+            </span>
+          )}
+        </div>
       </header>
 
       <div ref={scrollRef} className="chat-scroll">

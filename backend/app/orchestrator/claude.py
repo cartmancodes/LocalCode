@@ -14,6 +14,7 @@ from claude_agent_sdk import ClaudeAgentOptions, query
 from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
+    StreamEvent,
     SystemMessage,
     TextBlock,
     ToolResultBlock,
@@ -54,6 +55,7 @@ class ClaudeProvider:
             cwd=ctx.cwd,
             system_prompt=ctx.system_prompt,
             permission_mode="acceptEdits",
+            include_partial_messages=True,  # surface token-level deltas to the UI
             env=env,
         )
 
@@ -69,11 +71,32 @@ class ClaudeProvider:
 
 
 async def _translate(message: Any) -> AsyncIterator[Event]:
-    """Map claude-agent-sdk message objects to our unified Event stream."""
+    """Map claude-agent-sdk message objects to our unified Event stream.
+
+    With ``include_partial_messages=True`` the SDK emits raw Anthropic streaming
+    events as ``StreamEvent`` objects *and* a final ``AssistantMessage`` with
+    the consolidated content. We surface deltas from ``StreamEvent`` (so the UI
+    streams live) and emit only ``ToolUse`` / ``ToolResult`` blocks from the
+    final ``AssistantMessage`` — its ``TextBlock``s would otherwise double up
+    on top of the deltas we already streamed.
+    """
+    if isinstance(message, StreamEvent):
+        ev = message.event or {}
+        if ev.get("type") == "content_block_delta":
+            delta = ev.get("delta", {}) or {}
+            if delta.get("type") == "text_delta":
+                text = delta.get("text", "")
+                if text:
+                    yield Event(type="assistant.text", data={"text": text})
+        # Tool-use blocks (and their input_json_delta accumulations) are surfaced
+        # from the final AssistantMessage where the input is fully formed.
+        return
+
     if isinstance(message, AssistantMessage):
         for block in message.content:
             if isinstance(block, TextBlock):
-                yield Event(type="assistant.text", data={"text": block.text})
+                # Already streamed via StreamEvent; skip to avoid duplication.
+                continue
             elif isinstance(block, ToolUseBlock):
                 yield Event(
                     type="assistant.tool_use",

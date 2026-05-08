@@ -6,8 +6,13 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": "http://localhost:8080",
-      "/ws":  { target: "ws://localhost:8080", ws: true },
+      // Single rule covers both REST and the chat WebSocket at /api/sessions/:id/ws.
+      // `ws: true` is what makes vite upgrade the connection rather than HTTP-proxying it.
+      "/api": {
+        target: "http://localhost:8080",
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
 });

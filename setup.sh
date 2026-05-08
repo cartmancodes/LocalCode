@@ -2,10 +2,11 @@
 # LocalCode bootstrap — brings up the full stack from a clean checkout.
 #
 #   ./setup.sh            # prep + start everything in the background
-#   ./setup.sh stop       # stop backend + frontend (docker stays up)
+#   ./setup.sh login      # run `claude login` and `opencode auth login` interactively
+#   ./setup.sh stop       # stop backend + frontend + opencode
 #   ./setup.sh down       # stop everything including docker compose
 #   ./setup.sh status     # show whether services are running
-#   ./setup.sh logs       # tail backend + frontend logs
+#   ./setup.sh logs       # tail backend + frontend + opencode logs
 #
 # Re-runnable: each step is idempotent.
 
@@ -20,8 +21,14 @@ mkdir -p "$RUN_DIR"
 VENV_DIR="$ROOT_DIR/.venv"
 BACKEND_PID="$RUN_DIR/backend.pid"
 FRONTEND_PID="$RUN_DIR/frontend.pid"
+OPENCODE_PID="$RUN_DIR/opencode.pid"
 BACKEND_LOG="$RUN_DIR/backend.log"
 FRONTEND_LOG="$RUN_DIR/frontend.log"
+OPENCODE_LOG="$RUN_DIR/opencode.log"
+
+# Where the official installer lands `opencode` on macOS / Linux.
+OPENCODE_HOME="$HOME/.opencode"
+OPENCODE_BIN="$OPENCODE_HOME/bin/opencode"
 
 # ── colours ──────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -70,16 +77,32 @@ is_running() {  # is_running <pidfile>
 stop_pidfile() {  # stop_pidfile <pidfile> <name>
   local pf="$1" name="$2"
   if is_running "$pf"; then
-    log "stopping $name (pid $(cat "$pf"))"
-    kill "$(cat "$pf")" 2>/dev/null || true
+    local pid="$(cat "$pf")"
+    log "stopping $name (pid $pid)"
+    # Kill the recorded pid and any descendants (npm → vite, uvicorn → workers).
+    # We do NOT kill the whole process group: backgrounded daemons inherit our
+    # own pgid by default, so a pgid kill takes out our siblings too.
+    _kill_tree "$pid" TERM
     sleep 1
-    kill -9 "$(cat "$pf")" 2>/dev/null || true
+    _kill_tree "$pid" KILL
     rm -f "$pf"
     ok "$name stopped"
   else
     warn "$name not running"
     rm -f "$pf"
   fi
+}
+
+# Recursively kill `pid` and all its descendants with the given signal.
+_kill_tree() {
+  local pid="$1" sig="$2"
+  [[ -z "$pid" ]] && return
+  # Walk children first so they die before the parent reaps them.
+  local child
+  for child in $(pgrep -P "$pid" 2>/dev/null); do
+    _kill_tree "$child" "$sig"
+  done
+  kill -"$sig" "$pid" 2>/dev/null || true
 }
 
 # Wait for an HTTP endpoint to return 2xx. wait_http <url> <timeout-seconds> <label>
@@ -109,6 +132,7 @@ cmd_status() {
 cmd_stop() {
   stop_pidfile "$BACKEND_PID"  "backend"
   stop_pidfile "$FRONTEND_PID" "frontend"
+  stop_pidfile "$OPENCODE_PID" "opencode"
 }
 
 cmd_down() {
@@ -121,9 +145,62 @@ cmd_down() {
 }
 
 cmd_logs() {
-  log "tailing $BACKEND_LOG and $FRONTEND_LOG (Ctrl-C to exit)"
-  touch "$BACKEND_LOG" "$FRONTEND_LOG"
-  tail -n 50 -F "$BACKEND_LOG" "$FRONTEND_LOG"
+  log "tailing logs (Ctrl-C to exit)"
+  touch "$BACKEND_LOG" "$FRONTEND_LOG" "$OPENCODE_LOG"
+  tail -n 50 -F "$BACKEND_LOG" "$FRONTEND_LOG" "$OPENCODE_LOG"
+}
+
+# Run `claude login` and `opencode auth login` interactively. One-shot — once a
+# provider is logged in, OpenCode/Claude reuse the OAuth token + auto-refresh,
+# so this rarely needs re-running.
+cmd_login() {
+  ensure_opencode_installed
+  if ! command -v claude >/dev/null 2>&1; then
+    fail "claude CLI not installed yet — run ./setup.sh first"
+  fi
+
+  log "logging in to Claude Code (browser will open)"
+  if [[ -f "$HOME/.claude/.credentials.json" ]]; then
+    ok "already authenticated with Claude (~/.claude/.credentials.json present) — skipping"
+  else
+    claude login
+  fi
+
+  log "logging in to OpenCode (pick OpenAI for ChatGPT subscription / Codex)"
+  "$OPENCODE_BIN" auth login
+
+  ok "login complete. Tokens persist at ~/.claude and ~/.local/share/opencode/."
+}
+
+# Claude Code stores its OAuth token in ~/.claude/.credentials.json on Linux,
+# but in the macOS Keychain on Darwin. Best signal we can read without trying
+# to extract the secret: a non-empty ~/.claude/ directory after first login.
+_claude_logged_in() {
+  [[ -f "$HOME/.claude/.credentials.json" ]] && return 0
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    # Anything claude has written post-login (config, history, etc.) is enough.
+    [[ -d "$HOME/.claude" ]] && [[ -n "$(ls -A "$HOME/.claude" 2>/dev/null)" ]] && return 0
+  fi
+  return 1
+}
+
+_opencode_logged_in() {
+  [[ -f "$HOME/.local/share/opencode/auth.json" ]] && return 0
+  [[ -f "$HOME/Library/Application Support/opencode/auth.json" ]] && return 0
+  return 1
+}
+
+ensure_opencode_installed() {
+  if [[ -x "$OPENCODE_BIN" ]]; then
+    ok "opencode already installed ($("$OPENCODE_BIN" --version 2>/dev/null | head -1))"
+    return
+  fi
+  log "installing opencode (host-side) — this enables OAuth flows that won't work in Docker"
+  curl -fsSL https://opencode.ai/install | bash >/dev/null
+  if [[ ! -x "$OPENCODE_BIN" ]]; then
+    fail "opencode install completed but $OPENCODE_BIN not found"
+  fi
+  ok "opencode installed at $OPENCODE_BIN"
 }
 
 cmd_up() {
@@ -173,7 +250,7 @@ cmd_up() {
     ok "frontend deps already installed"
   fi
 
-  # 4b. Claude Code CLI — required for native-auth mode (no API key).
+  # 4b. Claude Code CLI (host-side) — needed for the OAuth flow.
   if ! command -v claude >/dev/null 2>&1; then
     log "installing @anthropic-ai/claude-code globally"
     npm i -g @anthropic-ai/claude-code >/dev/null
@@ -181,18 +258,14 @@ cmd_up() {
   else
     ok "claude CLI already installed ($(claude --version 2>/dev/null | head -1))"
   fi
-  # Detect whether the user has logged in. ~/.claude/.credentials.json appears
-  # after `claude login`. We don't run login non-interactively; just nudge.
-  if [[ "${CLAUDE_USE_NATIVE_AUTH:-true}" == "true" ]] && [[ ! -f "$HOME/.claude/.credentials.json" ]]; then
-    warn "Claude native auth is enabled but no token found at ~/.claude/.credentials.json"
-    warn "  Run:  claude login   (then re-run ./setup.sh — Claude turns will fail until you do)"
-  fi
 
-  # 5. Docker stack
-  log "bringing up docker stack (postgres + litellm + opencode)"
+  # 4c. OpenCode CLI (host-side) — required for OAuth flows; can't run in Docker.
+  ensure_opencode_installed
+
+  # 5. Docker stack (postgres + litellm).  OpenCode now runs as a host process.
+  log "bringing up docker stack (postgres + litellm)"
   docker compose up -d
   wait_http "http://localhost:4000/health/readiness" 90 "litellm proxy"
-  wait_http "http://localhost:4096/doc"             90 "opencode server"
 
   # 6. Mint a LiteLLM virtual key if we don't have one yet
   if [[ -z "${LITELLM_API_KEY:-}" ]]; then
@@ -237,24 +310,46 @@ PY
     warn "backend already running (pid $(cat "$BACKEND_PID")) — leaving as-is"
   else
     log "starting backend on :${PORT:-8080}"
+    # Redirect all three std fds so the child doesn't keep our caller's pipe open.
     nohup "$VENV_DIR/bin/uvicorn" backend.app.main:app \
       --host "${HOST:-0.0.0.0}" --port "${PORT:-8080}" \
-      >>"$BACKEND_LOG" 2>&1 &
+      </dev/null >>"$BACKEND_LOG" 2>&1 &
     echo $! >"$BACKEND_PID"
+    disown 2>/dev/null || true
     ok "backend started (pid $(cat "$BACKEND_PID")) — log: $BACKEND_LOG"
   fi
 
-  # 9. Start frontend (vite) in the background
+  # 9. Start opencode serve on host so OAuth tokens at ~/.local/share/opencode/ work.
+  if is_running "$OPENCODE_PID"; then
+    warn "opencode already running (pid $(cat "$OPENCODE_PID")) — leaving as-is"
+  else
+    log "starting opencode serve on :4096"
+    (cd "$ROOT_DIR/opencode" && nohup "$OPENCODE_BIN" serve --hostname 127.0.0.1 --port 4096 \
+      </dev/null >>"$OPENCODE_LOG" 2>&1 & echo $! >"$OPENCODE_PID"; disown 2>/dev/null || true)
+    ok "opencode started (pid $(cat "$OPENCODE_PID")) — log: $OPENCODE_LOG"
+  fi
+  wait_http "http://localhost:4096/doc" 30 "opencode server"
+
+  # 10. Start frontend (vite) in the background
   if is_running "$FRONTEND_PID"; then
     warn "frontend already running (pid $(cat "$FRONTEND_PID")) — leaving as-is"
   else
     log "starting frontend on :5173"
-    (cd frontend && nohup npm run dev -- --host >>"$FRONTEND_LOG" 2>&1 & echo $! >"$FRONTEND_PID")
+    (cd frontend && nohup npm run dev -- --host </dev/null >>"$FRONTEND_LOG" 2>&1 & echo $! >"$FRONTEND_PID"; disown 2>/dev/null || true)
     ok "frontend started (pid $(cat "$FRONTEND_PID")) — log: $FRONTEND_LOG"
   fi
 
-  # 10. Smoke check the backend itself
+  # 11. Smoke check the backend itself
   wait_http "http://localhost:${PORT:-8080}/api/health" 30 "backend"
+
+  # 12. Nudge the user to log in if either OAuth token is missing.
+  local need_login=()
+  if ! _claude_logged_in; then need_login+=("claude"); fi
+  if ! _opencode_logged_in; then need_login+=("opencode"); fi
+  if (( ${#need_login[@]} > 0 )); then
+    warn "not yet authenticated: ${need_login[*]}"
+    warn "  Run:  ./setup.sh login   (one-time browser-based login; tokens are reused thereafter)"
+  fi
 
   cat <<EOF
 
@@ -262,12 +357,14 @@ ${C_OK}LocalCode is up.${C_END}
 
   UI:        http://localhost:5173
   Backend:   http://localhost:${PORT:-8080}/api/health
-  LiteLLM:   http://localhost:4000   (master key: ${LITELLM_MASTER_KEY:-sk-localcode-master})
-  OpenCode:  http://localhost:4096
+  LiteLLM:   http://localhost:4000   (proxy is online but bypassed: Claude + OpenCode talk
+                                      directly to their providers via subscription OAuth.)
+  OpenCode:  http://localhost:4096   (host process, not docker — needed for OAuth flows.)
 
-  ./setup.sh logs    # tail backend + frontend
+  ./setup.sh login   # one-shot Claude + OpenCode login (browser opens)
+  ./setup.sh logs    # tail backend + frontend + opencode
   ./setup.sh status  # show what's running
-  ./setup.sh stop    # stop backend + frontend
+  ./setup.sh stop    # stop backend + frontend + opencode
   ./setup.sh down    # stop everything (incl. docker)
 
 EOF
@@ -276,9 +373,10 @@ EOF
 # ── dispatch ─────────────────────────────────────────────────────────────────
 case "${1:-up}" in
   up|"")    cmd_up ;;
+  login)    cmd_login ;;
   stop)     cmd_stop ;;
   down)     cmd_down ;;
   status)   cmd_status ;;
   logs)     cmd_logs ;;
-  *)        fail "unknown command: $1 (use up|stop|down|status|logs)" ;;
+  *)        fail "unknown command: $1 (use up|login|stop|down|status|logs)" ;;
 esac

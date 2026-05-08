@@ -1,9 +1,10 @@
 """OpenCode provider — speaks to a running `opencode serve` over HTTP + SSE.
 
-OpenCode is configured (via `opencode/opencode.json`) to use a single
-`@ai-sdk/openai-compatible` provider pointed at the LiteLLM proxy. So the
-`model` we pass through here is a LiteLLM model name, prefixed with the
-opencode provider id (`litellm/<model-name>`).
+OpenCode runs on the host (not in Docker) so that `opencode auth login` can open
+a browser and persist OAuth tokens at ~/.local/share/opencode/auth.json. The
+backend therefore passes models in OpenCode's native `<provider>/<model>` form,
+e.g. `openai/gpt-5-codex` or `openai/gpt-4o`. OpenCode resolves the credential
+from its own auth store — we don't pass any key.
 """
 from __future__ import annotations
 
@@ -15,9 +16,6 @@ import httpx
 
 from ..config import get_settings
 from .base import Event, RunContext
-
-
-OPENCODE_PROVIDER_ID = "litellm"  # must match key in opencode/opencode.json
 
 
 class OpenCodeProvider:
@@ -38,9 +36,26 @@ class OpenCodeProvider:
         return resp.json()["id"]
 
     async def run(self, ctx: RunContext) -> AsyncIterator[Event]:
-        session_id = await self.open_session(ctx)
+        try:
+            session_id = await self.open_session(ctx)
+        except httpx.HTTPError as exc:
+            yield Event(
+                type="error",
+                data={
+                    "message": f"could not reach opencode at {self._settings.opencode_base_url}: {exc}",
+                    "provider": self.name,
+                },
+            )
+            return
+
+        # OpenCode's current schema expects model as {providerID, modelID}, not
+        # "provider/model". Our catalog stores "openai/gpt-5-codex" so we split.
+        provider_id, _, model_id = ctx.model.partition("/")
+        if not model_id:
+            # Fallback: treat the whole string as the model id under "openai".
+            provider_id, model_id = "openai", provider_id
         body: dict[str, Any] = {
-            "model": f"{OPENCODE_PROVIDER_ID}/{ctx.model}",
+            "model": {"providerID": provider_id, "modelID": model_id},
             "parts": [{"type": "text", "text": ctx.prompt}],
         }
         if ctx.system_prompt:
@@ -60,6 +75,7 @@ class OpenCodeProvider:
                     )
                     return
 
+                state = _TurnState()
                 done = False
                 async for raw_line in stream.aiter_lines():
                     if not raw_line or not raw_line.startswith("data:"):
@@ -72,7 +88,7 @@ class OpenCodeProvider:
                     except json.JSONDecodeError:
                         continue
 
-                    for ev in _translate(payload, session_id):
+                    for ev in _translate(payload, session_id, state):
                         yield ev
                         if ev.type == "assistant.done":
                             done = True
@@ -85,29 +101,76 @@ class OpenCodeProvider:
         await self._client.aclose()
 
 
-def _translate(payload: dict[str, Any], session_id: str) -> list[Event]:
-    """Translate an opencode SSE event into our unified events.
+class _TurnState:
+    """Per-turn correlation state for the SSE translator. OpenCode emits
+    user-message parts and assistant-message parts on the same stream, so we
+    track which message IDs are user-role and skip their parts (the UI already
+    has the user's prompt — re-emitting it produces an echo)."""
 
-    OpenCode emits a small zoo of bus events (`message.part.updated`,
-    `message.updated`, etc.). We pick the ones that carry text/tool deltas
-    and the message-finished signal.
-    """
+    __slots__ = ("user_msg_ids", "text_seen_per_part")
+
+    def __init__(self) -> None:
+        self.user_msg_ids: set[str] = set()
+        # OpenCode sends `message.part.updated` with the *full* current text on
+        # each update, not a delta. Track the running length per part so we can
+        # emit only the new tail to the UI.
+        self.text_seen_per_part: dict[str, int] = {}
+
+
+def _translate(
+    payload: dict[str, Any], session_id: str, state: _TurnState
+) -> list[Event]:
+    """Translate an opencode SSE event into our unified events. See _TurnState
+    for the correlation we maintain across events."""
     out: list[Event] = []
     event_type = payload.get("type") or payload.get("event")
     properties = payload.get("properties", {}) or {}
+
+    if event_type == "message.updated":
+        info = properties.get("info") or {}
+        if info.get("sessionID") and info["sessionID"] != session_id:
+            return out
+        if info.get("role") == "user" and info.get("id"):
+            state.user_msg_ids.add(info["id"])
+        # Assistant message completion → end of turn.
+        if info.get("role") == "assistant" and info.get("time", {}).get("completed"):
+            out.append(
+                Event(
+                    type="assistant.done",
+                    data={"cost_usd": info.get("cost"), "tokens": info.get("tokens")},
+                )
+            )
+        return out
+
+    if event_type in ("session.error",):
+        err = properties.get("error") or {}
+        msg = (err.get("data") or {}).get("message") or err.get("name") or "session error"
+        out.append(Event(type="error", data={"message": msg, "provider": "opencode"}))
+        # Follow with done so the UI clears its working indicator.
+        out.append(Event(type="assistant.done", data={}))
+        return out
 
     if event_type in ("message.part.updated", "message.part.added"):
         part = properties.get("part") or {}
         if part.get("sessionID") and part["sessionID"] != session_id:
             return out
+        # Skip parts that belong to the user's own message — those are the
+        # prompt being echoed back, not the assistant's response.
+        if part.get("messageID") in state.user_msg_ids:
+            return out
+
         ptype = part.get("type")
         if ptype == "text":
-            text = part.get("text", "")
-            if text:
-                out.append(Event(type="assistant.text", data={"text": text}))
+            full = part.get("text", "") or ""
+            pid = part.get("id") or ""
+            seen = state.text_seen_per_part.get(pid, 0)
+            delta = full[seen:]
+            if delta:
+                state.text_seen_per_part[pid] = len(full)
+                out.append(Event(type="assistant.text", data={"text": delta}))
         elif ptype == "tool":
-            state = part.get("state", {}) or {}
-            status = state.get("status")
+            tstate = part.get("state", {}) or {}
+            status = tstate.get("status")
             if status in ("running", "pending"):
                 out.append(
                     Event(
@@ -115,7 +178,7 @@ def _translate(payload: dict[str, Any], session_id: str) -> list[Event]:
                         data={
                             "id": part.get("id"),
                             "name": part.get("tool"),
-                            "input": state.get("input", {}),
+                            "input": tstate.get("input", {}),
                         },
                     )
                 )
@@ -125,7 +188,7 @@ def _translate(payload: dict[str, Any], session_id: str) -> list[Event]:
                         type="tool.result",
                         data={
                             "tool_use_id": part.get("id"),
-                            "content": state.get("output"),
+                            "content": tstate.get("output"),
                             "is_error": False,
                         },
                     )
@@ -136,23 +199,9 @@ def _translate(payload: dict[str, Any], session_id: str) -> list[Event]:
                         type="tool.result",
                         data={
                             "tool_use_id": part.get("id"),
-                            "content": state.get("error"),
+                            "content": tstate.get("error"),
                             "is_error": True,
                         },
                     )
                 )
-    elif event_type == "message.updated":
-        info = properties.get("info") or {}
-        if info.get("sessionID") and info["sessionID"] != session_id:
-            return out
-        if info.get("time", {}).get("completed"):
-            out.append(
-                Event(
-                    type="assistant.done",
-                    data={
-                        "cost_usd": info.get("cost"),
-                        "tokens": info.get("tokens"),
-                    },
-                )
-            )
     return out

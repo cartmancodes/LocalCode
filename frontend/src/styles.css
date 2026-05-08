@@ -239,6 +239,26 @@ button.primary:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .muted { color: var(--fg-muted); }
 
+.ws-pill { margin-left: 4px; font-weight: 500; }
+.ws-pill.ws-connecting { color: var(--accent-2); }
+.ws-pill.ws-closed { color: var(--danger); }
+
+.session-actions { margin-bottom: 4px; }
+.clear-all {
+  width: 100%;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--fg-muted);
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.clear-all:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 .footer {
   grid-area: foot;
   padding: 8px 14px;

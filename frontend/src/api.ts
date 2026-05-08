@@ -17,6 +17,8 @@ export const api = {
   getMessages: (id: string) => json<any[]>(`/api/sessions/${id}/messages`),
   deleteSession: (id: string) =>
     fetch(`/api/sessions/${id}`, { method: "DELETE" }).then(() => undefined),
+  deleteAllSessions: () =>
+    fetch("/api/sessions", { method: "DELETE" }).then(() => undefined),
   budget: () => json<Budget>("/api/budget"),
 };
 

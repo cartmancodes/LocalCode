@@ -10,6 +10,7 @@ interface Props {
   onSelect: (id: string) => void;
   onCreate: () => void;
   onDelete: (id: string) => void;
+  onClearAll: () => void;
 }
 
 export default function Sidebar(p: Props) {
@@ -21,6 +22,22 @@ export default function Sidebar(p: Props) {
         <ModelPicker models={p.models} value={p.pendingModelId} onChange={p.onPickModel} />
         <button onClick={p.onCreate} className="primary">+ New chat</button>
       </div>
+
+      {p.sessions.length > 0 && (
+        <div className="session-actions">
+          <button
+            className="clear-all"
+            title="Delete every chat (cannot be undone)"
+            onClick={() => {
+              if (confirm(`Delete all ${p.sessions.length} chats? This cannot be undone.`)) {
+                p.onClearAll();
+              }
+            }}
+          >
+            Clear all chats
+          </button>
+        </div>
+      )}
 
       <div className="session-list">
         {p.sessions.length === 0 && <div className="muted">No chats yet.</div>}

@@ -7,3 +7,61 @@
 
   ➜  Local:   http://localhost:5173/
   ➜  Network: http://192.168.1.4:5173/
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+Port 5173 is in use, trying another one...
+
+  VITE v5.4.21  ready in 100 ms
+
+  ➜  Local:   http://localhost:5174/
+  ➜  Network: http://192.168.1.4:5174/
+4:01:00 AM [vite] http proxy error: /api/budget
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 94 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.4:5173/
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 108 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.4:5173/
+5:08:00 AM [vite] vite.config.ts changed, restarting server...
+5:08:00 AM [vite] server restarted.
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 93 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.4:5173/
+5:40:47 AM [vite] hmr update /src/components/ChatPane.tsx
+5:40:52 AM [vite] hmr update /src/styles.css
+5:43:45 AM [vite] hmr update /src/App.tsx, /src/components/BudgetBar.tsx, /src/components/ChatPane.tsx
+5:43:51 AM [vite] hmr update /src/components/Sidebar.tsx
+5:44:02 AM [vite] hmr update /src/components/Sidebar.tsx
+5:44:11 AM [vite] hmr update /src/App.tsx
+5:44:16 AM [vite] hmr update /src/App.tsx
+5:44:22 AM [vite] hmr update /src/styles.css
+5:44:34 AM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+5:44:34 AM [vite] ws proxy socket error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)

@@ -41,6 +41,12 @@ export default function App() {
     if (activeId === id) setActiveId(null);
   };
 
+  const onClearAll = async () => {
+    await api.deleteAllSessions();
+    setSessions([]);
+    setActiveId(null);
+  };
+
   return (
     <div className="layout">
       <Sidebar
@@ -52,6 +58,7 @@ export default function App() {
         onSelect={setActiveId}
         onCreate={onCreate}
         onDelete={onDelete}
+        onClearAll={onClearAll}
       />
       <ChatPane session={active} />
       <div className="footer">

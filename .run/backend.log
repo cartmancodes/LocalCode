@@ -3,3 +3,707 @@ INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
 INFO:     127.0.0.1:60247 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60275 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60277 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60279 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60281 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60333 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60337 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60339 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60334 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60342 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60344 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60332 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60347 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60353 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60350 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60356 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60359 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60364 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60368 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60373 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60377 - "GET /api/sessions/f392470495ac4af4a04bbbf9fa17c765/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60380 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60384 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60388 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60392 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60396 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60400 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60403 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60440 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60446 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60452 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60457 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60461 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60465 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60469 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60474 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60480 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60484 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60488 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60493 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60499 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60504 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60509 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60514 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60550 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60559 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60563 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60567 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60574 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60578 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60582 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60586 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60591 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60595 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60601 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60605 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60609 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60614 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60618 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60623 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60628 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60633 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60637 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60642 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60646 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60651 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60655 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60665 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60669 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60674 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60678 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60682 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60686 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60692 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60696 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60701 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60705 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60709 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60715 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60719 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60723 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60728 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60732 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60736 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60740 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60744 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60748 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60752 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60756 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60762 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60769 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60774 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60780 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60784 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60788 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60793 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60797 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60801 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60805 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60809 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60813 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60817 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60823 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60827 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60831 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60835 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60839 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60844 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60848 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60852 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60856 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60860 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60864 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60870 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60874 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60878 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60883 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60888 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60892 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60896 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60902 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60907 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60911 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60915 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60920 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60925 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60931 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60935 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60939 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60943 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60947 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60951 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60955 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60959 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60963 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60967 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60971 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60975 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60979 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60983 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60987 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60992 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60997 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61001 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61007 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61011 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61015 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61020 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61024 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61028 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61032 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61037 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61041 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61046 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61050 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61058 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61062 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61066 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61070 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61074 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61078 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61082 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61087 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61091 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61095 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61099 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61103 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61107 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61113 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61117 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61121 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61125 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61129 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61134 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61138 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61142 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61146 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61150 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61154 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61159 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61164 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61171 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61177 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61183 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61187 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61192 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61211 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61222 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61226 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61223 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61229 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61221 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61233 - "GET /api/sessions/f392470495ac4af4a04bbbf9fa17c765/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61237 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61240 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61243 - "GET /api/sessions/fb78fbabaeff45819c66adcd075d761b/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61249 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61253 - "GET /api/sessions/f392470495ac4af4a04bbbf9fa17c765/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61257 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61260 - "GET /api/sessions/9386be982cba4ac7aa9a9efc99bfde70/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61264 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61270 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61274 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61278 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61281 - "GET /api/sessions/790bda5a4e644323855fb53c8e84e611/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61287 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61291 - "GET /api/sessions/790bda5a4e644323855fb53c8e84e611/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61294 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61298 - "DELETE /api/sessions/790bda5a4e644323855fb53c8e84e611 HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:61301 - "DELETE /api/sessions/9386be982cba4ac7aa9a9efc99bfde70 HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:61304 - "DELETE /api/sessions/fb78fbabaeff45819c66adcd075d761b HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:61307 - "DELETE /api/sessions/f392470495ac4af4a04bbbf9fa17c765 HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:61310 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61314 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61318 - "GET /api/sessions/8388b467f3b74400b391bf6e421e78c0/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61321 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61325 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61329 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61333 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61339 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61346 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61352 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61356 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61361 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61365 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61369 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61373 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61377 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61382 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61386 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61392 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61396 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61403 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61407 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61411 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61416 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61422 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [71587]
+INFO:     Started server process [77093]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:61441 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61444 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61448 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61454 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61460 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61464 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61468 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61473 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61477 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61481 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61485 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61489 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61493 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61497 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61501 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61505 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61509 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61515 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61519 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61523 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61529 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61533 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61537 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61542 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61546 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61581 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61586 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61588 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [77093]
+INFO:     Started server process [81079]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:61713 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61765 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61767 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61774 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61813 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62108 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62121 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62127 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62120 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62125 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62128 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62135 - "GET /api/sessions/8388b467f3b74400b391bf6e421e78c0/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62126 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62138 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62141 - "GET /api/sessions/096497f72e1742d19fdd03cefe5b03a2/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62146 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62150 - "DELETE /api/sessions/8388b467f3b74400b391bf6e421e78c0 HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:62153 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62156 - "GET /api/sessions/eaa972d5ab5746df87d9d3cffa64590f/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62161 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62165 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62179 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62184 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62180 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62185 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62178 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62181 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62190 - "GET /api/sessions/eaa972d5ab5746df87d9d3cffa64590f/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62202 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62206 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62203 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62208 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62200 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62204 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62211 - "GET /api/sessions/eaa972d5ab5746df87d9d3cffa64590f/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62217 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [81079]
+INFO:     Started server process [85242]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:62242 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62249 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62252 - "WebSocket /api/sessions/0498aad28476494f925b1935c7da104b/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62266 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62269 - "WebSocket /api/sessions/922b8d97194b441891b78aea57fcfa11/ws" [accepted]
+INFO:     connection open
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 394, in handle_async_request
+    resp = await self._pool.handle_async_request(req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpcore/_async/connection_pool.py", line 256, in handle_async_request
+    raise exc from None
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpcore/_async/connection_pool.py", line 236, in handle_async_request
+    response = await connection.handle_async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpcore/_async/connection.py", line 101, in handle_async_request
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpcore/_async/connection.py", line 78, in handle_async_request
+    stream = await self._connect(request)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpcore/_async/connection.py", line 124, in _connect
+    stream = await self._network_backend.connect_tcp(**kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpcore/_backends/auto.py", line 31, in connect_tcp
+    return await self._backend.connect_tcp(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpcore/_backends/anyio.py", line 113, in connect_tcp
+    with map_exceptions(exc_map):
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_1/Frameworks/Python.framework/Versions/3.11/lib/python3.11/contextlib.py", line 158, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ConnectError: All connection attempts failed
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/websockets/websockets_impl.py", line 239, in run_asgi
+    result = await self.app(self.scope, self.asgi_receive, self.asgi_send)  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 56, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/applications.py", line 1159, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 151, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/cors.py", line 80, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 680, in app
+    await route.handle(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 350, in handle
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 160, in app
+    await wrap_app_handling_exceptions(app, session)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 157, in app
+    await func(session)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 764, in app
+    await dependant.call(**solved_result.values)
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 138, in chat_ws
+    async for ev in provider.run(ctx):
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/orchestrator/opencode.py", line 39, in run
+    session_id = await self.open_session(ctx)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/orchestrator/opencode.py", line 34, in open_session
+    resp = await self._client.post("/session", json={})
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpx/_client.py", line 1859, in post
+    return await self.request(
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpx/_client.py", line 1540, in request
+    return await self.send(request, auth=auth, follow_redirects=follow_redirects)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpx/_client.py", line 1629, in send
+    response = await self._send_handling_auth(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpx/_client.py", line 1657, in _send_handling_auth
+    response = await self._send_handling_redirects(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpx/_client.py", line 1694, in _send_handling_redirects
+    response = await self._send_single_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpx/_client.py", line 1730, in _send_single_request
+    response = await transport.handle_async_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 393, in handle_async_request
+    with map_httpcore_exceptions():
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_1/Frameworks/Python.framework/Versions/3.11/lib/python3.11/contextlib.py", line 158, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ConnectError: All connection attempts failed
+INFO:     connection closed
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [85242]
+INFO:     Started server process [85858]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:62297 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62300 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62303 - "WebSocket /api/sessions/490d7c75b71647a5bea0a6166a687797/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [85858]
+INFO:     Started server process [86065]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:62317 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62320 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62323 - "WebSocket /api/sessions/9614518dede546bfa9ddde4dc1239c10/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62338 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62341 - "WebSocket /api/sessions/7480b1ea8d744baca347f1cbe5af7359/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [86065]
+INFO:     Started server process [86405]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:62372 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62375 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62378 - "WebSocket /api/sessions/62fc1344a30d4238bb9e27e7158501e2/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     Shutting down
+INFO:     Waiting for background tasks to complete. (CTRL+C to force quit)
+INFO:     Started server process [86958]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:62415 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62417 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62419 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62422 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62513 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62517 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62515 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62512 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62518 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62527 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:62516 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62525 - "GET /api/sessions/5c2ae90f81054e409a546e59447cd8fe/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:62540 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62545 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62541 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62546 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62537 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62552 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:62542 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62551 - "GET /api/sessions/5c2ae90f81054e409a546e59447cd8fe/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62555 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:62558 - "GET /api/sessions/2efe3856072c43be9ff36df5cc57b6ad/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62561 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62565 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62568 - "GET /api/sessions/147aabbbdc764485b12c7b5f9c1e81bc/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62571 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62575 - "GET /api/sessions/62fc1344a30d4238bb9e27e7158501e2/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62578 - "GET /api/sessions/5c2ae90f81054e409a546e59447cd8fe/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62581 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62585 - "GET /api/sessions/7480b1ea8d744baca347f1cbe5af7359/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62588 - "GET /api/sessions/9614518dede546bfa9ddde4dc1239c10/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62591 - "GET /api/sessions/490d7c75b71647a5bea0a6166a687797/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62594 - "GET /api/sessions/0498aad28476494f925b1935c7da104b/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62597 - "GET /api/sessions/147aabbbdc764485b12c7b5f9c1e81bc/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62600 - "GET /api/sessions/2efe3856072c43be9ff36df5cc57b6ad/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62603 - "GET /api/sessions/5c2ae90f81054e409a546e59447cd8fe/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62606 - "GET /api/sessions/2efe3856072c43be9ff36df5cc57b6ad/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62609 - "GET /api/sessions/147aabbbdc764485b12c7b5f9c1e81bc/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62612 - "GET /api/sessions/2efe3856072c43be9ff36df5cc57b6ad/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62615 - "GET /api/sessions/5c2ae90f81054e409a546e59447cd8fe/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62618 - "GET /api/sessions/7480b1ea8d744baca347f1cbe5af7359/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62621 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62625 - "GET /api/sessions/147aabbbdc764485b12c7b5f9c1e81bc/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62628 - "GET /api/sessions/2efe3856072c43be9ff36df5cc57b6ad/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62631 - "GET /api/sessions/5c2ae90f81054e409a546e59447cd8fe/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62634 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62640 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62645 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62653 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62662 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62666 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62668 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62671 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62679 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62683 - "GET /api/sessions/5c2ae90f81054e409a546e59447cd8fe/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62689 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:62687 - "GET /api/sessions/5c2ae90f81054e409a546e59447cd8fe/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62697 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62700 - "WebSocket /api/sessions/645c4ab29da34361a2be4f7f84956219/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62713 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62719 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62725 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:62731 - "GET /api/sessions/5c2ae90f81054e409a546e59447cd8fe/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62737 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62739 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:62742 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62734 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62747 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62751 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62755 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62758 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62761 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62765 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62768 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62773 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [86958]
+INFO:     Started server process [89690]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:62783 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62786 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62788 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62790 - "DELETE /api/sessions HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:62792 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62795 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62798 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62801 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62804 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62807 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62810 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62813 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62816 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62819 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62822 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62825 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62828 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62832 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62835 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62838 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62841 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62844 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62847 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62851 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62854 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62857 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62860 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62863 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62866 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62869 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62872 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62875 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62878 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62882 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62885 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62888 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62892 - "WebSocket /api/sessions/5c2ae90f81054e409a546e59447cd8fe/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62903 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62908 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62904 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62901 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62906 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62911 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62917 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62920 - "GET /api/sessions/354aed47f2b64291a9c502a626c36228/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62923 - "WebSocket /api/sessions/354aed47f2b64291a9c502a626c36228/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:62927 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62932 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62936 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:62939 - "GET /api/sessions/a3116b5d71bd4f709b3aa6d34f79ee40/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62943 - "WebSocket /api/sessions/a3116b5d71bd4f709b3aa6d34f79ee40/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62952 - "GET /api/sessions/354aed47f2b64291a9c502a626c36228/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62955 - "WebSocket /api/sessions/354aed47f2b64291a9c502a626c36228/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:62958 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62963 - "GET /api/budget HTTP/1.1" 200 OK
