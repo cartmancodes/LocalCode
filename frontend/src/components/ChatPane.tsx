@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, openSessionSocket } from "../api";
-import type { ChatBlock, ChatTurn, SessionRow, StreamEvent } from "../types";
+import type {
+  ChatBlock,
+  ChatTurn,
+  FleetConfig,
+  FleetRole,
+  FleetRoleConfig,
+  SessionRow,
+  StreamEvent,
+} from "../types";
 import Composer from "./Composer";
 import MessageBubble from "./MessageBubble";
 
@@ -211,6 +219,25 @@ export default function ChatPane({ session }: Props) {
     return `${session.provider} · ${session.model}`;
   }, [session]);
 
+  // For fleet sessions, fetch the global config once and merge the per-session
+  // override locally so the header can show what's actually running.
+  const [fleetBase, setFleetBase] = useState<FleetConfig | null>(null);
+  useEffect(() => {
+    if (session?.provider !== "fleet") return;
+    let cancelled = false;
+    api.fleetConfig().then((r) => {
+      if (!cancelled) setFleetBase(r.config);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.id, session?.provider]);
+
+  const effectiveFleet = useMemo<FleetConfig | null>(() => {
+    if (!session || session.provider !== "fleet" || !fleetBase) return null;
+    return mergeFleetOverride(fleetBase, session.fleet_config_override);
+  }, [session, fleetBase]);
+
   return (
     <main className="chat-pane">
       <header className="chat-header">
@@ -223,6 +250,26 @@ export default function ChatPane({ session }: Props) {
             </span>
           )}
         </div>
+        {effectiveFleet && (
+          <div className="chat-fleet-roles">
+            {(["planner", "developer", "coder", "reviewer"] as FleetRole[]).map((role) => {
+              const r = effectiveFleet[role];
+              const overridden = isRoleOverridden(role, session?.fleet_config_override);
+              return (
+                <span
+                  key={role}
+                  className={`fleet-role-chip ${overridden ? "is-overridden" : ""}`}
+                  title={`${role}: ${r.provider}:${r.model}${overridden ? " (UI override)" : ""}`}
+                >
+                  <span className="fleet-role-chip-name">{role}</span>
+                  <span className="fleet-role-chip-model">
+                    {r.provider}:{r.model}
+                  </span>
+                </span>
+              );
+            })}
+          </div>
+        )}
       </header>
 
       <div ref={scrollRef} className="chat-scroll">
@@ -235,6 +282,31 @@ export default function ChatPane({ session }: Props) {
       <Composer disabled={!session || streaming} onSend={send} />
     </main>
   );
+}
+
+function mergeFleetOverride(
+  base: FleetConfig,
+  override: SessionRow["fleet_config_override"]
+): FleetConfig {
+  if (!override) return base;
+  const merged: FleetConfig = JSON.parse(JSON.stringify(base));
+  if (override.max_steps != null) merged.max_steps = override.max_steps;
+  if (override.name) merged.name = override.name;
+  for (const role of ["planner", "developer", "coder", "reviewer"] as FleetRole[]) {
+    const o = override.roles?.[role];
+    if (!o) continue;
+    merged[role] = { ...merged[role], ...(o as Partial<FleetRoleConfig>) };
+  }
+  return merged;
+}
+
+function isRoleOverridden(
+  role: FleetRole,
+  override: SessionRow["fleet_config_override"]
+): boolean {
+  if (!override?.roles?.[role]) return false;
+  const o = override.roles[role]!;
+  return Boolean(o.provider || o.model || o.system_prompt);
 }
 
 function blockFromPersisted(b: any): ChatBlock {

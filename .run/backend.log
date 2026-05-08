@@ -883,3 +883,211 @@ INFO:     connection closed
 INFO:     127.0.0.1:51612 - "GET /api/budget HTTP/1.1" 200 OK
 INFO:     127.0.0.1:51621 - "GET /api/budget HTTP/1.1" 200 OK
 INFO:     127.0.0.1:51628 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51723 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:51737 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51742 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51738 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51736 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51739 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51743 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51751 - "WebSocket /api/sessions/26763736ef8b4895a66daf788aeab972/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51750 - "GET /api/sessions/26763736ef8b4895a66daf788aeab972/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51755 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51767 - "DELETE /api/sessions HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:51770 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51773 - "GET /api/sessions/2c94c868d1a948afa3cf10922b9ad309/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51776 - "WebSocket /api/sessions/2c94c868d1a948afa3cf10922b9ad309/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51779 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51786 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51790 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51796 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51801 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51808 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51820 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51832 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51838 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51846 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [94092]
+INFO:     Started server process [97262]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:51863 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51866 - "WebSocket /api/sessions/2c94c868d1a948afa3cf10922b9ad309/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:51880 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51883 - "WebSocket /api/sessions/2c94c868d1a948afa3cf10922b9ad309/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51874 - "GET /api/sessions/2c94c868d1a948afa3cf10922b9ad309/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51879 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51884 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:51892 - "GET /api/sessions/2c94c868d1a948afa3cf10922b9ad309/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51897 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51901 - "WebSocket /api/sessions/2c94c868d1a948afa3cf10922b9ad309/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51903 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51895 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51906 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51912 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51916 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51920 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51925 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:51942 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51948 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51933 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51945 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51949 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51947 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51956 - "WebSocket /api/sessions/2c94c868d1a948afa3cf10922b9ad309/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51954 - "GET /api/sessions/2c94c868d1a948afa3cf10922b9ad309/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51961 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51965 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:52000 - "WebSocket /api/sessions/2c94c868d1a948afa3cf10922b9ad309/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51997 - "GET /api/sessions/2c94c868d1a948afa3cf10922b9ad309/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52010 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52013 - "WebSocket /api/sessions/c9ab140f134c443caca8dc92f8efb2f5/ws" [accepted]
+INFO:     connection open
+fleet planning failed, single-shot fallback: planner did not return JSON
+INFO:     connection closed
+INFO:     127.0.0.1:52087 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:52095 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52102 - "WebSocket /api/sessions/2c94c868d1a948afa3cf10922b9ad309/ws" [accepted]
+INFO:     127.0.0.1:52103 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:52093 - "GET /api/sessions/2c94c868d1a948afa3cf10922b9ad309/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52097 - "GET /api/sessions/2c94c868d1a948afa3cf10922b9ad309/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:52115 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52121 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52118 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52122 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52131 - "WebSocket /api/sessions/c9ab140f134c443caca8dc92f8efb2f5/ws" [accepted]
+INFO:     127.0.0.1:52132 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:52114 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52120 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52130 - "GET /api/sessions/c9ab140f134c443caca8dc92f8efb2f5/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52136 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52138 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52141 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52146 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52148 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52151 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52157 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52161 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:52167 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52166 - "GET /api/sessions/be7f3c6884cc4690a606c1ce69e78da9/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52170 - "WebSocket /api/sessions/be7f3c6884cc4690a606c1ce69e78da9/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:52203 - "GET /api/budget HTTP/1.1" 200 OK
+fleet planning failed, single-shot fallback: planner did not return JSON
+INFO:     127.0.0.1:52220 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52225 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52227 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52230 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:52236 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52234 - "GET /api/sessions/a920581a594b4369a3e532ba468b9f81/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52239 - "WebSocket /api/sessions/a920581a594b4369a3e532ba468b9f81/ws" [accepted]
+INFO:     connection open
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/websockets/websockets_impl.py", line 317, in asgi_send
+    await self.send(data)  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/websockets/legacy/protocol.py", line 618, in send
+    await self.ensure_open()
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/websockets/legacy/protocol.py", line 916, in ensure_open
+    raise self.connection_closed_exc()
+websockets.exceptions.ConnectionClosedOK: received 1005 (no status received [internal]); then sent 1005 (no status received [internal])
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/websockets.py", line 86, in send
+    await self._send(message)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 39, in sender
+    await send(message)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/websockets/websockets_impl.py", line 330, in asgi_send
+    raise ClientDisconnected from exc
+uvicorn.protocols.utils.ClientDisconnected
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/websockets/websockets_impl.py", line 239, in run_asgi
+    result = await self.app(self.scope, self.asgi_receive, self.asgi_send)  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 56, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/applications.py", line 1159, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 151, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/cors.py", line 80, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 680, in app
+    await route.handle(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 350, in handle
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 160, in app
+    await wrap_app_handling_exceptions(app, session)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 157, in app
+    await func(session)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 764, in app
+    await dependant.call(**solved_result.values)
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 191, in chat_ws
+    await websocket.send_json(ev.to_json())
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/websockets.py", line 176, in send_json
+    await self.send({"type": "websocket.send", "text": text})
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/websockets.py", line 89, in send
+    raise WebSocketDisconnect(code=1006)
+starlette.websockets.WebSocketDisconnect
+INFO:     127.0.0.1:52242 - "DELETE /api/sessions/be7f3c6884cc4690a606c1ce69e78da9 HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:52245 - "DELETE /api/sessions/c9ab140f134c443caca8dc92f8efb2f5 HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:52248 - "DELETE /api/sessions/2c94c868d1a948afa3cf10922b9ad309 HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:52251 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52278 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52295 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52304 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52309 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52336 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52354 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52358 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52362 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52366 - "DELETE /api/sessions/a920581a594b4369a3e532ba468b9f81 HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:52371 - "GET /api/budget HTTP/1.1" 200 OK

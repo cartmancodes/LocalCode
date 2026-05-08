@@ -2,14 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import BudgetBar from "./components/BudgetBar";
 import ChatPane from "./components/ChatPane";
+import FleetConfigEditor from "./components/FleetConfigEditor";
 import Sidebar from "./components/Sidebar";
-import type { CatalogModel, SessionRow } from "./types";
+import type { CatalogModel, FleetConfigOverride, SessionRow } from "./types";
 
 export default function App() {
   const [models, setModels] = useState<CatalogModel[]>([]);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [pendingModelId, setPendingModelId] = useState<string>("");
+  // When the user creates a chat with a fleet model, we open this modal first
+  // so they can override role/provider/model before the session is created.
+  const [fleetEditorOpen, setFleetEditorOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -27,12 +31,27 @@ export default function App() {
     [sessions, activeId]
   );
 
-  const onCreate = async () => {
+  const createWithOverride = async (override: FleetConfigOverride | null) => {
     if (!pendingModelId) return;
     const [provider, model] = pendingModelId.split(":") as [SessionRow["provider"], string];
-    const fresh = await api.createSession({ provider, model });
+    const fresh = await api.createSession({
+      provider,
+      model,
+      fleet_config_override: provider === "fleet" ? override : null,
+    });
     setSessions((cur) => [fresh, ...cur]);
     setActiveId(fresh.id);
+  };
+
+  const onCreate = async () => {
+    if (!pendingModelId) return;
+    const [provider] = pendingModelId.split(":");
+    if (provider === "fleet") {
+      // Show the editor so the user can preview / override role assignments.
+      setFleetEditorOpen(true);
+      return;
+    }
+    await createWithOverride(null);
   };
 
   const onDelete = async (id: string) => {
@@ -64,6 +83,17 @@ export default function App() {
       <div className="footer">
         <BudgetBar />
       </div>
+
+      {fleetEditorOpen && (
+        <FleetConfigEditor
+          models={models}
+          onCancel={() => setFleetEditorOpen(false)}
+          onConfirm={async (override) => {
+            setFleetEditorOpen(false);
+            await createWithOverride(override);
+          }}
+        />
+      )}
     </div>
   );
 }

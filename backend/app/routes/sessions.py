@@ -56,6 +56,7 @@ async def create_session(
         model=body.model,
         cwd=body.cwd,
         title=body.title or "New chat",
+        fleet_config_override=body.fleet_config_override,
     )
     db.add(s)
     await db.commit()
@@ -114,6 +115,7 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
         model = sess.model
         cwd = sess.cwd
         upstream_id = sess.upstream_id
+        fleet_override = sess.fleet_config_override
 
     provider = get_provider(provider_name)  # type: ignore[arg-type]
 
@@ -161,6 +163,7 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
                 prompt=prompt,
                 cwd=cwd,
                 upstream_session_id=upstream_id,
+                extras={"fleet_config_override": fleet_override} if fleet_override else {},
             )
 
             assistant_blocks: list[dict[str, Any]] = []

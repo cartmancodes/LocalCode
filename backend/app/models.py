@@ -27,6 +27,10 @@ class Session(Base):
     cwd: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # Provider-native session id (e.g. opencode session id) so we can resume.
     upstream_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # When provider == "fleet", a partial dict that's merged on top of the file-level
+    # fleet config for this session — lets the UI override roles per-chat without
+    # touching .localcode/fleet.yaml. Shape matches the YAML/JSON config schema.
+    fleet_config_override: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now

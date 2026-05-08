@@ -1,4 +1,10 @@
-import type { Budget, CatalogModel, SessionRow } from "./types";
+import type {
+  Budget,
+  CatalogModel,
+  FleetConfigOverride,
+  FleetConfigResponse,
+  SessionRow,
+} from "./types";
 
 async function json<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const res = await fetch(input, {
@@ -12,8 +18,14 @@ async function json<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
 export const api = {
   listModels: () => json<CatalogModel[]>("/api/models"),
   listSessions: () => json<SessionRow[]>("/api/sessions"),
-  createSession: (body: { provider: string; model: string; cwd?: string; title?: string }) =>
-    json<SessionRow>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
+  createSession: (body: {
+    provider: string;
+    model: string;
+    cwd?: string;
+    title?: string;
+    fleet_config_override?: FleetConfigOverride | null;
+  }) => json<SessionRow>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
+  fleetConfig: () => json<FleetConfigResponse>("/api/fleet/config"),
   getMessages: (id: string) => json<any[]>(`/api/sessions/${id}/messages`),
   deleteSession: (id: string) =>
     fetch(`/api/sessions/${id}`, { method: "DELETE" }).then(() => undefined),

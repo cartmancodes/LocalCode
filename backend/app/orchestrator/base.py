@@ -35,6 +35,9 @@ class RunContext:
     cwd: str | None = None
     upstream_session_id: str | None = None
     system_prompt: str | None = None
+    # Provider-specific extras. Currently only used by the fleet provider
+    # (a per-session partial config dict that overrides the file-level YAML).
+    extras: dict[str, Any] = field(default_factory=dict)
 
 
 class Provider(Protocol):

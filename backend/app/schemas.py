@@ -11,6 +11,10 @@ class CreateSessionRequest(BaseModel):
     model: str
     cwd: str | None = None
     title: str | None = None
+    # When provider == "fleet", a partial config dict (matches the YAML schema)
+    # that overrides the file-level config for this session only. Anything you
+    # omit inherits the file-level / built-in default.
+    fleet_config_override: dict[str, Any] | None = None
 
 
 class SessionOut(BaseModel):
@@ -20,6 +24,7 @@ class SessionOut(BaseModel):
     model: str
     cwd: str | None
     upstream_id: str | None
+    fleet_config_override: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
 

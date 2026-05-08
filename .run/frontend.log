@@ -81,3 +81,18 @@ AggregateError [ECONNREFUSED]:
 4:46:11 AM [vite] ws proxy socket error:
 Error: read ECONNRESET
     at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+5:10:38 AM [vite] http proxy error: /api/budget
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+5:10:39 AM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+5:10:55 AM [vite] hmr update /src/App.tsx, /src/components/BudgetBar.tsx, /src/components/ChatPane.tsx
+5:11:03 AM [vite] hmr update /src/App.tsx, /src/components/BudgetBar.tsx, /src/components/ChatPane.tsx
+5:12:04 AM [vite] hmr update /src/App.tsx
+5:12:28 AM [vite] hmr update /src/components/ChatPane.tsx
+5:12:44 AM [vite] hmr update /src/components/ChatPane.tsx
+5:12:53 AM [vite] hmr update /src/components/ChatPane.tsx
+5:13:16 AM [vite] hmr update /src/styles.css

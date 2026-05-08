@@ -343,6 +343,14 @@ class FleetProvider:
     async def run(self, ctx: RunContext) -> AsyncIterator[Event]:
         self._t0 = time.time()
         cfg = load_fleet_config(ctx.cwd)
+        # Per-session UI override layered on top of the file config. Same
+        # validation rules apply: bad fields revert to whatever the file/built-in
+        # supplied, so a typo in the modal can't sink the turn.
+        ui_override = ctx.extras.get("fleet_config_override") if ctx.extras else None
+        if isinstance(ui_override, dict) and ui_override:
+            base_src = cfg.config_source or "<built-in defaults>"
+            cfg = _merge_config(cfg, ui_override)
+            cfg.config_source = f"{base_src} + UI override"
 
         # ── 1. Planning ─────────────────────────────────────────────────
         plan_id = "fleet.plan"

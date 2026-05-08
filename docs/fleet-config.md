@@ -1,12 +1,29 @@
 # Configuring the Fleet
 
-The fleet ([docs/fleet.md](fleet.md)) runs four roles — **Planner**, **Developer**, **Coder**, **Reviewer** — each with its own `{provider, model, system_prompt}`. This page is the user-facing guide to changing those assignments.
+The fleet ([docs/fleet.md](fleet.md)) runs four roles — **Planner**, **Developer**, **Coder**, **Reviewer** — each with its own `{provider, model, system_prompt}`. There are three layers of configuration, applied in this order (later layers override earlier ones):
 
-> If you just want it to work: don't write a config. The built-in defaults assume you've run `./setup.sh login` and use Claude (Sonnet/Opus/Haiku) + OpenCode (gpt-5.3-codex). Pick `fleet:default` in the model dropdown and send a prompt.
+| Layer            | Where                                                | When to use                                         |
+| :--------------- | :--------------------------------------------------- | :-------------------------------------------------- |
+| Built-in defaults | code in [fleet.py](../backend/app/orchestrator/fleet.py) | Always available — no setup required                |
+| File config       | `.localcode/fleet.{yaml,yml,json}` (or env override) | Per-project, version-controllable                   |
+| **UI override**   | Modal that pops up when you click **+ New chat** with a fleet model selected | Per-session, stored on the session row in the DB    |
+
+> If you just want it to work: don't write any config. The built-in defaults assume you've run `./setup.sh login` and use Claude (Sonnet/Opus/Haiku) + OpenCode (gpt-5.3-codex). Pick `fleet:default` in the model dropdown and send a prompt.
 
 ---
 
-## Quick start (60 seconds)
+## Quick start: UI override (no files)
+
+1. Pick `fleet:default` in the model dropdown.
+2. Click **+ New chat**.
+3. The **Configure Fleet** modal opens. It shows the current effective config (built-in defaults plus any file-level overrides) and lets you change provider/model per role inline. Roles you didn't touch keep inheriting whatever the layer below provided.
+4. Click **Start chat** — the override is saved on the session and applied on every subsequent turn for that session. New chats start fresh from the file/built-in defaults.
+
+The chat header shows role chips like `PLANNER claude:claude-sonnet-4-6` per turn — anything you overrode is highlighted in accent purple, with a tooltip noting "(UI override)".
+
+For project-wide changes (every chat in a repo) prefer the file path below. The UI is for one-off "just for this chat" tweaks.
+
+## Quick start: file config (60 seconds)
 
 ```bash
 cp .localcode/fleet.yaml.example .localcode/fleet.yaml
@@ -197,12 +214,21 @@ The default coder prompt is replaced entirely — the role's job (don't add feat
 
 ## Live editing workflow
 
+**File config:**
 1. Edit `.localcode/fleet.yaml`.
 2. Send the next prompt in the UI.
 3. The fleet reloads the file at the start of every turn.
-4. Hit `GET /api/fleet/config` if you want to confirm what's active.
+4. Hit `GET /api/fleet/config` to confirm what's active.
 
-No backend restart required. If your YAML is malformed, the fleet logs a warning and falls back to defaults — the chat still works.
+No backend restart required. Malformed YAML logs a warning and falls back to defaults; the chat still works.
+
+**UI override:**
+1. Open the editor when creating a new chat (it auto-opens on fleet provider selection).
+2. Tweak roles, click **Start chat**.
+3. The override is stored on the session row (`sessions.fleet_config_override`) — it's persisted across backend restarts and applies for every turn in that session.
+4. To change a session's override later: delete the chat and create a new one. Per-turn override editing is on the to-do list.
+
+The two layers compose: file config sets the project default, UI override tweaks one chat. Roles you didn't touch in the UI inherit from the file (or built-in if no file).
 
 ---
 
@@ -277,3 +303,4 @@ The Coder tool-calls (Edit / Write) happen inside the sub-provider, but they nee
 - [.localcode/fleet.yaml.example](../.localcode/fleet.yaml.example) — annotated YAML starter.
 - [.localcode/fleet.json.example](../.localcode/fleet.json.example) — JSON starter.
 - [backend/app/orchestrator/fleet.py](../backend/app/orchestrator/fleet.py) — config loader, validator, runner.
+- [frontend/src/components/FleetConfigEditor.tsx](../frontend/src/components/FleetConfigEditor.tsx) — UI modal that emits the per-session override.
