@@ -18,7 +18,16 @@ export default function ModelPicker({ models, value, onChange }: Props) {
       onChange={(e) => onChange(e.target.value)}
     >
       {Object.entries(grouped).map(([provider, list]) => (
-        <optgroup key={provider} label={provider === "claude" ? "Claude Code" : "OpenCode"}>
+        <optgroup
+          key={provider}
+          label={
+            provider === "claude"
+              ? "Claude Code"
+              : provider === "opencode"
+              ? "OpenCode"
+              : "Fleet (multi-agent)"
+          }
+        >
           {list.map((m) => (
             <option key={m.id} value={m.id}>
               {m.model}

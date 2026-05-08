@@ -7,7 +7,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-Provider = Literal["claude", "opencode"]
+Provider = Literal["claude", "opencode", "fleet"]
 
 
 class CatalogEntry:
@@ -65,8 +65,8 @@ class Settings(BaseSettings):
     @field_validator("default_provider")
     @classmethod
     def _validate_default_provider(cls, v: str) -> str:
-        if v not in ("claude", "opencode"):
-            raise ValueError("default_provider must be 'claude' or 'opencode'")
+        if v not in ("claude", "opencode", "fleet"):
+            raise ValueError("default_provider must be 'claude', 'opencode', or 'fleet'")
         return v
 
     def catalog(self) -> list[CatalogEntry]:
@@ -76,7 +76,7 @@ class Settings(BaseSettings):
             if not raw:
                 continue
             provider, _, model = raw.partition(":")
-            if provider not in ("claude", "opencode") or not model:
+            if provider not in ("claude", "opencode", "fleet") or not model:
                 # Skip malformed entries silently — surfacing them would block startup.
                 continue
             entries.append(CatalogEntry(provider, model))  # type: ignore[arg-type]

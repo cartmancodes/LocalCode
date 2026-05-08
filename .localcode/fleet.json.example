@@ -1,0 +1,11 @@
+{
+  "//": "Same shape as fleet.yaml.example. Save as .localcode/fleet.json. See docs/fleet.md.",
+  "name": "all-claude",
+  "max_steps": 6,
+  "roles": {
+    "planner":   { "provider": "claude", "model": "claude-sonnet-4-6" },
+    "developer": { "provider": "claude", "model": "claude-opus-4-7" },
+    "coder":     { "provider": "claude", "model": "claude-sonnet-4-6" },
+    "reviewer":  { "provider": "claude", "model": "claude-haiku-4-5" }
+  }
+}

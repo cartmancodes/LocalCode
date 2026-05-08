@@ -1,4 +1,4 @@
-export type Provider = "claude" | "opencode";
+export type Provider = "claude" | "opencode" | "fleet";
 
 export interface CatalogModel {
   id: string;

@@ -707,3 +707,179 @@ INFO:     127.0.0.1:62955 - "WebSocket /api/sessions/354aed47f2b64291a9c502a626c
 INFO:     connection open
 INFO:     127.0.0.1:62958 - "GET /api/budget HTTP/1.1" 200 OK
 INFO:     127.0.0.1:62963 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62968 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62975 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62981 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62984 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62987 - "WebSocket /api/sessions/c3f04050b023497d975887b39f47be47/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62993 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63001 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [89690]
+INFO:     Started server process [90407]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:63010 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63012 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63015 - "WebSocket /api/sessions/cc2816e89256460f992aea6dbb45cc6a/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:63040 - "WebSocket /api/sessions/354aed47f2b64291a9c502a626c36228/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:63055 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63070 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63076 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63083 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:63095 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63103 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63097 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63092 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63099 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63104 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63112 - "WebSocket /api/sessions/cc2816e89256460f992aea6dbb45cc6a/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:63110 - "GET /api/sessions/cc2816e89256460f992aea6dbb45cc6a/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63118 - "DELETE /api/sessions HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:63121 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63124 - "GET /api/sessions/1d6842c2469241c6825acd29eef8d8cb/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63127 - "WebSocket /api/sessions/1d6842c2469241c6825acd29eef8d8cb/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:63158 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63166 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63204 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63211 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63243 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63247 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63282 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63286 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63290 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63295 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63300 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63305 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63312 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63321 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63333 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63340 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63345 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63356 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [90407]
+INFO:     Started server process [25770]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:64446 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64448 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64452 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64455 - "WebSocket /api/sessions/c52d5bc82cf34695a78f4884d9bf995a/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:64503 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64506 - "WebSocket /api/sessions/d4e236d3167541aca99de1321df9077d/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:51182 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51188 - "WebSocket /api/sessions/1d6842c2469241c6825acd29eef8d8cb/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:51196 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51204 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51195 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51199 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51198 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51205 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51210 - "GET /api/sessions/d4e236d3167541aca99de1321df9077d/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51213 - "WebSocket /api/sessions/d4e236d3167541aca99de1321df9077d/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:51216 - "GET /api/sessions/c52d5bc82cf34695a78f4884d9bf995a/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51219 - "GET /api/sessions/d4e236d3167541aca99de1321df9077d/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51222 - "GET /api/sessions/c52d5bc82cf34695a78f4884d9bf995a/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51225 - "GET /api/sessions/1d6842c2469241c6825acd29eef8d8cb/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51228 - "WebSocket /api/sessions/1d6842c2469241c6825acd29eef8d8cb/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:51231 - "GET /api/sessions/c52d5bc82cf34695a78f4884d9bf995a/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51234 - "WebSocket /api/sessions/c52d5bc82cf34695a78f4884d9bf995a/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:51237 - "GET /api/sessions/d4e236d3167541aca99de1321df9077d/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51240 - "GET /api/sessions/c52d5bc82cf34695a78f4884d9bf995a/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51243 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51247 - "GET /api/sessions/1d6842c2469241c6825acd29eef8d8cb/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51250 - "GET /api/sessions/c52d5bc82cf34695a78f4884d9bf995a/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51253 - "GET /api/sessions/d4e236d3167541aca99de1321df9077d/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51256 - "GET /api/sessions/c52d5bc82cf34695a78f4884d9bf995a/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51259 - "GET /api/sessions/1d6842c2469241c6825acd29eef8d8cb/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51262 - "GET /api/sessions/d4e236d3167541aca99de1321df9077d/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51265 - "GET /api/sessions/c52d5bc82cf34695a78f4884d9bf995a/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51268 - "GET /api/sessions/1d6842c2469241c6825acd29eef8d8cb/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51271 - "WebSocket /api/sessions/1d6842c2469241c6825acd29eef8d8cb/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51274 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51281 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51286 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:51290 - "GET /api/sessions/c52d5bc82cf34695a78f4884d9bf995a/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51293 - "WebSocket /api/sessions/c52d5bc82cf34695a78f4884d9bf995a/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51297 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51301 - "DELETE /api/sessions HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:51304 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51307 - "GET /api/sessions/0fcf114b8aeb48d490b056302c47d096/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51310 - "WebSocket /api/sessions/0fcf114b8aeb48d490b056302c47d096/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51313 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51349 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51366 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51370 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51375 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51380 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51384 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51389 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51394 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51407 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51422 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51428 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51433 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51439 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51443 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51452 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51456 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51463 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [25770]
+INFO:     Started server process [94092]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:51476 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51478 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51481 - "WebSocket /api/sessions/0fcf114b8aeb48d490b056302c47d096/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51483 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51485 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51488 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51491 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51494 - "WebSocket /api/sessions/26763736ef8b4895a66daf788aeab972/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51565 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:51612 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51621 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51628 - "GET /api/budget HTTP/1.1" 200 OK

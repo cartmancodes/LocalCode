@@ -99,6 +99,7 @@ body {
 }
 .badge.claude { color: var(--accent); }
 .badge.opencode { color: var(--accent-2); }
+.badge.fleet { color: var(--green); }
 
 .delete {
   position: absolute;

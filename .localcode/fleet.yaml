@@ -1,0 +1,8 @@
+# Active fleet config — see .localcode/fleet.yaml.example for the full schema.
+name: localcode-default
+max_steps: 4
+roles:
+  planner:   { provider: claude,   model: claude-sonnet-4-6 }
+  developer: { provider: claude,   model: claude-opus-4-7 }
+  coder:     { provider: opencode, model: openai/gpt-5.3-codex }
+  reviewer:  { provider: claude,   model: claude-haiku-4-5 }

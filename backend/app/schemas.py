@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class CreateSessionRequest(BaseModel):
-    provider: Literal["claude", "opencode"]
+    provider: Literal["claude", "opencode", "fleet"]
     model: str
     cwd: str | None = None
     title: str | None = None
