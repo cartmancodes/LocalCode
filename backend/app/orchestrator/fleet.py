@@ -42,6 +42,7 @@ and richer streaming once we know what we actually need.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -65,6 +66,12 @@ VALID_PROVIDERS = ("claude", "opencode")
 VALID_ROLES = ("planner", "developer", "coder", "reviewer")
 WORKER_ROLES: tuple[str, ...] = ("developer", "coder", "reviewer")
 StepRole = Literal["developer", "coder", "reviewer"]
+
+# How long the plan-approval gate blocks before treating silence as a timeout
+# (and aborting the turn). 5 min strikes a balance — long enough for the user
+# to read the plan, short enough that a tab left open overnight doesn't pin a
+# WS forever.
+APPROVAL_TIMEOUT_S = 300.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -163,6 +170,16 @@ class FleetConfig:
     # Always one of the keys in ``roles``.
     entry_role: str
     max_steps: int = 6
+    # Auto-retry on reviewer NACK. After a reviewer step that begins with
+    # "NACK", the upstream worker step is re-run with the reviewer's feedback
+    # appended to its prompt, then the reviewer runs again. Bounded so a
+    # consistently-failing step can't loop forever. 0 disables retries.
+    max_review_retries: int = 1
+    # HITL: when true and the workflow has a planner, the pipeline pauses
+    # after the planner emits its plan and waits for the user to approve.
+    # Reject ends the turn with the user's feedback recorded as the assistant
+    # message. Has no effect on planner-less workflows.
+    require_plan_approval: bool = False
     # Where the active config came from — None means built-in defaults. Useful
     # for the UI to surface "Fleet config: ~/.localcode/fleet.yaml".
     config_source: str | None = None
@@ -411,6 +428,12 @@ def _merge_config(base: FleetConfig, override: dict[str, Any]) -> FleetConfig:
         roles=resolved_roles,
         entry_role=entry_role,
         max_steps=max(1, int(override.get("max_steps", base.max_steps))),
+        max_review_retries=max(
+            0, int(override.get("max_review_retries", base.max_review_retries))
+        ),
+        require_plan_approval=bool(
+            override.get("require_plan_approval", base.require_plan_approval)
+        ),
     )
 
 
@@ -580,7 +603,20 @@ class FleetProvider:
         self, ctx: RunContext, cfg: FleetConfig
     ) -> AsyncIterator[Event]:
         """Planner-led path: planner emits a JSON plan, steps execute
-        sequentially with results threaded as context."""
+        sequentially with results threaded as context.
+
+        Two HITL/safety features layer onto the basic loop:
+
+        - **Plan approval gate** (``cfg.require_plan_approval``): after the
+          planner emits a valid plan, the workflow blocks on an approval
+          message from the WebSocket. Reject / timeout aborts the turn before
+          any worker step runs.
+        - **Auto-retry on reviewer NACK** (``cfg.max_review_retries``): when a
+          reviewer step starts with "NACK", the upstream worker step is
+          re-queued with the reviewer's feedback prepended to its prompt, then
+          the reviewer runs again. Bounded so a stubbornly-failing step can't
+          loop forever.
+        """
         planner_base = cfg.get("planner")
         assert planner_base is not None  # caller checked cfg.has("planner")
         workers = cfg.workers()
@@ -605,6 +641,7 @@ class FleetProvider:
                 "input": {"task": ctx.prompt, "available_roles": cfg.role_names()},
             },
         )
+        plan_parsed_ok = False
         try:
             plan_text = await _collect_text(
                 planner_role, ctx.prompt, ctx.cwd, ctx.additional_dirs
@@ -628,6 +665,7 @@ class FleetProvider:
                 steps=[Step(id="s1", role=fallback, prompt=ctx.prompt, depends_on=[])]  # type: ignore[arg-type]
             )
         else:
+            plan_parsed_ok = True
             yield Event(
                 type="tool.result",
                 data={
@@ -637,12 +675,107 @@ class FleetProvider:
                 },
             )
 
+        # ── HITL: plan approval gate ─────────────────────────────────────────
+        # Only gate when the user opted in AND the planner produced a real
+        # plan — gating a single-step fallback (which IS the user's prompt) is
+        # noise.
+        if cfg.require_plan_approval and plan_parsed_ok:
+            approval_id = "approval.plan"
+            yield Event(
+                type="pipeline.awaiting_approval",
+                data={
+                    "id": approval_id,
+                    "kind": "plan",
+                    "plan": _summarize_plan(plan),
+                    "message": (
+                        "Approve this plan to run the worker steps, or reject "
+                        "with feedback to abort the turn."
+                    ),
+                    "timeout_s": APPROVAL_TIMEOUT_S,
+                },
+            )
+            decision = await _await_approval(
+                ctx.approval_channel, approval_id, APPROVAL_TIMEOUT_S
+            )
+            yield Event(type="pipeline.approval_received", data=decision)
+            if decision["value"] != "yes":
+                # Surface why the turn ended so chat history is self-explanatory.
+                if decision["value"] == "timeout":
+                    note = "Plan approval timed out — workflow aborted."
+                else:
+                    note = "Plan rejected by user."
+                fb = decision.get("feedback") or ""
+                if fb:
+                    note += f"\n\nFeedback: {fb}"
+                yield Event(type="assistant.text", data={"text": note})
+                return
+
+        # ── Step execution with NACK retries ────────────────────────────────
         outputs: dict[str, str] = {}
-        for step in plan.steps:
+        # `pending` is a mutable queue so retries can be inserted in front of
+        # the remaining plan — a NACK on step N must be fixed before step N+1
+        # runs, otherwise downstream context gets stale.
+        pending: list[Step] = list(plan.steps)
+        # Steps that actually ran, in execution order. Used by the final
+        # summary so retry outputs (which aren't in plan.steps) get picked.
+        executed: list[Step] = []
+        nack_attempts: dict[str, int] = {}  # base reviewer step id -> attempts so far
+
+        while pending:
+            step = pending.pop(0)
             async for ev in self._run_step(step, ctx, cfg, outputs):
                 yield ev
+            executed.append(step)
 
-        final = _final_summary(outputs, plan)
+            if step.role != "reviewer" or cfg.max_review_retries <= 0:
+                continue
+
+            output = outputs.get(step.id, "")
+            if not output.strip().upper().startswith("NACK"):
+                continue
+
+            # Retry counter is keyed by the ORIGINAL reviewer id so that a
+            # second NACK on `s2.retry1` still increments the same counter.
+            base_id = step.id.split(".retry", 1)[0]
+            attempts = nack_attempts.get(base_id, 0)
+            if attempts >= cfg.max_review_retries:
+                logger.info(
+                    "fleet reviewer %s NACKed %d time(s); not retrying further",
+                    base_id, attempts,
+                )
+                continue
+
+            upstream = _find_upstream_worker(plan.steps, base_id)
+            if upstream is None:
+                logger.info(
+                    "fleet reviewer %s NACKed but no upstream worker to retry",
+                    base_id,
+                )
+                continue
+
+            attempt = attempts + 1
+            nack_attempts[base_id] = attempt
+            retry_step = Step(
+                id=f"{upstream.id}.retry{attempt}",
+                role=upstream.role,
+                prompt=(
+                    f"{upstream.prompt}\n\n"
+                    f"## Reviewer feedback (attempt {attempt}; must address)\n"
+                    f"{output}"
+                ),
+                depends_on=list(upstream.depends_on),
+            )
+            rerev_step = Step(
+                id=f"{base_id}.retry{attempt}",
+                role="reviewer",
+                prompt=_lookup_step_prompt(plan.steps, base_id),
+                depends_on=[retry_step.id],
+            )
+            # Run the retry pair before any remaining plan steps.
+            pending.insert(0, rerev_step)
+            pending.insert(0, retry_step)
+
+        final = _final_summary(outputs, Plan(steps=executed))
         if final:
             yield Event(type="assistant.text", data={"text": final})
 
@@ -837,6 +970,73 @@ def _summarize_plan(plan: Plan) -> str:
         f"- [{s.id}] {s.role}: {s.prompt[:120]}{'…' if len(s.prompt) > 120 else ''}"
         for s in plan.steps
     )
+
+
+def _find_upstream_worker(steps: list[Step], reviewer_id: str) -> Step | None:
+    """The worker step a reviewer was reviewing — i.e. what to re-run on NACK.
+
+    Preference order:
+      1. The reviewer's own ``depends_on`` if it points to a worker.
+      2. The most recent worker step before the reviewer in plan order.
+
+    Returns None if neither is available (defensive — caller should skip retry).
+    """
+    reviewer = next((s for s in steps if s.id == reviewer_id), None)
+    if reviewer is None:
+        return None
+    if reviewer.depends_on:
+        by_id = {s.id: s for s in steps}
+        for dep_id in reversed(reviewer.depends_on):
+            dep = by_id.get(dep_id)
+            if dep is not None and dep.role in WORKER_ROLES and dep.role != "reviewer":
+                return dep
+    idx = next((i for i, s in enumerate(steps) if s.id == reviewer_id), None)
+    if idx is None:
+        return None
+    for s in reversed(steps[:idx]):
+        if s.role in WORKER_ROLES and s.role != "reviewer":
+            return s
+    return None
+
+
+def _lookup_step_prompt(steps: list[Step], step_id: str) -> str:
+    s = next((x for x in steps if x.id == step_id), None)
+    return s.prompt if s else "Re-review the previous step."
+
+
+async def _await_approval(
+    channel: asyncio.Queue[dict[str, Any]] | None,
+    approval_id: str,
+    timeout: float,
+) -> dict[str, Any]:
+    """Block until the user accepts/rejects this approval, or a timeout fires.
+
+    The queue is shared across the whole turn — if the user clicks an old
+    "Approve" button after a new approval is asked, the stale message has a
+    different ``id`` and is dropped here rather than satisfying the wrong gate.
+
+    When ``channel`` is None (no WS back-channel — e.g. a unit test calling
+    the provider directly), default-allow so headless usage still completes.
+    """
+    if channel is None:
+        return {"id": approval_id, "value": "yes", "feedback": None, "auto": True}
+
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"id": approval_id, "value": "timeout", "feedback": None}
+        try:
+            msg = await asyncio.wait_for(channel.get(), timeout=remaining)
+        except asyncio.TimeoutError:
+            return {"id": approval_id, "value": "timeout", "feedback": None}
+        msg_id = msg.get("id")
+        if msg_id and msg_id != approval_id:
+            # Stale message addressed to a previous approval gate. Drop and
+            # keep waiting on the original deadline.
+            continue
+        value = "yes" if msg.get("value") == "yes" else "no"
+        return {"id": approval_id, "value": value, "feedback": msg.get("feedback")}
 
 
 def _final_summary(outputs: dict[str, str], plan: Plan) -> str:

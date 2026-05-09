@@ -6,6 +6,7 @@ import type {
   FleetConfig,
   FleetRole,
   FleetRoleConfig,
+  RoleStatus,
   SessionRow,
   StreamEvent,
 } from "../types";
@@ -39,10 +40,51 @@ function detectFleetRole(name?: string): FleetRole | null {
   return null;
 }
 
+/**
+ * Walk an assistant turn's blocks and return the per-role status for the
+ * current fleet pipeline. A role is `running` while its tool_use has no
+ * matching tool_result, `done` once a successful result arrives, and
+ * `error` on failure (e.g. reviewer NACK). When the turn isn't in progress
+ * any unmatched tool_use is also treated as `done` — the turn ended.
+ *
+ * Multi-step plans (e.g. two coder steps) overwrite per role with the
+ * latest entry, so the indicator reflects the most recent invocation.
+ */
+function deriveRoleStatuses(
+  turn: ChatTurn | null,
+): Partial<Record<FleetRole, RoleStatus>> {
+  if (!turn || turn.role !== "assistant") return {};
+  const useRole = new Map<string, FleetRole>();
+  const result = new Map<string, { isError: boolean }>();
+  for (const b of turn.blocks) {
+    if (b.kind === "tool_use" && b.toolUseId) {
+      const role = detectFleetRole(b.toolName);
+      if (role) useRole.set(b.toolUseId, role);
+    } else if (b.kind === "tool_result" && b.toolUseId) {
+      result.set(b.toolUseId, { isError: !!b.isError });
+    }
+  }
+  const out: Partial<Record<FleetRole, RoleStatus>> = {};
+  for (const [tid, role] of useRole) {
+    const r = result.get(tid);
+    out[role] = r ? (r.isError ? "error" : "done") : (turn.inProgress ? "running" : "done");
+  }
+  return out;
+}
+
 export default function ChatPane({ session, onConfigureFleet }: Props) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [wsState, setWsState] = useState<WsState>("closed");
+  // HITL plan-approval gate. When set, an approval card is rendered above
+  // the composer; sending `{type: "approval", ...}` over the WS clears it.
+  const [pendingApproval, setPendingApproval] = useState<{
+    id: string;
+    kind: "plan";
+    plan: string;
+    message: string;
+    expiresAt: number;
+  } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | null>(null);
   const reconnectAttempt = useRef(0);
@@ -53,8 +95,10 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
   useEffect(() => {
     if (!session) {
       setTurns([]);
+      setPendingApproval(null);
       return;
     }
+    setPendingApproval(null);
     let cancelled = false;
     (async () => {
       const page = await api.getMessages(session.id);
@@ -211,9 +255,44 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
           setStreaming(false);
           break;
         }
+        case "pipeline.awaiting_approval": {
+          // Surface the gate as an in-stream tool_result so the chat history
+          // shows where the workflow paused even after the decision lands.
+          const a = ensureAssistant();
+          a.blocks.push({
+            kind: "tool_use",
+            toolUseId: ev.data.id,
+            toolName: "approval-gate",
+            toolInput: { kind: ev.data.kind, message: ev.data.message },
+          });
+          a.blocks.push({
+            kind: "tool_result",
+            toolUseId: ev.data.id,
+            toolOutput: ev.data.plan,
+            isError: false,
+          });
+          break;
+        }
+        case "pipeline.approval_received": {
+          // The card may already be cleared (we clear optimistically on click).
+          // Make sure stale state from a previous gate is cleared too.
+          break;
+        }
       }
       return next;
     });
+    // State updates outside the turns reducer.
+    if (ev.type === "pipeline.awaiting_approval") {
+      setPendingApproval({
+        id: ev.data.id,
+        kind: ev.data.kind,
+        plan: ev.data.plan,
+        message: ev.data.message,
+        expiresAt: Date.now() + ev.data.timeout_s * 1000,
+      });
+    } else if (ev.type === "pipeline.approval_received") {
+      setPendingApproval(null);
+    }
   };
 
   const send = (prompt: string) => {
@@ -232,6 +311,23 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
       teardown();
       connect(session.id);
     }
+  };
+
+  const respondApproval = (value: "yes" | "no", feedback?: string) => {
+    if (!pendingApproval) return;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(
+      JSON.stringify({
+        type: "approval",
+        id: pendingApproval.id,
+        value,
+        ...(feedback && feedback.trim() ? { feedback: feedback.trim() } : {}),
+      })
+    );
+    // Clear optimistically — the server will also send approval_received,
+    // which is a no-op once the card is gone.
+    setPendingApproval(null);
   };
 
   // For fleet sessions, pull the live config (incl. UI override merge) so the
@@ -263,6 +359,16 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
   // Reset filter when session changes.
   useEffect(() => setActiveRole(null), [session?.id]);
 
+  // Per-role pipeline status for the latest assistant turn. Lets the CrewBar
+  // surface "which stage are we on" without each card having to dig through
+  // the block list itself. Recomputes on every turn mutation, but the input
+  // is just the current turn — cheap.
+  const roleStatuses = useMemo<Partial<Record<FleetRole, RoleStatus>>>(() => {
+    const last = turns[turns.length - 1];
+    if (!last || last.role !== "assistant") return {};
+    return deriveRoleStatuses(last);
+  }, [turns]);
+
   return (
     <main className="lc-main">
       {effectiveFleet && session && (
@@ -272,6 +378,7 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
           activeRole={activeRole}
           onPickRole={setActiveRole}
           onConfigure={onConfigureFleet}
+          roleStatuses={roleStatuses}
         />
       )}
       {!effectiveFleet && session && (
@@ -322,6 +429,14 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
       </div>
 
       <div className="lc-bottom">
+        {pendingApproval && (
+          <ApprovalCard
+            plan={pendingApproval.plan}
+            message={pendingApproval.message}
+            expiresAt={pendingApproval.expiresAt}
+            onRespond={respondApproval}
+          />
+        )}
         <Composer
           session={session}
           disabled={!session || streaming || wsState !== "open"}
@@ -588,6 +703,86 @@ function CodeBlock({
 }
 
 /* ─────────────────────────────────────────────────────────────────────── */
+/*  HITL: plan-approval card                                              */
+/* ─────────────────────────────────────────────────────────────────────── */
+
+function ApprovalCard({
+  plan,
+  message,
+  expiresAt,
+  onRespond,
+}: {
+  plan: string;
+  message: string;
+  expiresAt: number;
+  onRespond: (value: "yes" | "no", feedback?: string) => void;
+}) {
+  const [feedback, setFeedback] = useState("");
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [remaining, setRemaining] = useState(() =>
+    Math.max(0, Math.round((expiresAt - Date.now()) / 1000))
+  );
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setRemaining(Math.max(0, Math.round((expiresAt - Date.now()) / 1000)));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [expiresAt]);
+
+  const mins = Math.floor(remaining / 60);
+  const secs = remaining % 60;
+  const timeLbl = `${mins}:${secs.toString().padStart(2, "0")}`;
+
+  return (
+    <div className="lc-approval">
+      <div className="lc-approval__head">
+        <span className="lc-approval__title">Plan approval required</span>
+        <span className="lc-approval__timer" title="Approval timeout">
+          {timeLbl}
+        </span>
+      </div>
+      <p className="lc-approval__msg">{message}</p>
+      <pre className="lc-approval__plan">
+        <code>{plan}</code>
+      </pre>
+      {showFeedback && (
+        <textarea
+          className="lc-approval__feedback"
+          placeholder="Reason (optional, sent with rejection)…"
+          value={feedback}
+          onChange={(e) => setFeedback(e.target.value)}
+          rows={2}
+        />
+      )}
+      <div className="lc-approval__actions">
+        <button
+          className="lc-approval__btn lc-approval__btn--ok"
+          onClick={() => onRespond("yes")}
+        >
+          Approve
+        </button>
+        {!showFeedback ? (
+          <button
+            className="lc-approval__btn lc-approval__btn--no"
+            onClick={() => setShowFeedback(true)}
+          >
+            Reject…
+          </button>
+        ) : (
+          <button
+            className="lc-approval__btn lc-approval__btn--no"
+            onClick={() => onRespond("no", feedback)}
+          >
+            Send rejection
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────── */
 /*  Helpers                                                               */
 /* ─────────────────────────────────────────────────────────────────────── */
 
@@ -619,6 +814,9 @@ function mergeFleetOverride(
   const merged: FleetConfig = {
     name: override.name ?? base.name,
     max_steps: override.max_steps ?? base.max_steps,
+    max_review_retries: override.max_review_retries ?? base.max_review_retries,
+    require_plan_approval:
+      override.require_plan_approval ?? base.require_plan_approval,
     entry_role: (override.entry_role ?? base.entry_role) as FleetRole,
     config_source: base.config_source,
     roles: {},

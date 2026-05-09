@@ -44,6 +44,11 @@ export interface FleetConfig {
   roles: Partial<Record<FleetRole, FleetRoleConfig>>;
   entry_role: FleetRole;
   max_steps: number;
+  /** Auto-retry budget when the reviewer NACKs. 0 disables retries. */
+  max_review_retries: number;
+  /** When true (and a planner is present), the workflow pauses after the
+   *  planner emits its plan and waits for user approve/reject. */
+  require_plan_approval: boolean;
   config_source: string | null;
 }
 
@@ -70,6 +75,8 @@ export interface FleetConfigResponse {
 export interface FleetConfigOverride {
   name?: string;
   max_steps?: number;
+  max_review_retries?: number;
+  require_plan_approval?: boolean;
   entry_role?: FleetRole;
   roles?: Partial<Record<FleetRole, Partial<FleetRoleConfig>>>;
 }
@@ -80,7 +87,26 @@ export type StreamEvent =
   | { type: "assistant.tool_use"; data: { id: string; name: string; input: any } }
   | { type: "tool.result"; data: { tool_use_id: string; content: any; is_error: boolean } }
   | { type: "assistant.done"; data: { cost_usd?: number; duration_ms?: number } }
-  | { type: "error"; data: { message: string } };
+  | { type: "error"; data: { message: string } }
+  | {
+      type: "pipeline.awaiting_approval";
+      data: { id: string; kind: "plan"; plan: string; message: string; timeout_s: number };
+    }
+  | {
+      type: "pipeline.approval_received";
+      data: {
+        id: string;
+        value: "yes" | "no" | "timeout";
+        feedback?: string | null;
+        auto?: boolean;
+      };
+    };
+
+/** Outbound WebSocket message shapes. The server distinguishes by `type` —
+ * historical prompt frames omit `type` and are still accepted. */
+export type WsClientMessage =
+  | { prompt: string }
+  | { type: "approval"; id: string; value: "yes" | "no"; feedback?: string };
 
 export interface ChatBlock {
   kind: "text" | "tool_use" | "tool_result";
@@ -99,3 +125,6 @@ export interface ChatTurn {
   durationMs?: number;
   inProgress?: boolean;
 }
+
+/** Stage status for a single fleet role within the current/last turn. */
+export type RoleStatus = "idle" | "running" | "done" | "error";

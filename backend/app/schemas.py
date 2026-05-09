@@ -78,5 +78,7 @@ class StreamEvent(BaseModel):
         "tool.result",
         "assistant.done",
         "error",
+        "pipeline.awaiting_approval",
+        "pipeline.approval_received",
     ]
     data: dict[str, Any] = Field(default_factory=dict)

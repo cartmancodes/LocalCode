@@ -1,5 +1,5 @@
-import type { FleetConfig, FleetRole, SessionRow } from "../types";
-import { IconCpu, IconRetry } from "./icons";
+import type { FleetConfig, FleetRole, RoleStatus, SessionRow } from "../types";
+import { IconCheck, IconCpu, IconRetry, IconX } from "./icons";
 
 interface Props {
   fleet: FleetConfig;
@@ -7,6 +7,8 @@ interface Props {
   activeRole: FleetRole | null;
   onPickRole: (role: FleetRole | null) => void;
   onConfigure?: () => void;
+  /** Per-role pipeline status for the latest turn. Missing roles are idle. */
+  roleStatuses?: Partial<Record<FleetRole, RoleStatus>>;
 }
 
 const ROLE_ORDER: FleetRole[] = ["planner", "developer", "coder", "reviewer"];
@@ -32,8 +34,41 @@ function isRoleOverridden(
  * `fleet.roles` are shown. Click a card to filter the stream to that agent's
  * messages.
  */
-export default function CrewBar({ fleet, session, activeRole, onPickRole, onConfigure }: Props) {
+export default function CrewBar({
+  fleet,
+  session,
+  activeRole,
+  onPickRole,
+  onConfigure,
+  roleStatuses = {},
+}: Props) {
   const presentRoles = ROLE_ORDER.filter((r) => fleet.roles[r] != null);
+
+  // Progress headline: "X of Y done", or the role currently running, or
+  // "ready" between turns. Cheap derivation, lives next to the bar so it
+  // gives users a single glanceable status without reading every card.
+  const total = presentRoles.length;
+  const doneCount = presentRoles.filter((r) => roleStatuses[r] === "done").length;
+  const errorCount = presentRoles.filter((r) => roleStatuses[r] === "error").length;
+  const runningRole = presentRoles.find((r) => roleStatuses[r] === "running");
+  let progressLabel: string;
+  let progressTone: "idle" | "running" | "done" | "error";
+  if (runningRole) {
+    progressLabel = `Running · ${runningRole}`;
+    progressTone = "running";
+  } else if (doneCount + errorCount === 0) {
+    progressLabel = "Ready";
+    progressTone = "idle";
+  } else if (errorCount > 0) {
+    progressLabel = `${doneCount}/${total} done · ${errorCount} error${errorCount === 1 ? "" : "s"}`;
+    progressTone = "error";
+  } else if (doneCount === total) {
+    progressLabel = "All done";
+    progressTone = "done";
+  } else {
+    progressLabel = `${doneCount}/${total} done`;
+    progressTone = "done";
+  }
 
   return (
     <div className="lc-crew">
@@ -55,6 +90,13 @@ export default function CrewBar({ fleet, session, activeRole, onPickRole, onConf
           </span>
         </div>
         <div className="lc-crew__tools">
+          <span
+            className={`lc-progress lc-progress--${progressTone}`}
+            title={`Pipeline status — ${doneCount}/${total} done${errorCount ? `, ${errorCount} error${errorCount === 1 ? "" : "s"}` : ""}`}
+          >
+            <span className={`lc-progress__dot lc-progress__dot--${progressTone}`} />
+            <span className="lc-progress__lbl">{progressLabel}</span>
+          </span>
           <button className="lc-ghostbtn" title="Retry turn (not yet wired)">
             <IconRetry size={14} /> Retry turn
           </button>
@@ -76,10 +118,11 @@ export default function CrewBar({ fleet, session, activeRole, onPickRole, onConf
           const colors = ROLE_COLORS[role];
           const isActive = activeRole === role;
           const overridden = isRoleOverridden(role, session.fleet_config_override);
+          const status: RoleStatus = roleStatuses[role] ?? "idle";
           return (
             <button
               key={role}
-              className={`lc-agent ${isActive ? "is-active" : ""}`}
+              className={`lc-agent lc-agent--${status} ${isActive ? "is-active" : ""}`}
               onClick={() => onPickRole(isActive ? null : role)}
               style={
                 {
@@ -88,7 +131,7 @@ export default function CrewBar({ fleet, session, activeRole, onPickRole, onConf
                   "--agc-bd": colors.bd,
                 } as React.CSSProperties
               }
-              title={`${role} — ${r.provider}:${r.model}${overridden ? " (UI override)" : ""}`}
+              title={`${role} — ${r.provider}:${r.model}${overridden ? " (UI override)" : ""} · ${status}`}
             >
               <span className="lc-agent__avatar">{role.charAt(0).toUpperCase()}</span>
               <span className="lc-agent__txt">
@@ -104,10 +147,32 @@ export default function CrewBar({ fleet, session, activeRole, onPickRole, onConf
                   {r.model}
                 </span>
               </span>
+              <RoleStatusBadge status={status} />
             </button>
           );
         })}
       </div>
     </div>
   );
+}
+
+function RoleStatusBadge({ status }: { status: RoleStatus }) {
+  if (status === "running") {
+    return <span className="lc-agent__status lc-agent__status--running" aria-label="running" />;
+  }
+  if (status === "done") {
+    return (
+      <span className="lc-agent__status lc-agent__status--done" aria-label="done">
+        <IconCheck size={12} />
+      </span>
+    );
+  }
+  if (status === "error") {
+    return (
+      <span className="lc-agent__status lc-agent__status--error" aria-label="error">
+        <IconX size={12} />
+      </span>
+    );
+  }
+  return <span className="lc-agent__status lc-agent__status--idle" aria-hidden="true" />;
 }

@@ -291,20 +291,52 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
                 continue
 
             async with lock:
-                if not await _run_one_turn(
-                    websocket=websocket,
-                    session_id=session_id,
-                    provider=provider,
-                    provider_name=provider_name,
-                    model=model,
-                    cwd=cwd,
-                    additional_dirs=additional_dirs,
-                    upstream_id=upstream_id,
-                    fleet_override=fleet_override,
-                    prompt=prompt,
-                ):
-                    # Client disconnected during the turn. Stop receiving.
-                    return
+                # Per-turn back-channel for HITL approvals. The reader task
+                # below drains inbound WS frames during the turn and routes
+                # approval messages into this queue; everything else is
+                # silently dropped (consistent with prior behaviour, which
+                # also ignored frames mid-turn).
+                approval_q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+                async def _approval_reader() -> None:
+                    while True:
+                        try:
+                            raw = await websocket.receive_text()
+                        except WebSocketDisconnect:
+                            return
+                        except RuntimeError:
+                            # Socket closed underneath us.
+                            return
+                        try:
+                            msg = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(msg, dict) and msg.get("type") == "approval":
+                            await approval_q.put(msg)
+
+                reader = asyncio.create_task(_approval_reader())
+                try:
+                    if not await _run_one_turn(
+                        websocket=websocket,
+                        session_id=session_id,
+                        provider=provider,
+                        provider_name=provider_name,
+                        model=model,
+                        cwd=cwd,
+                        additional_dirs=additional_dirs,
+                        upstream_id=upstream_id,
+                        fleet_override=fleet_override,
+                        prompt=prompt,
+                        approval_channel=approval_q,
+                    ):
+                        # Client disconnected during the turn. Stop receiving.
+                        return
+                finally:
+                    reader.cancel()
+                    try:
+                        await reader
+                    except (asyncio.CancelledError, Exception):
+                        pass
     finally:
         heartbeat.cancel()
         # Don't close the provider — it's a singleton shared across sessions.
@@ -326,6 +358,7 @@ async def _run_one_turn(
     upstream_id: str | None,
     fleet_override: dict[str, Any] | None,
     prompt: str,
+    approval_channel: asyncio.Queue[dict[str, Any]] | None = None,
 ) -> bool:
     """Drive one user → assistant turn.
 
@@ -361,6 +394,7 @@ async def _run_one_turn(
         additional_dirs=additional_dirs,
         upstream_session_id=upstream_id,
         extras={"fleet_config_override": fleet_override} if fleet_override else {},
+        approval_channel=approval_channel,
     )
 
     assistant_blocks: list[dict[str, Any]] = []

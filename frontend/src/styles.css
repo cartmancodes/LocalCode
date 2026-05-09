@@ -501,6 +501,149 @@ a { color: var(--accent); text-decoration: none; }
 .lc-agent__sep { padding: 0 4px; color: var(--muted-2); }
 .lc-agent__overridden { color: var(--accent); font-weight: 600; }
 
+/* Per-agent status badge (right side of the card). The card border also
+ * tints based on status so users can scan the row without reading badges. */
+.lc-agent__status {
+  width: 18px; height: 18px;
+  display: inline-grid; place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  color: var(--muted-2);
+  background: var(--panel-2);
+  flex-shrink: 0;
+}
+.lc-agent__status--idle {
+  width: 10px; height: 10px;
+  background: var(--line); border-color: var(--line);
+}
+.lc-agent__status--running {
+  width: 12px; height: 12px;
+  border: 1.5px solid var(--muted-2);
+  border-top-color: var(--status-run);
+  background: transparent;
+  animation: lc-spin .8s linear infinite;
+}
+.lc-agent__status--done {
+  color: #fff;
+  background: var(--status-done);
+  border-color: var(--status-done);
+}
+.lc-agent__status--error {
+  color: #fff;
+  background: var(--status-err);
+  border-color: var(--status-err);
+}
+
+.lc-agent--done {
+  border-color: color-mix(in oklab, var(--status-done) 50%, var(--line));
+  background: color-mix(in oklab, var(--status-done) 6%, var(--panel));
+}
+.lc-agent--running {
+  border-color: color-mix(in oklab, var(--status-run) 60%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--status-run) 14%, transparent);
+}
+.lc-agent--error {
+  border-color: color-mix(in oklab, var(--status-err) 60%, var(--line));
+  background: color-mix(in oklab, var(--status-err) 6%, var(--panel));
+}
+
+/* Progress headline pill in the crew bar's tools row. */
+.lc-progress {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: 8px;
+  font-size: 12px; color: var(--ink-2);
+  background: var(--panel-2);
+}
+.lc-progress__dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted-2);
+}
+.lc-progress__dot--running {
+  background: var(--status-run);
+  animation: lc-pulse 1.4s ease-in-out infinite;
+}
+.lc-progress__dot--done { background: var(--status-done); }
+.lc-progress__dot--error { background: var(--status-err); }
+.lc-progress--running {
+  border-color: color-mix(in oklab, var(--status-run) 50%, var(--line));
+  color: var(--status-run);
+}
+.lc-progress--done {
+  border-color: color-mix(in oklab, var(--status-done) 50%, var(--line));
+  color: var(--status-done);
+}
+.lc-progress--error {
+  border-color: color-mix(in oklab, var(--status-err) 50%, var(--line));
+  color: var(--status-err);
+}
+
+/* HITL plan-approval card (sits above the composer when the workflow
+ * pauses for explicit user approval). */
+.lc-approval {
+  margin: 0 0 8px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in oklab, var(--status-run) 50%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--status-run) 6%, var(--panel));
+  display: flex; flex-direction: column; gap: 8px;
+}
+.lc-approval__head {
+  display: flex; align-items: baseline; justify-content: space-between;
+}
+.lc-approval__title {
+  font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--status-run);
+}
+.lc-approval__timer {
+  font-family: "Geist Mono", monospace; font-size: 11px;
+  color: var(--muted);
+}
+.lc-approval__msg {
+  margin: 0; font-size: 13px; color: var(--ink-2); line-height: 1.45;
+}
+.lc-approval__plan {
+  margin: 0;
+  max-height: 160px; overflow: auto;
+  background: var(--code-bg); color: var(--code-ink);
+  border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px;
+  font-family: "Geist Mono", monospace; font-size: 12px;
+  white-space: pre-wrap; word-break: break-word;
+}
+.lc-approval__feedback {
+  width: 100%;
+  font-family: inherit; font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--ink);
+  resize: vertical; min-height: 38px;
+}
+.lc-approval__feedback:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.lc-approval__actions {
+  display: flex; gap: 8px; justify-content: flex-end;
+}
+.lc-approval__btn {
+  height: 30px; padding: 0 14px;
+  border-radius: 8px; font-size: 13px; font-weight: 500;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.lc-approval__btn--ok {
+  background: var(--status-done); color: #fff;
+  border-color: var(--status-done);
+}
+.lc-approval__btn--ok:hover {
+  background: color-mix(in oklab, var(--status-done) 88%, #000);
+}
+.lc-approval__btn--no {
+  background: var(--panel); color: var(--status-err);
+  border-color: color-mix(in oklab, var(--status-err) 60%, var(--line));
+}
+.lc-approval__btn--no:hover {
+  background: color-mix(in oklab, var(--status-err) 12%, var(--panel));
+}
+
 /* Simple chat header (non-fleet sessions) ──────────────────────────────── */
 .lc-chathead {
   padding: 16px 24px 14px;

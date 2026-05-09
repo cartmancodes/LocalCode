@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -12,6 +13,11 @@ EventType = Literal[
     "tool.result",
     "assistant.done",
     "error",
+    # HITL — fleet pauses after planner; UI shows Approve/Reject buttons.
+    # `pipeline.approval_received` records the user's decision (or a timeout)
+    # so the chat history reflects what happened.
+    "pipeline.awaiting_approval",
+    "pipeline.approval_received",
 ]
 
 
@@ -42,6 +48,11 @@ class RunContext:
     # Provider-specific extras. Currently only used by the fleet provider
     # (a per-session partial config dict that overrides the file-level YAML).
     extras: dict[str, Any] = field(default_factory=dict)
+    # Back-channel for HITL: when set, the WebSocket handler routes inbound
+    # approval messages into this queue. Providers that implement an approval
+    # gate `await` on it; providers that don't can ignore it. Each message is
+    # a dict like {"id": "approval.plan", "value": "yes"|"no", "feedback": "..."}.
+    approval_channel: asyncio.Queue[dict[str, Any]] | None = None
 
 
 class Provider(Protocol):

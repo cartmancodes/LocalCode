@@ -52,6 +52,8 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
   const [draftRoles, setDraftRoles] = useState<Partial<Record<FleetRole, FleetRoleConfig>>>({});
   const [entryRole, setEntryRole] = useState<FleetRole>("coder");
   const [maxSteps, setMaxSteps] = useState<number>(6);
+  const [maxReviewRetries, setMaxReviewRetries] = useState<number>(1);
+  const [requirePlanApproval, setRequirePlanApproval] = useState<boolean>(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,6 +74,8 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
         setDraftRoles({ ...r.config.roles });
         setEntryRole((r.config.entry_role || "coder") as FleetRole);
         setMaxSteps(r.config.max_steps || 6);
+        setMaxReviewRetries(r.config.max_review_retries ?? 1);
+        setRequirePlanApproval(Boolean(r.config.require_plan_approval));
       } catch (e: any) {
         if (!cancelled) setError(String(e?.message ?? e));
       }
@@ -224,6 +228,12 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
     }
     if (entryRole !== resp.config.entry_role) override.entry_role = entryRole;
     if (maxSteps !== resp.config.max_steps) override.max_steps = maxSteps;
+    if (maxReviewRetries !== (resp.config.max_review_retries ?? 1)) {
+      override.max_review_retries = maxReviewRetries;
+    }
+    if (requirePlanApproval !== Boolean(resp.config.require_plan_approval)) {
+      override.require_plan_approval = requirePlanApproval;
+    }
     return Object.keys(override).length ? override : null;
   };
 
@@ -235,6 +245,8 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
     setDraftRoles({ ...(resp.config.roles ?? {}) });
     setEntryRole((resp.config.entry_role || "coder") as FleetRole);
     setMaxSteps(resp.config.max_steps || 6);
+    setMaxReviewRetries(resp.config.max_review_retries ?? 1);
+    setRequirePlanApproval(Boolean(resp.config.require_plan_approval));
   };
 
   return (
@@ -388,6 +400,38 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
             }
           />
         </label>
+        {presentRoles.includes("reviewer") && (
+          <label
+            className="meta-row"
+            title="On reviewer NACK, re-run the upstream worker step with the feedback prepended, then re-review. 0 disables retries."
+          >
+            <span>Max review retries</span>
+            <input
+              type="number"
+              min={0}
+              max={5}
+              value={maxReviewRetries}
+              onChange={(e) =>
+                setMaxReviewRetries(
+                  Math.max(0, Math.min(5, parseInt(e.target.value || "0", 10)))
+                )
+              }
+            />
+          </label>
+        )}
+        {presentRoles.includes("planner") && (
+          <label
+            className="meta-row"
+            title="When enabled, the workflow pauses after the planner emits its plan and waits for you to Approve or Reject in the chat before any worker steps run."
+          >
+            <span>Require plan approval (HITL)</span>
+            <input
+              type="checkbox"
+              checked={requirePlanApproval}
+              onChange={(e) => setRequirePlanApproval(e.target.checked)}
+            />
+          </label>
+        )}
       </div>
 
       {/* Advanced — system prompt overrides ───────────────────────────── */}
