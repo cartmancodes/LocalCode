@@ -69,13 +69,6 @@ class CatalogModel(BaseModel):
     model: str
 
 
-class BudgetOut(BaseModel):
-    spend_usd: float
-    daily_budget_usd: float
-    remaining_usd: float
-    window: str = Field(description="ISO date for the spend window")
-
-
 # Unified streaming event surfaced over the WebSocket. Front-end renders these.
 class StreamEvent(BaseModel):
     type: Literal[

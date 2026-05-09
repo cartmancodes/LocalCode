@@ -39,20 +39,7 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://postgres:postgres@localhost:5432/orchestrator"
     )
 
-    litellm_api_base: str = "http://localhost:4000"
-    litellm_master_key: str = "sk-localcode-master"
-    litellm_api_key: str = ""
-
-    openai_api_key: str = ""
-    anthropic_api_key: str = ""
-    ollama_api_base: str = "http://host.docker.internal:11434"
-
     opencode_base_url: str = "http://localhost:4096"
-
-    # When true, ClaudeProvider lets `claude-agent-sdk` use the host's `claude
-    # login` OAuth token instead of overriding ANTHROPIC_BASE_URL/API_KEY.
-    # Tradeoff: those turns bypass LiteLLM, so they don't appear in the budget bar.
-    claude_use_native_auth: bool = True
 
     default_provider: Provider = "claude"
     default_model: str = "claude-sonnet-4-6"
@@ -60,8 +47,6 @@ class Settings(BaseSettings):
         default="claude:claude-sonnet-4-6,opencode:gpt-4o-mini",
         description="Comma-separated provider:model entries.",
     )
-
-    daily_budget_usd: float = 10.00
 
     # Override the fleet config search path. Pulled through Settings (not read
     # raw via os.environ at request time) so behavior matches the rest of the
@@ -100,11 +85,6 @@ class Settings(BaseSettings):
                 continue
             entries.append(CatalogEntry(provider, model))  # type: ignore[arg-type]
         return entries
-
-    @property
-    def effective_litellm_key(self) -> str:
-        # Backend falls back to the master key if no virtual key has been minted yet.
-        return self.litellm_api_key or self.litellm_master_key
 
     @property
     def cors_origin_list(self) -> list[str]:

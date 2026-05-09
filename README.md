@@ -25,7 +25,7 @@ A provider-agnostic abstraction over **Claude Code** and **OpenCode** — one Cl
               Anthropic   OpenAI (ChatGPT subscription)
 ```
 
-Postgres holds session + message state. LiteLLM is plumbed but currently bypassed (subscription OAuth doesn't flow through it); the proxy stays online so you can flip to API-key-routed mode later without re-plumbing.
+Postgres holds session + message state. Both providers authenticate via host-side OAuth (`claude login` / `opencode auth login`) and stream directly to their upstreams.
 
 ## Why
 
@@ -48,9 +48,9 @@ See [docs/fleet.md](docs/fleet.md) for the fleet design and [docs/fleet-config.m
 | Path                                                                                          | Role                                                              |
 | :-------------------------------------------------------------------------------------------- | :---------------------------------------------------------------- |
 | [setup.sh](setup.sh)                                                                          | One-shot bring-up + `login` / `stop` / `down` / `status` / `logs` |
-| [docker-compose.yml](docker-compose.yml)                                                      | Postgres + LiteLLM (OpenCode now runs on the host)                |
+| [docker-compose.yml](docker-compose.yml)                                                      | Postgres (OpenCode runs on the host)                              |
 | [pyproject.toml](pyproject.toml)                                                              | Backend deps                                                      |
-| [.env.example](.env.example)                                                                  | Settings template (model catalog, daily budget, auth flags)       |
+| [.env.example](.env.example)                                                                  | Settings template (model catalog, defaults)                       |
 | [.localcode/fleet.yaml](.localcode/fleet.yaml)                                                | Active fleet config — picks role → provider → model               |
 | [.localcode/fleet.yaml.example](.localcode/fleet.yaml.example) / [.json.example](.localcode/fleet.json.example) | Drop-in starters                                                  |
 | [backend/app/orchestrator/base.py](backend/app/orchestrator/base.py)                          | `Provider` protocol + unified `Event`                             |
@@ -65,8 +65,7 @@ See [docs/fleet.md](docs/fleet.md) for the fleet design and [docs/fleet-config.m
 ## Setup
 
 ```bash
-./setup.sh                # check deps, bring up docker, install opencode on host,
-                          # mint LiteLLM virtual key (unused under OAuth but kept),
+./setup.sh                # check deps, bring up postgres, install opencode on host,
                           # create DB schema, start backend + frontend
 ./setup.sh login          # one-time browser-based: claude login + opencode auth login
 ```
@@ -87,15 +86,13 @@ Run `~/.opencode/bin/opencode models` to see what your ChatGPT subscription expo
 
 ## Auth notes
 
-The default mode for the Claude provider is **native auth** (`CLAUDE_USE_NATIVE_AUTH=true`) — turns bypass LiteLLM and bill against your Claude Pro / Max subscription. To force routing through LiteLLM with an API key (and recover budget-bar visibility for Claude), set `CLAUDE_USE_NATIVE_AUTH=false` and put `ANTHROPIC_API_KEY=...` in `.env`, then `docker compose up -d --force-recreate litellm`.
-
-The OpenAI side: OpenCode's OAuth path uses your **ChatGPT subscription** directly. There is currently no path to put OpenCode requests through LiteLLM without API keys.
+Both providers authenticate via host-side OAuth: the spawned `claude` CLI reads its token from `~/.claude/`, and `opencode serve` reads its token from `~/.local/share/opencode/auth.json`. Run `./setup.sh login` once to mint both; tokens auto-refresh thereafter.
 
 > **Heads up:** Anthropic blocked Claude OAuth tokens for *third-party* tools in early 2026. Native auth works only because the agent we spawn is the official `claude` CLI itself. Don't try to forward those tokens elsewhere.
 
-## Budget
+## Cost reporting
 
-The budget bar polls `/api/budget`, which calls LiteLLM `/spend/logs?summarize=true`. Under OAuth-only mode (the default) it'll always show $0 — that's the tradeoff for not using API keys. Token counts per turn are reported by both providers and surfaced in `assistant.done` events; surfacing them as a per-day token meter is on the to-do list.
+Per-turn cost (USD) is reported by each provider in the `assistant.done` event and rendered inline at the bottom of every assistant turn. There is no daily aggregate — under OAuth-only mode that figure would always be a subscription, not a metered spend.
 
 ## Documentation
 
@@ -106,7 +103,7 @@ The budget bar polls `/api/budget`, which calls LiteLLM `/spend/logs?summarize=t
 ## What's next (good first issues)
 
 - **Per-turn model switching in the UI.** The model picker still pins at chat creation. Surface a per-message override and a `/use <provider>:<model>` slash command (Proposal A in the orchestration doc).
-- **Token meter.** Replace the always-$0 budget bar with a tokens/day meter when in OAuth mode.
+- **Daily token meter.** Sum the tokens from each `assistant.done` over the day and render a per-day usage bar.
 - **Multi-turn Claude session reuse.** Switch from one-shot `query()` to `ClaudeSDKClient` and persist the upstream session id.
 - **Forward sub-step tool events.** Today the fleet's coder/developer steps stream their tool-use cards internally but the UI only sees the final text — wrap them with a `step_id` envelope.
 - **Auto-retry on reviewer NACK.** Surface NACKs as a re-run on the failing step.

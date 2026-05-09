@@ -253,7 +253,9 @@ DEFAULT_FLEET_CONFIG = FleetConfig(
 # Cache the parsed config keyed by (path, mtime). Only re-parses when the file
 # changes on disk. Mtime comparison is one stat() per turn — much cheaper than
 # parsing YAML and walking it every call. The lock protects the cache dict
-# itself from torn writes under concurrent access.
+# itself from torn writes under concurrent access. Bounded so a session that
+# rotates through many cwds can't grow the cache without limit.
+_CFG_CACHE_MAX = 16
 _CFG_CACHE: dict[str, tuple[float, FleetConfig]] = {}
 _CFG_CACHE_LOCK = threading.Lock()
 
@@ -302,6 +304,10 @@ def load_fleet_config(cwd: str | None = None) -> FleetConfig:
         merged = _merge_config(DEFAULT_FLEET_CONFIG, raw)
         merged.config_source = str(resolved)
         with _CFG_CACHE_LOCK:
+            if len(_CFG_CACHE) >= _CFG_CACHE_MAX:
+                # Drop the oldest insertion — dict preserves order, so a cheap
+                # FIFO eviction keeps the cache bounded without a real LRU.
+                _CFG_CACHE.pop(next(iter(_CFG_CACHE)), None)
             _CFG_CACHE[str(resolved)] = (stat.st_mtime, merged)
         return merged
 

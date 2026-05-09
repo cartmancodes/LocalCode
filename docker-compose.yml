@@ -17,24 +17,6 @@ services:
       timeout: 3s
       retries: 10
 
-  litellm:
-    image: ghcr.io/berriai/litellm:main-stable
-    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
-    environment:
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-localcode-master}
-      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-salt-localcode}
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/orchestrator
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OLLAMA_API_BASE: ${OLLAMA_API_BASE:-http://host.docker.internal:11434}
-    ports:
-      - "4000:4000"
-    volumes:
-      - ./litellm/config.yaml:/app/config.yaml:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-
 # OpenCode is no longer a docker service — it runs on the host so its
 # `opencode auth login` browser flow works and OAuth tokens persist at
 # ~/.local/share/opencode/. setup.sh installs it and starts `opencode serve`

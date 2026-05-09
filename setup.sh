@@ -262,43 +262,9 @@ cmd_up() {
   # 4c. OpenCode CLI (host-side) — required for OAuth flows; can't run in Docker.
   ensure_opencode_installed
 
-  # 5. Docker stack (postgres + litellm).  OpenCode now runs as a host process.
-  log "bringing up docker stack (postgres + litellm)"
+  # 5. Docker stack (postgres only). OpenCode runs as a host process.
+  log "bringing up docker stack (postgres)"
   docker compose up -d
-  wait_http "http://localhost:4000/health/readiness" 90 "litellm proxy"
-
-  # 6. Mint a LiteLLM virtual key if we don't have one yet
-  if [[ -z "${LITELLM_API_KEY:-}" ]]; then
-    local budget="${DAILY_BUDGET_USD:-10}"
-    log "minting LiteLLM virtual key (max_budget=\$$budget/day)"
-    local resp
-    resp="$(curl -fsS -X POST http://localhost:4000/key/generate \
-      -H "Authorization: Bearer ${LITELLM_MASTER_KEY:-sk-localcode-master}" \
-      -H "Content-Type: application/json" \
-      -d "{\"max_budget\": $budget, \"budget_duration\": \"1d\", \"models\": []}")"
-    local key
-    key="$(python -c 'import json,sys; print(json.loads(sys.stdin.read())["key"])' <<<"$resp")"
-    if [[ -z "$key" || "$key" == "None" ]]; then
-      warn "could not parse virtual key from LiteLLM response: $resp"
-    else
-      # Write back to .env, replacing any blank LITELLM_API_KEY= line.
-      python - "$key" <<'PY'
-import pathlib, re, sys
-key = sys.argv[1]
-p = pathlib.Path(".env")
-text = p.read_text()
-if re.search(r"^LITELLM_API_KEY=.*$", text, re.M):
-    text = re.sub(r"^LITELLM_API_KEY=.*$", f"LITELLM_API_KEY={key}", text, flags=re.M)
-else:
-    text += f"\nLITELLM_API_KEY={key}\n"
-p.write_text(text)
-PY
-      export LITELLM_API_KEY="$key"
-      ok "virtual key written to .env"
-    fi
-  else
-    ok "LITELLM_API_KEY already set"
-  fi
 
   # 7. DB schema
   log "ensuring database schema"
@@ -357,8 +323,6 @@ ${C_OK}LocalCode is up.${C_END}
 
   UI:        http://localhost:5173
   Backend:   http://localhost:${PORT:-8080}/api/health
-  LiteLLM:   http://localhost:4000   (proxy is online but bypassed: Claude + OpenCode talk
-                                      directly to their providers via subscription OAuth.)
   OpenCode:  http://localhost:4096   (host process, not docker — needed for OAuth flows.)
 
   ./setup.sh login   # one-shot Claude + OpenCode login (browser opens)

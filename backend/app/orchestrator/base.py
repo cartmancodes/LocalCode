@@ -48,8 +48,10 @@ class Provider(Protocol):
     """A backend that can run an agent turn and stream unified Events.
 
     Implementations:
-      - ClaudeProvider: spawns claude-agent-sdk with ANTHROPIC_BASE_URL pointed at LiteLLM.
-      - OpenCodeProvider: talks to `opencode serve` HTTP API (also fronted by LiteLLM).
+      - ClaudeProvider: spawns claude-agent-sdk; the CLI authenticates via the
+        host's `claude login` OAuth token.
+      - OpenCodeProvider: talks to `opencode serve` HTTP API; OpenCode reads
+        its own OAuth credentials from ~/.local/share/opencode/auth.json.
     """
 
     name: str

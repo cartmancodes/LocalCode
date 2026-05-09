@@ -74,13 +74,6 @@ export interface FleetConfigOverride {
   roles?: Partial<Record<FleetRole, Partial<FleetRoleConfig>>>;
 }
 
-export interface Budget {
-  spend_usd: number;
-  daily_budget_usd: number;
-  remaining_usd: number;
-  window: string;
-}
-
 export type StreamEvent =
   | { type: "session.started"; data: { provider: Provider; model: string } }
   | { type: "assistant.text"; data: { text: string } }

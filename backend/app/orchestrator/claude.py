@@ -1,9 +1,8 @@
-"""Claude Code provider — wraps `claude-agent-sdk` and routes through LiteLLM.
+"""Claude Code provider — wraps `claude-agent-sdk`.
 
-The SDK reads ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY from the env it spawns the
-underlying CLI with, so we set those to point at the LiteLLM proxy. This means
-every Claude turn flows through LiteLLM and is counted against the same budget
-as OpenCode turns.
+The SDK spawns the host's `claude` CLI, which reads its OAuth token from
+~/.claude/ (Linux) or the macOS keychain (Darwin). The token is persisted by
+`claude login` and auto-refreshes; the orchestrator never sees it.
 """
 from __future__ import annotations
 
@@ -22,15 +21,11 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
-from ..config import get_settings
 from .base import Event, RunContext
 
 
 class ClaudeProvider:
     name = "claude"
-
-    def __init__(self) -> None:
-        self._settings = get_settings()
 
     async def open_session(self, ctx: RunContext) -> str:
         # claude-agent-sdk's `query()` is stateless per call — there is no upstream
@@ -39,20 +34,6 @@ class ClaudeProvider:
         return ctx.upstream_session_id or ""
 
     async def run(self, ctx: RunContext) -> AsyncIterator[Event]:
-        # Native-auth mode: pass an empty env override — the spawned `claude`
-        # CLI inherits the process's env, picking up the OAuth token from
-        # `claude login` (stored in ~/.claude/ on Linux, the macOS keychain on
-        # Darwin).
-        # Proxied mode: route every call through LiteLLM so spend hits the
-        # budget bar; the SDK's virtual key authenticates the proxy.
-        env: dict[str, str] = (
-            {}
-            if self._settings.claude_use_native_auth
-            else {
-                "ANTHROPIC_BASE_URL": self._settings.litellm_api_base,
-                "ANTHROPIC_API_KEY": self._settings.effective_litellm_key,
-            }
-        )
         options = ClaudeAgentOptions(
             model=ctx.model,
             cwd=ctx.cwd,
@@ -62,7 +43,6 @@ class ClaudeProvider:
             system_prompt=ctx.system_prompt,
             permission_mode="acceptEdits",
             include_partial_messages=True,  # surface token-level deltas to the UI
-            env=env,
         )
 
         try:

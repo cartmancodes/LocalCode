@@ -10,7 +10,6 @@ import type {
   StreamEvent,
 } from "../types";
 import Composer from "./Composer";
-import CostMeter from "./CostMeter";
 import CrewBar from "./CrewBar";
 import { IconChevD, IconChevR, IconCheck, IconCopy } from "./icons";
 
@@ -44,7 +43,6 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [wsState, setWsState] = useState<WsState>("closed");
-  const [lastTurnCost, setLastTurnCost] = useState<number>(0);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | null>(null);
   const reconnectAttempt = useRef(0);
@@ -55,7 +53,6 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
   useEffect(() => {
     if (!session) {
       setTurns([]);
-      setLastTurnCost(0);
       return;
     }
     let cancelled = false;
@@ -69,9 +66,6 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
         durationMs: r.duration_ms ?? undefined,
       }));
       setTurns(hydrated);
-      // Best-effort session-cost initialisation: last assistant turn's cost.
-      const lastAssistant = [...hydrated].reverse().find((t) => t.role === "assistant");
-      setLastTurnCost(lastAssistant?.costUsd ?? 0);
     })();
     return () => {
       cancelled = true;
@@ -203,7 +197,6 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
           a.inProgress = false;
           a.costUsd = ev.data.cost_usd;
           a.durationMs = ev.data.duration_ms;
-          if (typeof ev.data.cost_usd === "number") setLastTurnCost(ev.data.cost_usd);
           setStreaming(false);
           break;
         }
@@ -329,7 +322,6 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
       </div>
 
       <div className="lc-bottom">
-        <CostMeter sessionCostUsd={lastTurnCost} />
         <Composer
           session={session}
           disabled={!session || streaming || wsState !== "open"}

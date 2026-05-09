@@ -1,5 +1,4 @@
 import type {
-  Budget,
   CatalogModel,
   FleetConfigOverride,
   FleetConfigResponse,
@@ -49,7 +48,6 @@ export const api = {
     fetch(`/api/sessions/${id}`, { method: "DELETE" }).then(() => undefined),
   deleteAllSessions: () =>
     fetch("/api/sessions", { method: "DELETE" }).then(() => undefined),
-  budget: () => json<Budget>("/api/budget"),
 };
 
 export function openSessionSocket(sessionId: string): WebSocket {

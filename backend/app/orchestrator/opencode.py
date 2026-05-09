@@ -33,9 +33,9 @@ class OpenCodeProvider:
         self._client = httpx.AsyncClient(
             base_url=self._settings.opencode_base_url,
             timeout=httpx.Timeout(60.0, read=None),  # SSE stream is open-ended
-            # Cap the connection pool so a runaway reconnect storm against a
-            # flapping OpenCode server can't exhaust file descriptors.
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            # Single-user dev tool: a small pool is plenty and keeps idle
+            # connection memory minimal. Also caps fd usage if opencode flaps.
+            limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
         )
 
     async def open_session(self, ctx: RunContext) -> str:

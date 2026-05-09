@@ -14,7 +14,17 @@ class Base(DeclarativeBase):
 
 
 _settings = get_settings()
-engine = create_async_engine(_settings.database_url, future=True, pool_pre_ping=True)
+# Single-user dev tool: a small pool is plenty. SQLAlchemy's default
+# pool_size=5/max_overflow=10 keeps up to 15 idle connections around per
+# process; trimming both halves the steady-state memory footprint of the
+# asyncpg pool without affecting throughput at this concurrency level.
+engine = create_async_engine(
+    _settings.database_url,
+    future=True,
+    pool_pre_ping=True,
+    pool_size=3,
+    max_overflow=2,
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
