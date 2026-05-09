@@ -7,11 +7,16 @@ import {
   IconSidebar,
   IconSun,
 } from "./icons";
+import ProjectPicker from "./ProjectPicker";
 
 interface Props {
   session: SessionRow | null;
   theme: "light" | "dark";
   wsState?: "connecting" | "open" | "closed";
+  cwd: string | null;
+  defaultCwd: string | null;
+  additionalDirs: string[];
+  onChangeProject: (cwd: string | null, additionalDirs: string[]) => void;
   onToggleTheme: () => void;
   onToggleSidebar: () => void;
   onNewChat: () => void;
@@ -21,6 +26,10 @@ export default function Topbar({
   session,
   theme,
   wsState,
+  cwd,
+  defaultCwd,
+  additionalDirs,
+  onChangeProject,
   onToggleTheme,
   onToggleSidebar,
   onNewChat,
@@ -59,6 +68,12 @@ export default function Topbar({
         </nav>
       </div>
       <div className="lc-topbar__right">
+        <ProjectPicker
+          cwd={cwd}
+          defaultCwd={defaultCwd}
+          additionalDirs={additionalDirs}
+          onChange={onChangeProject}
+        />
         <button
           className="lc-iconbtn"
           onClick={onToggleTheme}

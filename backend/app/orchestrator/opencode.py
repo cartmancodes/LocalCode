@@ -34,7 +34,14 @@ class OpenCodeProvider:
     async def open_session(self, ctx: RunContext) -> str:
         if ctx.upstream_session_id:
             return ctx.upstream_session_id
-        resp = await self._client.post("/session", json={})
+        # Pass the user-chosen working directory so the spawned coder's
+        # file/bash tools are rooted there. OpenCode tolerates a missing
+        # `directory` (uses its server-side cwd), so this is safe to send
+        # unconditionally when ctx.cwd is set.
+        body: dict[str, Any] = {}
+        if ctx.cwd:
+            body["directory"] = ctx.cwd
+        resp = await self._client.post("/session", json=body)
         resp.raise_for_status()
         return resp.json()["id"]
 

@@ -26,6 +26,10 @@ class Session(Base):
     provider: Mapped[str] = mapped_column(String(32))
     model: Mapped[str] = mapped_column(String(128))
     cwd: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Extra directories Claude / OpenCode tools are allowed to read & write
+    # under, beyond the primary `cwd`. Lets the user grant access to sibling
+    # projects without picking a single root that contains them all.
+    additional_dirs: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Provider-native session id (e.g. opencode session id) so we can resume.
     upstream_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # When provider == "fleet", a partial dict that's merged on top of the file-level

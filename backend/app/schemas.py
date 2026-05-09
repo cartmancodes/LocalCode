@@ -11,6 +11,11 @@ class CreateSessionRequest(BaseModel):
     provider: Literal["claude", "opencode", "fleet"]
     model: str
     cwd: str | None = None
+    # Extra absolute directory paths the agent's tools may read/write under,
+    # beyond the primary `cwd`. Useful when one chat needs access to sibling
+    # repos. Validated identically to `cwd` (must satisfy the allowlist if one
+    # is configured; otherwise permissive).
+    additional_dirs: list[str] | None = None
     title: str | None = None
     # When provider == "fleet", a partial config dict (matches the YAML schema)
     # that overrides the file-level config for this session only. Anything you
@@ -24,6 +29,7 @@ class SessionOut(BaseModel):
     provider: str
     model: str
     cwd: str | None
+    additional_dirs: list[str] | None = None
     upstream_id: str | None
     fleet_config_override: dict[str, Any] | None = None
     created_at: datetime

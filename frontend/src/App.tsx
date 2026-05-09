@@ -12,6 +12,8 @@ type Accent = "clay" | "violet" | "blue";
 
 const THEME_KEY = "lc-theme";
 const ACCENT_KEY = "lc-accent";
+const CWD_KEY = "lc-cwd";          // user's chosen project root for new chats; null = use backend default
+const ADD_DIRS_KEY = "lc-add-dirs"; // user's additional-dirs grant list for new chats (JSON-encoded array)
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(() => {
@@ -30,6 +32,23 @@ export default function App() {
   const [pendingModelId, setPendingModelId] = useState<string>("");
   const [fleetEditorOpen, setFleetEditorOpen] = useState(false);
 
+  // Working directory + additional-dirs for newly-created chats.
+  // - `cwd` (state): user's explicit override, persisted to localStorage. null = follow defaultCwd.
+  // - `defaultCwd`: orchestrator process's cwd, fetched once at boot.
+  // - `additionalDirs`: extra absolute paths to grant the agent's tools, on top of cwd.
+  const [cwd, setCwd] = useState<string | null>(() => localStorage.getItem(CWD_KEY));
+  const [defaultCwd, setDefaultCwd] = useState<string | null>(null);
+  const [additionalDirs, setAdditionalDirs] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(ADD_DIRS_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter((s) => typeof s === "string") : [];
+    } catch {
+      return [];
+    }
+  });
+  const effectiveCwd = cwd ?? defaultCwd;
+
   // Apply theme/accent to <html> data attrs.
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -40,17 +59,37 @@ export default function App() {
     localStorage.setItem(ACCENT_KEY, accent);
   }, [accent]);
 
-  // Load catalog + sessions on boot.
+  // Load catalog + sessions + system cwd on boot.
   useEffect(() => {
     (async () => {
-      const [m, s] = await Promise.all([api.listModels(), api.listSessions()]);
+      const [m, s, sys] = await Promise.all([
+        api.listModels(),
+        api.listSessions(),
+        api.systemCwd().catch(() => null),
+      ]);
       setModels(m);
       setSessions(s);
       if (m.length && !pendingModelId) setPendingModelId(m[0].id);
       if (s.length && !activeId) setActiveId(s[0].id);
+      if (sys?.cwd) setDefaultCwd(sys.cwd);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Persist cwd override across reloads.
+  useEffect(() => {
+    if (cwd) localStorage.setItem(CWD_KEY, cwd);
+    else localStorage.removeItem(CWD_KEY);
+  }, [cwd]);
+
+  // Persist additional-dirs list. Empty list = remove key entirely.
+  useEffect(() => {
+    if (additionalDirs.length > 0) {
+      localStorage.setItem(ADD_DIRS_KEY, JSON.stringify(additionalDirs));
+    } else {
+      localStorage.removeItem(ADD_DIRS_KEY);
+    }
+  }, [additionalDirs]);
 
   // ⌘N → new chat.
   useEffect(() => {
@@ -79,6 +118,8 @@ export default function App() {
     const fresh = await api.createSession({
       provider,
       model,
+      cwd: effectiveCwd ?? undefined,
+      additional_dirs: additionalDirs.length > 0 ? additionalDirs : null,
       fleet_config_override: provider === "fleet" ? override : null,
     });
     setSessions((cur) => [fresh, ...cur]);
@@ -117,6 +158,13 @@ export default function App() {
       <Topbar
         session={active}
         theme={theme}
+        cwd={cwd}
+        defaultCwd={defaultCwd}
+        additionalDirs={additionalDirs}
+        onChangeProject={(nextCwd, nextDirs) => {
+          setCwd(nextCwd);
+          setAdditionalDirs(nextDirs);
+        }}
         onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
         onToggleSidebar={() => setSidebarOpen((o) => !o)}
         onNewChat={onCreate}

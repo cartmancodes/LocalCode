@@ -9,7 +9,13 @@ from .config import get_settings
 from .db import Base, engine
 from . import models  # noqa: F401  register tables on Base.metadata
 from .orchestrator.registry import shutdown_all, warm_up
-from .routes import budget, fleet as fleet_route, models as models_route, sessions
+from .routes import (
+    budget,
+    fleet as fleet_route,
+    models as models_route,
+    sessions,
+    system as system_route,
+)
 
 
 @asynccontextmanager
@@ -39,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(models_route.router)
     app.include_router(budget.router)
     app.include_router(fleet_route.router)
+    app.include_router(system_route.router)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:

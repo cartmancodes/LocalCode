@@ -160,6 +160,119 @@ a { color: var(--accent); text-decoration: none; }
 .lc-primary:hover { filter: brightness(.95); }
 .lc-primary--sm { height: 30px; font-size: 12px; }
 
+/* Project picker in topbar ───── */
+.lc-project { position: relative; }
+.lc-project__btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 30px; padding: 0 10px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 12px; color: var(--ink-2);
+  max-width: 280px;
+}
+.lc-project__btn:hover { background: var(--hover); border-color: var(--line-2); color: var(--ink); }
+.lc-project__lbl {
+  font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); flex-shrink: 0;
+}
+.lc-project__path {
+  font-family: "Geist Mono", monospace; font-size: 11.5px;
+  color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lc-project__pop {
+  position: absolute; top: calc(100% + 6px); right: 0;
+  width: 380px; max-width: 90vw;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; box-shadow: var(--shadow);
+  padding: 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  z-index: 100;
+}
+.lc-project__pop-hdr {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted);
+}
+.lc-project__input {
+  background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 8px 10px; font-size: 13px;
+  font-family: "Geist Mono", monospace;
+  width: 100%;
+}
+.lc-project__input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); outline: 0; }
+.lc-project__pop-help { font-size: 11px; color: var(--muted); }
+.lc-project__reset { color: var(--accent); text-decoration: underline; cursor: pointer; }
+.lc-project__pop-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 4px; }
+.lc-project__cancel {
+  height: 28px; padding: 0 12px;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 6px;
+  font-size: 12px; cursor: pointer;
+}
+.lc-project__apply {
+  height: 28px; padding: 0 12px;
+  background: var(--accent); color: #fff;
+  border: 0; border-radius: 6px;
+  font-size: 12px; font-weight: 500; cursor: pointer;
+}
+
+.lc-project__badge {
+  font-family: "Geist Mono", monospace; font-size: 10.5px;
+  padding: 1px 5px; border-radius: 4px;
+  background: var(--accent-bg); color: var(--accent);
+  border: 1px solid var(--accent-bd);
+  flex-shrink: 0;
+}
+
+.lc-project__dirs {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 180px; overflow-y: auto;
+}
+.lc-project__dir {
+  display: grid;
+  grid-template-columns: 1fr 22px;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.lc-project__dir-path {
+  font-family: "Geist Mono", monospace; font-size: 11.5px;
+  color: var(--ink-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lc-project__dir-rm {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--muted);
+  border-radius: 4px;
+}
+.lc-project__dir-rm:hover { color: var(--status-err); background: var(--bg); }
+
+.lc-project__add { display: flex; gap: 6px; }
+.lc-project__add-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 30px; padding: 0 10px;
+  background: var(--panel-2); color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 6px;
+  font-size: 12px; cursor: pointer;
+  flex-shrink: 0;
+}
+.lc-project__add-btn:hover:not(:disabled) {
+  background: var(--accent-bg); color: var(--accent);
+  border-color: var(--accent-bd);
+}
+.lc-project__add-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* cwd pip in chat header ───── */
+.lc-chathead__cwd {
+  font-family: "Geist Mono", monospace; font-size: 11.5px;
+  color: var(--muted); padding: 1px 6px;
+  background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
 /* Status pip in topbar ───── */
 .lc-pip {
   display: inline-flex; align-items: center; gap: 6px;

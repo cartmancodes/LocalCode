@@ -204,3 +204,41 @@ AggregateError [ECONNREFUSED]:
       at transform.next (<anonymous>)
       at step (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/gensync/index.js:261:32)
 5:08:53 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+5:15:58 PM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+5:15:58 PM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+5:16:14 PM [vite] hmr update /src/App.tsx, /src/components/FleetConfigEditor.tsx, /src/components/ChatPane.tsx, /src/components/CostMeter.tsx
+5:16:42 PM [vite] hmr update /src/components/Topbar.tsx
+5:16:58 PM [vite] hmr update /src/components/Topbar.tsx
+5:17:06 PM [vite] hmr update /src/components/Topbar.tsx
+5:17:16 PM [vite] hmr update /src/App.tsx
+5:17:25 PM [vite] hmr update /src/App.tsx
+5:17:36 PM [vite] hmr update /src/App.tsx
+5:17:54 PM [vite] hmr update /src/App.tsx
+5:18:03 PM [vite] hmr update /src/App.tsx
+5:18:11 PM [vite] hmr update /src/App.tsx, /src/components/FleetConfigEditor.tsx, /src/components/ChatPane.tsx, /src/components/CostMeter.tsx
+5:18:22 PM [vite] hmr update /src/components/ChatPane.tsx
+5:18:42 PM [vite] hmr update /src/components/CrewBar.tsx
+5:19:00 PM [vite] hmr update /src/styles.css
+5:26:19 PM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+5:26:34 PM [vite] hmr update /src/App.tsx, /src/components/FleetConfigEditor.tsx, /src/components/ChatPane.tsx, /src/components/CostMeter.tsx
+5:27:07 PM [vite] hmr update /src/components/ProjectPicker.tsx
+5:27:16 PM [vite] hmr update /src/components/Topbar.tsx
+5:27:22 PM [vite] hmr update /src/components/Topbar.tsx
+5:27:32 PM [vite] hmr update /src/components/Topbar.tsx
+5:27:42 PM [vite] hmr update /src/App.tsx
+5:27:53 PM [vite] hmr update /src/App.tsx
+5:28:02 PM [vite] hmr update /src/App.tsx
+5:28:11 PM [vite] hmr update /src/App.tsx
+5:28:21 PM [vite] hmr update /src/App.tsx
+5:28:44 PM [vite] hmr update /src/components/ChatPane.tsx
+5:28:55 PM [vite] hmr update /src/components/CrewBar.tsx
+5:29:11 PM [vite] hmr update /src/styles.css

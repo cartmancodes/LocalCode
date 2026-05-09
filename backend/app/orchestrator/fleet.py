@@ -600,7 +600,9 @@ class FleetProvider:
             },
         )
         try:
-            plan_text = await _collect_text(planner_role, ctx.prompt, ctx.cwd)
+            plan_text = await _collect_text(
+                planner_role, ctx.prompt, ctx.cwd, ctx.additional_dirs
+            )
             plan = parse_plan(plan_text, cfg.max_steps, allowed_roles=set(workers))
         except Exception as exc:
             logger.warning("fleet planning failed, single-shot fallback: %s", exc)
@@ -713,7 +715,9 @@ class FleetProvider:
         )
 
         try:
-            output = await _collect_text(role_cfg, full_prompt, ctx.cwd)
+            output = await _collect_text(
+                role_cfg, full_prompt, ctx.cwd, ctx.additional_dirs
+            )
         except Exception as exc:
             yield Event(
                 type="tool.result",
@@ -735,7 +739,12 @@ class FleetProvider:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def _collect_text(role: RoleConfig, prompt: str, cwd: str | None) -> str:
+async def _collect_text(
+    role: RoleConfig,
+    prompt: str,
+    cwd: str | None,
+    additional_dirs: list[str] | None = None,
+) -> str:
     """Invoke a sub-provider and return its concatenated assistant text.
 
     Tool-use events from the sub-provider are intentionally swallowed at this
@@ -750,6 +759,7 @@ async def _collect_text(role: RoleConfig, prompt: str, cwd: str | None) -> str:
         model=role.model,
         prompt=prompt,
         cwd=cwd,
+        additional_dirs=list(additional_dirs or []),
         system_prompt=role.system_prompt,
     )
     chunks: list[str] = []

@@ -56,6 +56,9 @@ class ClaudeProvider:
         options = ClaudeAgentOptions(
             model=ctx.model,
             cwd=ctx.cwd,
+            # Extra paths the spawned `claude` CLI may read/write. The SDK
+            # restricts tools to `cwd` by default; this opens up sibling repos.
+            add_dirs=list(ctx.additional_dirs or []),
             system_prompt=ctx.system_prompt,
             permission_mode="acceptEdits",
             include_partial_messages=True,  # surface token-level deltas to the UI

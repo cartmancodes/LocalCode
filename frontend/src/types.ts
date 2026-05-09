@@ -12,6 +12,8 @@ export interface SessionRow {
   provider: Provider;
   model: string;
   cwd: string | null;
+  /** Extra absolute paths the agent's tools may operate on beyond `cwd`. */
+  additional_dirs: string[] | null;
   upstream_id: string | null;
   fleet_config_override: FleetConfigOverride | null;
   created_at: string;

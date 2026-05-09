@@ -33,6 +33,10 @@ class RunContext:
     model: str
     prompt: str
     cwd: str | None = None
+    # Extra absolute paths the agent's tools may operate on beyond `cwd`.
+    # Supported by ClaudeProvider via `add_dirs`; OpenCode currently has no
+    # equivalent so they're informational there.
+    additional_dirs: list[str] = field(default_factory=list)
     upstream_session_id: str | None = None
     system_prompt: str | None = None
     # Provider-specific extras. Currently only used by the fleet provider

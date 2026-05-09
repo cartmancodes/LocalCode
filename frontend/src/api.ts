@@ -22,11 +22,19 @@ export const api = {
   createSession: (body: {
     provider: string;
     model: string;
-    cwd?: string;
+    cwd?: string | null;
+    additional_dirs?: string[] | null;
     title?: string;
     fleet_config_override?: FleetConfigOverride | null;
   }) => json<SessionRow>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
   fleetConfig: () => json<FleetConfigResponse>("/api/fleet/config"),
+  systemCwd: () =>
+    json<{
+      cwd: string;
+      home: string;
+      allowed_roots: string[];
+      permissive: boolean;
+    }>("/api/system/cwd"),
   // Returns a page; for now ChatPane just unwraps `.messages` and ignores
   // pagination (the default page size of 50 covers a fresh chat). Older
   // history can be lazy-loaded via `before` later.

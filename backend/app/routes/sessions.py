@@ -73,6 +73,24 @@ def _validate_cwd(cwd: str | None) -> str | None:
     )
 
 
+def _validate_additional_dirs(dirs: list[str] | None) -> list[str] | None:
+    """Each additional dir is validated like `cwd`. Empties are dropped;
+    duplicates are deduped."""
+    if not dirs:
+        return None
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in dirs:
+        v = (raw or "").strip()
+        if not v:
+            continue
+        validated = _validate_cwd(v)  # raises 400 if outside the allowlist
+        if validated and validated not in seen:
+            seen.add(validated)
+            out.append(validated)
+    return out or None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Safe wrapper around a provider's `run`: turns exceptions into events and
 # guarantees an `assistant.done` so the UI clears its working indicator. Note
@@ -115,6 +133,7 @@ async def create_session(
         provider=body.provider,
         model=body.model,
         cwd=_validate_cwd(body.cwd),
+        additional_dirs=_validate_additional_dirs(body.additional_dirs),
         title=body.title or "New chat",
         fleet_config_override=body.fleet_config_override,
     )
@@ -231,6 +250,7 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
         provider_name = sess.provider
         model = sess.model
         cwd = sess.cwd
+        additional_dirs = list(sess.additional_dirs or [])
         upstream_id = sess.upstream_id
         fleet_override = sess.fleet_config_override
 
@@ -278,6 +298,7 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
                     provider_name=provider_name,
                     model=model,
                     cwd=cwd,
+                    additional_dirs=additional_dirs,
                     upstream_id=upstream_id,
                     fleet_override=fleet_override,
                     prompt=prompt,
@@ -301,6 +322,7 @@ async def _run_one_turn(
     provider_name: str,
     model: str,
     cwd: str | None,
+    additional_dirs: list[str],
     upstream_id: str | None,
     fleet_override: dict[str, Any] | None,
     prompt: str,
@@ -336,6 +358,7 @@ async def _run_one_turn(
         model=model,
         prompt=prompt,
         cwd=cwd,
+        additional_dirs=additional_dirs,
         upstream_session_id=upstream_id,
         extras={"fleet_config_override": fleet_override} if fleet_override else {},
     )

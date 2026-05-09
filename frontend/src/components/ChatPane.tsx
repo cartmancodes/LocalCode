@@ -287,6 +287,20 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
             <span className="lc-chathead__eyebrow">{session.provider}</span>
             <h1 className="lc-chathead__title">{session.title}</h1>
             <span className="lc-chathead__sub">{session.model}</span>
+            {session.cwd && (
+              <span className="lc-chathead__cwd" title={session.cwd}>
+                cwd: {session.cwd.replace(/^\/Users\/[^/]+/, "~")}
+              </span>
+            )}
+            {session.additional_dirs && session.additional_dirs.length > 0 && (
+              <span
+                className="lc-chathead__cwd"
+                title={`Additional dirs:\n${session.additional_dirs.join("\n")}`}
+              >
+                +{session.additional_dirs.length} dir
+                {session.additional_dirs.length === 1 ? "" : "s"}
+              </span>
+            )}
           </div>
         </div>
       )}

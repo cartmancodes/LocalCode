@@ -46,6 +46,12 @@ export default function CrewBar({ fleet, session, activeRole, onPickRole, onConf
             {fleet.entry_role && (!fleet.roles.planner || presentRoles.length === 1)
               ? ` · entry: ${fleet.entry_role}`
               : ""}
+            {session.cwd
+              ? ` · cwd: ${session.cwd.replace(/^\/Users\/[^/]+/, "~")}`
+              : ""}
+            {session.additional_dirs && session.additional_dirs.length > 0
+              ? ` · +${session.additional_dirs.length} dir${session.additional_dirs.length === 1 ? "" : "s"}`
+              : ""}
           </span>
         </div>
         <div className="lc-crew__tools">
