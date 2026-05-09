@@ -606,13 +606,44 @@ function mergeFleetOverride(
   override: SessionRow["fleet_config_override"]
 ): FleetConfig {
   if (!override) return base;
-  const merged: FleetConfig = JSON.parse(JSON.stringify(base));
-  if (override.max_steps != null) merged.max_steps = override.max_steps;
-  if (override.name) merged.name = override.name;
-  for (const role of ["planner", "developer", "coder", "reviewer"] as FleetRole[]) {
-    const o = override.roles?.[role];
-    if (!o) continue;
-    merged[role] = { ...merged[role], ...(o as Partial<FleetRoleConfig>) };
+
+  // Mirror the backend's _merge_config: when `override.roles` is supplied
+  // it REPLACES the workflow membership; otherwise the base's roles survive
+  // and per-role fields merge on top.
+  const merged: FleetConfig = {
+    name: override.name ?? base.name,
+    max_steps: override.max_steps ?? base.max_steps,
+    entry_role: (override.entry_role ?? base.entry_role) as FleetRole,
+    config_source: base.config_source,
+    roles: {},
+  };
+
+  if (override.roles && Object.keys(override.roles).length > 0) {
+    for (const role of Object.keys(override.roles) as FleetRole[]) {
+      const o = override.roles[role]!;
+      const baseRole = base.roles[role];
+      // For added roles we don't have a base on the client; use whatever's
+      // in the override and let the server's role library fill in any gaps.
+      // For surviving roles, merge over the existing.
+      if (baseRole) {
+        merged.roles[role] = { ...baseRole, ...(o as Partial<FleetRoleConfig>) };
+      } else {
+        merged.roles[role] = {
+          provider: (o.provider ?? "claude") as "claude" | "opencode",
+          model: o.model ?? "",
+          system_prompt: o.system_prompt ?? "",
+        };
+      }
+    }
+  } else {
+    merged.roles = { ...base.roles };
   }
+
+  // entry_role must be present in the workflow.
+  const present = Object.keys(merged.roles) as FleetRole[];
+  if (!present.includes(merged.entry_role)) {
+    merged.entry_role = (present.find((r) => r !== "planner") ?? present[0] ?? "coder") as FleetRole;
+  }
+
   return merged;
 }

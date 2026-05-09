@@ -1,27 +1,44 @@
 """Multi-agent fleet orchestrator (Proposal G).
 
-A fleet decomposes a single user prompt into specialist steps:
+A fleet is an ordered list of agents — the workflow IS its agents. Adding an
+agent means adding it to the `roles` dict; removing one means deleting the
+key. There is no "disabled" state to keep in sync, which means no class of
+bug where a stale `disabled` flag could let an agent leak into execution.
+
+Available agent roles:
 
   planner   → emits an ordered list of {developer | coder | reviewer} steps
   developer → produces a design / approach for a step (no code)
   coder     → implements a step (may use file/bash tools via its sub-provider)
   reviewer  → verifies the previous step's output, returns LGTM or NACK
 
+Workflows compose these. A few presets the UI exposes one-click:
+
+  Full crew      planner + developer + coder + reviewer
+  Plan + code    planner + coder
+  Design + code  planner + developer + coder
+  Code + review  planner + coder + reviewer
+  Code only      coder           (no planning — direct single-shot)
+  Plan only      planner         (emits the JSON plan, no execution)
+  Review only    reviewer        (single LGTM/NACK pass on the prompt)
+
 The fleet itself implements the ``Provider`` protocol so the FastAPI WebSocket
 treats it as just another backend. Each sub-step is surfaced as a tool_use →
 tool_result pair on the unified event stream, so the existing UI renders the
-workflow as an expandable card without any front-end changes.
+workflow as expandable cards without any front-end changes.
 
-The role assignments and models are user-configurable via a YAML or JSON file.
-Lookup order:
-  1. ``$LOCALCODE_FLEET_CONFIG``                       (explicit absolute path)
+Configuration sources (first hit wins):
+  1. ``Settings.localcode_fleet_config``               (explicit absolute path)
   2. ``<cwd>/.localcode/fleet.{yaml,yml,json}``        (project-local)
   3. ``<orchestrator-cwd>/.localcode/fleet.{yaml,yml,json}``
-  4. built-in defaults
+  4. built-in defaults (full crew)
+
+Per-session UI overrides apply on top of the resolved file config — see
+``FleetProvider.run`` and the modal in ``frontend/src/components/FleetConfigEditor.tsx``.
 
 Why so few abstractions: this is still a v1. Linear plan execution (no parallel
-branches), four roles, single-shot fallback if the planner fails. Add DAG
-support, retries, and richer streaming once we know what we actually need.
+branches), single-shot fallback if the planner fails. Add DAG support, retries,
+and richer streaming once we know what we actually need.
 """
 from __future__ import annotations
 
@@ -46,11 +63,79 @@ logger = logging.getLogger(__name__)
 
 VALID_PROVIDERS = ("claude", "opencode")
 VALID_ROLES = ("planner", "developer", "coder", "reviewer")
+WORKER_ROLES: tuple[str, ...] = ("developer", "coder", "reviewer")
 StepRole = Literal["developer", "coder", "reviewer"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Config
+# Workflow presets — name → role membership + entry role.
+#
+# These are starting points the UI exposes as one-click buttons. When the user
+# picks a preset, the modal pre-fills the role cards using ROLE_LIBRARY for
+# any role that wasn't already present in their existing config; from there
+# they can tune per-role provider/model freely.
+# ─────────────────────────────────────────────────────────────────────────────
+
+WORKFLOW_PRESETS: dict[str, dict[str, Any]] = {
+    "full": {
+        "label": "Full crew",
+        "description": "Planner decomposes; developer designs; coder implements; reviewer gates.",
+        "roles": ["planner", "developer", "coder", "reviewer"],
+        "entry_role": "coder",
+    },
+    "plan-and-code": {
+        "label": "Plan + code",
+        "description": "Planner breaks the task down, coder executes each step. Skips design + review.",
+        "roles": ["planner", "coder"],
+        "entry_role": "coder",
+    },
+    "design-and-code": {
+        "label": "Design + code",
+        "description": "Planner → developer (design) → coder (implement). No reviewer.",
+        "roles": ["planner", "developer", "coder"],
+        "entry_role": "coder",
+    },
+    "design-only": {
+        "label": "Design only",
+        "description": "Single developer turn — produces a technical design doc, no code.",
+        "roles": ["developer"],
+        "entry_role": "developer",
+    },
+    "design-and-review": {
+        "label": "Design + review",
+        "description": "Planner → developer (design) → reviewer (sanity-check the design).",
+        "roles": ["planner", "developer", "reviewer"],
+        "entry_role": "developer",
+    },
+    "code-and-review": {
+        "label": "Code + review",
+        "description": "Planner → coder, then reviewer gates each output.",
+        "roles": ["planner", "coder", "reviewer"],
+        "entry_role": "coder",
+    },
+    "code-only": {
+        "label": "Code only",
+        "description": "Single coder turn — no planning, no design, no review. Fastest.",
+        "roles": ["coder"],
+        "entry_role": "coder",
+    },
+    "plan-only": {
+        "label": "Plan only",
+        "description": "Just the planner — produces a JSON plan, no execution. Useful for review.",
+        "roles": ["planner"],
+        "entry_role": "planner",
+    },
+    "review-only": {
+        "label": "Review only",
+        "description": "Single reviewer turn — paste content into the prompt for an LGTM/NACK pass.",
+        "roles": ["reviewer"],
+        "entry_role": "reviewer",
+    },
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Config types
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -63,16 +148,44 @@ class RoleConfig:
 
 @dataclass
 class FleetConfig:
+    """A workflow, defined by which agents it contains.
+
+    Invariants (enforced at construction by ``_merge_config``):
+      - ``roles`` is non-empty
+      - every key in ``roles`` is in ``VALID_ROLES``
+      - ``entry_role`` is one of ``roles``' keys
+    """
+
     name: str
-    planner: RoleConfig
-    developer: RoleConfig
-    coder: RoleConfig
-    reviewer: RoleConfig
+    # Presence = membership. The workflow is exactly these agents.
+    roles: dict[str, RoleConfig]
+    # Which role runs first if there is no planner (or the planner fails).
+    # Always one of the keys in ``roles``.
+    entry_role: str
     max_steps: int = 6
     # Where the active config came from — None means built-in defaults. Useful
-    # for the UI to surface "Fleet config: ~/.localcode/fleet.yaml" debugging.
+    # for the UI to surface "Fleet config: ~/.localcode/fleet.yaml".
     config_source: str | None = None
 
+    # Convenience accessors — keep callers from poking `cfg.roles[...]` directly.
+    def has(self, role: str) -> bool:
+        return role in self.roles
+
+    def role_names(self) -> list[str]:
+        """Roles in canonical execution order (planner → dev → coder → reviewer)."""
+        return [r for r in VALID_ROLES if r in self.roles]
+
+    def workers(self) -> list[str]:
+        """Non-planner roles present, in canonical order."""
+        return [r for r in WORKER_ROLES if r in self.roles]
+
+    def get(self, role: str) -> RoleConfig | None:
+        return self.roles.get(role)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Built-in defaults — the role library and the default full-crew config.
+# ─────────────────────────────────────────────────────────────────────────────
 
 _PLANNER_SYSTEM = (
     "You are the Planner in a multi-agent coding fleet. Decompose the user's "
@@ -115,30 +228,27 @@ _REVIEWER_SYSTEM = (
 )
 
 
+# Built-in role definitions. The UI uses this to pre-fill a role card when
+# the user adds a previously-absent role to their workflow.
+ROLE_LIBRARY: dict[str, RoleConfig] = {
+    "planner":   RoleConfig(provider="claude",   model="claude-sonnet-4-6",     system_prompt=_PLANNER_SYSTEM),
+    "developer": RoleConfig(provider="claude",   model="claude-opus-4-7",       system_prompt=_DEVELOPER_SYSTEM),
+    "coder":     RoleConfig(provider="opencode", model="openai/gpt-5.3-codex",  system_prompt=_CODER_SYSTEM),
+    "reviewer":  RoleConfig(provider="claude",   model="claude-haiku-4-5",      system_prompt=_REVIEWER_SYSTEM),
+}
+
+
+# Default workflow when no file is found and no override is supplied: full crew.
 DEFAULT_FLEET_CONFIG = FleetConfig(
     name="default",
-    planner=RoleConfig(
-        provider="claude",
-        model="claude-sonnet-4-6",
-        system_prompt=_PLANNER_SYSTEM,
-    ),
-    developer=RoleConfig(
-        provider="claude",
-        model="claude-opus-4-7",
-        system_prompt=_DEVELOPER_SYSTEM,
-    ),
-    coder=RoleConfig(
-        provider="opencode",
-        model="openai/gpt-5.3-codex",
-        system_prompt=_CODER_SYSTEM,
-    ),
-    reviewer=RoleConfig(
-        provider="claude",
-        model="claude-haiku-4-5",
-        system_prompt=_REVIEWER_SYSTEM,
-    ),
+    roles={r: ROLE_LIBRARY[r] for r in ("planner", "developer", "coder", "reviewer")},
+    entry_role="coder",
 )
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Loading + parsing
+# ─────────────────────────────────────────────────────────────────────────────
 
 # Cache the parsed config keyed by (path, mtime). Only re-parses when the file
 # changes on disk. Mtime comparison is one stat() per turn — much cheaper than
@@ -149,21 +259,12 @@ _CFG_CACHE_LOCK = threading.Lock()
 
 
 def load_fleet_config(cwd: str | None = None) -> FleetConfig:
-    """Resolve and load the active fleet config.
+    """Resolve and load the active fleet config. Falls back to defaults on
+    any failure. Cached by (path, mtime) for cheap repeat reads.
 
-    Resolution order (first hit wins):
-      1. ``Settings.localcode_fleet_config`` (absolute path override).
-      2. ``<cwd>/.localcode/fleet.{yaml,yml,json}``.
-      3. ``<orchestrator-cwd>/.localcode/fleet.{yaml,yml,json}``.
-
-    Falls back to ``DEFAULT_FLEET_CONFIG`` when no file is found, parsing
-    fails, or every override is invalid. Per-field validation is best-effort:
-    invalid fields revert to the default (with a warning), so a typo in one
-    role doesn't break the whole fleet.
-
-    Cached by (path, mtime) so we don't re-parse on every turn — saves a
-    YAML parse + walk on the event loop. Edit-and-retry still works because
-    the cache invalidates as soon as mtime changes.
+    Validation is best-effort: invalid fields revert to the default rather
+    than failing the whole load, so a typo in one role doesn't break the
+    workflow.
     """
     candidates: list[Path] = []
     env_path = get_settings().localcode_fleet_config
@@ -228,48 +329,106 @@ def _parse_config_file(path: Path) -> dict[str, Any] | None:
 
 
 def _merge_config(base: FleetConfig, override: dict[str, Any]) -> FleetConfig:
-    """Validate and merge an override dict over the defaults. Field-by-field —
-    invalid entries log a warning and inherit the default rather than failing
-    the whole load."""
-    roles_in = override.get("roles") or {}
-    if not isinstance(roles_in, dict):
-        logger.warning("fleet config: 'roles' must be a mapping; ignoring")
-        roles_in = {}
+    """Merge an override on top of a base config.
 
-    def merge_role(name: str, base_r: RoleConfig) -> RoleConfig:
-        o = roles_in.get(name) or {}
-        if not isinstance(o, dict):
-            logger.warning("fleet config: 'roles.%s' must be a mapping; using defaults", name)
-            return base_r
-        provider = o.get("provider", base_r.provider)
+    Semantics: when ``override["roles"]`` is supplied, it REPLACES the workflow
+    membership entirely (the workflow is exactly those agents). For each role
+    in the override, fields fall back to the corresponding ROLE_LIBRARY entry,
+    so writing ``coder: {model: gpt-5.4}`` doesn't require re-specifying the
+    system prompt.
+
+    When ``override["roles"]`` is NOT supplied, base's role membership is
+    preserved and each role's per-field override (if any) merges over the
+    base's RoleConfig.
+
+    Validation is permissive: invalid fields are dropped with a warning and
+    inherit defaults rather than failing the whole config load.
+    """
+    has_role_override = isinstance(override.get("roles"), dict)
+    raw_roles = override.get("roles") if has_role_override else {}
+
+    # Normalize the role list: dropping unknown keys, replacement vs merge.
+    if has_role_override:
+        # The override defines the workflow. Use override keys verbatim.
+        role_names = [r for r in VALID_ROLES if r in raw_roles]  # canonical order
+        # Warn on unknown roles in the override.
+        for k in raw_roles:
+            if k not in VALID_ROLES:
+                logger.warning(
+                    "fleet config: 'roles.%s' unknown (allowed: %s); ignoring",
+                    k, list(VALID_ROLES),
+                )
+    else:
+        role_names = base.role_names()
+
+    if not role_names:
+        logger.warning("fleet config: no valid roles after merge; falling back to defaults")
+        role_names = list(DEFAULT_FLEET_CONFIG.role_names())
+
+    # Build each RoleConfig.
+    resolved_roles: dict[str, RoleConfig] = {}
+    for name in role_names:
+        # Field-level base for this role: prefer the existing base config's
+        # entry, then the role library, so users can tweak just one field.
+        role_base = base.roles.get(name) or ROLE_LIBRARY.get(name)
+        if role_base is None:  # pragma: no cover — name is in VALID_ROLES so library has it
+            continue
+
+        per_role = (raw_roles.get(name) or {}) if isinstance(raw_roles, dict) else {}
+        if not isinstance(per_role, dict):
+            logger.warning(
+                "fleet config: 'roles.%s' must be a mapping; using defaults", name
+            )
+            per_role = {}
+
+        provider = per_role.get("provider", role_base.provider)
         if provider not in VALID_PROVIDERS:
             logger.warning(
-                "fleet config: 'roles.%s.provider'=%r invalid (allowed: %s); "
-                "using default %r",
-                name, provider, VALID_PROVIDERS, base_r.provider,
+                "fleet config: 'roles.%s.provider'=%r invalid (allowed: %s); using default %r",
+                name, provider, VALID_PROVIDERS, role_base.provider,
             )
-            provider = base_r.provider
-        model = str(o.get("model") or base_r.model).strip()
+            provider = role_base.provider
+        model = str(per_role.get("model") or role_base.model).strip()
         if not model:
             logger.warning("fleet config: 'roles.%s.model' empty; using default", name)
-            model = base_r.model
-        system_prompt = str(o.get("system_prompt") or base_r.system_prompt).strip()
-        return RoleConfig(provider=provider, model=model, system_prompt=system_prompt)
+            model = role_base.model
+        system_prompt = str(per_role.get("system_prompt") or role_base.system_prompt).strip()
+        resolved_roles[name] = RoleConfig(provider=provider, model=model, system_prompt=system_prompt)
+
+    entry_role = _validate_entry_role(
+        override.get("entry_role", base.entry_role),
+        present=list(resolved_roles.keys()),
+    )
 
     return FleetConfig(
         name=str(override.get("name") or base.name),
-        planner=merge_role("planner", base.planner),
-        developer=merge_role("developer", base.developer),
-        coder=merge_role("coder", base.coder),
-        reviewer=merge_role("reviewer", base.reviewer),
+        roles=resolved_roles,
+        entry_role=entry_role,
         max_steps=max(1, int(override.get("max_steps", base.max_steps))),
     )
 
 
+def _validate_entry_role(value: Any, present: list[str]) -> str:
+    """Resolve `entry_role`. Must be one of the present roles. Falls back
+    to first non-planner role, then to first present role."""
+    sv = str(value).strip().lower() if value is not None else ""
+    if sv in present:
+        return sv
+    for r in present:
+        if r != "planner":
+            return r
+    return present[0] if present else "coder"
+
+
 def config_to_dict(cfg: FleetConfig) -> dict[str, Any]:
     """Serialize a FleetConfig for the /api/fleet/config endpoint."""
-    d = asdict(cfg)
-    return d
+    return asdict(cfg)
+
+
+def role_library_dict() -> dict[str, dict[str, Any]]:
+    """Serialize ROLE_LIBRARY for the API. Used by the UI to populate a
+    newly-added role card with sensible defaults."""
+    return {name: asdict(rc) for name, rc in ROLE_LIBRARY.items()}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -290,8 +449,21 @@ class Plan:
     steps: list[Step]
 
 
-def parse_plan(planner_output: str, max_steps: int) -> Plan:
-    """Pull the first JSON object out of a planner reply and validate it."""
+def parse_plan(
+    planner_output: str,
+    max_steps: int,
+    allowed_roles: set[str] | None = None,
+) -> Plan:
+    """Pull the first JSON object out of a planner reply and validate it.
+
+    `allowed_roles` constrains which step roles are accepted — when the
+    workflow doesn't include e.g. the developer, any developer-step the
+    planner emits is dropped (with a warning) rather than failing the
+    whole plan. Defaults to all worker roles when not supplied.
+    """
+    if allowed_roles is None:
+        allowed_roles = set(WORKER_ROLES)
+
     obj = _extract_json_object(planner_output)
     if obj is None:
         raise ValueError("planner did not return JSON")
@@ -305,8 +477,14 @@ def parse_plan(planner_output: str, max_steps: int) -> Plan:
             raise ValueError(f"step {i} is not an object")
         sid = str(s.get("id") or f"s{i+1}")
         role = s.get("role")
-        if role not in ("developer", "coder", "reviewer"):
+        if role not in WORKER_ROLES:
             raise ValueError(f"step {sid} has invalid role: {role!r}")
+        if role not in allowed_roles:
+            logger.warning(
+                "plan step %s uses role %r which is not in this workflow; skipping",
+                sid, role,
+            )
+            continue
         prompt = str(s.get("prompt") or "").strip()
         if not prompt:
             raise ValueError(f"step {sid} has empty prompt")
@@ -316,6 +494,8 @@ def parse_plan(planner_output: str, max_steps: int) -> Plan:
         steps.append(
             Step(id=sid, role=role, prompt=prompt, depends_on=[str(d) for d in depends])
         )
+    if not steps:
+        raise ValueError("plan has no steps with workflow-available roles")
     return Plan(steps=steps)
 
 
@@ -369,44 +549,75 @@ class FleetProvider:
         # FleetProvider is a singleton and concurrent turns share `self`.
         t0 = time.time()
         cfg = load_fleet_config(ctx.cwd)
-        # Per-session UI override layered on top of the file config. Same
-        # validation rules apply: bad fields revert to whatever the file/built-in
-        # supplied, so a typo in the modal can't sink the turn.
+        # Per-session UI override layered on top of the file config.
         ui_override = ctx.extras.get("fleet_config_override") if ctx.extras else None
         if isinstance(ui_override, dict) and ui_override:
             base_src = cfg.config_source or "<built-in defaults>"
             cfg = _merge_config(cfg, ui_override)
             cfg.config_source = f"{base_src} + UI override"
 
-        # ── 1. Planning ─────────────────────────────────────────────────
+        # Branch: planner-led pipeline (planner present + at least one worker)
+        # vs single-agent turn (no planner, or planner is the only role).
+        if cfg.has("planner") and cfg.workers():
+            async for ev in self._run_planned(ctx, cfg):
+                yield ev
+        else:
+            async for ev in self._run_single(ctx, cfg):
+                yield ev
+
+        yield Event(
+            type="assistant.done",
+            data={"duration_ms": int((time.time() - t0) * 1000)},
+        )
+
+    async def _run_planned(
+        self, ctx: RunContext, cfg: FleetConfig
+    ) -> AsyncIterator[Event]:
+        """Planner-led path: planner emits a JSON plan, steps execute
+        sequentially with results threaded as context."""
+        planner_base = cfg.get("planner")
+        assert planner_base is not None  # caller checked cfg.has("planner")
+        workers = cfg.workers()
         plan_id = "fleet.plan"
+
+        # Tell the planner which worker roles are available in THIS workflow.
+        # We append a constraint line rather than rewriting the whole prompt
+        # so any user-customised planner system_prompt is preserved.
+        planner_role = RoleConfig(
+            provider=planner_base.provider,
+            model=planner_base.model,
+            system_prompt=_planner_prompt_with_constraint(
+                planner_base.system_prompt, workers
+            ),
+        )
+
         yield Event(
             type="assistant.tool_use",
             data={
                 "id": plan_id,
-                "name": f"planner [{cfg.planner.provider}:{cfg.planner.model}]",
-                "input": {"task": ctx.prompt},
+                "name": f"planner [{planner_role.provider}:{planner_role.model}]",
+                "input": {"task": ctx.prompt, "available_roles": cfg.role_names()},
             },
         )
         try:
-            plan_text = await _collect_text(cfg.planner, ctx.prompt, ctx.cwd)
-            plan = parse_plan(plan_text, cfg.max_steps)
+            plan_text = await _collect_text(planner_role, ctx.prompt, ctx.cwd)
+            plan = parse_plan(plan_text, cfg.max_steps, allowed_roles=set(workers))
         except Exception as exc:
-            # Planner unreachable or returned garbage — fall back to a single
-            # coder step on the raw user prompt so the user still gets an answer.
             logger.warning("fleet planning failed, single-shot fallback: %s", exc)
             yield Event(
                 type="tool.result",
                 data={
                     "tool_use_id": plan_id,
                     "content": (
-                        f"planning failed ({exc}); falling back to a single coder step"
+                        f"planning failed ({exc}); falling back to a single "
+                        f"{cfg.entry_role} step"
                     ),
                     "is_error": True,
                 },
             )
+            fallback = cfg.entry_role if cfg.entry_role in workers else workers[0]
             plan = Plan(
-                steps=[Step(id="s1", role="coder", prompt=ctx.prompt, depends_on=[])]
+                steps=[Step(id="s1", role=fallback, prompt=ctx.prompt, depends_on=[])]  # type: ignore[arg-type]
             )
         else:
             yield Event(
@@ -418,21 +629,38 @@ class FleetProvider:
                 },
             )
 
-        # ── 2. Step execution ───────────────────────────────────────────
         outputs: dict[str, str] = {}
         for step in plan.steps:
             async for ev in self._run_step(step, ctx, cfg, outputs):
                 yield ev
 
-        # ── 3. Final assistant text ─────────────────────────────────────
         final = _final_summary(outputs, plan)
         if final:
             yield Event(type="assistant.text", data={"text": final})
 
-        yield Event(
-            type="assistant.done",
-            data={"duration_ms": int((time.time() - t0) * 1000)},
-        )
+    async def _run_single(
+        self, ctx: RunContext, cfg: FleetConfig
+    ) -> AsyncIterator[Event]:
+        """Single-agent path: the user prompt goes straight to one role
+        (the entry role). Used by Code-only / Review-only / Plan-only
+        workflows where decomposition would just add latency."""
+        # _validate_entry_role guarantees entry_role is a key in cfg.roles,
+        # but defend in case caller invariants ever change.
+        present = cfg.role_names()
+        role_name = cfg.entry_role if cfg.entry_role in present else (present[0] if present else "coder")
+        role_cfg = cfg.get(role_name) or ROLE_LIBRARY[role_name]
+
+        # Step.role expects a worker literal; for plan-only we still use the
+        # planner via _run_step, but Step.role is typed as the worker union.
+        # We bypass the strict typing — Step is internal to this module.
+        step = Step(id="s1", role=role_name, prompt=ctx.prompt, depends_on=[])  # type: ignore[arg-type]
+        outputs: dict[str, str] = {}
+        async for ev in self._run_step_with_role(step, role_cfg, ctx, outputs):
+            yield ev
+
+        text = outputs.get(step.id, "")
+        if text:
+            yield Event(type="assistant.text", data={"text": text})
 
     async def _run_step(
         self,
@@ -441,12 +669,28 @@ class FleetProvider:
         cfg: FleetConfig,
         outputs: dict[str, str],
     ) -> AsyncIterator[Event]:
-        role_cfg = {
-            "developer": cfg.developer,
-            "coder": cfg.coder,
-            "reviewer": cfg.reviewer,
-        }[step.role]
+        role_cfg = cfg.get(step.role)
+        if role_cfg is None:
+            # Defensive: parse_plan should have filtered this. Surface as error.
+            yield Event(
+                type="tool.result",
+                data={
+                    "tool_use_id": step.id,
+                    "content": f"role {step.role!r} not in this workflow",
+                    "is_error": True,
+                },
+            )
+            return
+        async for ev in self._run_step_with_role(step, role_cfg, ctx, outputs):
+            yield ev
 
+    async def _run_step_with_role(
+        self,
+        step: Step,
+        role_cfg: RoleConfig,
+        ctx: RunContext,
+        outputs: dict[str, str],
+    ) -> AsyncIterator[Event]:
         # Stitch the prompts of upstream dependencies in (or, if none declared,
         # the immediately previous step — the most useful default).
         deps = step.depends_on or ([list(outputs.keys())[-1]] if outputs else [])
@@ -479,8 +723,6 @@ class FleetProvider:
 
         outputs[step.id] = output
 
-        # A reviewer's NACK is informational (not an exception), but we mark it
-        # so the UI renders the card as failed.
         is_error = step.role == "reviewer" and output.strip().upper().startswith("NACK")
         yield Event(
             type="tool.result",
@@ -517,6 +759,23 @@ async def _collect_text(role: RoleConfig, prompt: str, cwd: str | None) -> str:
         elif ev.type == "error":
             raise RuntimeError(ev.data.get("message") or "sub-provider error")
     return "".join(chunks).strip()
+
+
+def _planner_prompt_with_constraint(base_prompt: str, workers: list[str]) -> str:
+    """Append a one-line constraint to the planner's system prompt that
+    spells out which worker roles ARE in this workflow. The model already
+    has its base instructions; this is just the hard guarantee.
+
+    When all three workers are present we skip the suffix — the base prompt
+    already enumerates them.
+    """
+    if set(workers) == set(WORKER_ROLES):
+        return base_prompt
+    return (
+        base_prompt
+        + "\n\n[Workflow constraint for this turn: ONLY emit steps with role in "
+        + f"{{ {', '.join(workers) or 'none'} }}. Do NOT use any other role.]"
+    )
 
 
 def _summarize_plan(plan: Plan) -> str:

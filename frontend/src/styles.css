@@ -662,6 +662,99 @@ a { color: var(--accent); text-decoration: none; }
 }
 .lc-send.is-ready:hover { filter: brightness(.95); }
 
+/* Fleet config editor — presets + role cards ─────────────────────────── */
+.fleet-section-hdr {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); padding: 6px 0 6px;
+}
+.fleet-presets { margin-bottom: 4px; }
+.fleet-preset-row {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 6px;
+}
+.fleet-preset {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding: 8px 10px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+  text-align: left; cursor: pointer;
+  transition: all .15s;
+}
+.fleet-preset:hover { border-color: var(--line-2); background: var(--hover); }
+.fleet-preset.is-active {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.fleet-preset-label {
+  font-size: 12px; font-weight: 600; color: var(--ink);
+}
+.fleet-preset-roles {
+  font-size: 10.5px; font-family: "Geist Mono", monospace;
+  color: var(--muted); letter-spacing: .04em;
+}
+
+.fleet-role-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  transition: opacity .15s, border-color .15s, background .15s;
+}
+.fleet-role-card.is-on {
+  border-color: var(--rc-bd);
+  background: color-mix(in oklab, var(--rc-bg) 60%, var(--panel-2));
+}
+.fleet-role-card.is-off {
+  opacity: .55;
+  border-style: dashed;
+}
+.fleet-role-card__head {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  gap: 8px; align-items: center;
+  margin-bottom: 8px;
+}
+.fleet-role-toggle {
+  width: 22px; height: 22px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.fleet-role-toggle.is-on {
+  border-color: var(--rc-bd);
+  background: var(--rc-bg);
+  color: var(--rc-fg);
+}
+.fleet-role-card__title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.fleet-role-card__name {
+  font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--rc-fg);
+}
+.fleet-role-card__desc { font-size: 11.5px; color: var(--muted); }
+.fleet-role-card__entry {
+  font-size: 10.5px; font-family: "Geist Mono", monospace;
+  background: var(--rc-bg); color: var(--rc-fg);
+  border: 1px solid var(--rc-bd);
+  padding: 1px 6px; border-radius: 4px;
+  text-transform: lowercase; letter-spacing: .04em;
+}
+.fleet-role-card__fields {
+  display: grid; grid-template-columns: 1fr 2fr; gap: 8px;
+}
+.fleet-role-card__fields label {
+  display: flex; flex-direction: column; gap: 4px; font-size: 12px;
+}
+.fleet-role-card__fields select {
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 8px; font-size: 13px;
+  font-family: "Geist Mono", monospace;
+}
+.fleet-role-card__fields select:disabled { opacity: .5; cursor: not-allowed; }
+
 /* Modal — fleet config editor (kept) ─────────────────────────────────── */
 .modal-backdrop {
   position: fixed; inset: 0;

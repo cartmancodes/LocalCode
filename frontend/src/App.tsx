@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import ChatPane from "./components/ChatPane";
+import ErrorBoundary from "./components/ErrorBoundary";
 import FleetConfigEditor from "./components/FleetConfigEditor";
 import Sidebar from "./components/Sidebar";
 import Topbar from "./components/Topbar";
@@ -132,25 +133,29 @@ export default function App() {
           onDelete={onDelete}
           onClearAll={onClearAll}
         />
-        <ChatPane
-          session={active}
-          onConfigureFleet={
-            active?.provider === "fleet"
-              ? () => setFleetEditorOpen(true)
-              : undefined
-          }
-        />
+        <ErrorBoundary label="ChatPane">
+          <ChatPane
+            session={active}
+            onConfigureFleet={
+              active?.provider === "fleet"
+                ? () => setFleetEditorOpen(true)
+                : undefined
+            }
+          />
+        </ErrorBoundary>
       </div>
 
       {fleetEditorOpen && (
-        <FleetConfigEditor
-          models={models}
-          onCancel={() => setFleetEditorOpen(false)}
-          onConfirm={async (override) => {
-            setFleetEditorOpen(false);
-            await createWithOverride(override);
-          }}
-        />
+        <ErrorBoundary label="FleetConfigEditor">
+          <FleetConfigEditor
+            models={models}
+            onCancel={() => setFleetEditorOpen(false)}
+            onConfirm={async (override) => {
+              setFleetEditorOpen(false);
+              await createWithOverride(override);
+            }}
+          />
+        </ErrorBoundary>
       )}
 
       {/* Floating accent toggle — small power-user control, top-right corner */}

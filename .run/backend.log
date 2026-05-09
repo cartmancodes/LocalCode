@@ -1325,3 +1325,295 @@ INFO:     127.0.0.1:56310 - "GET /api/budget HTTP/1.1" 200 OK
 INFO:     127.0.0.1:56315 - "GET /api/budget HTTP/1.1" 200 OK
 INFO:     127.0.0.1:56319 - "GET /api/budget HTTP/1.1" 200 OK
 INFO:     127.0.0.1:56323 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56329 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56335 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56342 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56349 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56354 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56362 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56369 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56380 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56387 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56396 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56405 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:56462 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56466 - "WebSocket /api/sessions/d0d2be97c29d438dbf895fc53507a713/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:56470 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56474 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56480 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56487 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56489 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56492 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56497 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56502 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56506 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56511 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56516 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56520 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56524 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56528 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56532 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56538 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56542 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56548 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56552 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56556 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [4586]
+INFO:     Started server process [55876]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:56741 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56743 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56768 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56771 - "WebSocket /api/sessions/26ff53839f774ab9845e4748978f74dd/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:56807 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56810 - "WebSocket /api/sessions/c9c563025661492383689c8ac088b54b/ws" [accepted]
+INFO:     connection open
+fleet planning failed, single-shot fallback: planner did not return JSON
+INFO:     connection closed
+INFO:     127.0.0.1:56880 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56883 - "WebSocket /api/sessions/8144cfb3ee1c4747b045d20ac80f998e/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:56914 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56917 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56975 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56979 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56976 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56973 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56981 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56992 - "WebSocket /api/sessions/8144cfb3ee1c4747b045d20ac80f998e/ws" [accepted]
+INFO:     127.0.0.1:56993 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:56989 - "GET /api/sessions/8144cfb3ee1c4747b045d20ac80f998e/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56977 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56997 - "DELETE /api/sessions HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:57002 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57003 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57016 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57022 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57012 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57019 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57023 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57021 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57029 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57030 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57062 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57062 - "DELETE /api/sessions/ff06fd8c93924ddea42babba4fedad2f HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:57062 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57062 - "DELETE /api/sessions/a10f866c01c141118fb856006d705075 HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:57062 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57062 - "DELETE /api/sessions/f7f0f44882fb4d18ad91fbba2e3fc4c6 HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:57062 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57082 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57086 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57083 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57087 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57084 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57081 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57093 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57095 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57111 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57115 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57112 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57116 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57105 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57114 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57120 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57123 - "GET /api/sessions/4b673ff7b130421d8880b2329beb872a/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57126 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57130 - "WebSocket /api/sessions/4b673ff7b130421d8880b2329beb872a/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57134 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57139 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57143 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57148 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57153 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57159 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57168 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [55876]
+INFO:     Started server process [58232]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:57177 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57179 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57183 - "WebSocket /api/sessions/4b673ff7b130421d8880b2329beb872a/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57188 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57191 - "WebSocket /api/sessions/7c07a5b9f0844a15bcf7d9e6c405c454/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:57225 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57228 - "WebSocket /api/sessions/5be99c7b4fe54e7e83d5ef7161d4bdbb/ws" [accepted]
+INFO:     connection open
+fleet planning failed, single-shot fallback: planner did not return JSON
+INFO:     127.0.0.1:57286 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57298 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57301 - "WebSocket /api/sessions/31c024e2433240c2bca7e5f422993b92/ws" [accepted]
+INFO:     connection open
+fleet planning failed, single-shot fallback: planner did not return JSON
+INFO:     connection closed
+INFO:     127.0.0.1:57372 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57376 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57379 - "GET /api/sessions/8ed65e004fc749e8bc1260f72d2193e5/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57382 - "WebSocket /api/sessions/8ed65e004fc749e8bc1260f72d2193e5/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57385 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57388 - "GET /api/sessions/0f4f917ec1af434fabe5e3b50fa1a6eb/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57391 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57394 - "GET /api/sessions/a8257949d9a54a81a3a38867bd9a7316/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57397 - "WebSocket /api/sessions/a8257949d9a54a81a3a38867bd9a7316/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57401 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57403 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57415 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57422 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57417 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57419 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57412 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57431 - "WebSocket /api/sessions/a8257949d9a54a81a3a38867bd9a7316/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57429 - "GET /api/sessions/a8257949d9a54a81a3a38867bd9a7316/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57423 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57435 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57449 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57454 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57445 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57452 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57456 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57453 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57463 - "WebSocket /api/sessions/a8257949d9a54a81a3a38867bd9a7316/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57462 - "GET /api/sessions/a8257949d9a54a81a3a38867bd9a7316/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57475 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57481 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57472 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57478 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57482 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57480 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57488 - "WebSocket /api/sessions/a8257949d9a54a81a3a38867bd9a7316/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57487 - "GET /api/sessions/a8257949d9a54a81a3a38867bd9a7316/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57500 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57505 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57496 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57503 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57507 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57504 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57510 - "GET /api/sessions/a8257949d9a54a81a3a38867bd9a7316/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57513 - "WebSocket /api/sessions/a8257949d9a54a81a3a38867bd9a7316/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57517 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57519 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57535 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57539 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57540 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57537 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57529 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57538 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57547 - "WebSocket /api/sessions/a8257949d9a54a81a3a38867bd9a7316/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57546 - "GET /api/sessions/a8257949d9a54a81a3a38867bd9a7316/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57551 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57553 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57568 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57570 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57572 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57638 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57642 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57639 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57637 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57644 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57646 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57652 - "WebSocket /api/sessions/a8257949d9a54a81a3a38867bd9a7316/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57650 - "GET /api/sessions/a8257949d9a54a81a3a38867bd9a7316/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57656 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57659 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57663 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57671 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57676 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57683 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57687 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57693 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57697 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57702 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57707 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57711 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57715 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57719 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57725 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57730 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57735 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57740 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57745 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57749 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57761 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57762 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57764 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57756 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57767 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57775 - "WebSocket /api/sessions/a8257949d9a54a81a3a38867bd9a7316/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57776 - "GET /api/sessions/a8257949d9a54a81a3a38867bd9a7316/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57773 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57780 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57783 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57786 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57791 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57796 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57802 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57808 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57820 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57826 - "WebSocket /api/sessions/92293d9a52e34006939a2c861f132bcc/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57829 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57828 - "GET /api/sessions/92293d9a52e34006939a2c861f132bcc/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57832 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57850 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57854 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57858 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57864 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57874 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57879 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57884 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57892 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57898 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57902 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57906 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57911 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57916 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57921 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57926 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57930 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57934 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57939 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57945 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57949 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57953 - "GET /api/budget HTTP/1.1" 200 OK

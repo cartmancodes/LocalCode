@@ -25,6 +25,10 @@ export interface MessagesPage {
 }
 
 // Mirrors the backend's FleetConfig — what /api/fleet/config returns.
+//
+// Workflow membership is presence-based: only roles in `roles` are part of
+// this workflow. Adding/removing an agent literally adds/removes a key. There
+// is no "disabled" flag.
 export type FleetRole = "planner" | "developer" | "coder" | "reviewer";
 
 export interface FleetRoleConfig {
@@ -35,12 +39,17 @@ export interface FleetRoleConfig {
 
 export interface FleetConfig {
   name: string;
-  planner: FleetRoleConfig;
-  developer: FleetRoleConfig;
-  coder: FleetRoleConfig;
-  reviewer: FleetRoleConfig;
+  roles: Partial<Record<FleetRole, FleetRoleConfig>>;
+  entry_role: FleetRole;
   max_steps: number;
   config_source: string | null;
+}
+
+export interface WorkflowPreset {
+  label: string;
+  description: string;
+  roles: FleetRole[];
+  entry_role: FleetRole;
 }
 
 export interface FleetConfigResponse {
@@ -48,14 +57,18 @@ export interface FleetConfigResponse {
   is_default: boolean;
   valid_providers: ("claude" | "opencode")[];
   valid_roles: FleetRole[];
+  role_library: Record<FleetRole, FleetRoleConfig>;
+  presets: Record<string, WorkflowPreset>;
   defaults: FleetConfig;
 }
 
-// Partial dict of overrides — only the fields the user actually changed.
-// Shape matches the YAML config schema.
+// Partial override — when `roles` is supplied, it REPLACES the workflow
+// membership. Per-role fields fall back to the role library so writing
+// `coder: { model: "..." }` doesn't require re-specifying everything.
 export interface FleetConfigOverride {
   name?: string;
   max_steps?: number;
+  entry_role?: FleetRole;
   roles?: Partial<Record<FleetRole, Partial<FleetRoleConfig>>>;
 }
 

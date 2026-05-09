@@ -9,7 +9,7 @@ interface Props {
   onConfigure?: () => void;
 }
 
-const ROLES: FleetRole[] = ["planner", "developer", "coder", "reviewer"];
+const ROLE_ORDER: FleetRole[] = ["planner", "developer", "coder", "reviewer"];
 
 const ROLE_COLORS: Record<FleetRole, { fg: string; bg: string; bd: string }> = {
   planner:   { fg: "var(--ag-violet-fg)",  bg: "var(--ag-violet-bg)",  bd: "var(--ag-violet-bd)" },
@@ -28,33 +28,45 @@ function isRoleOverridden(
 }
 
 /**
- * Shown above the chat stream for fleet sessions only — surfaces each role's
- * configured provider+model and (eventually) live token / cost stats. Click a
- * card to filter the stream to that role's messages.
+ * Renders the agents that are part of THIS workflow — only roles present in
+ * `fleet.roles` are shown. Click a card to filter the stream to that agent's
+ * messages.
  */
 export default function CrewBar({ fleet, session, activeRole, onPickRole, onConfigure }: Props) {
+  const presentRoles = ROLE_ORDER.filter((r) => fleet.roles[r] != null);
+
   return (
     <div className="lc-crew">
       <div className="lc-crew__head">
         <div className="lc-crew__title">
-          <span className="lc-crew__eyebrow">Crew</span>
+          <span className="lc-crew__eyebrow">Workflow</span>
           <h1 className="lc-crew__name">{fleet.name}</h1>
-          <span className="lc-crew__sub">{ROLES.length} agents</span>
+          <span className="lc-crew__sub">
+            {presentRoles.length} agent{presentRoles.length === 1 ? "" : "s"}
+            {fleet.entry_role && (!fleet.roles.planner || presentRoles.length === 1)
+              ? ` · entry: ${fleet.entry_role}`
+              : ""}
+          </span>
         </div>
         <div className="lc-crew__tools">
           <button className="lc-ghostbtn" title="Retry turn (not yet wired)">
             <IconRetry size={14} /> Retry turn
           </button>
           {onConfigure && (
-            <button className="lc-ghostbtn" onClick={onConfigure} title="Configure roles">
+            <button className="lc-ghostbtn" onClick={onConfigure} title="Configure agents">
               <IconCpu size={14} /> Configure
             </button>
           )}
         </div>
       </div>
-      <div className="lc-crew__row">
-        {ROLES.map((role) => {
-          const r = fleet[role];
+      <div
+        className="lc-crew__row"
+        style={{
+          gridTemplateColumns: `repeat(${Math.max(1, presentRoles.length)}, 1fr)`,
+        }}
+      >
+        {presentRoles.map((role) => {
+          const r = fleet.roles[role]!;
           const colors = ROLE_COLORS[role];
           const isActive = activeRole === role;
           const overridden = isRoleOverridden(role, session.fleet_config_override);
@@ -76,7 +88,9 @@ export default function CrewBar({ fleet, session, activeRole, onPickRole, onConf
               <span className="lc-agent__txt">
                 <span className="lc-agent__role">
                   {role}
-                  {overridden && <span className="lc-agent__overridden" title="UI override">●</span>}
+                  {overridden && (
+                    <span className="lc-agent__overridden" title="UI override">●</span>
+                  )}
                 </span>
                 <span className="lc-agent__model">
                   {r.provider}

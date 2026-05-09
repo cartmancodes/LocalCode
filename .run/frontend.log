@@ -108,3 +108,99 @@ AggregateError [ECONNREFUSED]:
 6:05:45 AM [vite] hmr update /src/components/BudgetBar.tsx
 6:05:45 AM [vite] hmr update /src/components/ModelPicker.tsx
 6:05:45 AM [vite] hmr update /src/components/MessageBubble.tsx
+4:39:04 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+4:39:25 PM [vite] hmr update /src/components/CrewBar.tsx
+4:39:45 PM [vite] hmr update /src/components/ChatPane.tsx
+4:40:05 PM [vite] hmr update /src/styles.css
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 99 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.4:5173/
+4:58:45 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+4:58:55 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+4:59:10 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+4:59:30 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+4:59:40 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+4:59:52 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+5:00:01 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+5:00:17 PM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+5:03:55 PM [vite] hmr update /src/App.tsx
+5:04:03 PM [vite] hmr update /src/App.tsx
+5:04:12 PM [vite] hmr update /src/App.tsx
+5:08:15 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+5:08:15 PM [vite] Internal server error: /Users/shubhojeet/Projects/LocalCode/frontend/src/components/FleetConfigEditor.tsx: Identifier 'activePresetKey' has already been declared. (230:8)
+
+  228 |   };
+  229 |
+> 230 |   const activePresetKey = useMemo(() => {
+      |         ^
+  231 |     const presets = resp?.presets ?? {};
+  232 |     const memberKey = presentRoles.slice().sort().join(",");
+  233 |     for (const [key, p] of Object.entries(presets)) {
+  Plugin: vite:react-babel
+  File: /Users/shubhojeet/Projects/LocalCode/frontend/src/components/FleetConfigEditor.tsx:230:8
+  228|    };
+  229|  
+  230|    const activePresetKey = useMemo(() => {
+     |          ^
+  231|      const presets = resp?.presets ?? {};
+  232|      const memberKey = presentRoles.slice().sort().join(",");
+      at constructor (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:365:19)
+      at TypeScriptParserMixin.raise (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:6616:19)
+      at TypeScriptScopeHandler.checkRedeclarationInScope (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:1619:19)
+      at TypeScriptScopeHandler.declareName (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:1585:12)
+      at TypeScriptScopeHandler.declareName (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:4892:11)
+      at TypeScriptParserMixin.declareNameFromIdentifier (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:7584:16)
+      at TypeScriptParserMixin.checkIdentifier (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:7580:12)
+      at TypeScriptParserMixin.checkLVal (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:7517:12)
+      at TypeScriptParserMixin.parseVarId (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:13429:10)
+      at TypeScriptParserMixin.parseVarId (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:9769:11)
+      at TypeScriptParserMixin.parseVar (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:13400:12)
+      at TypeScriptParserMixin.parseVarStatement (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:13247:10)
+      at TypeScriptParserMixin.parseVarStatement (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:9425:31)
+      at TypeScriptParserMixin.parseStatementContent (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:12868:23)
+      at TypeScriptParserMixin.parseStatementContent (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:9525:18)
+      at TypeScriptParserMixin.parseStatementLike (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:12784:17)
+      at TypeScriptParserMixin.parseStatementListItem (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:12764:17)
+      at TypeScriptParserMixin.parseBlockOrModuleBlockBody (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:13333:61)
+      at TypeScriptParserMixin.parseBlockBody (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:13326:10)
+      at TypeScriptParserMixin.parseBlock (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:13314:10)
+      at TypeScriptParserMixin.parseFunctionBody (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:12117:24)
+      at TypeScriptParserMixin.parseFunctionBodyAndFinish (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:12103:10)
+      at TypeScriptParserMixin.parseFunctionBodyAndFinish (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:9189:18)
+      at /Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:13462:12
+      at TypeScriptParserMixin.withSmartMixTopicForbiddingContext (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:12420:14)
+      at TypeScriptParserMixin.parseFunction (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:13461:10)
+      at TypeScriptParserMixin.parseExportDefaultExpression (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:13924:19)
+      at TypeScriptParserMixin.parseExportDefaultExpression (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:9419:18)
+      at TypeScriptParserMixin.parseExport (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:13845:25)
+      at TypeScriptParserMixin.parseExport (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:9402:20)
+      at TypeScriptParserMixin.parseStatementContent (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:12895:27)
+      at TypeScriptParserMixin.parseStatementContent (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:9525:18)
+      at TypeScriptParserMixin.parseStatementLike (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:12784:17)
+      at TypeScriptParserMixin.parseModuleItem (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:12761:17)
+      at TypeScriptParserMixin.parseBlockOrModuleBlockBody (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:13333:36)
+      at TypeScriptParserMixin.parseBlockBody (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:13326:10)
+      at TypeScriptParserMixin.parseProgram (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:12639:10)
+      at TypeScriptParserMixin.parseTopLevel (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:12629:25)
+      at TypeScriptParserMixin.parse (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:14505:25)
+      at TypeScriptParserMixin.parse (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:10143:18)
+      at parse (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/parser/lib/index.js:14539:38)
+      at parser (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/core/lib/parser/index.js:41:34)
+      at parser.next (<anonymous>)
+      at normalizeFile (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/core/lib/transformation/normalize-file.js:64:37)
+      at normalizeFile.next (<anonymous>)
+      at run (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/core/lib/transformation/index.js:22:50)
+      at run.next (<anonymous>)
+      at transform (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/@babel/core/lib/transform.js:22:33)
+      at transform.next (<anonymous>)
+      at step (/Users/shubhojeet/Projects/LocalCode/frontend/node_modules/gensync/index.js:261:32)
+5:08:53 PM [vite] hmr update /src/components/FleetConfigEditor.tsx

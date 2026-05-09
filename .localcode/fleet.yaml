@@ -1,6 +1,7 @@
 # Active fleet config — see .localcode/fleet.yaml.example for the full schema.
 name: localcode-default
 max_steps: 4
+entry_role: coder
 roles:
   planner:   { provider: claude,   model: claude-sonnet-4-6 }
   developer: { provider: claude,   model: claude-opus-4-7 }

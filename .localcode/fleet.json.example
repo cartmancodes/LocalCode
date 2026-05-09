@@ -1,7 +1,9 @@
 {
-  "//": "Same shape as fleet.yaml.example. Save as .localcode/fleet.json. See docs/fleet.md.",
+  "//": "Same shape as fleet.yaml.example. Save as .localcode/fleet.json.",
+  "//workflow": "Workflow IS its agents. Only roles in `roles` participate.",
   "name": "all-claude",
   "max_steps": 6,
+  "entry_role": "coder",
   "roles": {
     "planner":   { "provider": "claude", "model": "claude-sonnet-4-6" },
     "developer": { "provider": "claude", "model": "claude-opus-4-7" },
