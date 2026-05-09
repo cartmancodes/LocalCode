@@ -5,6 +5,13 @@ a browser and persist OAuth tokens at ~/.local/share/opencode/auth.json. The
 backend therefore passes models in OpenCode's native `<provider>/<model>` form,
 e.g. `openai/gpt-5-codex` or `openai/gpt-4o`. OpenCode resolves the credential
 from its own auth store — we don't pass any key.
+
+`ctx.additional_dirs` is intentionally NOT forwarded: opencode binds each
+session to a single project (one git worktree) and exposes only a binary
+`external_directory: ask|allow|deny` permission in opencode.json — there is
+no per-session allowlist of extra paths. Multi-directory grants therefore
+only affect Claude-provider roles; opencode coder steps stay scoped to
+`ctx.cwd`. See docs/working-directory.md.
 """
 from __future__ import annotations
 
@@ -34,14 +41,14 @@ class OpenCodeProvider:
     async def open_session(self, ctx: RunContext) -> str:
         if ctx.upstream_session_id:
             return ctx.upstream_session_id
-        # Pass the user-chosen working directory so the spawned coder's
-        # file/bash tools are rooted there. OpenCode tolerates a missing
-        # `directory` (uses its server-side cwd), so this is safe to send
-        # unconditionally when ctx.cwd is set.
-        body: dict[str, Any] = {}
+        # `directory` is a QUERY parameter on /session, not a body field —
+        # opencode silently drops unknown body keys, so a body-borne directory
+        # is a no-op and the session ends up rooted in whatever dir
+        # `opencode serve` was started from.
+        params: dict[str, str] = {}
         if ctx.cwd:
-            body["directory"] = ctx.cwd
-        resp = await self._client.post("/session", json=body)
+            params["directory"] = ctx.cwd
+        resp = await self._client.post("/session", params=params, json={})
         resp.raise_for_status()
         return resp.json()["id"]
 
@@ -84,12 +91,24 @@ class OpenCodeProvider:
         if ctx.system_prompt:
             body["system"] = ctx.system_prompt
 
+        # `directory` is a QUERY param on prompt_async AND /event — both are
+        # project-scoped. Without it, /event returns events for whichever
+        # project opencode was started in (typically LocalCode/opencode), and
+        # our neural-city session's events never appear on the stream.
+        prompt_params: dict[str, str] = {}
+        if ctx.cwd:
+            prompt_params["directory"] = ctx.cwd
+
         # Open the SSE channel BEFORE firing the prompt so we don't miss events.
         try:
-            async with self._client.stream("GET", "/event") as stream:
+            async with self._client.stream(
+                "GET", "/event", params=prompt_params
+            ) as stream:
                 # Fire the prompt asynchronously — server returns 204 immediately.
                 fire = await self._client.post(
-                    f"/session/{session_id}/prompt_async", json=body
+                    f"/session/{session_id}/prompt_async",
+                    params=prompt_params,
+                    json=body,
                 )
                 if fire.status_code >= 400:
                     yield Event(

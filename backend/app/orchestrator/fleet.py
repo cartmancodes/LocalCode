@@ -747,9 +747,11 @@ async def _collect_text(
 ) -> str:
     """Invoke a sub-provider and return its concatenated assistant text.
 
-    Tool-use events from the sub-provider are intentionally swallowed at this
-    level (file edits / bash calls still happen via the sub-provider's own
-    machinery). v2 may forward them as nested events.
+    If the sub-provider produced only tool calls (no narrative text), fall back
+    to a structured digest of those tool calls so downstream steps — and
+    especially the reviewer — have something to act on. Without this, a coder
+    that edits files but doesn't summarise produces "" and the reviewer
+    correctly NACKs with "no output to review".
     """
     # Lazy import — registry imports this module's class.
     from .registry import get_provider
@@ -763,12 +765,48 @@ async def _collect_text(
         system_prompt=role.system_prompt,
     )
     chunks: list[str] = []
+    tool_calls: list[tuple[str, str, Any]] = []  # (id, name, input)
+    tool_results: dict[str, tuple[str, bool]] = {}  # id -> (content, is_error)
     async for ev in sub.run(sub_ctx):
         if ev.type == "assistant.text":
             chunks.append(ev.data.get("text", ""))
+        elif ev.type == "assistant.tool_use":
+            tool_calls.append(
+                (ev.data.get("id", ""), ev.data.get("name", ""), ev.data.get("input"))
+            )
+        elif ev.type == "tool.result":
+            content = ev.data.get("content")
+            if isinstance(content, list):
+                # Anthropic tool_result blocks come as a list of {type:text, text:...}
+                content = "\n".join(
+                    str(b.get("text", b)) if isinstance(b, dict) else str(b)
+                    for b in content
+                )
+            tool_results[ev.data.get("tool_use_id", "")] = (
+                str(content or ""),
+                bool(ev.data.get("is_error")),
+            )
         elif ev.type == "error":
             raise RuntimeError(ev.data.get("message") or "sub-provider error")
-    return "".join(chunks).strip()
+
+    text = "".join(chunks).strip()
+    if text:
+        return text
+    if not tool_calls:
+        return ""
+    # Build a digest the reviewer can reason about.
+    lines = [f"(no narrative text from {role.provider}:{role.model}; tool activity:)"]
+    for tid, name, tinput in tool_calls:
+        inp_str = json.dumps(tinput, default=str) if tinput is not None else "{}"
+        if len(inp_str) > 400:
+            inp_str = inp_str[:400] + "…"
+        lines.append(f"- {name} input={inp_str}")
+        if tid in tool_results:
+            content, is_error = tool_results[tid]
+            tag = "ERR" if is_error else "OK"
+            snippet = content.replace("\n", " ")[:300]
+            lines.append(f"    [{tag}] {snippet}")
+    return "\n".join(lines)
 
 
 def _planner_prompt_with_constraint(base_prompt: str, workers: list[str]) -> str:
