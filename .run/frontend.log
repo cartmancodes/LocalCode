@@ -99,3 +99,12 @@ AggregateError [ECONNREFUSED]:
 5:34:13 AM [vite] hmr update /src/App.tsx, /src/components/BudgetBar.tsx, /src/components/ChatPane.tsx, /src/components/FleetConfigEditor.tsx
 5:34:21 AM [vite] hmr update /src/App.tsx, /src/components/BudgetBar.tsx, /src/components/ChatPane.tsx, /src/components/FleetConfigEditor.tsx
 5:34:29 AM [vite] hmr update /src/components/ChatPane.tsx
+5:58:56 AM [vite] page reload index.html
+6:01:23 AM [vite] hmr update /src/styles.css
+6:03:08 AM [vite] hmr update /src/components/Sidebar.tsx
+6:03:38 AM [vite] hmr update /src/components/Composer.tsx
+6:05:05 AM [vite] hmr update /src/components/ChatPane.tsx
+6:05:39 AM [vite] hmr update /src/App.tsx
+6:05:45 AM [vite] hmr update /src/components/BudgetBar.tsx
+6:05:45 AM [vite] hmr update /src/components/ModelPicker.tsx
+6:05:45 AM [vite] hmr update /src/components/MessageBubble.tsx
