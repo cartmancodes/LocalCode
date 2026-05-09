@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, field_validator
@@ -62,6 +63,24 @@ class Settings(BaseSettings):
 
     daily_budget_usd: float = 10.00
 
+    # Override the fleet config search path. Pulled through Settings (not read
+    # raw via os.environ at request time) so behavior matches the rest of the
+    # config — predictable rather than secretly hot-reloading.
+    localcode_fleet_config: str | None = None
+
+    # Comma-separated CORS origins. Override per env (e.g. add a staging URL).
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
+    # Comma-separated absolute directory roots that are valid `cwd` values for a
+    # session. Empty = no allowlist (permissive — fine for local dev). When set,
+    # any session-creation request with a `cwd` not under one of these roots is
+    # rejected with HTTP 400. Mitigates path traversal via spawned subprocesses.
+    allowed_cwd_roots: str = ""
+
+    # Bound on per-session lock map and per-message pagination caps.
+    messages_page_default: int = 50
+    messages_page_max: int = 500
+
     @field_validator("default_provider")
     @classmethod
     def _validate_default_provider(cls, v: str) -> str:
@@ -86,6 +105,17 @@ class Settings(BaseSettings):
     def effective_litellm_key(self) -> str:
         # Backend falls back to the master key if no virtual key has been minted yet.
         return self.litellm_api_key or self.litellm_master_key
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    def cwd_allowlist(self) -> list[Path]:
+        return [
+            Path(p).expanduser().resolve()
+            for p in self.allowed_cwd_roots.split(",")
+            if p.strip()
+        ]
 
 
 @lru_cache(maxsize=1)

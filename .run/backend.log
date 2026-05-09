@@ -1091,3 +1091,71 @@ INFO:     127.0.0.1:52362 - "GET /api/budget HTTP/1.1" 200 OK
 INFO:     127.0.0.1:52366 - "DELETE /api/sessions/a920581a594b4369a3e532ba468b9f81 HTTP/1.1" 204 No Content
 INFO:     connection closed
 INFO:     127.0.0.1:52371 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52377 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52383 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52387 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52392 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52394 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52397 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [97262]
+INFO:     Started server process [4586]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:52538 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52542 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52542 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52542 - "GET /api/sessions/06705e4b47ee42bf8f0fbc704096bf3d/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52542 - "POST /api/sessions HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:52545 - "WebSocket /api/sessions/06705e4b47ee42bf8f0fbc704096bf3d/ws" [accepted]
+INFO:     connection open
+fleet planning failed, single-shot fallback: planner did not return JSON
+INFO:     connection closed
+INFO:     127.0.0.1:52610 - "WebSocket /api/sessions/06705e4b47ee42bf8f0fbc704096bf3d/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:52615 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52620 - "WebSocket /api/sessions/78e1ec9795884f4f8c9ad7f3997cf597/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:52621 - "WebSocket /api/sessions/78e1ec9795884f4f8c9ad7f3997cf597/ws" [accepted]
+INFO:     connection open
+fleet planning failed, single-shot fallback: planner did not return JSON
+INFO:     connection closed
+fleet planning failed, single-shot fallback: planner did not return JSON
+INFO:     connection closed
+INFO:     127.0.0.1:52754 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52757 - "WebSocket /api/sessions/69880b0531784de9a590d75f672f7741/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:52803 - "GET /api/sessions/69880b0531784de9a590d75f672f7741/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52811 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52814 - "WebSocket /api/sessions/ef4d1137f0dd43bea9446d9ee21b132e/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:52947 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52952 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52948 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52953 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52961 - "WebSocket /api/sessions/ef4d1137f0dd43bea9446d9ee21b132e/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:52960 - "GET /api/sessions/ef4d1137f0dd43bea9446d9ee21b132e/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52945 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52951 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52967 - "DELETE /api/sessions HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:52971 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52973 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52976 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52982 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52979 - "GET /api/sessions/e1654676ed5a4347bdf500c866aafa26/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52985 - "WebSocket /api/sessions/e1654676ed5a4347bdf500c866aafa26/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:52989 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52997 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53005 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53043 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53065 - "GET /api/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53074 - "GET /api/budget HTTP/1.1" 200 OK

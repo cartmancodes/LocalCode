@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .db import Base, engine
 from . import models  # noqa: F401  register tables on Base.metadata
-from .orchestrator.registry import shutdown_all
+from .orchestrator.registry import shutdown_all, warm_up
 from .routes import budget, fleet as fleet_route, models as models_route, sessions
 
 
@@ -17,6 +17,10 @@ async def lifespan(app: FastAPI):
     # Auto-create tables in dev. Replace with Alembic for prod.
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Build provider singletons up-front so first-call concurrency can't race
+    # the registry init and so any provider misconfiguration surfaces at boot
+    # rather than mid-WS-turn.
+    await warm_up()
     yield
     await shutdown_all()
 
@@ -26,7 +30,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title=s.app_name, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=s.cors_origin_list,
         allow_methods=["*"],
         allow_headers=["*"],
         allow_credentials=True,

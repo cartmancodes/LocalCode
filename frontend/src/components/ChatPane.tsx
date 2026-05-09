@@ -36,9 +36,9 @@ export default function ChatPane({ session }: Props) {
     }
     let cancelled = false;
     (async () => {
-      const rows = await api.getMessages(session.id);
+      const page = await api.getMessages(session.id);
       if (cancelled) return;
-      const hydrated: ChatTurn[] = rows.map((r) => ({
+      const hydrated: ChatTurn[] = page.messages.map((r: any) => ({
         role: r.role,
         blocks: (r.content ?? []).map((c: any) => blockFromPersisted(c)),
         costUsd: r.cost_usd ?? undefined,

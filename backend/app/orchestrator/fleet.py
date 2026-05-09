@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
+import threading
 import time
 from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass, field
@@ -37,6 +37,7 @@ from typing import Any, Literal
 
 import yaml
 
+from ..config import get_settings
 from .base import Event, RunContext
 
 
@@ -139,21 +140,33 @@ DEFAULT_FLEET_CONFIG = FleetConfig(
 )
 
 
+# Cache the parsed config keyed by (path, mtime). Only re-parses when the file
+# changes on disk. Mtime comparison is one stat() per turn — much cheaper than
+# parsing YAML and walking it every call. The lock protects the cache dict
+# itself from torn writes under concurrent access.
+_CFG_CACHE: dict[str, tuple[float, FleetConfig]] = {}
+_CFG_CACHE_LOCK = threading.Lock()
+
+
 def load_fleet_config(cwd: str | None = None) -> FleetConfig:
     """Resolve and load the active fleet config.
 
     Resolution order (first hit wins):
-      1. ``$LOCALCODE_FLEET_CONFIG`` env var (absolute path; YAML or JSON).
+      1. ``Settings.localcode_fleet_config`` (absolute path override).
       2. ``<cwd>/.localcode/fleet.{yaml,yml,json}``.
       3. ``<orchestrator-cwd>/.localcode/fleet.{yaml,yml,json}``.
 
-    Falls back to ``DEFAULT_FLEET_CONFIG`` when no file is found, parses cleanly
-    fail, or every override is invalid. Per-field validation is best-effort:
+    Falls back to ``DEFAULT_FLEET_CONFIG`` when no file is found, parsing
+    fails, or every override is invalid. Per-field validation is best-effort:
     invalid fields revert to the default (with a warning), so a typo in one
     role doesn't break the whole fleet.
+
+    Cached by (path, mtime) so we don't re-parse on every turn — saves a
+    YAML parse + walk on the event loop. Edit-and-retry still works because
+    the cache invalidates as soon as mtime changes.
     """
     candidates: list[Path] = []
-    env_path = os.environ.get("LOCALCODE_FLEET_CONFIG")
+    env_path = get_settings().localcode_fleet_config
     if env_path:
         candidates.append(Path(env_path).expanduser())
     for base in (cwd, str(Path.cwd())):
@@ -171,14 +184,24 @@ def load_fleet_config(cwd: str | None = None) -> FleetConfig:
         if resolved in seen:
             continue
         seen.add(resolved)
+        try:
+            stat = resolved.stat()
+        except OSError:
+            continue
         if not resolved.is_file():
             continue
+
+        cached = _CFG_CACHE.get(str(resolved))
+        if cached is not None and cached[0] == stat.st_mtime:
+            return cached[1]
 
         raw = _parse_config_file(resolved)
         if raw is None:
             continue
         merged = _merge_config(DEFAULT_FLEET_CONFIG, raw)
         merged.config_source = str(resolved)
+        with _CFG_CACHE_LOCK:
+            _CFG_CACHE[str(resolved)] = (stat.st_mtime, merged)
         return merged
 
     return DEFAULT_FLEET_CONFIG
@@ -327,12 +350,13 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
 
 
 class FleetProvider:
-    """Composes Claude + OpenCode into a planner/coder/reviewer workflow."""
+    """Composes Claude + OpenCode into a planner/coder/reviewer workflow.
+
+    Stateless across turns — every per-turn datum is a local in `run()` so
+    concurrent turns don't clobber each other's state.
+    """
 
     name = "fleet"
-
-    def __init__(self) -> None:
-        self._t0 = 0.0
 
     async def open_session(self, ctx: RunContext) -> str:
         return ctx.upstream_session_id or ""
@@ -341,7 +365,9 @@ class FleetProvider:
         return None
 
     async def run(self, ctx: RunContext) -> AsyncIterator[Event]:
-        self._t0 = time.time()
+        # ALL per-turn state must live as locals here, not as instance attrs —
+        # FleetProvider is a singleton and concurrent turns share `self`.
+        t0 = time.time()
         cfg = load_fleet_config(ctx.cwd)
         # Per-session UI override layered on top of the file config. Same
         # validation rules apply: bad fields revert to whatever the file/built-in
@@ -405,7 +431,7 @@ class FleetProvider:
 
         yield Event(
             type="assistant.done",
-            data={"duration_ms": int((time.time() - self._t0) * 1000)},
+            data={"duration_ms": int((time.time() - t0) * 1000)},
         )
 
     async def _run_step(
@@ -477,7 +503,7 @@ async def _collect_text(role: RoleConfig, prompt: str, cwd: str | None) -> str:
     # Lazy import — registry imports this module's class.
     from .registry import get_provider
 
-    sub = get_provider(role.provider)  # type: ignore[arg-type]
+    sub = await get_provider(role.provider)  # type: ignore[arg-type]
     sub_ctx = RunContext(
         model=role.model,
         prompt=prompt,

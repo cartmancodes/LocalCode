@@ -3,6 +3,7 @@ import type {
   CatalogModel,
   FleetConfigOverride,
   FleetConfigResponse,
+  MessagesPage,
   SessionRow,
 } from "./types";
 
@@ -26,7 +27,16 @@ export const api = {
     fleet_config_override?: FleetConfigOverride | null;
   }) => json<SessionRow>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
   fleetConfig: () => json<FleetConfigResponse>("/api/fleet/config"),
-  getMessages: (id: string) => json<any[]>(`/api/sessions/${id}/messages`),
+  // Returns a page; for now ChatPane just unwraps `.messages` and ignores
+  // pagination (the default page size of 50 covers a fresh chat). Older
+  // history can be lazy-loaded via `before` later.
+  getMessages: (id: string, opts?: { before?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (opts?.before) qs.set("before", opts.before);
+    if (opts?.limit) qs.set("limit", String(opts.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return json<MessagesPage>(`/api/sessions/${id}/messages${suffix}`);
+  },
   deleteSession: (id: string) =>
     fetch(`/api/sessions/${id}`, { method: "DELETE" }).then(() => undefined),
   deleteAllSessions: () =>

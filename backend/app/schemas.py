@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CreateSessionRequest(BaseModel):
@@ -36,6 +37,24 @@ class MessageOut(BaseModel):
     cost_usd: float | None
     duration_ms: int | None
     created_at: datetime
+
+    @field_validator("cost_usd", mode="before")
+    @classmethod
+    def _decimal_to_float(cls, v: Any) -> Any:
+        # Storage is Numeric(12,6) (Decimal); the wire format stays float so
+        # the frontend doesn't have to special-case Decimal serialization.
+        if isinstance(v, Decimal):
+            return float(v)
+        return v
+
+
+class MessagesPage(BaseModel):
+    """Paginated /messages response. `next_before` is the timestamp to pass on
+    the next request to load older messages (or null if exhausted)."""
+
+    messages: list[MessageOut]
+    next_before: datetime | None = None
+    has_more: bool = False
 
 
 class CatalogModel(BaseModel):

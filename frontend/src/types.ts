@@ -18,6 +18,12 @@ export interface SessionRow {
   updated_at: string;
 }
 
+export interface MessagesPage {
+  messages: any[];
+  next_before: string | null;
+  has_more: boolean;
+}
+
 // Mirrors the backend's FleetConfig — what /api/fleet/config returns.
 export type FleetRole = "planner" | "developer" | "coder" | "reviewer";
 

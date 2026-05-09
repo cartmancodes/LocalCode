@@ -26,6 +26,9 @@ class OpenCodeProvider:
         self._client = httpx.AsyncClient(
             base_url=self._settings.opencode_base_url,
             timeout=httpx.Timeout(60.0, read=None),  # SSE stream is open-ended
+            # Cap the connection pool so a runaway reconnect storm against a
+            # flapping OpenCode server can't exhaust file descriptors.
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
         )
 
     async def open_session(self, ctx: RunContext) -> str:
@@ -49,11 +52,24 @@ class OpenCodeProvider:
             return
 
         # OpenCode's current schema expects model as {providerID, modelID}, not
-        # "provider/model". Our catalog stores "openai/gpt-5-codex" so we split.
+        # "provider/model". Our catalog stores "openai/gpt-5-codex" — we split
+        # on `/`. We do NOT silently default to "openai" for unprefixed names:
+        # users who type `gpt-5.4` (forgetting the prefix) get a clear error
+        # here instead of an opaque "model not found" from OpenCode later.
         provider_id, _, model_id = ctx.model.partition("/")
         if not model_id:
-            # Fallback: treat the whole string as the model id under "openai".
-            provider_id, model_id = "openai", provider_id
+            yield Event(
+                type="error",
+                data={
+                    "message": (
+                        f"opencode model {ctx.model!r} must be in 'provider/model' "
+                        f"form (e.g. 'openai/gpt-5.4-mini'). Run "
+                        f"'~/.opencode/bin/opencode models' for the list."
+                    ),
+                    "provider": self.name,
+                },
+            )
+            return
         body: dict[str, Any] = {
             "model": {"providerID": provider_id, "modelID": model_id},
             "parts": [{"type": "text", "text": ctx.prompt}],

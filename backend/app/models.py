@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -51,9 +52,10 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(16))  # user | assistant | system | tool
     # Content is a JSON list of blocks: [{type: "text", text: "..."}, {type: "tool_use", ...}]
     content: Mapped[list] = mapped_column(JSON, default=list)
-    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Numeric, not Float — currency / cost values must not accumulate binary
+    # rounding error. The API serializes back to float for the frontend.
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(default=None, nullable=True)
-    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     session: Mapped[Session] = relationship(back_populates="messages")

@@ -30,5 +30,17 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
+    """FastAPI dependency that provides an `AsyncSession` with managed
+    transaction lifecycle: commits on a clean exit, rolls back on exception.
+
+    Routes should NOT call `await db.commit()` themselves — this dependency
+    will commit when the handler returns. Routes that raise
+    ``HTTPException`` after writes will still see the rollback (HTTPException
+    propagates through `__aexit__`)."""
     async with SessionLocal() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise

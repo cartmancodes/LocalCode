@@ -13,7 +13,10 @@ class LiteLLMClient:
         s = get_settings()
         self._base = s.litellm_api_base.rstrip("/")
         self._master_key = s.litellm_master_key
-        self._client = httpx.AsyncClient(timeout=10.0)
+        self._client = httpx.AsyncClient(
+            timeout=10.0,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
 
     async def daily_spend(self, day: date | None = None) -> float:
         """Return total spend (USD) for `day` (defaults to today, UTC)."""
