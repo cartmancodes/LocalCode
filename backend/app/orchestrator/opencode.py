@@ -91,18 +91,24 @@ class OpenCodeProvider:
         if ctx.system_prompt:
             body["system"] = ctx.system_prompt
 
-        # `directory` is a QUERY param on prompt_async AND /event — both are
-        # project-scoped. Without it, /event returns events for whichever
-        # project opencode was started in (typically LocalCode/opencode), and
-        # our neural-city session's events never appear on the stream.
+        # `directory` is still a QUERY param on prompt_async (scopes the
+        # session to a project). It is NOT supported as a filter on
+        # /global/event in opencode 1.14.46 — that endpoint broadcasts every
+        # project's events, so we filter client-side using the session_id we
+        # know we just opened.
         prompt_params: dict[str, str] = {}
         if ctx.cwd:
             prompt_params["directory"] = ctx.cwd
 
-        # Open the SSE channel BEFORE firing the prompt so we don't miss events.
+        # Open the SSE channel BEFORE firing the prompt so we don't miss
+        # events. opencode 1.14.46 deprecated /event (it now only emits
+        # `server.connected` and goes silent); the real channel is
+        # /global/event, which wraps each event in a
+        # `{directory, project, payload}` envelope and also emits a noisy
+        # `sync` mirror of every event (skip those).
         try:
             async with self._client.stream(
-                "GET", "/event", params=prompt_params
+                "GET", "/global/event"
             ) as stream:
                 # Fire the prompt asynchronously — server returns 204 immediately.
                 fire = await self._client.post(
@@ -126,11 +132,20 @@ class OpenCodeProvider:
                     if not payload_str:
                         continue
                     try:
-                        payload = json.loads(payload_str)
+                        envelope = json.loads(payload_str)
                     except json.JSONDecodeError:
                         continue
 
-                    for ev in _translate(payload, session_id, state):
+                    # /global/event shape: {directory, project, payload: {...}}.
+                    # Inside `payload`, a `type: "sync"` entry is a duplicate
+                    # mirror of the real event we already saw — drop it.
+                    inner = envelope.get("payload") or envelope
+                    if not isinstance(inner, dict):
+                        continue
+                    if inner.get("type") == "sync":
+                        continue
+
+                    for ev in _translate(inner, session_id, state):
                         yield ev
                         if ev.type == "assistant.done":
                             done = True
