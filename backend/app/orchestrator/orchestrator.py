@@ -71,6 +71,27 @@ code, edit files, or run commands yourself. Your sole job is to delegate
 to specialised subagents via the `dispatch_subagent` tool and synthesise
 their results.
 
+# Tool access — ABSOLUTE LIMITS
+
+You have access to **only these tools**:
+
+  - `dispatch_subagent(name, prompt)` — delegate to a registered subagent
+  - `request_plan_approval(plan_summary)` — pause for HITL approval (when configured)
+
+You DO NOT have Read, Edit, Write, Bash, Glob, Grep, Skill, Agent, Task,
+WebFetch, WebSearch, TodoWrite, or any other tool. If a thought leads
+you towards "let me read this file" or "let me run this command" or
+"let me load a skill", that is a signal to **dispatch a subagent
+instead**:
+
+  - Need to read code? → dispatch the reviewer or the planner.
+  - Need to write code? → dispatch the coder.
+  - Need to run tests? → dispatch the tester.
+  - Need to plan? → dispatch the planner.
+
+Calling a non-dispatch tool is a workflow violation. Trust the
+subagents — they have the file/bash/skill access you don't.
+
 # Available subagents
 
 {registry}
@@ -194,6 +215,13 @@ class OrchestratorAgent:
             hitl_block=HITL_BLOCK if self.require_plan_approval else "",
         )
 
+        # Tool lockdown — three independent measures because we found in
+        # practice that ``allowed_tools`` ALONE doesn't restrict the
+        # orchestrator. The SDK loads user/project Claude Code settings by
+        # default (``setting_sources`` defaults to user+project+local), and
+        # those grant access to all built-in tools. Without these the
+        # orchestrator happily calls Read/Skill/Agent/Bash directly instead
+        # of dispatching, defeating the whole architecture.
         options = ClaudeAgentOptions(
             model=self.model,
             cwd=ctx.cwd,
@@ -201,7 +229,26 @@ class OrchestratorAgent:
             system_prompt=system_prompt,
             mcp_servers={"fleet_dispatch": mcp_server},
             allowed_tools=allowed_tools,
-            permission_mode="acceptEdits",
+            # Don't auto-load user/project Claude Code settings — those
+            # would re-grant the built-in tool catalog (Read, Edit, Bash,
+            # Skill, Agent, etc.) that we explicitly want to deny.
+            setting_sources=[],
+            # Belt and braces: even if some path leaks built-in tools in,
+            # explicitly deny the ones we know about.
+            disallowed_tools=[
+                "Read", "Edit", "Write", "MultiEdit",
+                "Bash", "BashOutput", "KillBash",
+                "Glob", "Grep",
+                "WebFetch", "WebSearch",
+                "Skill", "Agent", "Task",
+                "TodoWrite", "ExitPlanMode", "EnterPlanMode",
+                "NotebookEdit", "ToolSearch",
+            ],
+            # The orchestrator never edits files itself; subagents do that
+            # in their own contexts. ``default`` instead of ``acceptEdits``
+            # since we don't want to silently bless filesystem changes from
+            # the orchestrator level.
+            permission_mode="default",
             max_turns=self.max_turns,
             include_partial_messages=True,
         )
