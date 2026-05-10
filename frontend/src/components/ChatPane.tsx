@@ -208,11 +208,12 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
       const wasReconnect = reconnectAttempt.current > 0;
       reconnectAttempt.current = 0;
       setWsState("open");
-      // On reconnect, refetch persisted messages as a belt-and-braces in
-      // case the gap exceeded the runner's replay buffer (~256 events).
-      // The replay path is the fast common case; loadMessages is the
-      // fallback that always works.
-      if (wasReconnect) {
+      // On reconnect: prefer replay (server resends events past `lastEventId`
+      // so we don't drop tool_use/tool_result blocks). Falling back to
+      // loadMessages here would race the replay — both write to `turns`
+      // and we'd duplicate or clobber. Only refetch if we never saw an
+      // event id, which means the runner had nothing to replay.
+      if (wasReconnect && lastEventId.current === 0) {
         void loadMessages(sessionId);
       }
       if (pendingSend.current != null) {

@@ -254,6 +254,11 @@ class SessionRunner:
                     )
                     if assistant_message_id is None:
                         assistant_message_id = stored["id"]
+                except FileNotFoundError:
+                    # Session was deleted while the turn was still draining
+                    # (drop_runner cancelled us). Persistence is moot at this
+                    # point — skip silently rather than spewing a traceback.
+                    pass
                 except Exception:
                     logger.exception(
                         "checkpoint persist failed for %s", self.session_id
