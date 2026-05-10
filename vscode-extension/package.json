@@ -1,0 +1,85 @@
+{
+  "name": "localcode",
+  "displayName": "LocalCode",
+  "description": "Run the LocalCode multi-agent UI inside VS Code, beside your code.",
+  "version": "0.1.0",
+  "publisher": "localcode-local",
+  "engines": { "vscode": "^1.74.0" },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onView:localcode.chat"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "localcode.open",
+        "title": "Open Panel (split with current editor)",
+        "category": "LocalCode"
+      },
+      {
+        "command": "localcode.openSidebar",
+        "title": "Focus Sidebar",
+        "category": "LocalCode"
+      },
+      {
+        "command": "localcode.reload",
+        "title": "Reload Webview",
+        "category": "LocalCode",
+        "icon": "$(refresh)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "localcode",
+          "title": "LocalCode",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "localcode": [
+        {
+          "id": "localcode.chat",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "localcode.reload",
+          "when": "view == localcode.chat",
+          "group": "navigation"
+        },
+        {
+          "command": "localcode.open",
+          "when": "view == localcode.chat",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "LocalCode",
+      "properties": {
+        "localcode.url": {
+          "type": "string",
+          "default": "http://localhost:5173",
+          "description": "URL of the LocalCode frontend (vite dev server)."
+        },
+        "localcode.backendPort": {
+          "type": "number",
+          "default": 8080,
+          "description": "Backend port to forward through the webview (FastAPI WS + REST)."
+        },
+        "localcode.openOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-open the LocalCode panel beside the active editor on window startup."
+        }
+      }
+    }
+  }
+}

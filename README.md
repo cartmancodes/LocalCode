@@ -68,6 +68,7 @@ See [docs/fleet.md](docs/fleet.md) for the fleet concept, [docs/fleet-config.md]
 | [frontend/src/components/ChatPane.tsx](frontend/src/components/ChatPane.tsx)                  | Streaming chat UI with WS auto-reconnect + mid-turn refetch       |
 | [frontend/src/components/CrewBar.tsx](frontend/src/components/CrewBar.tsx)                    | Per-agent status indicator (running / done / NACK)                |
 | [frontend/src/components/FleetConfigEditor.tsx](frontend/src/components/FleetConfigEditor.tsx) | Modal that emits per-session fleet override                      |
+| [vscode-extension/](vscode-extension/)                                                        | Optional VS Code extension that embeds the LocalCode UI in a webview beside your code (see [docs/vscode-integration.md](docs/vscode-integration.md)) |
 | [docs/](docs/)                                                                                | Fleet concept, configuration UX, architecture deep-dive, design history |
 
 ## Setup
@@ -108,6 +109,7 @@ Per-turn cost (USD) is reported by each provider in the `assistant.done` event a
 - [docs/fleet-config.md](docs/fleet-config.md) — configuration UX, presets, recipes, troubleshooting.
 - [docs/architecture.md](docs/architecture.md) — orchestrator + dispatch + event-flow technical deep-dive.
 - [docs/storage.md](docs/storage.md) — filesystem session store: paths, file shapes, atomicity, cleanup, comparison with Claude Code / OpenCode.
+- [docs/vscode-integration.md](docs/vscode-integration.md) — VS Code extension that embeds the LocalCode UI beside your code (sidebar + editor-panel surfaces, install steps, architecture).
 - [docs/orchestration-proposals.md](docs/orchestration-proposals.md) — design history; the linear-pipeline → orchestrator-as-agent journey.
 - [docs/superpowers/plans/](docs/superpowers/plans/) — implementation plans for major features (writing-plans-style).
 
