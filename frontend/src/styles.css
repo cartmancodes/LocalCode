@@ -36,6 +36,9 @@
   --ag-amber-fg:   #B07A0F;
   --ag-amber-bg:   rgba(176,122,15,.12);
   --ag-amber-bd:   rgba(176,122,15,.30);
+  --ag-rose-fg:    #B83C5E;
+  --ag-rose-bg:    rgba(184,60,94,.12);
+  --ag-rose-bd:    rgba(184,60,94,.28);
 
   --status-run:  #B07A0F;
   --status-done: #1F8A5B;
@@ -74,6 +77,9 @@
   --ag-amber-fg:   #E5BC5C;
   --ag-amber-bg:   rgba(229,188,92,.12);
   --ag-amber-bd:   rgba(229,188,92,.30);
+  --ag-rose-fg:    #F5A6BD;
+  --ag-rose-bg:    rgba(245,166,189,.12);
+  --ag-rose-bd:    rgba(245,166,189,.28);
 
   --status-run:  #E5BC5C;
   --status-done: #6FD7A4;

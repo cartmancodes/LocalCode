@@ -16,22 +16,24 @@ interface Props {
   onConfirm: (override: FleetConfigOverride | null) => void;
 }
 
-const ROLE_ORDER: FleetRole[] = ["planner", "developer", "coder", "reviewer"];
+const ROLE_ORDER: FleetRole[] = ["planner", "developer", "coder", "reviewer", "tester"];
 const ROLE_DESCRIPTIONS: Record<FleetRole, string> = {
-  planner: "Decomposes the request into ordered steps. Outputs JSON.",
-  developer: "Designs the approach for a step. No code.",
-  coder: "Implements the step. May edit files / run bash.",
-  reviewer: "Gates the previous step. LGTM or NACK.",
+  planner: "Writes a detailed Markdown implementation plan and commits it under .localcode/plans/.",
+  developer: "Optional design pass before the coder. No code is written.",
+  coder: "Executes the plan task-by-task using file/bash tools.",
+  reviewer: "Gates plan compliance + code quality. LGTM or NACK → coder retry.",
+  tester: "Final gate. Writes + runs tests; LGTM / NACK_CODE → coder retry / NACK_TESTS → tester retry.",
 };
 
 // Fallback role library — used if the backend's /api/fleet/config response
 // somehow omits role_library (e.g. a stale or older backend). Each role MUST
 // produce a valid RoleConfig so the modal can never crash on a missing key.
 const ROLE_LIBRARY_FALLBACK: Record<FleetRole, FleetRoleConfig> = {
-  planner:   { provider: "claude",   model: "claude-sonnet-4-6",    system_prompt: "" },
-  developer: { provider: "claude",   model: "claude-opus-4-7",      system_prompt: "" },
+  planner:   { provider: "claude",   model: "claude-opus-4-7",      system_prompt: "" },
+  developer: { provider: "claude",   model: "claude-sonnet-4-6",    system_prompt: "" },
   coder:     { provider: "opencode", model: "openai/gpt-5.3-codex", system_prompt: "" },
-  reviewer:  { provider: "claude",   model: "claude-haiku-4-5",     system_prompt: "" },
+  tester:    { provider: "claude",   model: "claude-haiku-4-5",     system_prompt: "" },
+  reviewer:  { provider: "claude",   model: "claude-sonnet-4-6",    system_prompt: "" },
 };
 
 function libRole(resp: FleetConfigResponse | null, role: FleetRole): FleetRoleConfig {
@@ -54,6 +56,7 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
   const [maxSteps, setMaxSteps] = useState<number>(6);
   const [maxReviewRetries, setMaxReviewRetries] = useState<number>(1);
   const [requirePlanApproval, setRequirePlanApproval] = useState<boolean>(false);
+  const [orchestratorMode, setOrchestratorMode] = useState<boolean>(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -76,6 +79,7 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
         setMaxSteps(r.config.max_steps || 6);
         setMaxReviewRetries(r.config.max_review_retries ?? 1);
         setRequirePlanApproval(Boolean(r.config.require_plan_approval));
+        setOrchestratorMode(Boolean(r.config.orchestrator_mode));
       } catch (e: any) {
         if (!cancelled) setError(String(e?.message ?? e));
       }
@@ -234,6 +238,9 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
     if (requirePlanApproval !== Boolean(resp.config.require_plan_approval)) {
       override.require_plan_approval = requirePlanApproval;
     }
+    if (orchestratorMode !== Boolean(resp.config.orchestrator_mode)) {
+      override.orchestrator_mode = orchestratorMode;
+    }
     return Object.keys(override).length ? override : null;
   };
 
@@ -247,6 +254,7 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
     setMaxSteps(resp.config.max_steps || 6);
     setMaxReviewRetries(resp.config.max_review_retries ?? 1);
     setRequirePlanApproval(Boolean(resp.config.require_plan_approval));
+    setOrchestratorMode(Boolean(resp.config.orchestrator_mode));
   };
 
   return (
@@ -432,6 +440,17 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
             />
           </label>
         )}
+        <label
+          className="meta-row"
+          title="Tier-4 architecture: route the turn through an LLM-driven orchestrator that dispatches subagents dynamically (matches Claude Code / OpenCode). When off, uses the legacy fixed linear pipeline."
+        >
+          <span>Orchestrator mode (LLM-driven dispatch)</span>
+          <input
+            type="checkbox"
+            checked={orchestratorMode}
+            onChange={(e) => setOrchestratorMode(e.target.checked)}
+          />
+        </label>
       </div>
 
       {/* Advanced — system prompt overrides ───────────────────────────── */}
@@ -474,6 +493,7 @@ const ROLE_TINTS: Record<FleetRole, { fg: string; bg: string; bd: string }> = {
   planner:   { fg: "var(--ag-violet-fg)",  bg: "var(--ag-violet-bg)",  bd: "var(--ag-violet-bd)" },
   developer: { fg: "var(--ag-blue-fg)",    bg: "var(--ag-blue-bg)",    bd: "var(--ag-blue-bd)" },
   coder:     { fg: "var(--ag-emerald-fg)", bg: "var(--ag-emerald-bg)", bd: "var(--ag-emerald-bd)" },
+  tester:    { fg: "var(--ag-rose-fg)",    bg: "var(--ag-rose-bg)",    bd: "var(--ag-rose-bd)" },
   reviewer:  { fg: "var(--ag-amber-fg)",   bg: "var(--ag-amber-bg)",   bd: "var(--ag-amber-bd)" },
 };
 

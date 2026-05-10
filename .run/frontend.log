@@ -273,3 +273,50 @@ AggregateError [ECONNREFUSED]:
 10:53:42 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
 10:53:53 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
 10:54:03 PM [vite] hmr update /src/components/ChatPane.tsx
+4:57:48 AM [vite] hmr update /src/components/CrewBar.tsx
+4:58:01 AM [vite] hmr update /src/components/ChatPane.tsx
+4:58:15 AM [vite] hmr update /src/components/FleetConfigEditor.tsx
+4:58:23 AM [vite] hmr update /src/components/FleetConfigEditor.tsx
+4:58:31 AM [vite] hmr update /src/styles.css
+4:58:39 AM [vite] hmr update /src/styles.css
+4:59:06 AM [vite] hmr update /src/components/FleetConfigEditor.tsx
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 98 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.4:5173/
+5:20:48 AM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+5:27:05 AM [vite] hmr update /src/components/CrewBar.tsx
+5:27:11 AM [vite] hmr update /src/components/ChatPane.tsx
+5:27:22 AM [vite] hmr update /src/components/FleetConfigEditor.tsx
+5:30:02 AM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+5:48:27 AM [vite] hmr update /src/components/ChatPane.tsx
+5:48:40 AM [vite] hmr update /src/components/ChatPane.tsx
+5:49:12 AM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+6:01:08 AM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+6:17:44 AM [vite] hmr update /src/components/FleetConfigEditor.tsx
+6:17:51 AM [vite] hmr update /src/components/FleetConfigEditor.tsx
+6:17:59 AM [vite] hmr update /src/components/FleetConfigEditor.tsx
+6:18:08 AM [vite] hmr update /src/components/FleetConfigEditor.tsx
+6:18:22 AM [vite] hmr update /src/components/FleetConfigEditor.tsx
+6:18:31 AM [vite] hmr update /src/components/ChatPane.tsx
+6:19:09 AM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)

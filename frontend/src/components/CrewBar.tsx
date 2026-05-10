@@ -11,12 +11,13 @@ interface Props {
   roleStatuses?: Partial<Record<FleetRole, RoleStatus>>;
 }
 
-const ROLE_ORDER: FleetRole[] = ["planner", "developer", "coder", "reviewer"];
+const ROLE_ORDER: FleetRole[] = ["planner", "developer", "coder", "reviewer", "tester"];
 
 const ROLE_COLORS: Record<FleetRole, { fg: string; bg: string; bd: string }> = {
   planner:   { fg: "var(--ag-violet-fg)",  bg: "var(--ag-violet-bg)",  bd: "var(--ag-violet-bd)" },
   developer: { fg: "var(--ag-blue-fg)",    bg: "var(--ag-blue-bg)",    bd: "var(--ag-blue-bd)" },
   coder:     { fg: "var(--ag-emerald-fg)", bg: "var(--ag-emerald-bg)", bd: "var(--ag-emerald-bd)" },
+  tester:    { fg: "var(--ag-rose-fg)",    bg: "var(--ag-rose-bg)",    bd: "var(--ag-rose-bd)" },
   reviewer:  { fg: "var(--ag-amber-fg)",   bg: "var(--ag-amber-bg)",   bd: "var(--ag-amber-bd)" },
 };
 

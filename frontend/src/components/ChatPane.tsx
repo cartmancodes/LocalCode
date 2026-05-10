@@ -25,6 +25,7 @@ const ROLE_COLORS: Record<FleetRole | "user" | "assistant", { fg: string; bg: st
   planner:   { fg: "var(--ag-violet-fg)",  bg: "var(--ag-violet-bg)",  bd: "var(--ag-violet-bd)" },
   developer: { fg: "var(--ag-blue-fg)",    bg: "var(--ag-blue-bg)",    bd: "var(--ag-blue-bd)" },
   coder:     { fg: "var(--ag-emerald-fg)", bg: "var(--ag-emerald-bg)", bd: "var(--ag-emerald-bd)" },
+  tester:    { fg: "var(--ag-rose-fg)",    bg: "var(--ag-rose-bg)",    bd: "var(--ag-rose-bd)" },
   reviewer:  { fg: "var(--ag-amber-fg)",   bg: "var(--ag-amber-bg)",   bd: "var(--ag-amber-bd)" },
   user:      { fg: "var(--accent)",        bg: "var(--accent-bg)",     bd: "var(--accent-bd)" },
   assistant: { fg: "var(--ag-clay-fg)",    bg: "var(--ag-clay-bg)",    bd: "var(--ag-clay-bd)" },
@@ -34,7 +35,7 @@ const ROLE_COLORS: Record<FleetRole | "user" | "assistant", { fg: string; bg: st
 function detectFleetRole(name?: string): FleetRole | null {
   if (!name) return null;
   const lower = name.toLowerCase();
-  for (const r of ["planner", "developer", "coder", "reviewer"] as FleetRole[]) {
+  for (const r of ["planner", "developer", "coder", "reviewer", "tester"] as FleetRole[]) {
     if (lower.startsWith(r)) return r;
   }
   return null;
@@ -91,6 +92,45 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
   const pendingSend = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
+  // Load persisted messages and detect mid-turn state. Called on session
+  // change (initial load) AND on WS reconnect (so a refresh / reconnect
+  // mid-pipeline picks up checkpoints that landed while we were away).
+  const loadMessages = async (sessionId: string): Promise<void> => {
+    try {
+      const page = await api.getMessages(sessionId);
+      const hydrated: ChatTurn[] = page.messages.map((r: any) => ({
+        role: r.role,
+        blocks: (r.content ?? []).map((c: any) => blockFromPersisted(c)),
+        costUsd: r.cost_usd ?? undefined,
+        durationMs: r.duration_ms ?? undefined,
+      }));
+      // Detect "mid-turn" persisted state: the last assistant turn has at
+      // least one tool_use without a matching tool_result, meaning the
+      // backend checkpointed mid-pipeline. Marking inProgress lets live
+      // events from the WS continue extending this turn instead of pushing
+      // a duplicate one (ensureAssistant in handleEvent only appends to
+      // an in-progress assistant turn).
+      if (hydrated.length > 0) {
+        const last = hydrated[hydrated.length - 1];
+        if (last.role === "assistant") {
+          const fulfilled = new Set(
+            last.blocks
+              .filter((b) => b.kind === "tool_result" && b.toolUseId)
+              .map((b) => b.toolUseId!)
+          );
+          const hasUnfulfilled = last.blocks.some(
+            (b) => b.kind === "tool_use" && b.toolUseId && !fulfilled.has(b.toolUseId)
+          );
+          if (hasUnfulfilled) last.inProgress = true;
+        }
+      }
+      setTurns(hydrated);
+    } catch (err) {
+      // Refetch is best-effort — the WS will still deliver future events.
+      console.warn("loadMessages failed", err);
+    }
+  };
+
   // Hydrate persisted messages whenever the active session changes.
   useEffect(() => {
     if (!session) {
@@ -101,19 +141,13 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
     setPendingApproval(null);
     let cancelled = false;
     (async () => {
-      const page = await api.getMessages(session.id);
       if (cancelled) return;
-      const hydrated: ChatTurn[] = page.messages.map((r: any) => ({
-        role: r.role,
-        blocks: (r.content ?? []).map((c: any) => blockFromPersisted(c)),
-        costUsd: r.cost_usd ?? undefined,
-        durationMs: r.duration_ms ?? undefined,
-      }));
-      setTurns(hydrated);
+      await loadMessages(session.id);
     })();
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
 
   // Auto-scroll on new content.
@@ -159,8 +193,16 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
     wsRef.current = ws;
 
     ws.onopen = () => {
+      const wasReconnect = reconnectAttempt.current > 0;
       reconnectAttempt.current = 0;
       setWsState("open");
+      // On reconnect (not initial open — that's handled by the session-change
+      // useEffect above), refetch persisted messages so any checkpoints that
+      // landed while the WS was down show up. Without this, the chat shows
+      // stale state until the user manually refreshes.
+      if (wasReconnect) {
+        void loadMessages(sessionId);
+      }
       if (pendingSend.current != null) {
         const p = pendingSend.current;
         pendingSend.current = null;
@@ -817,6 +859,7 @@ function mergeFleetOverride(
     max_review_retries: override.max_review_retries ?? base.max_review_retries,
     require_plan_approval:
       override.require_plan_approval ?? base.require_plan_approval,
+    orchestrator_mode: override.orchestrator_mode ?? base.orchestrator_mode,
     entry_role: (override.entry_role ?? base.entry_role) as FleetRole,
     config_source: base.config_source,
     roles: {},

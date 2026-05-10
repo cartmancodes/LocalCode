@@ -1,44 +1,41 @@
-"""Multi-agent fleet orchestrator (Proposal G).
+"""Multi-agent fleet orchestrator.
 
-A fleet is an ordered list of agents — the workflow IS its agents. Adding an
-agent means adding it to the `roles` dict; removing one means deleting the
-key. There is no "disabled" state to keep in sync, which means no class of
-bug where a stale `disabled` flag could let an agent leak into execution.
+A fleet is a set of agents (roles) and a fixed pipeline that runs them in
+canonical order. Adding an agent means adding it to the `roles` dict;
+removing one means deleting the key. There is no "disabled" state to keep
+in sync.
 
-Available agent roles:
+Roles (canonical order):
 
-  planner   → emits an ordered list of {developer | coder | reviewer} steps
-  developer → produces a design / approach for a step (no code)
-  coder     → implements a step (may use file/bash tools via its sub-provider)
-  reviewer  → verifies the previous step's output, returns LGTM or NACK
+  planner   → produces a comprehensive Markdown implementation plan
+              (writing-plans-style: file paths, complete code, test commands,
+              bite-sized steps). The plan is committed to
+              ``<cwd>/.localcode/plans/<timestamp>-<slug>.md``.
+  developer → optional design pass (used by "design + code" presets)
+  coder     → executes the plan task-by-task using file/bash tools
+  tester    → writes tests for the implemented code, runs them, reports
+              pass/fail (does NOT modify production code)
+  reviewer  → gates the work; replies LGTM or "NACK: <reason>"
 
-Workflows compose these. A few presets the UI exposes one-click:
-
-  Full crew      planner + developer + coder + reviewer
-  Plan + code    planner + coder
-  Design + code  planner + developer + coder
-  Code + review  planner + coder + reviewer
-  Code only      coder           (no planning — direct single-shot)
-  Plan only      planner         (emits the JSON plan, no execution)
-  Review only    reviewer        (single LGTM/NACK pass on the prompt)
-
-The fleet itself implements the ``Provider`` protocol so the FastAPI WebSocket
-treats it as just another backend. Each sub-step is surfaced as a tool_use →
-tool_result pair on the unified event stream, so the existing UI renders the
-workflow as expandable cards without any front-end changes.
+Pipeline knobs:
+  - ``cfg.max_review_retries``   : on reviewer NACK, re-run coder (+ tester)
+                                    + reviewer up to N times
+  - ``cfg.require_plan_approval`` : HITL gate after the planner; pauses the
+                                    workflow until the user approves/rejects
+                                    via the WS back-channel
 
 Configuration sources (first hit wins):
   1. ``Settings.localcode_fleet_config``               (explicit absolute path)
   2. ``<cwd>/.localcode/fleet.{yaml,yml,json}``        (project-local)
   3. ``<orchestrator-cwd>/.localcode/fleet.{yaml,yml,json}``
-  4. built-in defaults (full crew)
+  4. built-in defaults
 
-Per-session UI overrides apply on top of the resolved file config — see
-``FleetProvider.run`` and the modal in ``frontend/src/components/FleetConfigEditor.tsx``.
+Each per-role invocation is surfaced as a tool_use → tool_result pair on the
+unified event stream, so the existing chat UI renders the workflow as
+expandable cards without front-end changes.
 
-Why so few abstractions: this is still a v1. Linear plan execution (no parallel
-branches), single-shot fallback if the planner fails. Add DAG support, retries,
-and richer streaming once we know what we actually need.
+Prompt design borrows directly from the obra/superpowers skill set:
+  writing-plans, executing-plans, test-driven-development, requesting-code-review.
 """
 from __future__ import annotations
 
@@ -49,7 +46,7 @@ import re
 import threading
 import time
 from collections.abc import AsyncIterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -58,20 +55,56 @@ import yaml
 from ..config import get_settings
 from .base import Event, RunContext
 
-
 logger = logging.getLogger(__name__)
 
 
 VALID_PROVIDERS = ("claude", "opencode")
-VALID_ROLES = ("planner", "developer", "coder", "reviewer")
-WORKER_ROLES: tuple[str, ...] = ("developer", "coder", "reviewer")
-StepRole = Literal["developer", "coder", "reviewer"]
+# Canonical execution order:
+#   planner  → produces the markdown plan (committed to disk)
+#   developer→ optional design step (legacy "design + code" presets)
+#   coder    → implements the plan
+#   reviewer → gates the implementation against the plan; on NACK, the coder
+#              is re-run with the feedback and the reviewer runs again
+#              (bounded by ``cfg.max_review_retries``)
+#   tester   → final smoke test — writes and runs tests against whatever
+#              implementation survived the reviewer gate. Tester results are
+#              reported but do NOT trigger further retries; the user acts on
+#              the report.
+#
+# Why tester is last: the reviewer is a code-review pass (catches plan-
+# compliance + obvious issues), the tester is a behaviour-verification pass.
+# In that order, the tester gives the final word: "the code that the reviewer
+# signed off actually works under tests" (or doesn't).
+VALID_ROLES = ("planner", "developer", "coder", "reviewer", "tester")
+WORKER_ROLES: tuple[str, ...] = ("developer", "coder", "reviewer", "tester")
+StepRole = Literal["developer", "coder", "reviewer", "tester"]
 
 # How long the plan-approval gate blocks before treating silence as a timeout
 # (and aborting the turn). 5 min strikes a balance — long enough for the user
 # to read the plan, short enough that a tab left open overnight doesn't pin a
 # WS forever.
 APPROVAL_TIMEOUT_S = 300.0
+
+# Cadence at which a long-running sub-provider step (e.g. opus thinking for 3
+# minutes on a complex plan) emits a chat heartbeat so the UI doesn't look
+# frozen. Heartbeats carry ``heartbeat: True`` in their data and are filtered
+# out of the persisted message blocks — they're chrome for the live UI only.
+HEARTBEAT_INTERVAL_S = 30.0
+
+# Maximum wall-clock time we'll wait on a single sub-provider step before
+# treating it as hung and aborting the turn. 10 min is generous (claude-opus
+# on a complex markdown plan can legitimately take 3-4 min) but bounded so a
+# stuck CLI / network blackhole can't pin a session forever. Surfaces as a
+# tool_result with is_error=True followed by a ``StepTimeoutError`` that
+# propagates up through ``_safe_run`` so the WS gets a clean ``error`` +
+# ``assistant.done`` close-out instead of silently waiting.
+STEP_TIMEOUT_S = 600.0
+
+
+class StepTimeoutError(RuntimeError):
+    """Raised by ``_run_step_with_role`` when a sub-provider exceeds the
+    per-step budget. Distinct from generic exceptions so the outer pipeline
+    can recognise "step abandoned" vs "step errored mid-flight"."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,19 +119,31 @@ APPROVAL_TIMEOUT_S = 300.0
 WORKFLOW_PRESETS: dict[str, dict[str, Any]] = {
     "full": {
         "label": "Full crew",
-        "description": "Planner decomposes; developer designs; coder implements; reviewer gates.",
-        "roles": ["planner", "developer", "coder", "reviewer"],
+        "description": "Planner writes a detailed plan; coder implements; reviewer gates plan compliance; tester writes & runs tests as the final smoke check.",
+        "roles": ["planner", "coder", "reviewer", "tester"],
+        "entry_role": "coder",
+    },
+    "plan-code-review-test": {
+        "label": "Plan + code + review + test",
+        "description": "Same as Full crew. Explicit name for clarity on the canonical order.",
+        "roles": ["planner", "coder", "reviewer", "tester"],
+        "entry_role": "coder",
+    },
+    "plan-code-test": {
+        "label": "Plan + code + test",
+        "description": "Planner → coder → tester. Skips review gate; tester is the only check.",
+        "roles": ["planner", "coder", "tester"],
         "entry_role": "coder",
     },
     "plan-and-code": {
         "label": "Plan + code",
-        "description": "Planner breaks the task down, coder executes each step. Skips design + review.",
+        "description": "Planner breaks the task down, coder executes. Skips testing + review.",
         "roles": ["planner", "coder"],
         "entry_role": "coder",
     },
     "design-and-code": {
         "label": "Design + code",
-        "description": "Planner → developer (design) → coder (implement). No reviewer.",
+        "description": "Planner → developer (extra design pass) → coder. No reviewer.",
         "roles": ["planner", "developer", "coder"],
         "entry_role": "coder",
     },
@@ -108,27 +153,21 @@ WORKFLOW_PRESETS: dict[str, dict[str, Any]] = {
         "roles": ["developer"],
         "entry_role": "developer",
     },
-    "design-and-review": {
-        "label": "Design + review",
-        "description": "Planner → developer (design) → reviewer (sanity-check the design).",
-        "roles": ["planner", "developer", "reviewer"],
-        "entry_role": "developer",
-    },
     "code-and-review": {
         "label": "Code + review",
-        "description": "Planner → coder, then reviewer gates each output.",
+        "description": "Planner → coder → reviewer. No tester.",
         "roles": ["planner", "coder", "reviewer"],
         "entry_role": "coder",
     },
     "code-only": {
         "label": "Code only",
-        "description": "Single coder turn — no planning, no design, no review. Fastest.",
+        "description": "Single coder turn — no planning, testing, or review. Fastest.",
         "roles": ["coder"],
         "entry_role": "coder",
     },
     "plan-only": {
         "label": "Plan only",
-        "description": "Just the planner — produces a JSON plan, no execution. Useful for review.",
+        "description": "Just the planner — produces the markdown plan, no execution. Useful for review.",
         "roles": ["planner"],
         "entry_role": "planner",
     },
@@ -180,6 +219,14 @@ class FleetConfig:
     # Reject ends the turn with the user's feedback recorded as the assistant
     # message. Has no effect on planner-less workflows.
     require_plan_approval: bool = False
+    # When true, route the turn through ``OrchestratorAgent`` (an LLM-driven
+    # dispatcher built on claude-agent-sdk + a custom MCP ``dispatch_subagent``
+    # tool) instead of the legacy fixed-order linear pipeline. Mirrors the
+    # Claude Code / OpenCode architecture: the orchestrator is itself an
+    # agent that delegates to the role registry dynamically, so workflows
+    # can branch, skip steps for trivial tasks, and re-dispatch on signal.
+    # Default off for backward compat — opt in via fleet.yaml or the UI.
+    orchestrator_mode: bool = False
     # Where the active config came from — None means built-in defaults. Useful
     # for the UI to surface "Fleet config: ~/.localcode/fleet.yaml".
     config_source: str | None = None
@@ -204,61 +251,292 @@ class FleetConfig:
 # Built-in defaults — the role library and the default full-crew config.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_PLANNER_SYSTEM = (
-    "You are the Planner in a multi-agent coding fleet. Decompose the user's "
-    "request into 1–6 concrete steps. Each step must be a self-contained "
-    "instruction another LLM can execute without further context.\n\n"
-    "Output STRICT JSON only — no prose, no markdown fences:\n"
-    '  {"steps":[{"id":"s1","role":"coder","prompt":"...","depends_on":[]}, ...]}\n\n'
-    "Roles allowed:\n"
-    "  - \"developer\" → designs the approach (interfaces, files, edge cases). "
-    "    NO code is written. Use this when a step has architectural ambiguity, "
-    "    multi-file impact, or unclear data flow.\n"
-    "  - \"coder\"     → implements the change. Use directly when the step is "
-    "    mechanical or already well-specified.\n"
-    "  - \"reviewer\"  → gates the prior step's output (LGTM / NACK). Use "
-    "    sparingly — only when correctness genuinely needs an extra check.\n\n"
-    "Keep step prompts short and imperative. If the request is trivial, "
-    "return a single coder step. Never include any text outside the JSON object."
-)
+# ─────────────────────────────────────────────────────────────────────────────
+# System prompts.
+#
+# Inspired by the obra/superpowers skill set:
+#   - writing-plans       → planner produces a comprehensive markdown plan
+#   - executing-plans     → coder follows the plan task-by-task, doesn't guess
+#   - test-driven-development → tester writes real tests and runs them
+#   - requesting-code-review  → reviewer gives a terse LGTM/NACK gate
+#
+# Economic intent: the planner and reviewer are the "expensive thinking" roles
+# (default to bigger Claude models); the coder and tester are the "do the work"
+# roles (default to cheaper opencode-routed models). All defaults are
+# overridable per-role in fleet.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
 
-_DEVELOPER_SYSTEM = (
-    "You are the Developer in a multi-agent fleet. Produce a short technical "
-    "design for the step described — files involved, interfaces and signatures, "
-    "data flow, edge cases, and a brief ordered list of changes. DO NOT write "
-    "code (the Coder does that next). End with a one-paragraph 'Approach:' "
-    "summary the Coder can act on directly."
-)
+_PLANNER_SYSTEM = """\
+You are the Planner in a multi-agent coding fleet. You produce ONE artifact:
+a comprehensive Markdown implementation plan that the Coder will execute
+without further context. Assume the Coder has zero familiarity with this
+codebase and questionable taste — write everything they need, exactly.
 
-_CODER_SYSTEM = (
-    "You are the Coder in a multi-agent fleet. Execute exactly the step "
-    "described — nothing more. If the step's context includes a Developer's "
-    "Approach, follow it. Use file-edit / bash tools as needed. Be minimal: do "
-    "not add features beyond what was asked. End with a short 'Changes:' "
-    "summary listing files touched and commands run."
-)
+Your output is plain Markdown. No JSON. No outer code fences around the whole
+plan — just the plan itself. The plan MUST follow this structure:
 
-_REVIEWER_SYSTEM = (
-    "You are the Reviewer. The user gives you a step description and the "
-    "previous step's report. Reply with one line: 'LGTM' if the work satisfies "
-    "the step, or 'NACK: <one-sentence reason>' otherwise. Be terse."
-)
+# <Feature> Implementation Plan
+
+**Goal:** <one sentence>
+
+**Architecture:** <2–3 sentences on approach, key trade-offs, tech stack>
+
+## File Structure
+
+List every file to create or modify, one per line, with a one-line
+responsibility. Group files that change together.
+
+## Tasks
+
+For each task use this exact shape (checkbox-style steps so the Coder can
+track progress):
+
+### Task N: <Component>
+
+**Files:**
+- Create: `exact/path/to/file.ext`
+- Modify: `exact/path/to/existing.ext`
+
+- [ ] **Step 1: <imperative action>**
+```<lang>
+<the FULL code — not pseudocode, not "similar to Task N">
+```
+
+- [ ] **Step 2: Verify**
+Run: `<exact shell command>`
+Expected: <expected stdout / exit status>
+
+- [ ] **Step 3: Commit**
+```bash
+git add <files>
+git commit -m "<conventional message>"
+```
+
+Repeat for every task. Each step is 2–5 minutes of work.
+
+## Forbidden in plans
+
+- "TBD", "TODO", "implement later", "fill in details"
+- "Add appropriate error handling" without showing the code
+- "Similar to Task N" — repeat the code; the Coder may read tasks out of order
+- Pseudocode where real code is needed
+- Undefined types, methods, or imports
+
+## Self-review before emitting
+
+Before you finish, walk back through:
+1. Every requirement in the user's request maps to at least one task.
+2. No placeholder phrases anywhere.
+3. Type names, function signatures, and identifiers are consistent across
+   tasks (a function called `clearLayers()` in Task 3 must be `clearLayers()`
+   in Task 7 — not `clearFullLayers()`).
+
+Fix issues inline, then emit the plan. The plan is your only output — no
+preamble, no commentary outside the document.
+"""
+
+_DEVELOPER_SYSTEM = """\
+You are the Developer in a multi-agent fleet. You receive the user's request
+and (when present) the Planner's plan. Produce a short technical design that
+fills any architectural gaps the plan left open: file layout, interfaces and
+signatures, data flow, edge cases, and a brief ordered list of changes.
+
+Do NOT write production code — the Coder does that next. End with a one-
+paragraph "Approach:" summary the Coder can act on directly.
+
+This role is optional in most workflows; the Planner's plan typically already
+contains the design. Use this role when the plan punts on architectural
+decisions or when a sub-system needs a separate sketch before implementation.
+"""
+
+_CODER_SYSTEM = """\
+You are the Coder in a multi-agent fleet. The Planner has produced an
+implementation plan (committed to `.localcode/plans/<timestamp>-<slug>.md`
+and included verbatim in your context). Your job: EXECUTE the plan
+task-by-task using file-edit and bash tools.
+
+# Execute, don't announce
+
+You have file-edit and bash tools. Use them. Do NOT reply with text like
+"Starting with the scaffold…" or "I'll implement task 1 first…" without
+following through with actual tool calls. Announcement-only responses are
+the #1 failure mode of this role and will cause the Reviewer to NACK.
+
+Concretely, for every task in the plan:
+1. Call the file-edit / write tool to create or modify each `Files:` entry.
+2. Call the bash tool to run the verification command exactly as the plan
+   specified, then confirm the expected output.
+3. Move to the next task.
+
+Don't paraphrase the plan into prose; perform the steps.
+
+# Discipline
+
+- Follow the plan steps exactly. Don't add features the plan doesn't list.
+- Don't refactor adjacent code. YAGNI.
+- After each task, run its verification command and confirm the expected
+  output. Don't skip verifications.
+- If a step is unclear or its verification fails repeatedly, stop and report
+  the blocker plainly with which step you stopped at. Do not guess.
+- If the plan refers to types/functions/files defined in earlier tasks, use
+  the names exactly as the plan defined them. Don't rename mid-flight.
+
+# Output
+
+End with a 'Changes:' summary listing:
+- Files touched (paths)
+- Commands run (exact, with exit codes)
+- Which tasks from the plan are complete, in-progress, or skipped
+
+If you wrote no files and ran no commands, your `Changes:` section is
+empty — and that's a self-NACK. The Reviewer will see the empty diff on
+disk and route the work back to you.
+"""
+
+_REVIEWER_SYSTEM = """\
+You are the Reviewer in a multi-agent fleet. You run BEFORE the Tester —
+your gate is plan compliance and code quality, not test results (the Tester
+hasn't run yet). You receive the implementation plan and the Coder's report.
+
+You may use file-read / bash tools to inspect what the Coder actually
+shipped (e.g. `ls`, `git status`, `cat <file>`) — don't take the Coder's
+narrative at face value when it's easy to verify.
+
+Verify:
+
+1. Every task in the plan is complete on disk (files exist, code matches).
+   If the Coder's narrative says "done" but the files aren't there, that's
+   an automatic NACK.
+2. No placeholders ("TODO", "TBD", "implement later", "fill in details")
+   survived in the implementation.
+3. Type and function names match what the plan defined — no drift.
+4. The Coder didn't add scope the plan didn't ask for.
+
+# Output protocol — STRICT
+
+You MUST end your reply with EXACTLY ONE classifier line, alone on the
+final line, no trailing whitespace, no surrounding markdown. Above the
+classifier you may write up to ~10 lines of reasoning / findings — that's
+fine, the orchestrator parses only the LAST non-empty line.
+
+Allowed classifiers (pick ONE):
+
+  LGTM
+  NACK: <one-sentence specific reason naming the failing task or file>
+
+Examples of valid output:
+
+  ----
+  Walked the plan task-by-task. Tasks 1-5 present and match. Task 6 (cli.py)
+  is missing — `ls src/scraper/` shows no cli.py.
+
+  NACK: task 6 is unimplemented (src/scraper/cli.py missing)
+  ----
+
+  ----
+  All 8 tasks present. Names align with the plan. No placeholders.
+
+  LGTM
+  ----
+
+If you produce an unclassified ending, the orchestrator treats it as NACK
+to be safe — so always include the classifier line. Don't restate the plan
+or echo the code; the Coder already has both.
+"""
+
+_TESTER_SYSTEM = """\
+You are the Tester in a multi-agent fleet. You run LAST — the Coder has
+implemented the plan and the Reviewer has signed off on plan compliance.
+Your job: write executable tests that exercise the new behavior and run
+them. You are the final gate; your verdict decides whether the workflow
+ships or loops back.
+
+Process per behavior the plan specifies:
+1. Write a test in the project's existing test directory (typically
+   `tests/` or `__tests__/`). Use real inputs/outputs — avoid mocks unless
+   the dependency is genuinely unavoidable (network, time, randomness).
+2. Run it with the project's test runner.
+3. Record pass/fail and the assertion that fired on failure.
+
+You do NOT modify production code — that is the Coder's job. You MAY
+modify your own test files on retry if the test itself was wrong.
+
+Above your classifier line, write the full 'Tests:' summary:
+- Each test file you created (with path)
+- Each test case inside (one line each)
+- pass/fail for each
+- For each failure: plan-task id + the actual assertion that fired
+
+# Output protocol — STRICT
+
+You MUST end your reply with EXACTLY ONE classifier line, alone on the
+final line, no trailing whitespace, no surrounding markdown. The
+orchestrator parses only the LAST non-empty line; reasoning above is fine.
+
+Allowed classifiers (pick ONE):
+
+  LGTM                        — all tests passed; workflow ships
+  NACK_CODE: <one-sentence>   — at least one test failed; the IMPLEMENTATION
+                                is at fault → coder retries with your feedback
+  NACK_TESTS: <one-sentence>  — at least one test failed; the TEST itself is
+                                wrong → only you retry (you may edit tests)
+
+Examples of valid output:
+
+  ----
+  Tests:
+  - tests/test_scraper.py::test_fetch_for_date — PASS
+  - tests/test_scraper.py::test_handles_404 — PASS
+
+  LGTM
+  ----
+
+  ----
+  Tests:
+  - tests/test_scraper.py::test_fetch_for_date — FAIL (AssertionError: expected 12 articles, got 0)
+
+  NACK_CODE: scraper.fetch returns empty list because date filter is wrong
+  ----
+
+  ----
+  Tests:
+  - tests/test_scraper.py::test_fetch_for_date — FAIL (TypeError: unhashable list)
+
+  NACK_TESTS: my fixture passed a list where a tuple was needed
+  ----
+
+If you produce an unclassified ending, the orchestrator treats it as
+NACK_CODE (the more common failure mode) — so always include the classifier
+line. Picking the wrong classifier wastes retries: NACK_TESTS when the impl
+is broken hides bugs; NACK_CODE when the test is broken churns the Coder.
+"""
 
 
 # Built-in role definitions. The UI uses this to pre-fill a role card when
 # the user adds a previously-absent role to their workflow.
+#
+# Default model picks reflect the economic intent of the fleet:
+#   - planner  → biggest Claude (deep decomposition is worth the cost)
+#   - developer→ mid-tier Claude (used only when the plan needs more design)
+#   - coder    → cheap opencode-routed codex (mechanical execution)
+#   - tester   → cheap Claude haiku (writes + runs tests; doesn't reason much)
+#   - reviewer → mid-tier Claude (LGTM/NACK gate needs real judgement)
 ROLE_LIBRARY: dict[str, RoleConfig] = {
-    "planner":   RoleConfig(provider="claude",   model="claude-sonnet-4-6",     system_prompt=_PLANNER_SYSTEM),
-    "developer": RoleConfig(provider="claude",   model="claude-opus-4-7",       system_prompt=_DEVELOPER_SYSTEM),
+    "planner":   RoleConfig(provider="claude",   model="claude-opus-4-7",       system_prompt=_PLANNER_SYSTEM),
+    "developer": RoleConfig(provider="claude",   model="claude-sonnet-4-6",     system_prompt=_DEVELOPER_SYSTEM),
     "coder":     RoleConfig(provider="opencode", model="openai/gpt-5.3-codex",  system_prompt=_CODER_SYSTEM),
-    "reviewer":  RoleConfig(provider="claude",   model="claude-haiku-4-5",      system_prompt=_REVIEWER_SYSTEM),
+    "tester":    RoleConfig(provider="claude",   model="claude-haiku-4-5",      system_prompt=_TESTER_SYSTEM),
+    "reviewer":  RoleConfig(provider="claude",   model="claude-sonnet-4-6",     system_prompt=_REVIEWER_SYSTEM),
 }
 
 
-# Default workflow when no file is found and no override is supplied: full crew.
+# Default workflow: planner produces the plan, coder implements, reviewer
+# gates plan compliance, tester writes & runs tests as the final smoke check.
+# Developer is omitted from the default — most tasks don't need a separate
+# design step now that the plan IS the design.
 DEFAULT_FLEET_CONFIG = FleetConfig(
     name="default",
-    roles={r: ROLE_LIBRARY[r] for r in ("planner", "developer", "coder", "reviewer")},
+    roles={r: ROLE_LIBRARY[r] for r in ("planner", "coder", "reviewer", "tester")},
     entry_role="coder",
 )
 
@@ -434,6 +712,9 @@ def _merge_config(base: FleetConfig, override: dict[str, Any]) -> FleetConfig:
         require_plan_approval=bool(
             override.get("require_plan_approval", base.require_plan_approval)
         ),
+        orchestrator_mode=bool(
+            override.get("orchestrator_mode", base.orchestrator_mode)
+        ),
     )
 
 
@@ -461,96 +742,60 @@ def role_library_dict() -> dict[str, dict[str, Any]]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Plan parsing
+# Step record + plan persistence
+#
+# The planner now produces a Markdown document — we don't parse it into
+# discrete steps. The plan is the artifact; the Coder reads it whole and
+# iterates through its tasks with file/bash tools. Step is just a per-role
+# invocation record so we can label tool_use events and track execution order.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
 class Step:
     id: str
-    role: StepRole  # "developer" | "coder" | "reviewer"
+    role: str  # any role in VALID_ROLES — typed loose so planner-only single-shot fits too
     prompt: str
-    depends_on: list[str] = field(default_factory=list)
 
 
-@dataclass
-class Plan:
-    steps: list[Step]
+def _slugify_plan_title(plan_text: str) -> str:
+    """Pull the first H1 heading from a markdown plan and turn it into a
+    filename-safe slug. Falls back to ``"plan"`` when there's no heading."""
+    m = re.search(r"^\s*#\s+(.+?)\s*$", plan_text, re.MULTILINE)
+    title = m.group(1) if m else "plan"
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return (slug or "plan")[:60]
 
 
-def parse_plan(
-    planner_output: str,
-    max_steps: int,
-    allowed_roles: set[str] | None = None,
-) -> Plan:
-    """Pull the first JSON object out of a planner reply and validate it.
+def _save_plan(plan_text: str, cwd: str | None) -> Path:
+    """Persist the planner's markdown output under
+    ``<cwd>/.localcode/plans/YYYYMMDD-HHMMSS-<slug>.md``.
 
-    `allowed_roles` constrains which step roles are accepted — when the
-    workflow doesn't include e.g. the developer, any developer-step the
-    planner emits is dropped (with a warning) rather than failing the
-    whole plan. Defaults to all worker roles when not supplied.
+    The file IS the contract handed to the Coder — naming includes the slug
+    so a directory listing is browsable, and the timestamp so multiple plans
+    for the same feature don't collide.
     """
-    if allowed_roles is None:
-        allowed_roles = set(WORKER_ROLES)
-
-    obj = _extract_json_object(planner_output)
-    if obj is None:
-        raise ValueError("planner did not return JSON")
-    raw_steps = obj.get("steps")
-    if not isinstance(raw_steps, list) or not raw_steps:
-        raise ValueError("plan has no steps")
-
-    steps: list[Step] = []
-    for i, s in enumerate(raw_steps[:max_steps]):
-        if not isinstance(s, dict):
-            raise ValueError(f"step {i} is not an object")
-        sid = str(s.get("id") or f"s{i+1}")
-        role = s.get("role")
-        if role not in WORKER_ROLES:
-            raise ValueError(f"step {sid} has invalid role: {role!r}")
-        if role not in allowed_roles:
-            logger.warning(
-                "plan step %s uses role %r which is not in this workflow; skipping",
-                sid, role,
-            )
-            continue
-        prompt = str(s.get("prompt") or "").strip()
-        if not prompt:
-            raise ValueError(f"step {sid} has empty prompt")
-        depends = s.get("depends_on") or []
-        if not isinstance(depends, list):
-            depends = []
-        steps.append(
-            Step(id=sid, role=role, prompt=prompt, depends_on=[str(d) for d in depends])
-        )
-    if not steps:
-        raise ValueError("plan has no steps with workflow-available roles")
-    return Plan(steps=steps)
+    base = Path(cwd) if cwd else Path.cwd()
+    plans_dir = base / ".localcode" / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    path = plans_dir / f"{timestamp}-{_slugify_plan_title(plan_text)}.md"
+    path.write_text(plan_text, encoding="utf-8")
+    return path
 
 
-def _extract_json_object(text: str) -> dict[str, Any] | None:
-    """Tolerant JSON extractor — strips ```fences``` and finds the first
-    balanced ``{...}`` block, returning the parsed dict or None."""
-    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if fenced:
-        text = fenced.group(1)
-    start = text.find("{")
-    if start < 0:
-        return None
-    depth = 0
-    for i in range(start, len(text)):
-        c = text[i]
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    obj = json.loads(text[start : i + 1])
-                except json.JSONDecodeError:
-                    return None
-                return obj if isinstance(obj, dict) else None
-    return None
+def _summarize_plan_text(plan_text: str, plan_path: Path | None) -> str:
+    """Compact version of the plan for the planner's tool_result content.
+
+    The full plan is too long to render in the tool-card preview, but we
+    don't want the UI to show only the path either — so we include the path
+    plus the first ~30 lines. Approval gate sees the full plan.
+    """
+    head = f"Plan saved to {plan_path}\n\n" if plan_path else ""
+    lines = plan_text.splitlines()
+    if len(lines) > 30:
+        return head + "\n".join(lines[:30]) + "\n…"
+    return head + plan_text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -585,9 +830,17 @@ class FleetProvider:
             cfg = _merge_config(cfg, ui_override)
             cfg.config_source = f"{base_src} + UI override"
 
-        # Branch: planner-led pipeline (planner present + at least one worker)
-        # vs single-agent turn (no planner, or planner is the only role).
-        if cfg.has("planner") and cfg.workers():
+        # Three branches:
+        #   1. Orchestrator mode (Tier-4 architecture): an LLM-driven
+        #      orchestrator dispatches subagents dynamically via a custom
+        #      MCP tool. This is the Claude Code / OpenCode pattern.
+        #   2. Linear planner-led pipeline (legacy default): fixed order
+        #      planner → coder → reviewer → tester with NACK retry.
+        #   3. Single-agent fallback: no planner / sole-role workflows.
+        if cfg.orchestrator_mode and cfg.workers():
+            async for ev in self._run_orchestrated(ctx, cfg):
+                yield ev
+        elif cfg.has("planner") and cfg.workers():
             async for ev in self._run_planned(ctx, cfg):
                 yield ev
         else:
@@ -599,32 +852,60 @@ class FleetProvider:
             data={"duration_ms": int((time.time() - t0) * 1000)},
         )
 
+    async def _run_orchestrated(
+        self, ctx: RunContext, cfg: FleetConfig
+    ) -> AsyncIterator[Event]:
+        """LLM-driven dispatch path (Tier-4).
+
+        Builds a per-turn registry from ``cfg.roles``, instantiates an
+        ``OrchestratorAgent`` with a fresh MCP dispatch server, and yields
+        the merged event stream (orchestrator narrative + sub-agent cards).
+        """
+        # Lazy imports — these modules import RoleConfig/Step from this
+        # module, so we keep the dependency one-way at import time.
+        from .agent_def import registry_from_role_library
+        from .orchestrator import OrchestratorAgent
+
+        registry = registry_from_role_library(cfg.roles)
+        orchestrator = OrchestratorAgent(
+            registry=registry,
+            run_step_fn=self._run_step_with_role,
+        )
+        async for ev in orchestrator.run(ctx):
+            yield ev
+
     async def _run_planned(
         self, ctx: RunContext, cfg: FleetConfig
     ) -> AsyncIterator[Event]:
-        """Planner-led path: planner emits a JSON plan, steps execute
-        sequentially with results threaded as context.
+        """Planner-led pipeline.
 
-        Two HITL/safety features layer onto the basic loop:
+        Flow (each role is optional except planner; canonical execution order
+        is enforced by ``WORKER_ROLES``):
 
-        - **Plan approval gate** (``cfg.require_plan_approval``): after the
-          planner emits a valid plan, the workflow blocks on an approval
-          message from the WebSocket. Reject / timeout aborts the turn before
-          any worker step runs.
-        - **Auto-retry on reviewer NACK** (``cfg.max_review_retries``): when a
-          reviewer step starts with "NACK", the upstream worker step is
-          re-queued with the reviewer's feedback prepended to its prompt, then
-          the reviewer runs again. Bounded so a stubbornly-failing step can't
-          loop forever.
+            planner → (developer) → coder → (tester) → (reviewer)
+
+        The planner produces a Markdown plan, which we save to
+        ``<cwd>/.localcode/plans/`` and pass verbatim to every downstream
+        worker. Each worker also sees prior workers' reports so context
+        compounds (the reviewer needs the coder's report and the tester's
+        results to gate properly).
+
+        Two HITL/safety knobs layer on top:
+
+        - ``cfg.require_plan_approval`` blocks after the plan is written and
+          waits for the user to approve / reject via the WS back-channel.
+        - ``cfg.max_review_retries`` bounds NACK retries: on reviewer NACK,
+          the coder is re-run with the feedback, the tester re-runs (if
+          present) against the new code, and the reviewer re-runs. Up to N
+          times.
         """
         planner_base = cfg.get("planner")
         assert planner_base is not None  # caller checked cfg.has("planner")
         workers = cfg.workers()
-        plan_id = "fleet.plan"
+        plan_step_id = "fleet.plan"
 
-        # Tell the planner which worker roles are available in THIS workflow.
-        # We append a constraint line rather than rewriting the whole prompt
-        # so any user-customised planner system_prompt is preserved.
+        # Tell the planner which worker roles are present, so it doesn't
+        # write tasks for roles that won't run.
         planner_role = RoleConfig(
             provider=planner_base.provider,
             model=planner_base.model,
@@ -633,60 +914,78 @@ class FleetProvider:
             ),
         )
 
-        yield Event(
-            type="assistant.tool_use",
-            data={
-                "id": plan_id,
-                "name": f"planner [{planner_role.provider}:{planner_role.model}]",
-                "input": {"task": ctx.prompt, "available_roles": cfg.role_names()},
-            },
-        )
-        plan_parsed_ok = False
+        # Run the planner via the unified step runner so it gets the same
+        # heartbeats + timeout that worker steps get. (Previously the planner
+        # called ``_collect_text`` directly, which meant zero progress signal
+        # to the UI during a 2-3 minute opus turn — the #1 source of "looks
+        # frozen" reports.)
+        outputs_planner: dict[str, str] = {}
+        plan_step = Step(id=plan_step_id, role="planner", prompt=ctx.prompt)
         try:
-            plan_text = await _collect_text(
-                planner_role, ctx.prompt, ctx.cwd, ctx.additional_dirs
-            )
-            plan = parse_plan(plan_text, cfg.max_steps, allowed_roles=set(workers))
-        except Exception as exc:
-            logger.warning("fleet planning failed, single-shot fallback: %s", exc)
+            async for ev in self._run_step_with_role(
+                plan_step, planner_role, ctx, outputs_planner
+            ):
+                yield ev
+        except StepTimeoutError:
+            # _run_step_with_role already yielded a tool.result with the
+            # error; re-raise lets _safe_run wrap up with an error event +
+            # assistant.done. The whole turn aborts cleanly — single-shot
+            # fallback isn't safe here (the model wasn't responding at all).
+            raise
+
+        plan_text = outputs_planner.get(plan_step_id, "").strip()
+        if not plan_text:
+            # Planner returned but produced empty output (e.g. provider error
+            # surfaced as an empty digest). Fall back to single-shot so the
+            # user gets *something* instead of a silent failure.
+            logger.warning("fleet planner produced empty output; falling back to single-shot")
             yield Event(
-                type="tool.result",
+                type="assistant.text",
                 data={
-                    "tool_use_id": plan_id,
-                    "content": (
-                        f"planning failed ({exc}); falling back to a single "
-                        f"{cfg.entry_role} step"
-                    ),
-                    "is_error": True,
+                    "text": (
+                        "_Planner returned no plan; falling back to a single "
+                        f"{cfg.entry_role} step on your prompt._\n"
+                    )
                 },
             )
-            fallback = cfg.entry_role if cfg.entry_role in workers else workers[0]
-            plan = Plan(
-                steps=[Step(id="s1", role=fallback, prompt=ctx.prompt, depends_on=[])]  # type: ignore[arg-type]
-            )
-        else:
-            plan_parsed_ok = True
+            async for ev in self._run_single(ctx, cfg):
+                yield ev
+            return
+
+        # Persist the plan as an inspectable artifact + tell the user where.
+        # The plan_text variable feeds into _build_worker_prompt below so we
+        # don't need to register the planner in shared outputs/executed (that
+        # would just duplicate the plan in every worker's prompt).
+        plan_path: Path | None
+        try:
+            plan_path = _save_plan(plan_text, ctx.cwd)
+        except OSError as exc:
+            logger.warning("failed to save plan to disk: %s", exc)
+            plan_path = None
             yield Event(
-                type="tool.result",
+                type="assistant.text",
                 data={
-                    "tool_use_id": plan_id,
-                    "content": _summarize_plan(plan),
-                    "is_error": False,
+                    "text": (
+                        f"_Note: could not save plan to disk ({exc}). The plan "
+                        f"is still passed inline to downstream workers._\n"
+                    )
                 },
+            )
+        if plan_path is not None:
+            yield Event(
+                type="assistant.text",
+                data={"text": f"_Plan saved to_ `{plan_path}`\n"},
             )
 
         # ── HITL: plan approval gate ─────────────────────────────────────────
-        # Only gate when the user opted in AND the planner produced a real
-        # plan — gating a single-step fallback (which IS the user's prompt) is
-        # noise.
-        if cfg.require_plan_approval and plan_parsed_ok:
+        if cfg.require_plan_approval:
             approval_id = "approval.plan"
             yield Event(
                 type="pipeline.awaiting_approval",
                 data={
                     "id": approval_id,
                     "kind": "plan",
-                    "plan": _summarize_plan(plan),
+                    "plan": plan_text,
                     "message": (
                         "Approve this plan to run the worker steps, or reject "
                         "with feedback to abort the turn."
@@ -699,7 +998,6 @@ class FleetProvider:
             )
             yield Event(type="pipeline.approval_received", data=decision)
             if decision["value"] != "yes":
-                # Surface why the turn ended so chat history is self-explanatory.
                 if decision["value"] == "timeout":
                     note = "Plan approval timed out — workflow aborted."
                 else:
@@ -710,72 +1008,159 @@ class FleetProvider:
                 yield Event(type="assistant.text", data={"text": note})
                 return
 
-        # ── Step execution with NACK retries ────────────────────────────────
+        # ── Worker pipeline ──────────────────────────────────────────────────
         outputs: dict[str, str] = {}
-        # `pending` is a mutable queue so retries can be inserted in front of
-        # the remaining plan — a NACK on step N must be fixed before step N+1
-        # runs, otherwise downstream context gets stale.
-        pending: list[Step] = list(plan.steps)
-        # Steps that actually ran, in execution order. Used by the final
-        # summary so retry outputs (which aren't in plan.steps) get picked.
         executed: list[Step] = []
-        nack_attempts: dict[str, int] = {}  # base reviewer step id -> attempts so far
 
-        while pending:
-            step = pending.pop(0)
-            async for ev in self._run_step(step, ctx, cfg, outputs):
+        async def _run_role(
+            role: str,
+            step_id: str,
+            feedback_label: str | None = None,
+            feedback: str | None = None,
+        ) -> AsyncIterator[Event]:
+            """Run one worker role with the plan + prior outputs as context."""
+            role_cfg = cfg.get(role)
+            if role_cfg is None:
+                return
+            prompt = _build_worker_prompt(
+                user_request=ctx.prompt,
+                plan_text=plan_text,
+                plan_path=plan_path,
+                prior=executed,
+                outputs=outputs,
+                feedback_label=feedback_label,
+                feedback=feedback,
+            )
+            step = Step(id=step_id, role=role, prompt=prompt)
+            async for ev in self._run_step_with_role(step, role_cfg, ctx, outputs):
                 yield ev
             executed.append(step)
 
-            if step.role != "reviewer" or cfg.max_review_retries <= 0:
-                continue
+        # ── Initial pass: developer (if present) + coder ────────────────────
+        for role in ("developer", "coder"):
+            if role in workers:
+                async for ev in _run_role(role, f"fleet.{role}"):
+                    yield ev
 
-            output = outputs.get(step.id, "")
-            if not output.strip().upper().startswith("NACK"):
-                continue
+        # ── Reviewer pass (gates plan compliance — no test results yet) ────
+        last_reviewer_id: str | None = None
+        if "reviewer" in workers:
+            last_reviewer_id = "fleet.reviewer"
+            async for ev in _run_role("reviewer", last_reviewer_id):
+                yield ev
 
-            # Retry counter is keyed by the ORIGINAL reviewer id so that a
-            # second NACK on `s2.retry1` still increments the same counter.
-            base_id = step.id.split(".retry", 1)[0]
-            attempts = nack_attempts.get(base_id, 0)
-            if attempts >= cfg.max_review_retries:
-                logger.info(
-                    "fleet reviewer %s NACKed %d time(s); not retrying further",
-                    base_id, attempts,
-                )
-                continue
+        def _reviewer_passed() -> bool:
+            if last_reviewer_id is None:
+                return True
+            return _classify_gate(
+                outputs.get(last_reviewer_id, ""), "reviewer"
+            ) == "lgtm"
 
-            upstream = _find_upstream_worker(plan.steps, base_id)
-            if upstream is None:
-                logger.info(
-                    "fleet reviewer %s NACKed but no upstream worker to retry",
-                    base_id,
-                )
-                continue
+        # ── Tester pass (only if reviewer passed; tester's verdict can also
+        #    trigger retries — see the unified retry loop below) ─────────────
+        last_tester_id: str | None = None
+        if "tester" in workers and _reviewer_passed():
+            last_tester_id = "fleet.tester"
+            async for ev in _run_role("tester", last_tester_id):
+                yield ev
 
-            attempt = attempts + 1
-            nack_attempts[base_id] = attempt
-            retry_step = Step(
-                id=f"{upstream.id}.retry{attempt}",
-                role=upstream.role,
-                prompt=(
-                    f"{upstream.prompt}\n\n"
-                    f"## Reviewer feedback (attempt {attempt}; must address)\n"
-                    f"{output}"
-                ),
-                depends_on=list(upstream.depends_on),
+        # ── Unified retry loop ──────────────────────────────────────────────
+        # Two failure paths feed this loop:
+        #   1. Reviewer NACK         → re-run coder + reviewer (+ tester if present)
+        #   2. Tester NACK_CODE       → re-run coder + reviewer (+ tester)
+        #   3. Tester NACK_TESTS      → re-run tester only (test files were buggy)
+        # All paths share one budget (cfg.max_review_retries).
+        attempt = 0
+        while attempt < cfg.max_review_retries:
+            rev_class = (
+                _classify_gate(outputs.get(last_reviewer_id, ""), "reviewer")
+                if last_reviewer_id else "lgtm"
             )
-            rerev_step = Step(
-                id=f"{base_id}.retry{attempt}",
-                role="reviewer",
-                prompt=_lookup_step_prompt(plan.steps, base_id),
-                depends_on=[retry_step.id],
+            tst_class = (
+                _classify_gate(outputs.get(last_tester_id, ""), "tester")
+                if last_tester_id else "lgtm"
             )
-            # Run the retry pair before any remaining plan steps.
-            pending.insert(0, rerev_step)
-            pending.insert(0, retry_step)
+            rev_nacked = rev_class == "nack"
+            tst_nack_code = tst_class == "nack_code"
+            tst_nack_tests = tst_class == "nack_tests"
 
-        final = _final_summary(outputs, Plan(steps=executed))
+            if not (rev_nacked or tst_nack_code or tst_nack_tests):
+                break  # all gates green (or absent)
+
+            attempt += 1
+
+            if rev_nacked or tst_nack_code:
+                # Implementation bug → re-run coder, then reviewer, then tester.
+                if rev_nacked:
+                    feedback_label = "Reviewer feedback"
+                    feedback = outputs[last_reviewer_id]  # type: ignore[index]
+                else:
+                    feedback_label = "Tester feedback (implementation bug)"
+                    feedback = outputs[last_tester_id]  # type: ignore[index]
+
+                if "coder" not in workers:
+                    logger.info("fleet retry would need coder but it's not in this workflow; stopping")
+                    break
+
+                async for ev in _run_role(
+                    "coder",
+                    f"fleet.coder.retry{attempt}",
+                    feedback_label=feedback_label,
+                    feedback=feedback,
+                ):
+                    yield ev
+                if "reviewer" in workers:
+                    last_reviewer_id = f"fleet.reviewer.retry{attempt}"
+                    async for ev in _run_role("reviewer", last_reviewer_id):
+                        yield ev
+                if "tester" in workers and _reviewer_passed():
+                    last_tester_id = f"fleet.tester.retry{attempt}"
+                    async for ev in _run_role("tester", last_tester_id):
+                        yield ev
+            else:
+                # Tester says the test files themselves are buggy → re-run
+                # tester only with that feedback. Implementation is fine.
+                feedback = outputs[last_tester_id]  # type: ignore[index]
+                last_tester_id = f"fleet.tester.retry{attempt}"
+                async for ev in _run_role(
+                    "tester",
+                    last_tester_id,
+                    feedback_label="Tester feedback (test bug — fix the test files)",
+                    feedback=feedback,
+                ):
+                    yield ev
+
+        if attempt >= cfg.max_review_retries:
+            # Surface the terminal state both in the log and as a chat note,
+            # so the user knows the workflow stopped because budget ran out
+            # rather than because the work is actually green.
+            final_state: list[str] = []
+            if last_reviewer_id and _classify_gate(
+                outputs.get(last_reviewer_id, ""), "reviewer"
+            ) != "lgtm":
+                final_state.append("reviewer NACK")
+            if last_tester_id and _classify_gate(
+                outputs.get(last_tester_id, ""), "tester"
+            ) != "lgtm":
+                final_state.append("tester NACK")
+            if final_state:
+                logger.info(
+                    "fleet retry budget (%d) exhausted; final state: %s",
+                    cfg.max_review_retries, ", ".join(final_state),
+                )
+                yield Event(
+                    type="assistant.text",
+                    data={
+                        "text": (
+                            f"\n_Retry budget ({cfg.max_review_retries}) "
+                            f"exhausted with **{', '.join(final_state)}**. "
+                            f"The latest gate output is shown above; act on "
+                            f"its feedback and re-prompt to continue._\n"
+                        )
+                    },
+                )
+
+        final = _final_summary(outputs, executed)
         if final:
             yield Event(type="assistant.text", data={"text": final})
 
@@ -784,46 +1169,22 @@ class FleetProvider:
     ) -> AsyncIterator[Event]:
         """Single-agent path: the user prompt goes straight to one role
         (the entry role). Used by Code-only / Review-only / Plan-only
-        workflows where decomposition would just add latency."""
-        # _validate_entry_role guarantees entry_role is a key in cfg.roles,
-        # but defend in case caller invariants ever change.
+        workflows where decomposition would just add latency, and as a
+        fallback when planning fails."""
         present = cfg.role_names()
-        role_name = cfg.entry_role if cfg.entry_role in present else (present[0] if present else "coder")
+        role_name = (
+            cfg.entry_role
+            if cfg.entry_role in present
+            else (present[0] if present else "coder")
+        )
         role_cfg = cfg.get(role_name) or ROLE_LIBRARY[role_name]
-
-        # Step.role expects a worker literal; for plan-only we still use the
-        # planner via _run_step, but Step.role is typed as the worker union.
-        # We bypass the strict typing — Step is internal to this module.
-        step = Step(id="s1", role=role_name, prompt=ctx.prompt, depends_on=[])  # type: ignore[arg-type]
+        step = Step(id="fleet.single", role=role_name, prompt=ctx.prompt)
         outputs: dict[str, str] = {}
         async for ev in self._run_step_with_role(step, role_cfg, ctx, outputs):
             yield ev
-
         text = outputs.get(step.id, "")
         if text:
             yield Event(type="assistant.text", data={"text": text})
-
-    async def _run_step(
-        self,
-        step: Step,
-        ctx: RunContext,
-        cfg: FleetConfig,
-        outputs: dict[str, str],
-    ) -> AsyncIterator[Event]:
-        role_cfg = cfg.get(step.role)
-        if role_cfg is None:
-            # Defensive: parse_plan should have filtered this. Surface as error.
-            yield Event(
-                type="tool.result",
-                data={
-                    "tool_use_id": step.id,
-                    "content": f"role {step.role!r} not in this workflow",
-                    "is_error": True,
-                },
-            )
-            return
-        async for ev in self._run_step_with_role(step, role_cfg, ctx, outputs):
-            yield ev
 
     async def _run_step_with_role(
         self,
@@ -832,41 +1193,106 @@ class FleetProvider:
         ctx: RunContext,
         outputs: dict[str, str],
     ) -> AsyncIterator[Event]:
-        # Stitch the prompts of upstream dependencies in (or, if none declared,
-        # the immediately previous step — the most useful default).
-        deps = step.depends_on or ([list(outputs.keys())[-1]] if outputs else [])
-        context_blocks = [
-            f"## Output of {dep_id}\n{outputs[dep_id]}"
-            for dep_id in deps
-            if dep_id in outputs
-        ]
-        full_prompt = (
-            "\n\n".join(context_blocks + [step.prompt]) if context_blocks else step.prompt
-        )
+        """Invoke ``role_cfg`` with ``step.prompt`` exactly. The caller is
+        responsible for stitching plan + prior-step context into ``prompt`` —
+        we just delegate to the sub-provider and emit tool_use/tool_result.
 
+        Two safeguards keep this robust:
+
+        - **Heartbeats** every ``HEARTBEAT_INTERVAL_S`` so the UI doesn't
+          look frozen during a multi-minute opus turn. Marked
+          ``heartbeat: True`` so the WS handler keeps them out of persisted
+          history.
+        - **Per-step timeout** ``STEP_TIMEOUT_S``. On exceeding the budget
+          we yield a ``tool.result`` with ``is_error=True`` and raise
+          ``StepTimeoutError``, which propagates up through ``_safe_run``
+          and surfaces as a clean ``error`` + ``assistant.done`` to the
+          frontend. Without this a hung sub-provider would pin the WS
+          forever.
+        """
+        display = step.prompt if len(step.prompt) <= 600 else step.prompt[:600] + "…"
         yield Event(
             type="assistant.tool_use",
             data={
                 "id": step.id,
                 "name": f"{step.role} [{role_cfg.provider}:{role_cfg.model}]",
-                "input": {"prompt": step.prompt, "depends_on": deps},
+                "input": {"prompt": display},
             },
         )
 
+        # Run _collect_text concurrently with a heartbeat ticker. shield()
+        # protects the inner task from wait_for's cancel-on-timeout — we want
+        # the timeout to fire the heartbeat, not abort the inner work.
+        collect = asyncio.create_task(
+            _collect_text(role_cfg, step.prompt, ctx.cwd, ctx.additional_dirs)
+        )
+        elapsed_s = 0
+        output: str | None = None
+        error_text: str | None = None
+        timed_out = False
         try:
-            output = await _collect_text(
-                role_cfg, full_prompt, ctx.cwd, ctx.additional_dirs
-            )
+            while True:
+                try:
+                    output = await asyncio.wait_for(
+                        asyncio.shield(collect), timeout=HEARTBEAT_INTERVAL_S
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    elapsed_s += int(HEARTBEAT_INTERVAL_S)
+                    if elapsed_s >= STEP_TIMEOUT_S:
+                        timed_out = True
+                        error_text = (
+                            f"{step.role} step exceeded {int(STEP_TIMEOUT_S)}s budget "
+                            f"with no response — aborting turn. Check that the "
+                            f"{role_cfg.provider} backend is healthy."
+                        )
+                        break
+                    yield Event(
+                        type="assistant.text",
+                        data={
+                            "text": f"_…{step.role} still working ({elapsed_s}s)…_\n",
+                            "heartbeat": True,
+                        },
+                    )
         except Exception as exc:
+            # Sub-provider raised (or our own cancellation cascaded). Capture
+            # the message for the tool_result; the finally block will cancel
+            # the inner task.
+            error_text = str(exc) or repr(exc)
+        finally:
+            # Belt-and-braces: cancel the inner task on every exit path so
+            # it doesn't leak past this scope (the outer generator may be
+            # aclose()'d on WS disconnect, in which case the try blocks above
+            # don't catch it).
+            if not collect.done():
+                collect.cancel()
+                try:
+                    await collect
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+        if error_text is not None:
             yield Event(
                 type="tool.result",
-                data={"tool_use_id": step.id, "content": str(exc), "is_error": True},
+                data={"tool_use_id": step.id, "content": error_text, "is_error": True},
             )
+            if timed_out:
+                # Bubble up so the outer pipeline aborts cleanly rather than
+                # racing on with no output for this step. _safe_run will
+                # surface this as an `error` event + `assistant.done`.
+                raise StepTimeoutError(error_text)
             return
 
+        # Successful step — record output and emit the result card.
+        assert output is not None  # if no error_text, we broke out with output set
         outputs[step.id] = output
-
-        is_error = step.role == "reviewer" and output.strip().upper().startswith("NACK")
+        # Mark gate failures as errored tool results so the UI shows them red.
+        # We use the canonical _classify_gate (last-line parse, fail-safe to
+        # NACK) so a reviewer that buries its verdict under prose still gets
+        # routed correctly.
+        is_error = step.role in ("reviewer", "tester") and _classify_gate(
+            output, step.role
+        ) != "lgtm"
         yield Event(
             type="tool.result",
             data={"tool_use_id": step.id, "content": output, "is_error": is_error},
@@ -929,79 +1355,134 @@ async def _collect_text(
             raise RuntimeError(ev.data.get("message") or "sub-provider error")
 
     text = "".join(chunks).strip()
+
+    # Build a tool-activity digest. We always include it (when tools fired)
+    # so downstream gates can verify what the worker actually did rather
+    # than trusting its narrative summary. Previously, ANY non-empty text
+    # caused tool activity to be dropped — which let the coder say "Starting
+    # with the scaffold…" while having made zero edits, and the Reviewer had
+    # no way to detect the gap from the prompt alone.
+    digest_lines: list[str] = []
+    if tool_calls:
+        digest_lines.append(f"(tool activity from {role.provider}:{role.model})")
+        for tid, name, tinput in tool_calls:
+            inp_str = json.dumps(tinput, default=str) if tinput is not None else "{}"
+            if len(inp_str) > 400:
+                inp_str = inp_str[:400] + "…"
+            digest_lines.append(f"- {name} input={inp_str}")
+            if tid in tool_results:
+                content, is_error = tool_results[tid]
+                tag = "ERR" if is_error else "OK"
+                snippet = content.replace("\n", " ")[:300]
+                digest_lines.append(f"    [{tag}] {snippet}")
+
+    if text and digest_lines:
+        return text + "\n\n---\n" + "\n".join(digest_lines)
     if text:
         return text
-    if not tool_calls:
-        return ""
-    # Build a digest the reviewer can reason about.
-    lines = [f"(no narrative text from {role.provider}:{role.model}; tool activity:)"]
-    for tid, name, tinput in tool_calls:
-        inp_str = json.dumps(tinput, default=str) if tinput is not None else "{}"
-        if len(inp_str) > 400:
-            inp_str = inp_str[:400] + "…"
-        lines.append(f"- {name} input={inp_str}")
-        if tid in tool_results:
-            content, is_error = tool_results[tid]
-            tag = "ERR" if is_error else "OK"
-            snippet = content.replace("\n", " ")[:300]
-            lines.append(f"    [{tag}] {snippet}")
-    return "\n".join(lines)
+    if digest_lines:
+        return "\n".join(digest_lines)
+    return ""
+
+
+def _classify_gate(output: str, role: str) -> str:
+    """Parse the LAST non-empty line of a gate's output for its classifier.
+
+    Returns one of:
+      - ``"lgtm"``        — explicit pass
+      - ``"nack"``        — reviewer NACK (or unclassified reviewer output —
+                            fail-safe so we retry rather than silently shipping
+                            work the gate didn't bless)
+      - ``"nack_code"``   — tester says implementation is buggy
+      - ``"nack_tests"``  — tester says tests themselves are buggy
+
+    Both system prompts instruct the model to put the classifier on the LAST
+    line. Earlier we used ``output.startswith("NACK")`` which only ever
+    examined the FIRST line — so a reviewer that prefaced its verdict with
+    descriptive prose ("The project directory is empty…") looked like an
+    LGTM and the workflow advanced past clear failures. This function is the
+    canonical classifier; ``_run_step_with_role`` and the retry loop both
+    consume it.
+    """
+    lines = [ln.strip() for ln in output.strip().splitlines() if ln.strip()]
+    if not lines:
+        # Empty output → fail-safe NACK. Retry rather than silently advance.
+        return "nack" if role != "tester" else "nack_code"
+    last = lines[-1].upper()
+
+    if role == "tester":
+        if last.startswith("LGTM") or last.startswith("TESTS_OK"):
+            return "lgtm"
+        if last.startswith("NACK_TESTS"):
+            return "nack_tests"
+        if last.startswith("NACK_CODE") or last.startswith("NACK"):
+            return "nack_code"
+        # Unclassified output → assume implementation bug (the more common
+        # cause of test failure). Better to retry the coder than to ship.
+        return "nack_code"
+
+    # Reviewer (or any other gate that uses the LGTM / NACK protocol).
+    if last.startswith("LGTM"):
+        return "lgtm"
+    if last.startswith("NACK"):
+        return "nack"
+    return "nack"  # unclassified → fail-safe NACK
 
 
 def _planner_prompt_with_constraint(base_prompt: str, workers: list[str]) -> str:
-    """Append a one-line constraint to the planner's system prompt that
-    spells out which worker roles ARE in this workflow. The model already
-    has its base instructions; this is just the hard guarantee.
-
-    When all three workers are present we skip the suffix — the base prompt
-    already enumerates them.
+    """Append a one-line constraint telling the planner which worker roles
+    actually exist in this workflow. The base prompt enumerates the full
+    cast; this pins down which of those will run, so the planner doesn't
+    write tasks for a role that's been disabled.
     """
     if set(workers) == set(WORKER_ROLES):
         return base_prompt
     return (
         base_prompt
-        + "\n\n[Workflow constraint for this turn: ONLY emit steps with role in "
-        + f"{{ {', '.join(workers) or 'none'} }}. Do NOT use any other role.]"
+        + "\n\n[Workflow constraint for this turn: only these worker roles "
+        + f"will run after you: {{ {', '.join(workers) or 'none'} }}. "
+        + "Tailor your plan accordingly — don't write tasks for absent roles.]"
     )
 
 
-def _summarize_plan(plan: Plan) -> str:
-    return "\n".join(
-        f"- [{s.id}] {s.role}: {s.prompt[:120]}{'…' if len(s.prompt) > 120 else ''}"
-        for s in plan.steps
-    )
+def _build_worker_prompt(
+    *,
+    user_request: str,
+    plan_text: str,
+    plan_path: Path | None,
+    prior: list[Step],
+    outputs: dict[str, str],
+    feedback_label: str | None = None,
+    feedback: str | None = None,
+) -> str:
+    """Prompt sent to every downstream worker (developer/coder/tester/reviewer).
 
-
-def _find_upstream_worker(steps: list[Step], reviewer_id: str) -> Step | None:
-    """The worker step a reviewer was reviewing — i.e. what to re-run on NACK.
-
-    Preference order:
-      1. The reviewer's own ``depends_on`` if it points to a worker.
-      2. The most recent worker step before the reviewer in plan order.
-
-    Returns None if neither is available (defensive — caller should skip retry).
+    Layered context:
+      1. The user's original request (so the worker can sanity-check the plan).
+      2. The full Markdown plan (the contract).
+      3. Each prior worker's report, in execution order.
+      4. (Retry only) feedback from the gate that NACKed, called out under a
+         labelled heading so the model can't miss it. The label tells the
+         worker which gate they're answering — e.g. "Reviewer feedback"
+         vs "Tester feedback (implementation bug)".
     """
-    reviewer = next((s for s in steps if s.id == reviewer_id), None)
-    if reviewer is None:
-        return None
-    if reviewer.depends_on:
-        by_id = {s.id: s for s in steps}
-        for dep_id in reversed(reviewer.depends_on):
-            dep = by_id.get(dep_id)
-            if dep is not None and dep.role in WORKER_ROLES and dep.role != "reviewer":
-                return dep
-    idx = next((i for i, s in enumerate(steps) if s.id == reviewer_id), None)
-    if idx is None:
-        return None
-    for s in reversed(steps[:idx]):
-        if s.role in WORKER_ROLES and s.role != "reviewer":
-            return s
-    return None
-
-
-def _lookup_step_prompt(steps: list[Step], step_id: str) -> str:
-    s = next((x for x in steps if x.id == step_id), None)
-    return s.prompt if s else "Re-review the previous step."
+    parts = [f"## Original user request\n{user_request}"]
+    plan_header = "## Implementation plan"
+    if plan_path is not None:
+        plan_header += f"\n_(committed to `{plan_path}`)_"
+    parts.append(f"{plan_header}\n\n{plan_text}")
+    for s in prior:
+        out = outputs.get(s.id, "")
+        if not out:
+            continue
+        label = s.role
+        if ".retry" in s.id:
+            label = f"{s.role} (retry {s.id.split('.retry', 1)[1]})"
+        parts.append(f"## Output from {label}\n{out}")
+    if feedback:
+        heading = feedback_label or "Feedback"
+        parts.append(f"## {heading} (must address this iteration)\n{feedback}")
+    return "\n\n".join(parts)
 
 
 async def _await_approval(
@@ -1028,7 +1509,7 @@ async def _await_approval(
             return {"id": approval_id, "value": "timeout", "feedback": None}
         try:
             msg = await asyncio.wait_for(channel.get(), timeout=remaining)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return {"id": approval_id, "value": "timeout", "feedback": None}
         msg_id = msg.get("id")
         if msg_id and msg_id != approval_id:
@@ -1039,18 +1520,23 @@ async def _await_approval(
         return {"id": approval_id, "value": value, "feedback": msg.get("feedback")}
 
 
-def _final_summary(outputs: dict[str, str], plan: Plan) -> str:
-    """The user-facing assistant text after all steps complete.
+def _final_summary(outputs: dict[str, str], executed: list[Step]) -> str:
+    """The user-facing assistant text after all workers complete.
 
-    Preference order: last coder output → last developer output → last output
-    of any kind. Reviewer outputs are skipped — their LGTM/NACK is metadata,
-    not the answer the user asked for.
+    Preference order: last coder output → last developer output → last
+    output of any non-review/non-tester role. The reviewer's LGTM/NACK is
+    metadata; the tester's pass/fail report is also metadata — neither
+    answers the user's actual request.
     """
     for role in ("coder", "developer"):
-        rolled = [outputs[s.id] for s in plan.steps if s.role == role and outputs.get(s.id)]
+        rolled = [
+            outputs[s.id] for s in executed if s.role == role and outputs.get(s.id)
+        ]
         if rolled:
             return rolled[-1]
-    any_non_review = [
-        outputs[s.id] for s in plan.steps if s.role != "reviewer" and outputs.get(s.id)
+    any_substantive = [
+        outputs[s.id]
+        for s in executed
+        if s.role not in ("reviewer", "tester") and outputs.get(s.id)
     ]
-    return any_non_review[-1] if any_non_review else ""
+    return any_substantive[-1] if any_substantive else ""

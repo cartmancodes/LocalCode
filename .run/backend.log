@@ -3888,3 +3888,423 @@ INFO:     127.0.0.1:51858 - "GET /api/fleet/config HTTP/1.1" 200 OK
 INFO:     127.0.0.1:51857 - "GET /api/sessions/9b9a9f9cee6542ff93011b2a06aa37bf/messages HTTP/1.1" 200 OK
 INFO:     127.0.0.1:51861 - "WebSocket /api/sessions/9b9a9f9cee6542ff93011b2a06aa37bf/ws" [accepted]
 INFO:     connection open
+INFO:     127.0.0.1:52029 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52031 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52034 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:52040 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52038 - "GET /api/sessions/889a51c57f01456f8f176b67f313589d/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52043 - "WebSocket /api/sessions/889a51c57f01456f8f176b67f313589d/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:52046 - "DELETE /api/sessions HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:52051 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52052 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52055 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52061 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52059 - "GET /api/sessions/7c9522b0dc654dc9ac401bf8ae147ea8/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52064 - "WebSocket /api/sessions/7c9522b0dc654dc9ac401bf8ae147ea8/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:54136 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54139 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54140 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54143 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54142 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54137 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54149 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54147 - "GET /api/sessions/7c9522b0dc654dc9ac401bf8ae147ea8/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54152 - "WebSocket /api/sessions/7c9522b0dc654dc9ac401bf8ae147ea8/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:54165 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54167 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54169 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54171 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54166 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54170 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54177 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54175 - "GET /api/sessions/7c9522b0dc654dc9ac401bf8ae147ea8/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54188 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54192 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54194 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54196 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54195 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54189 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54202 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54201 - "GET /api/sessions/7c9522b0dc654dc9ac401bf8ae147ea8/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54205 - "WebSocket /api/sessions/7c9522b0dc654dc9ac401bf8ae147ea8/ws" [accepted]
+INFO:     connection open
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for background tasks to complete. (CTRL+C to force quit)
+Fatal error in message reader: Command failed with exit code 143 (exit code: 143)
+Error output: Check stderr output for details
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [61134]
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/websockets/websockets_impl.py", line 317, in asgi_send
+    await self.send(data)  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/websockets/legacy/protocol.py", line 618, in send
+    await self.ensure_open()
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/websockets/legacy/protocol.py", line 916, in ensure_open
+    raise self.connection_closed_exc()
+websockets.exceptions.ConnectionClosedOK: received 1000 (OK); then sent 1000 (OK)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/websockets.py", line 86, in send
+    await self._send(message)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 39, in sender
+    await send(message)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/websockets/websockets_impl.py", line 330, in asgi_send
+    raise ClientDisconnected from exc
+uvicorn.protocols.utils.ClientDisconnected
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/websockets/websockets_impl.py", line 239, in run_asgi
+    result = await self.app(self.scope, self.asgi_receive, self.asgi_send)  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 56, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/applications.py", line 1159, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 151, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/cors.py", line 80, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 680, in app
+    await route.handle(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 350, in handle
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 160, in app
+    await wrap_app_handling_exceptions(app, session)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 157, in app
+    await func(session)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 764, in app
+    await dependant.call(**solved_result.values)
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 179, in chat_ws
+    has_more = len(rows) > page_size
+                ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/websockets.py", line 176, in send_json
+    await self.send({"type": "websocket.send", "text": text})
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/websockets.py", line 89, in send
+    raise WebSocketDisconnect(code=1006)
+starlette.websockets.WebSocketDisconnect
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [86405]
+INFO:     Started server process [16420]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:54315 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54329 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54331 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54332 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54333 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54330 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54334 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54343 - "WebSocket /api/sessions/7c9522b0dc654dc9ac401bf8ae147ea8/ws" [accepted]
+INFO:     127.0.0.1:54344 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:54342 - "GET /api/sessions/7c9522b0dc654dc9ac401bf8ae147ea8/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54347 - "DELETE /api/sessions HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:54351 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54353 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54358 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54364 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54363 - "GET /api/sessions/20e8002814a5444185f3aea3e4b4df5c/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54367 - "WebSocket /api/sessions/20e8002814a5444185f3aea3e4b4df5c/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:54463 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54466 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54468 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54470 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54464 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54472 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54480 - "WebSocket /api/sessions/20e8002814a5444185f3aea3e4b4df5c/ws" [accepted]
+INFO:     127.0.0.1:54481 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:54477 - "GET /api/sessions/20e8002814a5444185f3aea3e4b4df5c/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:54490 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54492 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54494 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54497 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54491 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54500 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54508 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54509 - "WebSocket /api/sessions/20e8002814a5444185f3aea3e4b4df5c/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:54506 - "GET /api/sessions/20e8002814a5444185f3aea3e4b4df5c/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54517 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54519 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54522 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:54529 - "WebSocket /api/sessions/dc3c9ada18bf443a866770adc7c86d82/ws" [accepted]
+INFO:     127.0.0.1:54531 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:54528 - "GET /api/sessions/dc3c9ada18bf443a866770adc7c86d82/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54561 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54565 - "GET /api/sessions/dc3c9ada18bf443a866770adc7c86d82/messages?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54637 - "GET /api/sessions/dc3c9ada18bf443a866770adc7c86d82/messages?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54762 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for background tasks to complete. (CTRL+C to force quit)
+Fatal error in message reader: Command failed with exit code 143 (exit code: 143)
+Error output: Check stderr output for details
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [16420]
+INFO:     Started server process [18352]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:54835 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54838 - "WebSocket /api/sessions/dc3c9ada18bf443a866770adc7c86d82/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:55061 - "WebSocket /api/sessions/dc3c9ada18bf443a866770adc7c86d82/ws" [accepted]
+INFO:     127.0.0.1:55062 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:55058 - "GET /api/sessions/dc3c9ada18bf443a866770adc7c86d82/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55068 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55079 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [18352]
+INFO:     Started server process [21100]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:55163 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55166 - "WebSocket /api/sessions/dc3c9ada18bf443a866770adc7c86d82/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:55174 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55178 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55180 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55185 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55188 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55182 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55195 - "WebSocket /api/sessions/dc3c9ada18bf443a866770adc7c86d82/ws" [accepted]
+INFO:     127.0.0.1:55197 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:55194 - "GET /api/sessions/dc3c9ada18bf443a866770adc7c86d82/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:55207 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55210 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55212 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55208 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55215 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55218 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55226 - "WebSocket /api/sessions/dc3c9ada18bf443a866770adc7c86d82/ws" [accepted]
+INFO:     127.0.0.1:55227 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:55224 - "GET /api/sessions/dc3c9ada18bf443a866770adc7c86d82/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55230 - "DELETE /api/sessions HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:55234 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55236 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55240 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55248 - "WebSocket /api/sessions/0b6b08f6d89241fbb81824750939d507/ws" [accepted]
+INFO:     127.0.0.1:55249 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:55246 - "GET /api/sessions/0b6b08f6d89241fbb81824750939d507/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55316 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55318 - "GET /api/sessions/0b6b08f6d89241fbb81824750939d507/messages?limit=5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55544 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55546 - "GET /api/sessions/0b6b08f6d89241fbb81824750939d507/messages?limit=10 HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:55798 - "WebSocket /api/sessions/0b6b08f6d89241fbb81824750939d507/ws" [accepted]
+INFO:     127.0.0.1:55799 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:55796 - "GET /api/sessions/0b6b08f6d89241fbb81824750939d507/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:55808 - "WebSocket /api/sessions/0b6b08f6d89241fbb81824750939d507/ws" [accepted]
+INFO:     127.0.0.1:55809 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:55804 - "GET /api/sessions/0b6b08f6d89241fbb81824750939d507/messages HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [21100]
+INFO:     Started server process [25619]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:55821 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55824 - "WebSocket /api/sessions/0b6b08f6d89241fbb81824750939d507/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:55827 - "GET /api/sessions/0b6b08f6d89241fbb81824750939d507/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55838 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55840 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55845 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:55853 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     127.0.0.1:55854 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:55851 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56012 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56014 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages?limit=20 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [25619]
+INFO:     Started server process [27089]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:56075 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56078 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:56081 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:56289 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:56292 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56286 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [27089]
+INFO:     Started server process [29679]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:56303 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56305 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56308 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:56311 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:56514 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:56517 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:56716 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:56719 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:56927 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:56930 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57138 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57141 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57355 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57358 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57573 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57576 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:57793 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57796 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:58028 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:58031 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:58253 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:58256 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:58495 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:58498 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:58725 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:58728 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:58979 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:58982 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:59213 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:59216 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:59487 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:59490 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:59733 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:59736 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:59994 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:59997 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:60235 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:60238 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:60504 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60505 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60508 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60501 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60511 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60514 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60522 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60523 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:60520 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:60532 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60535 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60537 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60533 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60539 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60542 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60550 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60551 - "WebSocket /api/sessions/bfa8950176fb4439adb4514c5d5f151f/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:60545 - "GET /api/sessions/bfa8950176fb4439adb4514c5d5f151f/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60554 - "DELETE /api/sessions HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:60558 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60560 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60569 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60575 - "WebSocket /api/sessions/eaae21daef524de28541695bc3d7f13e/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:60578 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60576 - "GET /api/sessions/eaae21daef524de28541695bc3d7f13e/messages HTTP/1.1" 200 OK

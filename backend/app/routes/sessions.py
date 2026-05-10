@@ -16,7 +16,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -402,30 +402,85 @@ async def _run_one_turn(
     duration_ms: int | None = None
     text_buf: list[str] = []
     client_alive = True
+    # Mid-turn persistence: insert the assistant row on the FIRST tool_use
+    # and update it on every subsequent tool_result. A page refresh during
+    # a multi-minute pipeline can then load the partial turn from the
+    # messages endpoint instead of seeing a blank chat. Without this, the
+    # assistant message only existed at end-of-turn.
+    assistant_message_id: str | None = None
+
+    async def _checkpoint() -> None:
+        """INSERT the assistant message on first call, UPDATE thereafter.
+
+        Persists ``assistant_blocks`` plus a flushed copy of any pending
+        ``text_buf`` (we don't promote text_buf into assistant_blocks here —
+        that happens lazily on the next tool_use, so checkpoint stays
+        idempotent). DB failure is logged but not raised: a checkpoint loss
+        must never break the WS lifecycle.
+        """
+        nonlocal assistant_message_id
+        flushed = list(assistant_blocks)
+        if text_buf:
+            flushed.append({"type": "text", "text": "".join(text_buf)})
+        if not flushed:
+            return
+        try:
+            async with session_scope() as db:
+                if assistant_message_id is None:
+                    msg = Message(
+                        session_id=session_id,
+                        role="assistant",
+                        content=flushed,
+                        cost_usd=cost_usd,
+                        duration_ms=duration_ms,
+                    )
+                    db.add(msg)
+                    await db.flush()
+                    assistant_message_id = msg.id
+                else:
+                    await db.execute(
+                        update(Message)
+                        .where(Message.id == assistant_message_id)
+                        .values(
+                            content=flushed,
+                            cost_usd=cost_usd,
+                            duration_ms=duration_ms,
+                        )
+                    )
+        except Exception:
+            logger.exception("checkpoint persist failed for %s", session_id)
 
     events = _safe_run(provider, ctx)
     try:
         async for ev in events:
-            # Always update local accumulators — even if the client is gone we
-            # want to persist what the provider produced so the chat history
-            # is consistent.
+            # Update local accumulators first — even if the client disconnects
+            # we still want a consistent persisted record of what happened.
             if ev.type == "assistant.text":
-                text_buf.append(ev.data.get("text", ""))
+                # Heartbeat pings ("still working") are chrome for the live UI;
+                # don't put them in persisted history.
+                if not ev.data.get("heartbeat"):
+                    text_buf.append(ev.data.get("text", ""))
             elif ev.type == "assistant.tool_use":
                 if text_buf:
                     assistant_blocks.append({"type": "text", "text": "".join(text_buf)})
                     text_buf = []
                 assistant_blocks.append({"type": "tool_use", **ev.data})
+                # Checkpoint: a step has started. Persist so a refresh sees
+                # the role's tool_use card with its "running" status.
+                await _checkpoint()
             elif ev.type == "tool.result":
                 assistant_blocks.append({"type": "tool_result", **ev.data})
+                # Checkpoint: a step finished. Persist its result.
+                await _checkpoint()
             elif ev.type == "assistant.done":
                 cost_usd = ev.data.get("cost_usd")
                 duration_ms = ev.data.get("duration_ms")
+                # Final checkpoint happens in the finally block below.
 
             if not client_alive:
                 # Client gone — stop streaming. Break (rather than continue)
                 # so the provider doesn't keep producing tokens we'll throw
-                # away. The `finally` below closes the generator cleanly.
+                # away. The finally below closes the generator cleanly.
                 break
 
             try:
@@ -434,29 +489,18 @@ async def _run_one_turn(
                 client_alive = False
                 break
     finally:
-        # Critical: close the wrapper generator so the underlying
-        # provider.run's `finally` blocks (httpx stream close, subprocess
-        # cleanup) actually execute.
+        # Critical: close the wrapper generator so the underlying provider's
+        # finally blocks (httpx stream close, subprocess cleanup) actually
+        # execute.
         await events.aclose()
 
-        # Flush any trailing text.
+        # Final flush + persist. Covers trailing text after the last
+        # tool_result, the final cost/duration from assistant.done, and the
+        # case where the WS died before any tool_result fired.
         if text_buf:
             assistant_blocks.append({"type": "text", "text": "".join(text_buf)})
-
-        # Persist whatever we got — even on disconnect.
+            text_buf = []
         if assistant_blocks:
-            try:
-                async with session_scope() as db:
-                    db.add(
-                        Message(
-                            session_id=session_id,
-                            role="assistant",
-                            content=assistant_blocks,
-                            cost_usd=cost_usd,
-                            duration_ms=duration_ms,
-                        )
-                    )
-            except Exception:
-                logger.exception("failed to persist assistant turn for %s", session_id)
+            await _checkpoint()
 
     return client_alive
