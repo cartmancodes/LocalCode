@@ -91,6 +91,12 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
   const reconnectAttempt = useRef(0);
   const pendingSend = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Highest event id observed from the backend's broadcast. The backend
+  // stamps every event with a monotonic `_id`; on reconnect we pass it as
+  // `?since=<id>` so the runner replays anything we missed during the gap
+  // — much faster and more reliable than relying on `loadMessages` alone,
+  // which only sees persisted checkpoints.
+  const lastEventId = useRef<number>(0);
 
   // Load persisted messages and detect mid-turn state. Called on session
   // change (initial load) AND on WS reconnect (so a refresh / reconnect
@@ -165,6 +171,9 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
       return;
     }
     reconnectAttempt.current = 0;
+    // Resetting on session change is correct — events from a different
+    // session's runner have an unrelated id space.
+    lastEventId.current = 0;
     connect(session.id);
     return () => {
       teardown();
@@ -189,17 +198,20 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
 
   function connect(sessionId: string) {
     setWsState("connecting");
-    const ws = openSessionSocket(sessionId);
+    // Pass the last seen event id so the backend replays anything we missed
+    // during the disconnect. On first connect lastEventId is 0 → no `since`
+    // query → no replay (the persisted checkpoints already cover us).
+    const ws = openSessionSocket(sessionId, lastEventId.current || undefined);
     wsRef.current = ws;
 
     ws.onopen = () => {
       const wasReconnect = reconnectAttempt.current > 0;
       reconnectAttempt.current = 0;
       setWsState("open");
-      // On reconnect (not initial open — that's handled by the session-change
-      // useEffect above), refetch persisted messages so any checkpoints that
-      // landed while the WS was down show up. Without this, the chat shows
-      // stale state until the user manually refreshes.
+      // On reconnect, refetch persisted messages as a belt-and-braces in
+      // case the gap exceeded the runner's replay buffer (~256 events).
+      // The replay path is the fast common case; loadMessages is the
+      // fallback that always works.
       if (wasReconnect) {
         void loadMessages(sessionId);
       }
@@ -212,8 +224,27 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
 
     ws.onmessage = (ev) => {
       try {
-        const parsed = JSON.parse(ev.data) as StreamEvent | { type: "ping"; data: any };
-        if (parsed.type === "ping") return;
+        const parsed = JSON.parse(ev.data) as
+          | (StreamEvent & { _id?: number })
+          | { type: "ping"; data: any };
+        if (parsed.type === "ping") {
+          // Echo so the backend's `receive_text()` resets its idle timer.
+          // Server pings every 30s; an unreplied chain hits WS_IDLE_TIMEOUT_S
+          // (30 min) and the WS is closed mid-pipeline.
+          try {
+            ws.send(JSON.stringify({ type: "pong" }));
+          } catch {
+            /* socket may have closed between ping and reply */
+          }
+          return;
+        }
+        // Track the runner's monotonic id so reconnects can resume from
+        // here. Pings are unstamped (they're at the WS-frame layer, not
+        // the runner's broadcast), so we update only on real events.
+        const id = (parsed as { _id?: number })._id;
+        if (typeof id === "number" && id > lastEventId.current) {
+          lastEventId.current = id;
+        }
         handleEvent(parsed as StreamEvent);
       } catch {
         /* ignore malformed frame */

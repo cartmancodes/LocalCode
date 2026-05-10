@@ -4555,3 +4555,751 @@ INFO:     127.0.0.1:62766 - "GET /api/sessions/402468ba0f824b24b9c9cbc9cc448965/
 INFO:     127.0.0.1:62768 - "GET /api/fleet/config HTTP/1.1" 200 OK
 INFO:     127.0.0.1:62769 - "WebSocket /api/sessions/402468ba0f824b24b9c9cbc9cc448965/ws" [accepted]
 INFO:     connection open
+INFO:     127.0.0.1:62889 - "DELETE /api/sessions/402468ba0f824b24b9c9cbc9cc448965 HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:62893 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62895 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62899 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62905 - "GET /api/sessions/e5c25bf8413940118ee85157d907adb0/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62907 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62908 - "WebSocket /api/sessions/e5c25bf8413940118ee85157d907adb0/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:62957 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:62962 - "GET /api/sessions/4f815cf1f3d74e1dbed076e453d48490/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62963 - "WebSocket /api/sessions/4f815cf1f3d74e1dbed076e453d48490/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62969 - "GET /api/sessions/e5c25bf8413940118ee85157d907adb0/messages HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 421, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 56, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 213, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in get_messages
+    messages=[MessageOut.model_validate(m) for m in msgs],
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in <listcomp>
+    messages=[MessageOut.model_validate(m) for m in msgs],
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/pydantic/main.py", line 705, in model_validate
+    return cls.__pydantic_validator__.validate_python(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+pydantic_core._pydantic_core.ValidationError: 2 validation errors for MessageOut
+cost_usd
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+duration_ms
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+INFO:     127.0.0.1:62971 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62972 - "WebSocket /api/sessions/e5c25bf8413940118ee85157d907adb0/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62981 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62983 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62984 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62989 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62991 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62993 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62999 - "GET /api/sessions/e5c25bf8413940118ee85157d907adb0/messages HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 421, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 56, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 213, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in get_messages
+    messages=[MessageOut.model_validate(m) for m in msgs],
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in <listcomp>
+    messages=[MessageOut.model_validate(m) for m in msgs],
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/pydantic/main.py", line 705, in model_validate
+    return cls.__pydantic_validator__.validate_python(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+pydantic_core._pydantic_core.ValidationError: 2 validation errors for MessageOut
+cost_usd
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+duration_ms
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+INFO:     127.0.0.1:63001 - "WebSocket /api/sessions/e5c25bf8413940118ee85157d907adb0/ws" [accepted]
+INFO:     127.0.0.1:63002 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:63010 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63011 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63012 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63018 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63019 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63021 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63027 - "GET /api/sessions/e5c25bf8413940118ee85157d907adb0/messages HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 421, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 56, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 213, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in get_messages
+    messages=[MessageOut.model_validate(m) for m in msgs],
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in <listcomp>
+    messages=[MessageOut.model_validate(m) for m in msgs],
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/pydantic/main.py", line 705, in model_validate
+    return cls.__pydantic_validator__.validate_python(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+pydantic_core._pydantic_core.ValidationError: 2 validation errors for MessageOut
+cost_usd
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+duration_ms
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+INFO:     127.0.0.1:63029 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63030 - "WebSocket /api/sessions/e5c25bf8413940118ee85157d907adb0/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:63039 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63040 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63041 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63044 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63047 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63049 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63055 - "GET /api/sessions/e5c25bf8413940118ee85157d907adb0/messages HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 421, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 56, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 213, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in get_messages
+    messages=[MessageOut.model_validate(m) for m in msgs],
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in <listcomp>
+    messages=[MessageOut.model_validate(m) for m in msgs],
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/pydantic/main.py", line 705, in model_validate
+    return cls.__pydantic_validator__.validate_python(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+pydantic_core._pydantic_core.ValidationError: 2 validation errors for MessageOut
+cost_usd
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+duration_ms
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+INFO:     127.0.0.1:63057 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63058 - "WebSocket /api/sessions/e5c25bf8413940118ee85157d907adb0/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:63064 - "GET /api/sessions/4f815cf1f3d74e1dbed076e453d48490/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63065 - "WebSocket /api/sessions/4f815cf1f3d74e1dbed076e453d48490/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:63071 - "GET /api/sessions/e5c25bf8413940118ee85157d907adb0/messages HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 421, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 56, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 213, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in get_messages
+    messages=[MessageOut.model_validate(m) for m in msgs],
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in <listcomp>
+    messages=[MessageOut.model_validate(m) for m in msgs],
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/pydantic/main.py", line 705, in model_validate
+    return cls.__pydantic_validator__.validate_python(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+pydantic_core._pydantic_core.ValidationError: 2 validation errors for MessageOut
+cost_usd
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+duration_ms
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+INFO:     127.0.0.1:63073 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63074 - "WebSocket /api/sessions/e5c25bf8413940118ee85157d907adb0/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:63095 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63096 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63097 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63099 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63104 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63105 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63111 - "GET /api/sessions/e5c25bf8413940118ee85157d907adb0/messages HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 421, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 56, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 213, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in get_messages
+    messages=[MessageOut.model_validate(m) for m in msgs],
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in <listcomp>
+    messages=[MessageOut.model_validate(m) for m in msgs],
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/pydantic/main.py", line 705, in model_validate
+    return cls.__pydantic_validator__.validate_python(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+pydantic_core._pydantic_core.ValidationError: 2 validation errors for MessageOut
+cost_usd
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+duration_ms
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+INFO:     127.0.0.1:63113 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63114 - "WebSocket /api/sessions/e5c25bf8413940118ee85157d907adb0/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:63124 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63125 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63126 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63128 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63131 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63133 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63139 - "GET /api/sessions/e5c25bf8413940118ee85157d907adb0/messages HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 421, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 56, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/cors.py", line 85, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 78, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/starlette/routing.py", line 75, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 302, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/fastapi/routing.py", line 213, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in get_messages
+    messages=[MessageOut.model_validate(m) for m in msgs],
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/routes/sessions.py", line 159, in <listcomp>
+    messages=[MessageOut.model_validate(m) for m in msgs],
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/shubhojeet/Projects/LocalCode/.venv/lib/python3.11/site-packages/pydantic/main.py", line 705, in model_validate
+    return cls.__pydantic_validator__.validate_python(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+pydantic_core._pydantic_core.ValidationError: 2 validation errors for MessageOut
+cost_usd
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+duration_ms
+  Field required [type=missing, input_value={'role': 'user', 'content...T12:20:07.577034+00:00'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+INFO:     127.0.0.1:63141 - "WebSocket /api/sessions/e5c25bf8413940118ee85157d907adb0/ws" [accepted]
+INFO:     127.0.0.1:63142 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:63144 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [82932]
+INFO:     Started server process [84837]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:63268 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63270 - "GET /api/sessions/e5c25bf8413940118ee85157d907adb0/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63277 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63278 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63279 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63281 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63282 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63283 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63289 - "GET /api/sessions/e5c25bf8413940118ee85157d907adb0/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63290 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63292 - "WebSocket /api/sessions/e5c25bf8413940118ee85157d907adb0/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:63317 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63318 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63319 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63321 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63324 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63326 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63332 - "GET /api/sessions/e5c25bf8413940118ee85157d907adb0/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63334 - "WebSocket /api/sessions/e5c25bf8413940118ee85157d907adb0/ws" [accepted]
+INFO:     127.0.0.1:63335 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:63445 - "GET /api/sessions/4f815cf1f3d74e1dbed076e453d48490/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63447 - "WebSocket /api/sessions/4f815cf1f3d74e1dbed076e453d48490/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:63453 - "GET /api/sessions/e5c25bf8413940118ee85157d907adb0/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63455 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63456 - "WebSocket /api/sessions/e5c25bf8413940118ee85157d907adb0/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:63466 - "GET /api/sessions/4f815cf1f3d74e1dbed076e453d48490/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63467 - "WebSocket /api/sessions/4f815cf1f3d74e1dbed076e453d48490/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:63470 - "DELETE /api/sessions/4f815cf1f3d74e1dbed076e453d48490 HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:63476 - "GET /api/sessions/e5c25bf8413940118ee85157d907adb0/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63478 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63479 - "WebSocket /api/sessions/e5c25bf8413940118ee85157d907adb0/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:63496 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63498 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63501 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:63507 - "GET /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63509 - "WebSocket /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/ws" [accepted]
+INFO:     127.0.0.1:63510 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:63543 - "DELETE /api/sessions/e5c25bf8413940118ee85157d907adb0 HTTP/1.1" 204 No Content
+dispatch_subagent: planner raised
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/orchestrator/dispatch.py", line 152, in _dispatch_subagent
+    async for ev in run_step_fn(step, role_cfg, ctx, outputs):
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/orchestrator/fleet.py", line 910, in _run_step_with_role
+    raise StepTimeoutError(error_text)
+backend.app.orchestrator.fleet.StepTimeoutError: planner step exceeded 600s budget with no response — aborting turn. Check that the claude backend is healthy.
+dispatch_subagent: coder raised
+Traceback (most recent call last):
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/orchestrator/dispatch.py", line 152, in _dispatch_subagent
+    async for ev in run_step_fn(step, role_cfg, ctx, outputs):
+  File "/Users/shubhojeet/Projects/LocalCode/backend/app/orchestrator/fleet.py", line 910, in _run_step_with_role
+    raise StepTimeoutError(error_text)
+backend.app.orchestrator.fleet.StepTimeoutError: coder step exceeded 600s budget with no response — aborting turn. Check that the opencode backend is healthy.
+INFO:     connection closed
+INFO:     127.0.0.1:64117 - "WebSocket /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:64120 - "GET /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:64244 - "WebSocket /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:64247 - "GET /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:64384 - "WebSocket /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:64387 - "GET /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:64516 - "WebSocket /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:64519 - "GET /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:64671 - "WebSocket /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:64674 - "GET /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:64833 - "WebSocket /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:64836 - "GET /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:65010 - "WebSocket /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:65013 - "GET /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:65176 - "WebSocket /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:65179 - "GET /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:65346 - "WebSocket /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:65349 - "GET /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:65522 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65523 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65524 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65530 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65532 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65533 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49155 - "GET /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49157 - "WebSocket /api/sessions/3e33cbd5e84c44a88396751fdf9998f9/ws" [accepted]
+INFO:     127.0.0.1:49158 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:49180 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49181 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49182 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49184 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49187 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49189 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49199 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49200 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49201 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49205 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49206 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49208 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49218 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49219 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49220 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49224 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49226 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49228 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49232 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49234 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49237 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49243 - "GET /api/sessions/0e708f16d7234fc48dfab8651632f1b3/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49245 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49246 - "WebSocket /api/sessions/0e708f16d7234fc48dfab8651632f1b3/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:49743 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:49748 - "GET /api/sessions/e6156fd342a740759265906215d56709/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49749 - "WebSocket /api/sessions/e6156fd342a740759265906215d56709/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:49755 - "WebSocket /api/sessions/0e708f16d7234fc48dfab8651632f1b3/ws" [accepted]
+INFO:     127.0.0.1:49757 - "GET /api/sessions/0e708f16d7234fc48dfab8651632f1b3/messages HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:49758 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:49803 - "GET /api/sessions/e6156fd342a740759265906215d56709/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49804 - "WebSocket /api/sessions/e6156fd342a740759265906215d56709/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:49810 - "GET /api/sessions/0e708f16d7234fc48dfab8651632f1b3/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49812 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49813 - "WebSocket /api/sessions/0e708f16d7234fc48dfab8651632f1b3/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:50316 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50318 - "GET /api/sessions/0e708f16d7234fc48dfab8651632f1b3/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50319 - "GET /api/sessions/0e708f16d7234fc48dfab8651632f1b3/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50321 - "GET /api/sessions/0e708f16d7234fc48dfab8651632f1b3/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:50362 - "WebSocket /api/sessions/0e708f16d7234fc48dfab8651632f1b3/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:50365 - "GET /api/sessions/0e708f16d7234fc48dfab8651632f1b3/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:50375 - "GET /api/sessions/0e708f16d7234fc48dfab8651632f1b3/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50377 - "WebSocket /api/sessions/0e708f16d7234fc48dfab8651632f1b3/ws" [accepted]
+INFO:     127.0.0.1:50379 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [84837]
+INFO:     Started server process [34804]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:50423 - "WebSocket /api/sessions/0e708f16d7234fc48dfab8651632f1b3/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:50426 - "GET /api/sessions/0e708f16d7234fc48dfab8651632f1b3/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50427 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50428 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50437 - "DELETE /api/sessions HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:50440 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50445 - "GET /api/sessions/76c93c700a2547df886ff6c4f2d83ccc/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50446 - "WebSocket /api/sessions/76c93c700a2547df886ff6c4f2d83ccc/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:50450 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50452 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50456 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:50462 - "GET /api/sessions/197560fabe714839a03670b6b32e2540/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50464 - "WebSocket /api/sessions/197560fabe714839a03670b6b32e2540/ws" [accepted]
+INFO:     127.0.0.1:50465 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:50539 - "WebSocket /api/sessions/76c93c700a2547df886ff6c4f2d83ccc/ws" [accepted]
+INFO:     127.0.0.1:50540 - "GET /api/sessions/76c93c700a2547df886ff6c4f2d83ccc/messages HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:50546 - "GET /api/sessions/197560fabe714839a03670b6b32e2540/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50548 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50549 - "WebSocket /api/sessions/197560fabe714839a03670b6b32e2540/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:50563 - "GET /api/sessions/76c93c700a2547df886ff6c4f2d83ccc/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50564 - "WebSocket /api/sessions/76c93c700a2547df886ff6c4f2d83ccc/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:50570 - "GET /api/sessions/197560fabe714839a03670b6b32e2540/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50571 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50573 - "WebSocket /api/sessions/197560fabe714839a03670b6b32e2540/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:50576 - "GET /api/sessions/76c93c700a2547df886ff6c4f2d83ccc/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50577 - "GET /api/sessions/197560fabe714839a03670b6b32e2540/messages HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [34804]
+INFO:     Started server process [36271]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:50701 - "GET /api/health HTTP/1.1" 200 OK

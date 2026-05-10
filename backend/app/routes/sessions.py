@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from fastapi import (
     APIRouter,
@@ -18,32 +16,18 @@ from fastapi import (
 
 from ..config import get_settings
 from ..orchestrator import get_provider
-from ..orchestrator.base import Event, Provider, RunContext
 from ..schemas import CreateSessionRequest, MessagesPage, MessageOut, SessionOut
+from ..session_runner import drop_all_runners, drop_runner, get_runner
 from ..storage.sessions import store as session_store
 
 
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Per-session locking — prevents two browser tabs (or two queued prompts on
-# one tab) from running concurrent turns on the same session, which would
-# scramble the OpenCode SSE stream and the message ordering in the DB.
-# ─────────────────────────────────────────────────────────────────────────────
-
-_session_locks: dict[str, asyncio.Lock] = {}
-_session_locks_guard = asyncio.Lock()
-
-
-async def _get_session_lock(session_id: str) -> asyncio.Lock:
-    async with _session_locks_guard:
-        return _session_locks.setdefault(session_id, asyncio.Lock())
-
-
-async def _drop_session_lock(session_id: str) -> None:
-    async with _session_locks_guard:
-        _session_locks.pop(session_id, None)
+# Concurrency note: the per-session asyncio.Lock that used to live here moved
+# into `SessionRunner` so it covers turn execution rather than just the WS
+# handler. WS connections are viewers — they subscribe/unsubscribe without
+# holding any session-wide lock.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -87,27 +71,6 @@ def _validate_additional_dirs(dirs: list[str] | None) -> list[str] | None:
     return out or None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Safe wrapper around a provider's `run`: turns exceptions into events and
-# guarantees an `assistant.done` so the UI clears its working indicator. Note
-# that the *consumer* is responsible for `aclose()`-ing this generator on
-# early exit (e.g. WS disconnect) so the inner provider's resources are freed.
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def _safe_run(provider: Provider, ctx: RunContext) -> AsyncIterator[Event]:
-    saw_done = False
-    try:
-        async for ev in provider.run(ctx):
-            if ev.type == "assistant.done":
-                saw_done = True
-            yield ev
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("provider.run raised")
-        yield Event(type="error", data={"message": str(exc) or repr(exc)})
-    if not saw_done:
-        yield Event(type="assistant.done", data={})
-
-
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
@@ -137,11 +100,10 @@ async def create_session(body: CreateSessionRequest) -> SessionOut:
 @router.delete("", status_code=204, response_model=None)
 async def delete_all_sessions() -> None:
     """Wipe every session — removes the on-disk session dirs and the
-    user-global index. Per-session asyncio locks are also cleared so a
-    reused session id doesn't inherit stale state."""
+    user-global index. In-memory runners are torn down too (any in-flight
+    turn is cancelled) so a reused id doesn't inherit stale state."""
     await session_store.delete_all_sessions()
-    async with _session_locks_guard:
-        _session_locks.clear()
+    await drop_all_runners()
 
 
 @router.get("/{session_id}/messages", response_model=MessagesPage)
@@ -167,7 +129,7 @@ async def delete_session(session_id: str) -> None:
     existed = await session_store.delete_session(session_id)
     if not existed:
         raise HTTPException(404)
-    await _drop_session_lock(session_id)
+    await drop_runner(session_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -196,26 +158,29 @@ async def _ws_heartbeat(ws: WebSocket) -> None:
 
 @router.websocket("/{session_id}/ws")
 async def chat_ws(websocket: WebSocket, session_id: str) -> None:
-    """Bidirectional chat. Client sends `{prompt: str}`; we stream events back.
+    """Viewer + control channel for a session.
 
-    Concurrency: a per-session asyncio.Lock serializes turns so two tabs (or
-    queued prompts on one tab) don't scramble the OpenCode event stream or
-    interleave DB writes.
+    The actual turn execution lives in `SessionRunner` and runs as an
+    independent task. This handler does three things:
 
-    Resource hygiene: the inner provider generator is `aclose()`-d on every
-    exit path so a WS disconnect mid-stream doesn't leak a Claude subprocess
-    or an open SSE connection. Whatever output we accumulated up to the
-    disconnect is still persisted as the assistant message.
+      1. Subscribes to the runner's broadcast on connect (with optional
+         `?since=<id>` replay so a reconnect picks up missed events
+         without refetching `/messages`).
+      2. Forwards inbound frames: `{prompt}` starts a new turn (rejected
+         if one is already running); `{type:"approval"}` is routed to the
+         runner's approval queue; `{type:"ping"|"pong"}` is keepalive.
+      3. Pumps live events from its subscriber queue out to the socket.
 
-    Liveness: an idle WS is closed after `WS_IDLE_TIMEOUT_S` and pinged every
-    `WS_HEARTBEAT_INTERVAL_S` to detect half-open TCP sessions.
+    A WS disconnect just unsubscribes — the running turn keeps going and
+    a reconnect resumes streaming.
     """
     await websocket.accept()
 
-    # Load the session metadata and pin provider/model from when it was created.
     sess = await session_store.get_session(session_id)
     if not sess:
-        await websocket.send_json({"type": "error", "data": {"message": "session not found"}})
+        await websocket.send_json(
+            {"type": "error", "data": {"message": "session not found"}}
+        )
         await websocket.close()
         return
     provider_name = sess["provider"]
@@ -225,13 +190,43 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
     upstream_id = sess.get("upstream_id")
     fleet_override = sess.get("fleet_config_override")
 
-    provider = await get_provider(provider_name)  # type: ignore[arg-type]
-    lock = await _get_session_lock(session_id)
+    runner = await get_runner(session_id)
+
+    # Optional `?since=<id>` query for replay. The frontend tracks the
+    # highest `_id` it received and passes it on reconnect; we replay any
+    # buffered events newer than that.
+    since_raw = websocket.query_params.get("since")
+    since_id: int | None = None
+    if since_raw and since_raw.isdigit():
+        since_id = int(since_raw)
+
+    queue, replay = await runner.subscribe(since_id=since_id)
+
+    # Replay buffered events first so the client catches up before live
+    # events arrive. If the client died between subscribe and replay, the
+    # forwarder below will detect it on the next send and bail.
+    for ev in replay:
+        try:
+            await websocket.send_json(ev)
+        except (WebSocketDisconnect, RuntimeError):
+            await runner.unsubscribe(queue)
+            return
+
     heartbeat = asyncio.create_task(_ws_heartbeat(websocket))
+
+    async def _forward_events() -> None:
+        """Drain the subscriber queue → WS until the WS dies."""
+        while True:
+            ev = await queue.get()
+            try:
+                await websocket.send_json(ev)
+            except (WebSocketDisconnect, RuntimeError):
+                return
+
+    forwarder = asyncio.create_task(_forward_events())
 
     try:
         while True:
-            # Idle-timeout the receive so silent clients don't pin resources.
             try:
                 raw = await asyncio.wait_for(
                     websocket.receive_text(), timeout=WS_IDLE_TIMEOUT_S
@@ -254,6 +249,16 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
                 )
                 continue
 
+            # Keepalive: server pings every WS_HEARTBEAT_INTERVAL_S; the
+            # client echoes back so the server's `receive_text()` resets
+            # its idle timer. Either direction's frame counts.
+            if msg.get("type") in ("ping", "pong"):
+                continue
+
+            if msg.get("type") == "approval":
+                await runner.submit_approval(msg)
+                continue
+
             prompt = msg.get("prompt") or ""
             if not prompt.strip():
                 await websocket.send_json(
@@ -261,206 +266,41 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
                 )
                 continue
 
-            async with lock:
-                # Per-turn back-channel for HITL approvals. The reader task
-                # below drains inbound WS frames during the turn and routes
-                # approval messages into this queue; everything else is
-                # silently dropped (consistent with prior behaviour, which
-                # also ignored frames mid-turn).
-                approval_q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-                async def _approval_reader() -> None:
-                    while True:
-                        try:
-                            raw = await websocket.receive_text()
-                        except WebSocketDisconnect:
-                            return
-                        except RuntimeError:
-                            # Socket closed underneath us.
-                            return
-                        try:
-                            msg = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        if isinstance(msg, dict) and msg.get("type") == "approval":
-                            await approval_q.put(msg)
-
-                reader = asyncio.create_task(_approval_reader())
-                try:
-                    if not await _run_one_turn(
-                        websocket=websocket,
-                        session_id=session_id,
-                        provider=provider,
-                        provider_name=provider_name,
-                        model=model,
-                        cwd=cwd,
-                        additional_dirs=additional_dirs,
-                        upstream_id=upstream_id,
-                        fleet_override=fleet_override,
-                        prompt=prompt,
-                        approval_channel=approval_q,
-                    ):
-                        # Client disconnected during the turn. Stop receiving.
-                        return
-                finally:
-                    reader.cancel()
-                    try:
-                        await reader
-                    except (asyncio.CancelledError, Exception):
-                        pass
+            provider = await get_provider(provider_name)  # type: ignore[arg-type]
+            started = runner.start_turn(
+                provider=provider,
+                provider_name=provider_name,
+                model=model,
+                cwd=cwd,
+                additional_dirs=additional_dirs,
+                upstream_id=upstream_id,
+                fleet_override=fleet_override,
+                prompt=prompt,
+            )
+            if not started:
+                # Reject silently-queueing a prompt — the user expects their
+                # message to either start running now or get a clear error.
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "data": {
+                            "message": (
+                                "another turn is already running on this "
+                                "session — wait for it to finish, or open a "
+                                "new chat."
+                            )
+                        },
+                    }
+                )
     finally:
         heartbeat.cancel()
-        # Don't close the provider — it's a singleton shared across sessions.
+        forwarder.cancel()
+        try:
+            await forwarder
+        except (asyncio.CancelledError, Exception):
+            pass
+        await runner.unsubscribe(queue)
         try:
             await websocket.close()
         except Exception:
             pass
-
-
-async def _run_one_turn(
-    *,
-    websocket: WebSocket,
-    session_id: str,
-    provider: Provider,
-    provider_name: str,
-    model: str,
-    cwd: str | None,
-    additional_dirs: list[str],
-    upstream_id: str | None,
-    fleet_override: dict[str, Any] | None,
-    prompt: str,
-    approval_channel: asyncio.Queue[dict[str, Any]] | None = None,
-) -> bool:
-    """Drive one user → assistant turn.
-
-    Returns True if the WS should keep accepting prompts, False if the client
-    disconnected mid-stream (caller should stop the receive loop).
-    """
-    # Persist the user turn — atomic JSONL append.
-    await session_store.append_message(
-        session_id,
-        {
-            "role": "user",
-            "content": [{"type": "text", "text": prompt}],
-        },
-    )
-
-    # Send the kickoff frame. If even THIS fails the client is already gone —
-    # but we already wrote the user message, which is fine.
-    try:
-        await websocket.send_json(
-            {
-                "type": "session.started",
-                "data": {"provider": provider_name, "model": model},
-            }
-        )
-    except (WebSocketDisconnect, RuntimeError):
-        return False
-
-    ctx = RunContext(
-        model=model,
-        prompt=prompt,
-        cwd=cwd,
-        additional_dirs=additional_dirs,
-        upstream_session_id=upstream_id,
-        extras={"fleet_config_override": fleet_override} if fleet_override else {},
-        approval_channel=approval_channel,
-    )
-
-    assistant_blocks: list[dict[str, Any]] = []
-    cost_usd: float | None = None
-    duration_ms: int | None = None
-    text_buf: list[str] = []
-    client_alive = True
-    # Mid-turn persistence: append the assistant message to messages.jsonl on
-    # first tool_use and re-append (with the same id) on every subsequent
-    # tool_use / tool_result. The store dedups by id keeping the LATEST line,
-    # so a page refresh during a multi-minute pipeline shows the partial
-    # turn instead of a blank chat. Cleanup compacts the JSONL down to one
-    # entry per id so this doesn't bloat disk over time.
-    assistant_message_id: str | None = None
-
-    async def _checkpoint() -> None:
-        """Append (or re-append) the assistant message to the JSONL log.
-
-        Persists ``assistant_blocks`` plus a flushed copy of any pending
-        ``text_buf`` (we don't promote text_buf into assistant_blocks here —
-        that happens lazily on the next tool_use, so checkpoint stays
-        idempotent). Filesystem failure is logged but not raised: a
-        checkpoint loss must never break the WS lifecycle.
-        """
-        nonlocal assistant_message_id
-        flushed = list(assistant_blocks)
-        if text_buf:
-            flushed.append({"type": "text", "text": "".join(text_buf)})
-        if not flushed:
-            return
-        try:
-            payload: dict[str, Any] = {
-                "role": "assistant",
-                "content": flushed,
-                "cost_usd": cost_usd,
-                "duration_ms": duration_ms,
-            }
-            if assistant_message_id is not None:
-                payload["id"] = assistant_message_id
-            stored = await session_store.append_message(session_id, payload)
-            if assistant_message_id is None:
-                assistant_message_id = stored["id"]
-        except Exception:
-            logger.exception("checkpoint persist failed for %s", session_id)
-
-    events = _safe_run(provider, ctx)
-    try:
-        async for ev in events:
-            # Update local accumulators first — even if the client disconnects
-            # we still want a consistent persisted record of what happened.
-            if ev.type == "assistant.text":
-                # Heartbeat pings ("still working") are chrome for the live UI;
-                # don't put them in persisted history.
-                if not ev.data.get("heartbeat"):
-                    text_buf.append(ev.data.get("text", ""))
-            elif ev.type == "assistant.tool_use":
-                if text_buf:
-                    assistant_blocks.append({"type": "text", "text": "".join(text_buf)})
-                    text_buf = []
-                assistant_blocks.append({"type": "tool_use", **ev.data})
-                # Checkpoint: a step has started. Persist so a refresh sees
-                # the role's tool_use card with its "running" status.
-                await _checkpoint()
-            elif ev.type == "tool.result":
-                assistant_blocks.append({"type": "tool_result", **ev.data})
-                # Checkpoint: a step finished. Persist its result.
-                await _checkpoint()
-            elif ev.type == "assistant.done":
-                cost_usd = ev.data.get("cost_usd")
-                duration_ms = ev.data.get("duration_ms")
-                # Final checkpoint happens in the finally block below.
-
-            if not client_alive:
-                # Client gone — stop streaming. Break (rather than continue)
-                # so the provider doesn't keep producing tokens we'll throw
-                # away. The finally below closes the generator cleanly.
-                break
-
-            try:
-                await websocket.send_json(ev.to_json())
-            except (WebSocketDisconnect, RuntimeError):
-                client_alive = False
-                break
-    finally:
-        # Critical: close the wrapper generator so the underlying provider's
-        # finally blocks (httpx stream close, subprocess cleanup) actually
-        # execute.
-        await events.aclose()
-
-        # Final flush + persist. Covers trailing text after the last
-        # tool_result, the final cost/duration from assistant.done, and the
-        # case where the WS died before any tool_result fired.
-        if text_buf:
-            assistant_blocks.append({"type": "text", "text": "".join(text_buf)})
-            text_buf = []
-        if assistant_blocks:
-            await _checkpoint()
-
-    return client_alive

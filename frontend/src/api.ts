@@ -50,7 +50,16 @@ export const api = {
     fetch("/api/sessions", { method: "DELETE" }).then(() => undefined),
 };
 
-export function openSessionSocket(sessionId: string): WebSocket {
+export function openSessionSocket(
+  sessionId: string,
+  sinceId?: number,
+): WebSocket {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  return new WebSocket(`${proto}//${location.host}/api/sessions/${sessionId}/ws`);
+  // `?since=<id>` lets the backend's session runner replay any events the
+  // client missed during a brief disconnect. Omitted on first connect (the
+  // client has nothing to resume from).
+  const qs = typeof sinceId === "number" && sinceId > 0 ? `?since=${sinceId}` : "";
+  return new WebSocket(
+    `${proto}//${location.host}/api/sessions/${sessionId}/ws${qs}`,
+  );
 }
