@@ -1,5 +1,5 @@
 # Active fleet config — see .localcode/fleet.yaml.example for the full schema.
-name: localcode-default
+name: default
 max_steps: 4
 entry_role: coder
 roles:
