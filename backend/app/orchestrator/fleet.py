@@ -1012,8 +1012,15 @@ async def _collect_text(
     return ""
 
 
+# Marker that ``_collect_text`` injects when it appends a tool-activity
+# digest underneath a sub-provider's narrative. The classifier strips
+# everything from this marker onward before parsing — otherwise tool log
+# lines would mask the model's actual classifier line.
+_TOOL_DIGEST_MARKER = "\n---\n(tool activity from "
+
+
 def _classify_gate(output: str, role: str) -> str:
-    """Parse the LAST non-empty line of a gate's output for its classifier.
+    """Parse a gate's output for its classifier line.
 
     Returns one of:
       - ``"lgtm"``        — explicit pass
@@ -1023,34 +1030,47 @@ def _classify_gate(output: str, role: str) -> str:
       - ``"nack_code"``   — tester says implementation is buggy
       - ``"nack_tests"``  — tester says tests themselves are buggy
 
-    Both system prompts instruct the model to put the classifier on the LAST
-    line. Earlier we used ``output.startswith("NACK")`` which only ever
-    examined the FIRST line — so a reviewer that prefaced its verdict with
-    descriptive prose ("The project directory is empty…") looked like an
-    LGTM and the workflow advanced past clear failures. This function is the
-    canonical classifier; ``_run_step_with_role`` and the retry loop both
-    consume it.
+    Robustness:
+      - Strips ``_collect_text``'s appended tool-activity digest first.
+        Without this, a reviewer that correctly emitted ``LGTM`` followed
+        by the digest would be misclassified because the absolute last
+        line of the output is now a Bash log line.
+      - Walks BACKWARDS for the last classifier-shaped line, so a model
+        that adds a friendly trailing sentence after its verdict
+        ("LGTM\\nThanks for the review!") still matches.
+      - Tolerates Markdown decorations on the classifier line (``**LGTM**``,
+        ```LGTM```, etc.) by stripping common decoration characters before
+        the prefix check.
+      - Fail-safe when no classifier is found: NACK for reviewer, NACK_CODE
+        for tester. Better to retry than to silently advance past work the
+        gate didn't actually bless.
     """
-    lines = [ln.strip() for ln in output.strip().splitlines() if ln.strip()]
+    body = output.split(_TOOL_DIGEST_MARKER, 1)[0]
+    lines = [ln.strip() for ln in body.strip().splitlines() if ln.strip()]
     if not lines:
-        # Empty output → fail-safe NACK. Retry rather than silently advance.
         return "nack" if role != "tester" else "nack_code"
-    last = lines[-1].upper()
+
+    classifier: str | None = None
+    for ln in reversed(lines):
+        upper = ln.lstrip("`*_# ").upper()
+        if upper.startswith(
+            ("LGTM", "TESTS_OK", "NACK_TESTS", "NACK_CODE", "NACK")
+        ):
+            classifier = upper
+            break
+
+    if classifier is None:
+        return "nack" if role != "tester" else "nack_code"
 
     if role == "tester":
-        if last.startswith("LGTM") or last.startswith("TESTS_OK"):
+        if classifier.startswith("LGTM") or classifier.startswith("TESTS_OK"):
             return "lgtm"
-        if last.startswith("NACK_TESTS"):
+        if classifier.startswith("NACK_TESTS"):
             return "nack_tests"
-        if last.startswith("NACK_CODE") or last.startswith("NACK"):
-            return "nack_code"
-        # Unclassified output → assume implementation bug (the more common
-        # cause of test failure). Better to retry the coder than to ship.
+        # Bare NACK or NACK_CODE → assume implementation bug.
         return "nack_code"
 
-    # Reviewer (or any other gate that uses the LGTM / NACK protocol).
-    if last.startswith("LGTM"):
+    # Reviewer (or any other gate using the LGTM / NACK protocol).
+    if classifier.startswith("LGTM"):
         return "lgtm"
-    if last.startswith("NACK"):
-        return "nack"
-    return "nack"  # unclassified → fail-safe NACK
+    return "nack"

@@ -145,7 +145,7 @@ async def create_session(
     return SessionOut.model_validate(s, from_attributes=True)
 
 
-@router.delete("", status_code=204)
+@router.delete("", status_code=204, response_model=None)
 async def delete_all_sessions(db: AsyncSession = Depends(get_session)) -> None:
     """Wipe every session.
 
@@ -189,7 +189,7 @@ async def get_messages(
     )
 
 
-@router.delete("/{session_id}", status_code=204)
+@router.delete("/{session_id}", status_code=204, response_model=None)
 async def delete_session(session_id: str, db: AsyncSession = Depends(get_session)) -> None:
     s = await db.get(Session, session_id)
     if not s:
