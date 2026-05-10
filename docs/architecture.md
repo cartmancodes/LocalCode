@@ -60,7 +60,8 @@ One control path. The orchestrator is itself an LLM agent — it makes routing d
 | [orchestrator.py](../backend/app/orchestrator/orchestrator.py) | `OrchestratorAgent` — wraps a claude-agent-sdk session, registers the dispatch MCP server, merges its own model output with sub-agent events from the sink into one outgoing event stream. |
 | [fleet.py](../backend/app/orchestrator/fleet.py) | `FleetProvider`, `FleetConfig`, `RoleConfig`, `Step`. The per-step runner `_run_step_with_role` (heartbeats + timeout + classifier) lives here — it's called from inside the dispatch tool. Plus config loader, merger, and built-in defaults. |
 | [base.py](../backend/app/orchestrator/base.py) | `Provider` protocol, `RunContext` (carries cwd, additional_dirs, approval_channel), `Event` and `EventType` literals. |
-| [routes/sessions.py](../backend/app/routes/sessions.py) | WebSocket handler. Drains the merged event stream, persists assistant blocks at every checkpoint, routes inbound approval messages to `RunContext.approval_channel`. |
+| [storage/sessions.py](../backend/app/storage/sessions.py) | Filesystem session store. Sessions persist as `<cwd>/.localcode/sessions/<uuid>/{meta.json, messages.jsonl}`; user-global index at `~/.localcode/sessions-index.json`; auto-cleanup with compaction. See [docs/storage.md](storage.md). |
+| [routes/sessions.py](../backend/app/routes/sessions.py) | WebSocket handler. Drains the merged event stream, persists assistant blocks at every checkpoint via the SessionStore, routes inbound approval messages to `RunContext.approval_channel`. |
 
 ---
 
@@ -228,27 +229,41 @@ The HITL block in the orchestrator's system prompt is only injected when `cfg.re
 
 ## Mid-turn persistence
 
-Every `tool_use` and `tool.result` event triggers a checkpoint:
+Every `tool_use` and `tool.result` event triggers a checkpoint via the
+[SessionStore](../backend/app/storage/sessions.py):
 
 ```python
 async def _checkpoint() -> None:
-    """INSERT the assistant message on first call, UPDATE thereafter."""
+    """Append (or re-append) the assistant message to messages.jsonl.
+
+    The store dedups by id keeping the LATEST line on read; cleanup
+    compacts the log to one entry per id over time."""
     flushed = list(assistant_blocks)
     if text_buf:
         flushed.append({"type": "text", "text": "".join(text_buf)})
     if not flushed: return
-    async with session_scope() as db:
-        if assistant_message_id is None:
-            msg = Message(session_id=..., role="assistant", content=flushed, ...)
-            db.add(msg); await db.flush()
-            assistant_message_id = msg.id
-        else:
-            await db.execute(update(Message).where(Message.id == assistant_message_id).values(content=flushed, ...))
+    payload = {
+        "role": "assistant",
+        "content": flushed,
+        "cost_usd": cost_usd,
+        "duration_ms": duration_ms,
+    }
+    if assistant_message_id is not None:
+        payload["id"] = assistant_message_id
+    stored = await session_store.append_message(session_id, payload)
+    if assistant_message_id is None:
+        assistant_message_id = stored["id"]
 ```
 
-A page refresh during a multi-minute workflow shows the latest checkpoint — every completed step is in the DB. Without this the user only saw their own prompt until the entire turn finished.
+POSIX `O_APPEND` is atomic for line writes — a crash mid-checkpoint loses
+at most the trailing line, never the whole turn. A page refresh during a
+multi-minute workflow shows the latest checkpoint, with every completed
+step's tool_use+tool_result already persisted. See [docs/storage.md](storage.md)
+for the on-disk shape, atomicity guarantees, and cleanup model.
 
-Heartbeat events (`assistant.text` with `heartbeat: True`) are filtered from `text_buf` so they reach the live WS but not persisted history. Result: live chat is responsive, persisted chat is clean.
+Heartbeat events (`assistant.text` with `heartbeat: True`) are filtered
+from `text_buf` so they reach the live WS but never get persisted. Live
+chat stays responsive; persisted history stays clean.
 
 ---
 

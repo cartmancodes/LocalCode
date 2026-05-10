@@ -10,21 +10,17 @@ from typing import Any
 
 from fastapi import (
     APIRouter,
-    Depends,
     HTTPException,
     Query,
     WebSocket,
     WebSocketDisconnect,
 )
-from sqlalchemy import delete, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..db import get_session, session_scope
-from ..models import Message, Session
 from ..orchestrator import get_provider
 from ..orchestrator.base import Event, Provider, RunContext
 from ..schemas import CreateSessionRequest, MessagesPage, MessageOut, SessionOut
+from ..storage.sessions import store as session_store
 
 
 logger = logging.getLogger(__name__)
@@ -120,16 +116,14 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[SessionOut])
-async def list_sessions(db: AsyncSession = Depends(get_session)) -> list[SessionOut]:
-    rows = (await db.execute(select(Session).order_by(Session.updated_at.desc()))).scalars().all()
-    return [SessionOut.model_validate(r, from_attributes=True) for r in rows]
+async def list_sessions() -> list[SessionOut]:
+    rows = await session_store.list_sessions()
+    return [SessionOut.model_validate(r) for r in rows]
 
 
 @router.post("", response_model=SessionOut)
-async def create_session(
-    body: CreateSessionRequest, db: AsyncSession = Depends(get_session)
-) -> SessionOut:
-    s = Session(
+async def create_session(body: CreateSessionRequest) -> SessionOut:
+    meta = await session_store.create_session(
         provider=body.provider,
         model=body.model,
         cwd=_validate_cwd(body.cwd),
@@ -137,24 +131,15 @@ async def create_session(
         title=body.title or "New chat",
         fleet_config_override=body.fleet_config_override,
     )
-    db.add(s)
-    # `get_session` commits on clean exit — but we need `s.id` populated NOW
-    # (so the response can include it), so flush + refresh explicitly.
-    await db.flush()
-    await db.refresh(s)
-    return SessionOut.model_validate(s, from_attributes=True)
+    return SessionOut.model_validate(meta)
 
 
 @router.delete("", status_code=204, response_model=None)
-async def delete_all_sessions(db: AsyncSession = Depends(get_session)) -> None:
-    """Wipe every session.
-
-    Bulk-DELETE rather than per-row ORM delete: messages are pruned via the
-    `ON DELETE CASCADE` on `messages.session_id`, so one round-trip suffices.
-    """
-    await db.execute(delete(Session))
-    # Drop any in-memory per-session locks too, so they don't leak when the
-    # same id is later reused by a new session.
+async def delete_all_sessions() -> None:
+    """Wipe every session — removes the on-disk session dirs and the
+    user-global index. Per-session asyncio locks are also cleared so a
+    reused session id doesn't inherit stale state."""
+    await session_store.delete_all_sessions()
     async with _session_locks_guard:
         _session_locks.clear()
 
@@ -164,37 +149,24 @@ async def get_messages(
     session_id: str,
     before: datetime | None = Query(default=None, description="ISO datetime — return messages older than this"),
     limit: int | None = Query(default=None, ge=1, description="Page size; defaults from settings"),
-    db: AsyncSession = Depends(get_session),
 ) -> MessagesPage:
     s = get_settings()
     page_size = min(limit or s.messages_page_default, s.messages_page_max)
-
-    stmt = select(Message).where(Message.session_id == session_id)
-    if before is not None:
-        stmt = stmt.where(Message.created_at < before)
-    # Fetch one extra row to determine `has_more` cheaply.
-    stmt = stmt.order_by(Message.created_at.desc()).limit(page_size + 1)
-    rows = (await db.execute(stmt)).scalars().all()
-
-    has_more = len(rows) > page_size
-    rows = rows[:page_size]
-    next_before = rows[-1].created_at if (has_more and rows) else None
-
-    # Frontend expects oldest → newest within the returned page.
-    rows.reverse()
+    msgs, next_before, has_more = await session_store.list_messages(
+        session_id, before=before, limit=page_size
+    )
     return MessagesPage(
-        messages=[MessageOut.model_validate(r, from_attributes=True) for r in rows],
+        messages=[MessageOut.model_validate(m) for m in msgs],
         next_before=next_before,
         has_more=has_more,
     )
 
 
 @router.delete("/{session_id}", status_code=204, response_model=None)
-async def delete_session(session_id: str, db: AsyncSession = Depends(get_session)) -> None:
-    s = await db.get(Session, session_id)
-    if not s:
+async def delete_session(session_id: str) -> None:
+    existed = await session_store.delete_session(session_id)
+    if not existed:
         raise HTTPException(404)
-    await db.delete(s)
     await _drop_session_lock(session_id)
 
 
@@ -240,19 +212,18 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
     """
     await websocket.accept()
 
-    # Load the session and pin provider/model from when it was created.
-    async with session_scope() as db:
-        sess = await db.get(Session, session_id)
-        if not sess:
-            await websocket.send_json({"type": "error", "data": {"message": "session not found"}})
-            await websocket.close()
-            return
-        provider_name = sess.provider
-        model = sess.model
-        cwd = sess.cwd
-        additional_dirs = list(sess.additional_dirs or [])
-        upstream_id = sess.upstream_id
-        fleet_override = sess.fleet_config_override
+    # Load the session metadata and pin provider/model from when it was created.
+    sess = await session_store.get_session(session_id)
+    if not sess:
+        await websocket.send_json({"type": "error", "data": {"message": "session not found"}})
+        await websocket.close()
+        return
+    provider_name = sess["provider"]
+    model = sess["model"]
+    cwd = sess.get("cwd")
+    additional_dirs = list(sess.get("additional_dirs") or [])
+    upstream_id = sess.get("upstream_id")
+    fleet_override = sess.get("fleet_config_override")
 
     provider = await get_provider(provider_name)  # type: ignore[arg-type]
     lock = await _get_session_lock(session_id)
@@ -365,15 +336,14 @@ async def _run_one_turn(
     Returns True if the WS should keep accepting prompts, False if the client
     disconnected mid-stream (caller should stop the receive loop).
     """
-    # Persist the user turn.
-    async with session_scope() as db:
-        db.add(
-            Message(
-                session_id=session_id,
-                role="user",
-                content=[{"type": "text", "text": prompt}],
-            )
-        )
+    # Persist the user turn — atomic JSONL append.
+    await session_store.append_message(
+        session_id,
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": prompt}],
+        },
+    )
 
     # Send the kickoff frame. If even THIS fails the client is already gone —
     # but we already wrote the user message, which is fine.
@@ -402,21 +372,22 @@ async def _run_one_turn(
     duration_ms: int | None = None
     text_buf: list[str] = []
     client_alive = True
-    # Mid-turn persistence: insert the assistant row on the FIRST tool_use
-    # and update it on every subsequent tool_result. A page refresh during
-    # a multi-minute pipeline can then load the partial turn from the
-    # messages endpoint instead of seeing a blank chat. Without this, the
-    # assistant message only existed at end-of-turn.
+    # Mid-turn persistence: append the assistant message to messages.jsonl on
+    # first tool_use and re-append (with the same id) on every subsequent
+    # tool_use / tool_result. The store dedups by id keeping the LATEST line,
+    # so a page refresh during a multi-minute pipeline shows the partial
+    # turn instead of a blank chat. Cleanup compacts the JSONL down to one
+    # entry per id so this doesn't bloat disk over time.
     assistant_message_id: str | None = None
 
     async def _checkpoint() -> None:
-        """INSERT the assistant message on first call, UPDATE thereafter.
+        """Append (or re-append) the assistant message to the JSONL log.
 
         Persists ``assistant_blocks`` plus a flushed copy of any pending
         ``text_buf`` (we don't promote text_buf into assistant_blocks here —
         that happens lazily on the next tool_use, so checkpoint stays
-        idempotent). DB failure is logged but not raised: a checkpoint loss
-        must never break the WS lifecycle.
+        idempotent). Filesystem failure is logged but not raised: a
+        checkpoint loss must never break the WS lifecycle.
         """
         nonlocal assistant_message_id
         flushed = list(assistant_blocks)
@@ -425,28 +396,17 @@ async def _run_one_turn(
         if not flushed:
             return
         try:
-            async with session_scope() as db:
-                if assistant_message_id is None:
-                    msg = Message(
-                        session_id=session_id,
-                        role="assistant",
-                        content=flushed,
-                        cost_usd=cost_usd,
-                        duration_ms=duration_ms,
-                    )
-                    db.add(msg)
-                    await db.flush()
-                    assistant_message_id = msg.id
-                else:
-                    await db.execute(
-                        update(Message)
-                        .where(Message.id == assistant_message_id)
-                        .values(
-                            content=flushed,
-                            cost_usd=cost_usd,
-                            duration_ms=duration_ms,
-                        )
-                    )
+            payload: dict[str, Any] = {
+                "role": "assistant",
+                "content": flushed,
+                "cost_usd": cost_usd,
+                "duration_ms": duration_ms,
+            }
+            if assistant_message_id is not None:
+                payload["id"] = assistant_message_id
+            stored = await session_store.append_message(session_id, payload)
+            if assistant_message_id is None:
+                assistant_message_id = stored["id"]
         except Exception:
             logger.exception("checkpoint persist failed for %s", session_id)
 

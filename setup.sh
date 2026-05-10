@@ -4,7 +4,7 @@
 #   ./setup.sh            # prep + start everything in the background
 #   ./setup.sh login      # run `claude login` and `opencode auth login` interactively
 #   ./setup.sh stop       # stop backend + frontend + opencode
-#   ./setup.sh down       # stop everything including docker compose
+#   ./setup.sh down       # stop everything (alias for stop now that the stack is purely host-side)
 #   ./setup.sh status     # show whether services are running
 #   ./setup.sh logs       # tail backend + frontend + opencode logs
 #
@@ -116,7 +116,7 @@ wait_http() {
     fi
     sleep 2; elapsed=$(( elapsed + 2 ))
   done
-  fail "$label did not become ready in ${timeout}s — check 'docker compose logs'"
+  fail "$label did not become ready in ${timeout}s — check $BACKEND_LOG / $OPENCODE_LOG"
 }
 
 # ── subcommands ──────────────────────────────────────────────────────────────
@@ -124,9 +124,7 @@ cmd_status() {
   load_env
   if is_running "$BACKEND_PID";  then ok  "backend running (pid $(cat "$BACKEND_PID"))";  else warn "backend stopped";  fi
   if is_running "$FRONTEND_PID"; then ok  "frontend running (pid $(cat "$FRONTEND_PID"))"; else warn "frontend stopped"; fi
-  if command -v docker >/dev/null 2>&1; then
-    docker compose ps 2>/dev/null || true
-  fi
+  if is_running "$OPENCODE_PID"; then ok  "opencode running (pid $(cat "$OPENCODE_PID"))"; else warn "opencode stopped"; fi
 }
 
 cmd_stop() {
@@ -135,13 +133,10 @@ cmd_stop() {
   stop_pidfile "$OPENCODE_PID" "opencode"
 }
 
+# `down` is now an alias for `stop` — there's no docker stack to bring down
+# anymore (Postgres has been replaced with on-disk session storage).
 cmd_down() {
   cmd_stop
-  if command -v docker >/dev/null 2>&1; then
-    log "docker compose down"
-    docker compose down
-    ok "docker stack stopped"
-  fi
 }
 
 cmd_logs() {
@@ -214,10 +209,6 @@ cmd_up() {
   need node    "${hint_brew:+$hint_brew node}"
   need npm     "${hint_brew:+$hint_brew node}"
   need curl    "${hint_brew:+$hint_brew curl}"
-  need docker  "install Docker Desktop from https://www.docker.com/products/docker-desktop/"
-  if ! docker compose version >/dev/null 2>&1; then
-    fail "docker compose v2 is required (the legacy 'docker-compose' binary is not supported)"
-  fi
   ok "all prerequisites present"
 
   # 2. .env
@@ -262,16 +253,13 @@ cmd_up() {
   # 4c. OpenCode CLI (host-side) — required for OAuth flows; can't run in Docker.
   ensure_opencode_installed
 
-  # 5. Docker stack (postgres only). OpenCode runs as a host process.
-  log "bringing up docker stack (postgres)"
-  docker compose up -d
+  # 5. Sessions are stored on disk under <session.cwd>/.localcode/sessions/
+  #    plus a user-global index at ~/.localcode/sessions-index.json. No
+  #    database to provision, no docker stack to bring up. Cleanup of stale
+  #    sessions is bounded by SESSION_RETENTION_DAYS (default 7) and runs
+  #    on every backend startup.
 
-  # 7. DB schema
-  log "ensuring database schema"
-  python -m backend.app.db_init
-  ok "schema ready"
-
-  # 8. Start backend (uvicorn) in the background
+  # 6. Start backend (uvicorn) in the background
   if is_running "$BACKEND_PID"; then
     warn "backend already running (pid $(cat "$BACKEND_PID")) — leaving as-is"
   else
@@ -323,13 +311,17 @@ ${C_OK}LocalCode is up.${C_END}
 
   UI:        http://localhost:5173
   Backend:   http://localhost:${PORT:-8080}/api/health
-  OpenCode:  http://localhost:4096   (host process, not docker — needed for OAuth flows.)
+  OpenCode:  http://localhost:4096   (host process — needed for OAuth flows.)
+
+  Sessions: stored on disk under <session.cwd>/.localcode/sessions/
+            (index at ~/.localcode/sessions-index.json). Auto-swept after
+            SESSION_RETENTION_DAYS days on backend startup.
 
   ./setup.sh login   # one-shot Claude + OpenCode login (browser opens)
   ./setup.sh logs    # tail backend + frontend + opencode
   ./setup.sh status  # show what's running
   ./setup.sh stop    # stop backend + frontend + opencode
-  ./setup.sh down    # stop everything (incl. docker)
+  ./setup.sh down    # alias for stop (no docker stack anymore)
 
 EOF
 }

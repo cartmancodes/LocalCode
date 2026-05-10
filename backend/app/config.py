@@ -35,11 +35,13 @@ class Settings(BaseSettings):
     port: int = 8080
     log_level: str = "INFO"
 
-    database_url: str = (
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/orchestrator"
-    )
-
     opencode_base_url: str = "http://localhost:4096"
+
+    # How long before a session is considered stale and gets swept by the
+    # cleanup pass. Mirrors Claude Code's ``cleanupPeriodDays``. Set to 0 to
+    # disable auto-deletion entirely (sessions accumulate forever; manual
+    # cleanup via the UI's /clear-all only).
+    session_retention_days: int = 7
 
     default_provider: Provider = "claude"
     default_model: str = "claude-sonnet-4-6"

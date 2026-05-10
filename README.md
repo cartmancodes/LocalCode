@@ -27,7 +27,7 @@ A provider-agnostic abstraction over **Claude Code** and **OpenCode** — one Cl
               Anthropic   OpenAI (ChatGPT subscription)
 ```
 
-Postgres holds session + message state. Both providers authenticate via host-side OAuth (`claude login` / `opencode auth login`) and stream directly to their upstreams. The fleet uses the orchestrator-as-agent pattern (matches Claude Code / OpenCode architecture); see [docs/architecture.md](docs/architecture.md).
+Sessions are persisted as files on disk under `<session.cwd>/.localcode/sessions/<uuid>/` (no database) — same pattern Claude Code uses; see [docs/storage.md](docs/storage.md). Both providers authenticate via host-side OAuth (`claude login` / `opencode auth login`) and stream directly to their upstreams. The fleet uses the orchestrator-as-agent pattern (matches Claude Code / OpenCode architecture); see [docs/architecture.md](docs/architecture.md).
 
 ## Why
 
@@ -51,9 +51,8 @@ See [docs/fleet.md](docs/fleet.md) for the fleet concept, [docs/fleet-config.md]
 | Path                                                                                          | Role                                                              |
 | :-------------------------------------------------------------------------------------------- | :---------------------------------------------------------------- |
 | [setup.sh](setup.sh)                                                                          | One-shot bring-up + `login` / `stop` / `down` / `status` / `logs` |
-| [docker-compose.yml](docker-compose.yml)                                                      | Postgres (OpenCode runs on the host)                              |
 | [pyproject.toml](pyproject.toml)                                                              | Backend deps                                                      |
-| [.env.example](.env.example)                                                                  | Settings template (model catalog, defaults)                       |
+| [.env.example](.env.example)                                                                  | Settings template (model catalog, defaults, session retention)    |
 | [.localcode/fleet.yaml](.localcode/fleet.yaml)                                                | Active fleet config — picks role → provider → model               |
 | [.localcode/fleet.yaml.example](.localcode/fleet.yaml.example) / [.json.example](.localcode/fleet.json.example) | Drop-in starters                                                  |
 | [backend/app/orchestrator/base.py](backend/app/orchestrator/base.py)                          | `Provider` protocol + `RunContext` + unified `Event` types        |
@@ -63,6 +62,7 @@ See [docs/fleet.md](docs/fleet.md) for the fleet concept, [docs/fleet-config.md]
 | [backend/app/orchestrator/orchestrator.py](backend/app/orchestrator/orchestrator.py)          | `OrchestratorAgent` — claude-agent-sdk session + merged event stream |
 | [backend/app/orchestrator/dispatch.py](backend/app/orchestrator/dispatch.py)                  | In-process MCP server: `dispatch_subagent` + `request_plan_approval` tools |
 | [backend/app/orchestrator/agent_def.py](backend/app/orchestrator/agent_def.py)                | `AgentDef` — registry entry shape (mirrors Claude Code's `AgentDefinition`) |
+| [backend/app/storage/sessions.py](backend/app/storage/sessions.py)                            | Filesystem session store — atomic JSONL append, mid-turn checkpoints, cleanup |
 | [backend/app/routes/sessions.py](backend/app/routes/sessions.py)                              | REST + WebSocket chat, `_safe_run` wrapper, mid-turn persistence  |
 | [backend/app/routes/fleet.py](backend/app/routes/fleet.py)                                    | `GET /api/fleet/config` for inspection                            |
 | [frontend/src/components/ChatPane.tsx](frontend/src/components/ChatPane.tsx)                  | Streaming chat UI with WS auto-reconnect + mid-turn refetch       |
@@ -73,8 +73,8 @@ See [docs/fleet.md](docs/fleet.md) for the fleet concept, [docs/fleet-config.md]
 ## Setup
 
 ```bash
-./setup.sh                # check deps, bring up postgres, install opencode on host,
-                          # create DB schema, start backend + frontend
+./setup.sh                # check deps, install opencode on host,
+                          # start backend + frontend (no database — sessions on disk)
 ./setup.sh login          # one-time browser-based: claude login + opencode auth login
 ```
 
@@ -107,6 +107,7 @@ Per-turn cost (USD) is reported by each provider in the `assistant.done` event a
 - [docs/fleet.md](docs/fleet.md) — fleet concept: roles, when to use it, what you see in chat.
 - [docs/fleet-config.md](docs/fleet-config.md) — configuration UX, presets, recipes, troubleshooting.
 - [docs/architecture.md](docs/architecture.md) — orchestrator + dispatch + event-flow technical deep-dive.
+- [docs/storage.md](docs/storage.md) — filesystem session store: paths, file shapes, atomicity, cleanup, comparison with Claude Code / OpenCode.
 - [docs/orchestration-proposals.md](docs/orchestration-proposals.md) — design history; the linear-pipeline → orchestrator-as-agent journey.
 - [docs/superpowers/plans/](docs/superpowers/plans/) — implementation plans for major features (writing-plans-style).
 
