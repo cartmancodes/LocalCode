@@ -1,136 +1,143 @@
-# Fleet — multi-agent orchestration (Proposal G)
+# Fleet — orchestrator-driven multi-agent workflow
 
-The fleet provider treats your prompt as a workflow rather than a single agent call. It decomposes the request with one model (the **Planner**) and runs the resulting steps through specialist models (**Developer**, **Coder**, **Reviewer**). The fleet itself implements the same `Provider` protocol as `claude` and `opencode`, so the UI renders it identically — each sub-step is a tool-use card you can expand.
+The `fleet` provider treats your prompt as a **workflow** rather than a single agent call. An LLM-driven **Orchestrator** reads your request, decides which specialist subagents to dispatch, runs them in isolated contexts, reasons about their results, and re-dispatches as needed. The orchestrator itself is a [claude-agent-sdk](https://docs.anthropic.com/en/api/agent-sdk) session running its own ReAct loop; subagents are dispatched via a custom MCP tool, so the same orchestrator can reach both Claude- and OpenCode-backed workers.
+
+This is the same shape Claude Code and OpenCode use for their main-session-with-Task-tool pattern, with one difference: our `dispatch_subagent` MCP tool routes provider-agnostically, so a single orchestrator can mix providers in one workflow.
+
+For the deep technical reference (event streams, cancellation, MCP layer, design tradeoffs), see [docs/architecture.md](architecture.md).
 
 ## Roles
 
-| Role          | Job                                                                       | Default model            |
-| :------------ | :------------------------------------------------------------------------ | :----------------------- |
-| **Planner**   | Decomposes user prompt into 1–6 steps; emits JSON.                        | `claude-sonnet-4-6`      |
-| **Developer** | Designs the approach for a step — interfaces, files, edge cases. No code. | `claude-opus-4-7`        |
-| **Coder**     | Implements the step. May use file-edit / bash tools.                      | `openai/gpt-5.3-codex`   |
-| **Reviewer**  | Gates the previous step (LGTM / NACK + reason). Used sparingly.           | `claude-haiku-4-5`       |
+| Role         | Job                                                                         | Default model            |
+| :----------- | :-------------------------------------------------------------------------- | :----------------------- |
+| **Planner**  | Produces a comprehensive Markdown implementation plan with file paths, complete code, test commands, and bite-sized steps. The plan is committed to `.localcode/plans/<timestamp>-<slug>.md`. | `claude-opus-4-7`        |
+| **Developer** *(optional)* | Extra design pass — interfaces, files, edge cases. No code. Used only when the plan needs more architectural detail. | `claude-sonnet-4-6`      |
+| **Coder**    | Executes the plan task-by-task using file-edit and bash tools. MUST use tools, not just describe intent. | `openai/gpt-5.3-codex` (via OpenCode) |
+| **Reviewer** | Verifies plan compliance + code quality on disk. Replies `LGTM` or `NACK: <reason>`. | `claude-sonnet-4-6`      |
+| **Tester**   | Final gate. Writes executable tests and runs them. Replies `LGTM`, `NACK_CODE` (impl bug), or `NACK_TESTS` (test bug). | `claude-haiku-4-5`       |
 
-The Planner picks `developer | coder | reviewer` per step. Developer steps emit a design only; the Coder reads it as context for the next step. Reviewer NACKs are surfaced as failed cards but do not (yet) trigger auto-retry.
+The orchestrator picks the order and which agents to dispatch based on the task. For non-trivial tasks the canonical order is:
+
+```
+planner → coder → reviewer → tester
+              ↑      ↓ NACK         ↓ NACK_CODE / NACK_TESTS
+              └──────┘                       │
+                          retry              │
+                ┌──────────────────────────────┘
+                ↓
+              coder again (with feedback)
+```
+
+The orchestrator can also skip the planner for trivial tasks, dispatch the developer when architectural ambiguity warrants it, or run any subset of agents the registry contains.
 
 ## When to use it
 
-- Multi-phase tasks (plan → design → implement → check).
-- Cost optimization: keep Opus / Sonnet on planning + design, Codex on the bulk work, Haiku on review.
-- Anytime you'd otherwise hand-prompt one agent to "first plan, then code, then review."
+- **Multi-phase tasks** (plan → code → review → test).
+- **Cost optimization**: keep `claude-opus-4-7` on planning, cheaper opencode-routed `gpt-5.3-codex` on the bulk implementation work, mid-tier sonnet on review, haiku on the test pass.
+- **Anything you'd hand-prompt one agent through "first plan, then code, then review, then write tests."**
 
-When **not** to use it: short factual questions, one-shots, or tasks where you'd rather keep the conversational thread inside one model. Fleet adds 1–3 LLM hops and is slower on trivial prompts.
-
-## Configuring (YAML or JSON)
-
-Drop a config at `.localcode/fleet.yaml` (or `.json` / `.yml`) in your project. Resolution order, first hit wins:
-
-1. `$LOCALCODE_FLEET_CONFIG` — absolute path override (YAML or JSON, detected by extension).
-2. `<cwd>/.localcode/fleet.{yaml,yml,json}`
-3. `<orchestrator-cwd>/.localcode/fleet.{yaml,yml,json}`
-
-Every field is optional — anything you omit inherits the default. Invalid fields (bad provider name, empty model) log a warning and revert to the default for that field, so a typo in one role doesn't sink the whole fleet.
-
-```yaml
-# .localcode/fleet.yaml
-name: opus-led
-max_steps: 4
-roles:
-  planner:   { provider: claude,   model: claude-opus-4-7 }
-  developer: { provider: claude,   model: claude-opus-4-7 }
-  coder:     { provider: opencode, model: openai/gpt-5.3-codex }
-  reviewer:  { provider: claude,   model: claude-haiku-4-5 }
-```
-
-Equivalent JSON:
-
-```json
-{
-  "name": "opus-led",
-  "max_steps": 4,
-  "roles": {
-    "planner":   { "provider": "claude",   "model": "claude-opus-4-7" },
-    "developer": { "provider": "claude",   "model": "claude-opus-4-7" },
-    "coder":     { "provider": "opencode", "model": "openai/gpt-5.3-codex" },
-    "reviewer":  { "provider": "claude",   "model": "claude-haiku-4-5" }
-  }
-}
-```
-
-You can also override the `system_prompt` per role to inject project conventions:
-
-```yaml
-roles:
-  coder:
-    provider: opencode
-    model: openai/gpt-5.3-codex
-    system_prompt: |
-      You are the Coder. Always run `pytest -q` after edits and paste the
-      result. Use `ruff format` on any Python you touch.
-```
-
-Config is loaded **per turn**, so editing the file takes effect on the next prompt without a backend restart.
-
-## Inspecting the active config
-
-```bash
-curl -fsS http://localhost:8080/api/fleet/config | jq
-```
-
-Returns:
-
-```json
-{
-  "config": { "name": "...", "planner": {...}, "developer": {...}, ... },
-  "is_default": false,
-  "config_source": "/Users/you/Projects/foo/.localcode/fleet.yaml",
-  "valid_providers": ["claude", "opencode"],
-  "valid_roles": ["planner", "developer", "coder", "reviewer"],
-  "defaults": { ... }
-}
-```
-
-`is_default: true` means no file was found and the built-in defaults are in effect.
+When **not** to use it: short factual questions, one-shots, or tasks where you'd rather keep the conversational thread inside one model. Fleet adds 1–4 LLM hops; trivial prompts feel slower with it on. Pick a direct `claude:…` or `opencode:…` model in those cases.
 
 ## How a turn flows
 
-1. **Plan.** Planner gets the user prompt, emits JSON: `{"steps": [{"id", "role", "prompt", "depends_on"}]}`.
-2. **Execute.** Steps run linearly. Each step's prompt is augmented with `## Output of <prior step>` blocks for declared dependencies (or, if none declared, the immediately previous step).
-3. **Final reply.** Last `coder` output → assistant text. If the plan was design-only, last `developer` output is used. Reviewer outputs are never the final answer.
-4. **Fallback.** If planning fails (model unreachable, JSON unparseable), the fleet runs a single coder step on the raw prompt — you still get an answer.
+1. **Orchestrator entry.** Your prompt + the registered agent registry go to the orchestrator (`claude-sonnet-4-6` by default — smart enough for delegation, cheap enough to use every turn).
+2. **Dispatch loop.** The orchestrator's ReAct loop calls `dispatch_subagent(name, prompt)` to delegate. Each dispatch:
+   - Spawns the named subagent in an isolated context window with its own system prompt and tools.
+   - Streams per-subagent events (tool_use card → heartbeats → tool_result) to the chat in real time via an `EventSink` queue.
+   - Returns the subagent's final summary text to the orchestrator.
+3. **Reasoning between dispatches.** The orchestrator reads the subagent's output and decides next steps:
+   - Coder returned only narrative without tool calls? Re-dispatch with "you MUST use tools to make real changes."
+   - Reviewer NACKed? Re-dispatch the coder with the NACK feedback prepended.
+   - Tester returned `NACK_CODE`? Re-dispatch coder + reviewer + tester. `NACK_TESTS`? Re-dispatch tester only with a "fix the test files" instruction.
+4. **HITL gate** *(optional)*. When `require_plan_approval` is set, the orchestrator's system prompt instructs it to call `request_plan_approval` after the planner. The chat shows an Approve/Reject card; the user's decision feeds back to the orchestrator.
+5. **Termination.** When all gates are green or the orchestrator's turn budget is exhausted, it emits a one-paragraph summary as the final assistant text.
 
-## Event protocol
+## What you see in the chat
 
-Each fleet turn produces this on the WebSocket:
+For each dispatched subagent the WS shows:
 
-```text
-session.started        provider=fleet model=default
-assistant.tool_use     id=fleet.plan name="planner [claude:claude-sonnet-4-6]"
-tool.result            id=fleet.plan content=<bullet list of steps>
-  ┌─ for each step ─┐
-  assistant.tool_use   id=s1 name="developer [claude:claude-opus-4-7]"
-  tool.result          id=s1 content=<design / Approach: ...>
-  assistant.tool_use   id=s2 name="coder [opencode:openai/gpt-5.3-codex]"
-  tool.result          id=s2 content=<changes summary>
-  └─────────────────┘
-assistant.text         <final answer = last coder step's output>
+```
+assistant.tool_use     name="planner [claude:claude-opus-4-7]"     input={"prompt": "<truncated>"}
+assistant.text         "_…planner still working (30s)…_"           heartbeat: True   ← every 30s
+assistant.text         "_…planner still working (60s)…_"           heartbeat: True
+tool.result            tool_use_id=orch.planner.1                  content=<full markdown plan>
+assistant.text         "_Plan saved to_ `<...>/.localcode/plans/<timestamp>-<slug>.md`"
+                       ↓
+                       (orchestrator decides what's next, possibly with its own narrative)
+                       ↓
+assistant.tool_use     name="coder [opencode:openai/gpt-5.3-codex]"
+…
 assistant.done         duration_ms=…
 ```
 
-The UI's existing tool-use cards render this without any front-end changes.
+Heartbeats are filtered out of persisted message history (live UI only); everything else is checkpointed mid-turn so a refresh shows the latest progress.
 
-## Limitations (v1)
+## Reliability features
 
-- **Linear plans only.** No parallel branches or DAG fan-out — `depends_on` is parsed but execution is sequential.
-- **No mid-step streaming visibility.** Sub-providers stream tokens internally; we collect the full text per step before emitting it.
-- **No auto-retry on reviewer NACK.** A NACK is surfaced as a failed card; the user has to ask for a re-do.
-- **Per-turn state only.** Multi-turn chats don't replay prior fleet outputs into a new planner — each user message starts fresh planning.
-- **Tool calls (Edit / Bash) inside a step are silent in the UI.** They still happen — the step's text output usually summarizes them.
+| Feature | Where | Behaviour |
+| :------ | :---- | :-------- |
+| Per-step timeout | `STEP_TIMEOUT_S = 600s` in `_run_step_with_role` | Hung sub-providers raise `StepTimeoutError`; orchestrator sees `is_error=True` and decides whether to retry or abort. |
+| Heartbeats | Every 30s during a long sub-provider call | Streams "still working" pings so the UI doesn't look frozen during opus's 2–3 min thinking. |
+| Mid-turn persistence | UPSERT on every `tool_use` and `tool.result` | A page refresh during a multi-minute workflow shows the latest checkpoint, not just the user prompt. |
+| WS reconnect refetch | Frontend `loadMessages()` runs on WS reopen | New WS replaces stale local state with the latest persisted blocks; mid-flight `tool_use` without matching result is marked `inProgress`. |
+| Last-line classifier | `_classify_gate(output, role)` | Reads the LAST non-empty line of a gate output. Unclassified output is treated as a fail-safe NACK rather than silently advancing. |
+| Bounded retry budget | `cfg.max_review_retries` | The orchestrator's system prompt tells it the budget; orchestrator self-bounds. |
+
+## Config
+
+```yaml
+# .localcode/fleet.yaml
+name: my-workflow
+max_review_retries: 3
+require_plan_approval: false
+
+roles:                              # registry — only these agents run
+  planner:
+    provider: claude
+    model: claude-opus-4-7
+  coder:
+    provider: opencode
+    model: openai/gpt-5.3-codex
+  reviewer:
+    provider: claude
+    model: claude-sonnet-4-6
+  tester:
+    provider: claude
+    model: claude-haiku-4-5
+```
+
+Drop the file into `.localcode/fleet.yaml` (or `.json` / `.yml`); resolution order, first hit wins:
+
+1. `$LOCALCODE_FLEET_CONFIG` — absolute path override.
+2. `<cwd>/.localcode/fleet.{yaml,yml,json}`
+3. `<orchestrator-cwd>/.localcode/fleet.{yaml,yml,json}`
+4. Built-in defaults (`planner + coder + reviewer + tester`).
+
+For configuration UX, presets, troubleshooting, see [docs/fleet-config.md](fleet-config.md).
+
+## Why this shape
+
+We previously shipped a **fixed linear pipeline** (planner JSON-decomposes → linear step execution → fixed retry topology) — see [docs/orchestration-proposals.md](orchestration-proposals.md), Proposal G. That worked but was rigid: adding an agent meant a code change, the orchestrator's "intelligence" was hardcoded Python, and parallel dispatch was impossible.
+
+The orchestrator-as-agent rewrite (May 2026) brings us structurally identical to Claude Code's main-session-with-Task and OpenCode's primary-agent-with-subagents architectures. Specifically:
+
+- The orchestrator is itself an LLM agent running a ReAct loop — it makes routing decisions, not Python code.
+- Subagents are dispatched via a Task-equivalent tool. Each gets an isolated context.
+- Provider-agnostic dispatch (the missing piece in upstream models) is achieved through a custom in-process MCP server that routes by registry lookup.
+- Reuse: the dispatch tool body delegates to `_run_step_with_role`, which means heartbeats, per-step timeout, the gate classifier, and mid-turn persistence all just work.
+
+Sources for the design:
+- [Claude Code subagents](https://code.claude.com/docs/en/sub-agents)
+- [OpenCode agents](https://opencode.ai/docs/agents/)
+- [Building agents with the Claude Agent SDK](https://claude.com/blog/building-agents-with-the-claude-agent-sdk)
+- [How Coding Agents Actually Work — OpenCode internals](https://cefboud.com/posts/coding-agents-internals-opencode-deepdive/)
 
 ## Source
 
-- [backend/app/orchestrator/fleet.py](../backend/app/orchestrator/fleet.py) — provider, config loader, plan parser, runner.
-- [backend/app/routes/fleet.py](../backend/app/routes/fleet.py) — `GET /api/fleet/config`.
-- [backend/app/orchestrator/registry.py](../backend/app/orchestrator/registry.py) — adds `fleet` to the singleton registry.
-- [.localcode/fleet.yaml.example](../.localcode/fleet.yaml.example) and [.localcode/fleet.json.example](../.localcode/fleet.json.example) — drop-in starter configs.
-- [docs/orchestration-proposals.md](orchestration-proposals.md) — design rationale.
+- [backend/app/orchestrator/fleet.py](../backend/app/orchestrator/fleet.py) — `FleetProvider`, config types, the per-step runner (`_run_step_with_role`), gate classifier.
+- [backend/app/orchestrator/orchestrator.py](../backend/app/orchestrator/orchestrator.py) — `OrchestratorAgent` (claude-agent-sdk session + merged event stream).
+- [backend/app/orchestrator/dispatch.py](../backend/app/orchestrator/dispatch.py) — in-process MCP server with `dispatch_subagent` and `request_plan_approval` tools.
+- [backend/app/orchestrator/agent_def.py](../backend/app/orchestrator/agent_def.py) — `AgentDef` (registry shape), conversion from legacy `RoleConfig`.
+- [backend/app/routes/fleet.py](../backend/app/routes/fleet.py) — `GET /api/fleet/config` for inspection.
+- [.localcode/fleet.yaml.example](../.localcode/fleet.yaml.example) — drop-in starter.
+- [docs/architecture.md](architecture.md) — deep technical reference.

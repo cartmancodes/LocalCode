@@ -56,7 +56,6 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
   const [maxSteps, setMaxSteps] = useState<number>(6);
   const [maxReviewRetries, setMaxReviewRetries] = useState<number>(1);
   const [requirePlanApproval, setRequirePlanApproval] = useState<boolean>(false);
-  const [orchestratorMode, setOrchestratorMode] = useState<boolean>(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -79,7 +78,6 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
         setMaxSteps(r.config.max_steps || 6);
         setMaxReviewRetries(r.config.max_review_retries ?? 1);
         setRequirePlanApproval(Boolean(r.config.require_plan_approval));
-        setOrchestratorMode(Boolean(r.config.orchestrator_mode));
       } catch (e: any) {
         if (!cancelled) setError(String(e?.message ?? e));
       }
@@ -238,9 +236,6 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
     if (requirePlanApproval !== Boolean(resp.config.require_plan_approval)) {
       override.require_plan_approval = requirePlanApproval;
     }
-    if (orchestratorMode !== Boolean(resp.config.orchestrator_mode)) {
-      override.orchestrator_mode = orchestratorMode;
-    }
     return Object.keys(override).length ? override : null;
   };
 
@@ -254,7 +249,6 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
     setMaxSteps(resp.config.max_steps || 6);
     setMaxReviewRetries(resp.config.max_review_retries ?? 1);
     setRequirePlanApproval(Boolean(resp.config.require_plan_approval));
-    setOrchestratorMode(Boolean(resp.config.orchestrator_mode));
   };
 
   return (
@@ -440,17 +434,6 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
             />
           </label>
         )}
-        <label
-          className="meta-row"
-          title="Tier-4 architecture: route the turn through an LLM-driven orchestrator that dispatches subagents dynamically (matches Claude Code / OpenCode). When off, uses the legacy fixed linear pipeline."
-        >
-          <span>Orchestrator mode (LLM-driven dispatch)</span>
-          <input
-            type="checkbox"
-            checked={orchestratorMode}
-            onChange={(e) => setOrchestratorMode(e.target.checked)}
-          />
-        </label>
       </div>
 
       {/* Advanced — system prompt overrides ───────────────────────────── */}

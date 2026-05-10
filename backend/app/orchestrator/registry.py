@@ -8,7 +8,6 @@ from .claude import ClaudeProvider
 from .fleet import FleetProvider
 from .opencode import OpenCodeProvider
 
-
 _singletons: dict[str, Provider] = {}
 _lock: asyncio.Lock | None = None
 

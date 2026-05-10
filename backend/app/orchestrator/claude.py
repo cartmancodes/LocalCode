@@ -9,9 +9,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, query
 from claude_agent_sdk import (
     AssistantMessage,
+    ClaudeAgentOptions,
     ResultMessage,
     StreamEvent,
     SystemMessage,
@@ -19,6 +19,7 @@ from claude_agent_sdk import (
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
+    query,
 )
 
 from .base import Event, RunContext

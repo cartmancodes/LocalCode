@@ -49,10 +49,6 @@ export interface FleetConfig {
   /** When true (and a planner is present), the workflow pauses after the
    *  planner emits its plan and waits for user approve/reject. */
   require_plan_approval: boolean;
-  /** Tier-4 architecture: route the turn through an LLM-driven orchestrator
-   *  that dispatches subagents dynamically (matches Claude Code / OpenCode).
-   *  Off → legacy fixed linear pipeline. */
-  orchestrator_mode: boolean;
   config_source: string | null;
 }
 
@@ -81,7 +77,6 @@ export interface FleetConfigOverride {
   max_steps?: number;
   max_review_retries?: number;
   require_plan_approval?: boolean;
-  orchestrator_mode?: boolean;
   entry_role?: FleetRole;
   roles?: Partial<Record<FleetRole, Partial<FleetRoleConfig>>>;
 }

@@ -43,7 +43,6 @@ from .agent_def import AgentDef, render_registry_for_prompt
 from .base import Event, RunContext
 from .dispatch import EventSink, build_dispatch_mcp
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -86,7 +85,7 @@ For a non-trivial task:
   1. Dispatch `planner` first. The planner produces a Markdown plan
      committed to disk under `.localcode/plans/`. Pass the user's
      original request as the prompt.
-  2. Dispatch `coder` with the FULL plan text in the prompt + a clear
+{hitl_block}  2. Dispatch `coder` with the FULL plan text in the prompt + a clear
      instruction to execute it task-by-task with file/bash tools.
   3. If `reviewer` is registered, dispatch it after the coder. Read its
      last line:
@@ -129,6 +128,21 @@ dispatches.
 """
 
 
+# Inserted between "Dispatch planner" and "Dispatch coder" when the workflow
+# has require_plan_approval enabled. Keeps the gate inline with the workflow
+# so the orchestrator can't miss it.
+HITL_BLOCK = """\
+  1a. **HITL plan approval is required for this workflow.** After the
+      planner returns, you MUST call `request_plan_approval` with a short
+      summary of the plan (the first ~30 lines is fine). The tool returns
+      one of:
+        - "User approved." → continue to step 2.
+        - "User rejected the plan." → STOP. Emit a brief assistant message
+          summarising the rejection feedback; do NOT dispatch the coder.
+        - "Approval timed out." → STOP and tell the user no decision arrived.
+"""
+
+
 class OrchestratorAgent:
     """Top-level fleet entry. Replaces the legacy fixed pipeline when a
     fleet config opts into ``orchestrator_mode``.
@@ -141,11 +155,13 @@ class OrchestratorAgent:
         run_step_fn: Any,  # FleetProvider._run_step_with_role bound method
         model: str = DEFAULT_ORCHESTRATOR_MODEL,
         max_turns: int = DEFAULT_ORCHESTRATOR_MAX_TURNS,
+        require_plan_approval: bool = False,
     ) -> None:
         self.registry = registry
         self._run_step_fn = run_step_fn
         self.model = model
         self.max_turns = max_turns
+        self.require_plan_approval = require_plan_approval
 
     async def run(self, ctx: RunContext) -> AsyncIterator[Event]:
         """Drive one user-prompt → assistant-response turn through the
@@ -155,16 +171,27 @@ class OrchestratorAgent:
         with per-subagent tool_use / tool_result / heartbeat events.
         """
         sink = EventSink()
-        mcp_server, allowed_tool = build_dispatch_mcp(
+        mcp_server, allowed_tools = build_dispatch_mcp(
             registry=self.registry,
             ctx=ctx,
             sink=sink,
             run_step_fn=self._run_step_fn,
         )
+        # The dispatch tool's wire name; used downstream to suppress its
+        # own tool_use events (the dispatch body emits per-role cards).
+        dispatch_tool_name = next(
+            (name for name in allowed_tools if name.endswith("__dispatch_subagent")),
+            "",
+        )
+        approval_tool_name = next(
+            (name for name in allowed_tools if name.endswith("__request_plan_approval")),
+            "",
+        )
 
         system_prompt = ORCHESTRATOR_SYSTEM.format(
             registry=render_registry_for_prompt(self.registry),
             max_turns=self.max_turns,
+            hitl_block=HITL_BLOCK if self.require_plan_approval else "",
         )
 
         options = ClaudeAgentOptions(
@@ -173,7 +200,7 @@ class OrchestratorAgent:
             add_dirs=list(ctx.additional_dirs or []),
             system_prompt=system_prompt,
             mcp_servers={"fleet_dispatch": mcp_server},
-            allowed_tools=[allowed_tool],
+            allowed_tools=allowed_tools,
             permission_mode="acceptEdits",
             max_turns=self.max_turns,
             include_partial_messages=True,
@@ -187,7 +214,8 @@ class OrchestratorAgent:
             try:
                 async for message in query(prompt=ctx.prompt, options=options):
                     async for ev in _translate_orchestrator_message(
-                        message, dispatch_tool_name=allowed_tool
+                        message,
+                        suppressed_tool_names={dispatch_tool_name, approval_tool_name},
                     ):
                         await merged.put(ev)
             except Exception as exc:  # noqa: BLE001
@@ -245,16 +273,20 @@ class OrchestratorAgent:
 async def _translate_orchestrator_message(
     message: Any,
     *,
-    dispatch_tool_name: str,
+    suppressed_tool_names: set[str],
 ) -> AsyncIterator[Event]:
-    """Like ``claude.py:_translate`` but suppresses the dispatch tool's own
+    """Like ``claude.py:_translate`` but suppresses our own MCP tools'
     tool_use / tool_result events.
 
-    The orchestrator's call to ``dispatch_subagent`` is an implementation
-    detail — what the user wants to see is the per-role tool_use cards
-    that the dispatch tool's body emits via the EventSink. If we forwarded
-    the raw ``mcp__fleet_dispatch__dispatch_subagent`` tool_use, the chat
-    would show *both* cards for the same call.
+    The orchestrator's calls to ``dispatch_subagent`` /
+    ``request_plan_approval`` are implementation details — the user-visible
+    cards (per-role agent cards, the approval card) are emitted directly
+    by those tools' bodies via the EventSink. Forwarding the raw MCP
+    tool_use blocks would show duplicate cards.
+
+    Note: the orchestrator's allowed_tools whitelist contains *only* our
+    MCP tools, so every tool_use at this layer is one we want to suppress.
+    Tool results are similarly always for our MCP tools at this layer.
     """
     if isinstance(message, StreamEvent):
         ev = message.event or {}
@@ -272,24 +304,18 @@ async def _translate_orchestrator_message(
                 # Already streamed via StreamEvent.
                 continue
             if isinstance(block, ToolUseBlock):
-                if block.name == dispatch_tool_name:
-                    # Hide the dispatch shim — sub-agent events from the
-                    # sink already render the user-visible card.
+                if block.name in suppressed_tool_names:
                     continue
                 yield Event(
                     type="assistant.tool_use",
                     data={"id": block.id, "name": block.name, "input": block.input},
                 )
             elif isinstance(block, ToolResultBlock):
-                # Same suppression for the matching tool result. We can't
-                # easily check the tool name from the result block, but
-                # since the only tool the orchestrator can call is the
-                # dispatch shim (allowed_tools whitelist), all tool results
-                # at this layer are dispatch results. Suppress them.
+                # All orchestrator-layer tool results are for our suppressed
+                # MCP tools (the only tools the orchestrator is permitted
+                # to call). Drop them.
                 continue
     elif isinstance(message, UserMessage):
-        # User messages here are tool-results being fed back into the
-        # orchestrator — same suppression as above.
         return
     elif isinstance(message, ResultMessage):
         yield Event(

@@ -320,3 +320,14 @@ AggregateError [ECONNREFUSED]:
 AggregateError [ECONNREFUSED]: 
     at internalConnectMultiple (node:net:1193:18)
     at afterConnectMultiple (node:net:1783:7)
+3:23:00 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+3:30:20 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+3:30:26 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+3:30:33 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+3:30:40 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+3:30:48 PM [vite] hmr update /src/components/FleetConfigEditor.tsx
+3:30:55 PM [vite] hmr update /src/components/ChatPane.tsx
+3:31:48 PM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)

@@ -42,7 +42,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -79,11 +78,6 @@ VALID_ROLES = ("planner", "developer", "coder", "reviewer", "tester")
 WORKER_ROLES: tuple[str, ...] = ("developer", "coder", "reviewer", "tester")
 StepRole = Literal["developer", "coder", "reviewer", "tester"]
 
-# How long the plan-approval gate blocks before treating silence as a timeout
-# (and aborting the turn). 5 min strikes a balance — long enough for the user
-# to read the plan, short enough that a tab left open overnight doesn't pin a
-# WS forever.
-APPROVAL_TIMEOUT_S = 300.0
 
 # Cadence at which a long-running sub-provider step (e.g. opus thinking for 3
 # minutes on a complex plan) emits a chat heartbeat so the UI doesn't look
@@ -219,14 +213,6 @@ class FleetConfig:
     # Reject ends the turn with the user's feedback recorded as the assistant
     # message. Has no effect on planner-less workflows.
     require_plan_approval: bool = False
-    # When true, route the turn through ``OrchestratorAgent`` (an LLM-driven
-    # dispatcher built on claude-agent-sdk + a custom MCP ``dispatch_subagent``
-    # tool) instead of the legacy fixed-order linear pipeline. Mirrors the
-    # Claude Code / OpenCode architecture: the orchestrator is itself an
-    # agent that delegates to the role registry dynamically, so workflows
-    # can branch, skip steps for trivial tasks, and re-dispatch on signal.
-    # Default off for backward compat — opt in via fleet.yaml or the UI.
-    orchestrator_mode: bool = False
     # Where the active config came from — None means built-in defaults. Useful
     # for the UI to surface "Fleet config: ~/.localcode/fleet.yaml".
     config_source: str | None = None
@@ -712,9 +698,6 @@ def _merge_config(base: FleetConfig, override: dict[str, Any]) -> FleetConfig:
         require_plan_approval=bool(
             override.get("require_plan_approval", base.require_plan_approval)
         ),
-        orchestrator_mode=bool(
-            override.get("orchestrator_mode", base.orchestrator_mode)
-        ),
     )
 
 
@@ -756,48 +739,6 @@ class Step:
     id: str
     role: str  # any role in VALID_ROLES — typed loose so planner-only single-shot fits too
     prompt: str
-
-
-def _slugify_plan_title(plan_text: str) -> str:
-    """Pull the first H1 heading from a markdown plan and turn it into a
-    filename-safe slug. Falls back to ``"plan"`` when there's no heading."""
-    m = re.search(r"^\s*#\s+(.+?)\s*$", plan_text, re.MULTILINE)
-    title = m.group(1) if m else "plan"
-    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-    return (slug or "plan")[:60]
-
-
-def _save_plan(plan_text: str, cwd: str | None) -> Path:
-    """Persist the planner's markdown output under
-    ``<cwd>/.localcode/plans/YYYYMMDD-HHMMSS-<slug>.md``.
-
-    The file IS the contract handed to the Coder — naming includes the slug
-    so a directory listing is browsable, and the timestamp so multiple plans
-    for the same feature don't collide.
-    """
-    base = Path(cwd) if cwd else Path.cwd()
-    plans_dir = base / ".localcode" / "plans"
-    plans_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    path = plans_dir / f"{timestamp}-{_slugify_plan_title(plan_text)}.md"
-    path.write_text(plan_text, encoding="utf-8")
-    return path
-
-
-def _summarize_plan_text(plan_text: str, plan_path: Path | None) -> str:
-    """Compact version of the plan for the planner's tool_result content.
-
-    The full plan is too long to render in the tool-card preview, but we
-    don't want the UI to show only the path either — so we include the path
-    plus the first ~30 lines. Approval gate sees the full plan.
-    """
-    head = f"Plan saved to {plan_path}\n\n" if plan_path else ""
-    lines = plan_text.splitlines()
-    if len(lines) > 30:
-        return head + "\n".join(lines[:30]) + "\n…"
-    return head + plan_text
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Provider
 # ─────────────────────────────────────────────────────────────────────────────
@@ -830,21 +771,18 @@ class FleetProvider:
             cfg = _merge_config(cfg, ui_override)
             cfg.config_source = f"{base_src} + UI override"
 
-        # Three branches:
-        #   1. Orchestrator mode (Tier-4 architecture): an LLM-driven
-        #      orchestrator dispatches subagents dynamically via a custom
-        #      MCP tool. This is the Claude Code / OpenCode pattern.
-        #   2. Linear planner-led pipeline (legacy default): fixed order
-        #      planner → coder → reviewer → tester with NACK retry.
-        #   3. Single-agent fallback: no planner / sole-role workflows.
-        if cfg.orchestrator_mode and cfg.workers():
-            async for ev in self._run_orchestrated(ctx, cfg):
-                yield ev
-        elif cfg.has("planner") and cfg.workers():
-            async for ev in self._run_planned(ctx, cfg):
-                yield ev
+        if not cfg.role_names():
+            yield Event(
+                type="error",
+                data={"message": "fleet has no agents configured"},
+            )
         else:
-            async for ev in self._run_single(ctx, cfg):
+            # Single path now: the LLM-driven orchestrator. It handles
+            # planner / coder / reviewer / tester registries equally well as
+            # single-role registries (it just dispatches the one available
+            # agent), so we don't need separate single-agent or linear-
+            # pipeline branches.
+            async for ev in self._run_orchestrated(ctx, cfg):
                 yield ev
 
         yield Event(
@@ -870,321 +808,10 @@ class FleetProvider:
         orchestrator = OrchestratorAgent(
             registry=registry,
             run_step_fn=self._run_step_with_role,
+            require_plan_approval=cfg.require_plan_approval,
         )
         async for ev in orchestrator.run(ctx):
             yield ev
-
-    async def _run_planned(
-        self, ctx: RunContext, cfg: FleetConfig
-    ) -> AsyncIterator[Event]:
-        """Planner-led pipeline.
-
-        Flow (each role is optional except planner; canonical execution order
-        is enforced by ``WORKER_ROLES``):
-
-            planner → (developer) → coder → (tester) → (reviewer)
-
-        The planner produces a Markdown plan, which we save to
-        ``<cwd>/.localcode/plans/`` and pass verbatim to every downstream
-        worker. Each worker also sees prior workers' reports so context
-        compounds (the reviewer needs the coder's report and the tester's
-        results to gate properly).
-
-        Two HITL/safety knobs layer on top:
-
-        - ``cfg.require_plan_approval`` blocks after the plan is written and
-          waits for the user to approve / reject via the WS back-channel.
-        - ``cfg.max_review_retries`` bounds NACK retries: on reviewer NACK,
-          the coder is re-run with the feedback, the tester re-runs (if
-          present) against the new code, and the reviewer re-runs. Up to N
-          times.
-        """
-        planner_base = cfg.get("planner")
-        assert planner_base is not None  # caller checked cfg.has("planner")
-        workers = cfg.workers()
-        plan_step_id = "fleet.plan"
-
-        # Tell the planner which worker roles are present, so it doesn't
-        # write tasks for roles that won't run.
-        planner_role = RoleConfig(
-            provider=planner_base.provider,
-            model=planner_base.model,
-            system_prompt=_planner_prompt_with_constraint(
-                planner_base.system_prompt, workers
-            ),
-        )
-
-        # Run the planner via the unified step runner so it gets the same
-        # heartbeats + timeout that worker steps get. (Previously the planner
-        # called ``_collect_text`` directly, which meant zero progress signal
-        # to the UI during a 2-3 minute opus turn — the #1 source of "looks
-        # frozen" reports.)
-        outputs_planner: dict[str, str] = {}
-        plan_step = Step(id=plan_step_id, role="planner", prompt=ctx.prompt)
-        try:
-            async for ev in self._run_step_with_role(
-                plan_step, planner_role, ctx, outputs_planner
-            ):
-                yield ev
-        except StepTimeoutError:
-            # _run_step_with_role already yielded a tool.result with the
-            # error; re-raise lets _safe_run wrap up with an error event +
-            # assistant.done. The whole turn aborts cleanly — single-shot
-            # fallback isn't safe here (the model wasn't responding at all).
-            raise
-
-        plan_text = outputs_planner.get(plan_step_id, "").strip()
-        if not plan_text:
-            # Planner returned but produced empty output (e.g. provider error
-            # surfaced as an empty digest). Fall back to single-shot so the
-            # user gets *something* instead of a silent failure.
-            logger.warning("fleet planner produced empty output; falling back to single-shot")
-            yield Event(
-                type="assistant.text",
-                data={
-                    "text": (
-                        "_Planner returned no plan; falling back to a single "
-                        f"{cfg.entry_role} step on your prompt._\n"
-                    )
-                },
-            )
-            async for ev in self._run_single(ctx, cfg):
-                yield ev
-            return
-
-        # Persist the plan as an inspectable artifact + tell the user where.
-        # The plan_text variable feeds into _build_worker_prompt below so we
-        # don't need to register the planner in shared outputs/executed (that
-        # would just duplicate the plan in every worker's prompt).
-        plan_path: Path | None
-        try:
-            plan_path = _save_plan(plan_text, ctx.cwd)
-        except OSError as exc:
-            logger.warning("failed to save plan to disk: %s", exc)
-            plan_path = None
-            yield Event(
-                type="assistant.text",
-                data={
-                    "text": (
-                        f"_Note: could not save plan to disk ({exc}). The plan "
-                        f"is still passed inline to downstream workers._\n"
-                    )
-                },
-            )
-        if plan_path is not None:
-            yield Event(
-                type="assistant.text",
-                data={"text": f"_Plan saved to_ `{plan_path}`\n"},
-            )
-
-        # ── HITL: plan approval gate ─────────────────────────────────────────
-        if cfg.require_plan_approval:
-            approval_id = "approval.plan"
-            yield Event(
-                type="pipeline.awaiting_approval",
-                data={
-                    "id": approval_id,
-                    "kind": "plan",
-                    "plan": plan_text,
-                    "message": (
-                        "Approve this plan to run the worker steps, or reject "
-                        "with feedback to abort the turn."
-                    ),
-                    "timeout_s": APPROVAL_TIMEOUT_S,
-                },
-            )
-            decision = await _await_approval(
-                ctx.approval_channel, approval_id, APPROVAL_TIMEOUT_S
-            )
-            yield Event(type="pipeline.approval_received", data=decision)
-            if decision["value"] != "yes":
-                if decision["value"] == "timeout":
-                    note = "Plan approval timed out — workflow aborted."
-                else:
-                    note = "Plan rejected by user."
-                fb = decision.get("feedback") or ""
-                if fb:
-                    note += f"\n\nFeedback: {fb}"
-                yield Event(type="assistant.text", data={"text": note})
-                return
-
-        # ── Worker pipeline ──────────────────────────────────────────────────
-        outputs: dict[str, str] = {}
-        executed: list[Step] = []
-
-        async def _run_role(
-            role: str,
-            step_id: str,
-            feedback_label: str | None = None,
-            feedback: str | None = None,
-        ) -> AsyncIterator[Event]:
-            """Run one worker role with the plan + prior outputs as context."""
-            role_cfg = cfg.get(role)
-            if role_cfg is None:
-                return
-            prompt = _build_worker_prompt(
-                user_request=ctx.prompt,
-                plan_text=plan_text,
-                plan_path=plan_path,
-                prior=executed,
-                outputs=outputs,
-                feedback_label=feedback_label,
-                feedback=feedback,
-            )
-            step = Step(id=step_id, role=role, prompt=prompt)
-            async for ev in self._run_step_with_role(step, role_cfg, ctx, outputs):
-                yield ev
-            executed.append(step)
-
-        # ── Initial pass: developer (if present) + coder ────────────────────
-        for role in ("developer", "coder"):
-            if role in workers:
-                async for ev in _run_role(role, f"fleet.{role}"):
-                    yield ev
-
-        # ── Reviewer pass (gates plan compliance — no test results yet) ────
-        last_reviewer_id: str | None = None
-        if "reviewer" in workers:
-            last_reviewer_id = "fleet.reviewer"
-            async for ev in _run_role("reviewer", last_reviewer_id):
-                yield ev
-
-        def _reviewer_passed() -> bool:
-            if last_reviewer_id is None:
-                return True
-            return _classify_gate(
-                outputs.get(last_reviewer_id, ""), "reviewer"
-            ) == "lgtm"
-
-        # ── Tester pass (only if reviewer passed; tester's verdict can also
-        #    trigger retries — see the unified retry loop below) ─────────────
-        last_tester_id: str | None = None
-        if "tester" in workers and _reviewer_passed():
-            last_tester_id = "fleet.tester"
-            async for ev in _run_role("tester", last_tester_id):
-                yield ev
-
-        # ── Unified retry loop ──────────────────────────────────────────────
-        # Two failure paths feed this loop:
-        #   1. Reviewer NACK         → re-run coder + reviewer (+ tester if present)
-        #   2. Tester NACK_CODE       → re-run coder + reviewer (+ tester)
-        #   3. Tester NACK_TESTS      → re-run tester only (test files were buggy)
-        # All paths share one budget (cfg.max_review_retries).
-        attempt = 0
-        while attempt < cfg.max_review_retries:
-            rev_class = (
-                _classify_gate(outputs.get(last_reviewer_id, ""), "reviewer")
-                if last_reviewer_id else "lgtm"
-            )
-            tst_class = (
-                _classify_gate(outputs.get(last_tester_id, ""), "tester")
-                if last_tester_id else "lgtm"
-            )
-            rev_nacked = rev_class == "nack"
-            tst_nack_code = tst_class == "nack_code"
-            tst_nack_tests = tst_class == "nack_tests"
-
-            if not (rev_nacked or tst_nack_code or tst_nack_tests):
-                break  # all gates green (or absent)
-
-            attempt += 1
-
-            if rev_nacked or tst_nack_code:
-                # Implementation bug → re-run coder, then reviewer, then tester.
-                if rev_nacked:
-                    feedback_label = "Reviewer feedback"
-                    feedback = outputs[last_reviewer_id]  # type: ignore[index]
-                else:
-                    feedback_label = "Tester feedback (implementation bug)"
-                    feedback = outputs[last_tester_id]  # type: ignore[index]
-
-                if "coder" not in workers:
-                    logger.info("fleet retry would need coder but it's not in this workflow; stopping")
-                    break
-
-                async for ev in _run_role(
-                    "coder",
-                    f"fleet.coder.retry{attempt}",
-                    feedback_label=feedback_label,
-                    feedback=feedback,
-                ):
-                    yield ev
-                if "reviewer" in workers:
-                    last_reviewer_id = f"fleet.reviewer.retry{attempt}"
-                    async for ev in _run_role("reviewer", last_reviewer_id):
-                        yield ev
-                if "tester" in workers and _reviewer_passed():
-                    last_tester_id = f"fleet.tester.retry{attempt}"
-                    async for ev in _run_role("tester", last_tester_id):
-                        yield ev
-            else:
-                # Tester says the test files themselves are buggy → re-run
-                # tester only with that feedback. Implementation is fine.
-                feedback = outputs[last_tester_id]  # type: ignore[index]
-                last_tester_id = f"fleet.tester.retry{attempt}"
-                async for ev in _run_role(
-                    "tester",
-                    last_tester_id,
-                    feedback_label="Tester feedback (test bug — fix the test files)",
-                    feedback=feedback,
-                ):
-                    yield ev
-
-        if attempt >= cfg.max_review_retries:
-            # Surface the terminal state both in the log and as a chat note,
-            # so the user knows the workflow stopped because budget ran out
-            # rather than because the work is actually green.
-            final_state: list[str] = []
-            if last_reviewer_id and _classify_gate(
-                outputs.get(last_reviewer_id, ""), "reviewer"
-            ) != "lgtm":
-                final_state.append("reviewer NACK")
-            if last_tester_id and _classify_gate(
-                outputs.get(last_tester_id, ""), "tester"
-            ) != "lgtm":
-                final_state.append("tester NACK")
-            if final_state:
-                logger.info(
-                    "fleet retry budget (%d) exhausted; final state: %s",
-                    cfg.max_review_retries, ", ".join(final_state),
-                )
-                yield Event(
-                    type="assistant.text",
-                    data={
-                        "text": (
-                            f"\n_Retry budget ({cfg.max_review_retries}) "
-                            f"exhausted with **{', '.join(final_state)}**. "
-                            f"The latest gate output is shown above; act on "
-                            f"its feedback and re-prompt to continue._\n"
-                        )
-                    },
-                )
-
-        final = _final_summary(outputs, executed)
-        if final:
-            yield Event(type="assistant.text", data={"text": final})
-
-    async def _run_single(
-        self, ctx: RunContext, cfg: FleetConfig
-    ) -> AsyncIterator[Event]:
-        """Single-agent path: the user prompt goes straight to one role
-        (the entry role). Used by Code-only / Review-only / Plan-only
-        workflows where decomposition would just add latency, and as a
-        fallback when planning fails."""
-        present = cfg.role_names()
-        role_name = (
-            cfg.entry_role
-            if cfg.entry_role in present
-            else (present[0] if present else "coder")
-        )
-        role_cfg = cfg.get(role_name) or ROLE_LIBRARY[role_name]
-        step = Step(id="fleet.single", role=role_name, prompt=ctx.prompt)
-        outputs: dict[str, str] = {}
-        async for ev in self._run_step_with_role(step, role_cfg, ctx, outputs):
-            yield ev
-        text = outputs.get(step.id, "")
-        if text:
-            yield Event(type="assistant.text", data={"text": text})
 
     async def _run_step_with_role(
         self,
@@ -1237,7 +864,7 @@ class FleetProvider:
                         asyncio.shield(collect), timeout=HEARTBEAT_INTERVAL_S
                     )
                     break
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     elapsed_s += int(HEARTBEAT_INTERVAL_S)
                     if elapsed_s >= STEP_TIMEOUT_S:
                         timed_out = True
@@ -1427,116 +1054,3 @@ def _classify_gate(output: str, role: str) -> str:
     if last.startswith("NACK"):
         return "nack"
     return "nack"  # unclassified → fail-safe NACK
-
-
-def _planner_prompt_with_constraint(base_prompt: str, workers: list[str]) -> str:
-    """Append a one-line constraint telling the planner which worker roles
-    actually exist in this workflow. The base prompt enumerates the full
-    cast; this pins down which of those will run, so the planner doesn't
-    write tasks for a role that's been disabled.
-    """
-    if set(workers) == set(WORKER_ROLES):
-        return base_prompt
-    return (
-        base_prompt
-        + "\n\n[Workflow constraint for this turn: only these worker roles "
-        + f"will run after you: {{ {', '.join(workers) or 'none'} }}. "
-        + "Tailor your plan accordingly — don't write tasks for absent roles.]"
-    )
-
-
-def _build_worker_prompt(
-    *,
-    user_request: str,
-    plan_text: str,
-    plan_path: Path | None,
-    prior: list[Step],
-    outputs: dict[str, str],
-    feedback_label: str | None = None,
-    feedback: str | None = None,
-) -> str:
-    """Prompt sent to every downstream worker (developer/coder/tester/reviewer).
-
-    Layered context:
-      1. The user's original request (so the worker can sanity-check the plan).
-      2. The full Markdown plan (the contract).
-      3. Each prior worker's report, in execution order.
-      4. (Retry only) feedback from the gate that NACKed, called out under a
-         labelled heading so the model can't miss it. The label tells the
-         worker which gate they're answering — e.g. "Reviewer feedback"
-         vs "Tester feedback (implementation bug)".
-    """
-    parts = [f"## Original user request\n{user_request}"]
-    plan_header = "## Implementation plan"
-    if plan_path is not None:
-        plan_header += f"\n_(committed to `{plan_path}`)_"
-    parts.append(f"{plan_header}\n\n{plan_text}")
-    for s in prior:
-        out = outputs.get(s.id, "")
-        if not out:
-            continue
-        label = s.role
-        if ".retry" in s.id:
-            label = f"{s.role} (retry {s.id.split('.retry', 1)[1]})"
-        parts.append(f"## Output from {label}\n{out}")
-    if feedback:
-        heading = feedback_label or "Feedback"
-        parts.append(f"## {heading} (must address this iteration)\n{feedback}")
-    return "\n\n".join(parts)
-
-
-async def _await_approval(
-    channel: asyncio.Queue[dict[str, Any]] | None,
-    approval_id: str,
-    timeout: float,
-) -> dict[str, Any]:
-    """Block until the user accepts/rejects this approval, or a timeout fires.
-
-    The queue is shared across the whole turn — if the user clicks an old
-    "Approve" button after a new approval is asked, the stale message has a
-    different ``id`` and is dropped here rather than satisfying the wrong gate.
-
-    When ``channel`` is None (no WS back-channel — e.g. a unit test calling
-    the provider directly), default-allow so headless usage still completes.
-    """
-    if channel is None:
-        return {"id": approval_id, "value": "yes", "feedback": None, "auto": True}
-
-    deadline = time.monotonic() + timeout
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return {"id": approval_id, "value": "timeout", "feedback": None}
-        try:
-            msg = await asyncio.wait_for(channel.get(), timeout=remaining)
-        except TimeoutError:
-            return {"id": approval_id, "value": "timeout", "feedback": None}
-        msg_id = msg.get("id")
-        if msg_id and msg_id != approval_id:
-            # Stale message addressed to a previous approval gate. Drop and
-            # keep waiting on the original deadline.
-            continue
-        value = "yes" if msg.get("value") == "yes" else "no"
-        return {"id": approval_id, "value": value, "feedback": msg.get("feedback")}
-
-
-def _final_summary(outputs: dict[str, str], executed: list[Step]) -> str:
-    """The user-facing assistant text after all workers complete.
-
-    Preference order: last coder output → last developer output → last
-    output of any non-review/non-tester role. The reviewer's LGTM/NACK is
-    metadata; the tester's pass/fail report is also metadata — neither
-    answers the user's actual request.
-    """
-    for role in ("coder", "developer"):
-        rolled = [
-            outputs[s.id] for s in executed if s.role == role and outputs.get(s.id)
-        ]
-        if rolled:
-            return rolled[-1]
-    any_substantive = [
-        outputs[s.id]
-        for s in executed
-        if s.role not in ("reviewer", "tester") and outputs.get(s.id)
-    ]
-    return any_substantive[-1] if any_substantive else ""

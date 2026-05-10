@@ -14,7 +14,9 @@ A provider-agnostic abstraction over **Claude Code** and **OpenCode** — one Cl
             │  ─ Provider protocol   │     unified Event stream
             │   ├ ClaudeProvider     │ ──▶ claude-agent-sdk → `claude` CLI
             │   ├ OpenCodeProvider   │ ──▶ opencode serve  (HTTP + SSE)
-            │   └ FleetProvider      │ ──▶ planner → developer → coder → reviewer
+            │   └ FleetProvider      │ ──▶ OrchestratorAgent dispatches
+            │                        │     planner / coder / reviewer / tester
+            │                        │     subagents via in-process MCP
             └──────┬───────┬─────────┘
                    │       │
                    ▼       ▼
@@ -25,13 +27,14 @@ A provider-agnostic abstraction over **Claude Code** and **OpenCode** — one Cl
               Anthropic   OpenAI (ChatGPT subscription)
 ```
 
-Postgres holds session + message state. Both providers authenticate via host-side OAuth (`claude login` / `opencode auth login`) and stream directly to their upstreams.
+Postgres holds session + message state. Both providers authenticate via host-side OAuth (`claude login` / `opencode auth login`) and stream directly to their upstreams. The fleet uses the orchestrator-as-agent pattern (matches Claude Code / OpenCode architecture); see [docs/architecture.md](docs/architecture.md).
 
 ## Why
 
-- **Two agents, one chat surface.** Claude Code is fast and tightly integrated; OpenCode is open-source and pluralistic. Pick per session — or hand both to the **fleet** and let a Planner orchestrate them per step.
+- **Two agents, one chat surface.** Claude Code is fast and tightly integrated; OpenCode is open-source and pluralistic. Pick per session — or hand both to the **fleet** and let an LLM orchestrator delegate to specialists per step.
 - **No keys to manage.** `./setup.sh login` runs `claude login` and `opencode auth login` once; tokens persist on disk / keychain and auto-refresh.
 - **Composable orchestration.** A `Provider` protocol turns "which agent answered" into an implementation detail. The fleet is itself a provider — UI doesn't need to know.
+- **Provider-agnostic dispatch.** A custom `dispatch_subagent` MCP tool lets one orchestrator dispatch both Claude- and OpenCode-backed subagents in the same workflow — the architectural unlock that lets you mix `claude-opus-4-7` for planning with `opencode/openai/gpt-5.3-codex` for the bulk coding work.
 
 ## Three providers
 
@@ -39,9 +42,9 @@ Postgres holds session + message state. Both providers authenticate via host-sid
 | :--------- | :-------------------------------------------------------------------------------------------------------- | :------------------------------------------------ |
 | `claude`   | Spawns the `claude` CLI via `claude-agent-sdk`. Streams text deltas (token-level) and tool-use events.    | `claude login` (OAuth, on host)                   |
 | `opencode` | Talks to `opencode serve` over HTTP + SSE. Sends model as `{providerID, modelID}`.                        | `opencode auth login` (OAuth, on host)            |
-| `fleet`    | Decomposes a prompt into Planner / Developer / Coder / Reviewer steps and runs them through the other two. | Config file + the underlying providers' auth      |
+| `fleet`    | LLM-driven orchestrator dispatches **planner / developer / coder / reviewer / tester** subagents dynamically. Matches the Claude Code / OpenCode main-session-with-Task pattern; subagents can be claude- or opencode-backed in the same workflow. | Config file + the underlying providers' auth      |
 
-See [docs/fleet.md](docs/fleet.md) for the fleet design and [docs/fleet-config.md](docs/fleet-config.md) for the configuration UX.
+See [docs/fleet.md](docs/fleet.md) for the fleet concept, [docs/fleet-config.md](docs/fleet-config.md) for configuration UX, and [docs/architecture.md](docs/architecture.md) for the technical deep-dive.
 
 ## Layout
 
@@ -53,14 +56,19 @@ See [docs/fleet.md](docs/fleet.md) for the fleet design and [docs/fleet-config.m
 | [.env.example](.env.example)                                                                  | Settings template (model catalog, defaults)                       |
 | [.localcode/fleet.yaml](.localcode/fleet.yaml)                                                | Active fleet config — picks role → provider → model               |
 | [.localcode/fleet.yaml.example](.localcode/fleet.yaml.example) / [.json.example](.localcode/fleet.json.example) | Drop-in starters                                                  |
-| [backend/app/orchestrator/base.py](backend/app/orchestrator/base.py)                          | `Provider` protocol + unified `Event`                             |
+| [backend/app/orchestrator/base.py](backend/app/orchestrator/base.py)                          | `Provider` protocol + `RunContext` + unified `Event` types        |
 | [backend/app/orchestrator/claude.py](backend/app/orchestrator/claude.py)                      | Claude SDK adapter (partial-message streaming, native auth)       |
 | [backend/app/orchestrator/opencode.py](backend/app/orchestrator/opencode.py)                  | OpenCode HTTP/SSE adapter                                         |
-| [backend/app/orchestrator/fleet.py](backend/app/orchestrator/fleet.py)                        | Multi-agent fleet (Proposal G — shipped)                          |
-| [backend/app/routes/sessions.py](backend/app/routes/sessions.py)                              | REST + WebSocket chat, `_safe_run` wrapper                        |
+| [backend/app/orchestrator/fleet.py](backend/app/orchestrator/fleet.py)                        | `FleetProvider`, config types, per-step runner (heartbeats + timeout + classifier) |
+| [backend/app/orchestrator/orchestrator.py](backend/app/orchestrator/orchestrator.py)          | `OrchestratorAgent` — claude-agent-sdk session + merged event stream |
+| [backend/app/orchestrator/dispatch.py](backend/app/orchestrator/dispatch.py)                  | In-process MCP server: `dispatch_subagent` + `request_plan_approval` tools |
+| [backend/app/orchestrator/agent_def.py](backend/app/orchestrator/agent_def.py)                | `AgentDef` — registry entry shape (mirrors Claude Code's `AgentDefinition`) |
+| [backend/app/routes/sessions.py](backend/app/routes/sessions.py)                              | REST + WebSocket chat, `_safe_run` wrapper, mid-turn persistence  |
 | [backend/app/routes/fleet.py](backend/app/routes/fleet.py)                                    | `GET /api/fleet/config` for inspection                            |
-| [frontend/src/components/ChatPane.tsx](frontend/src/components/ChatPane.tsx)                  | Streaming chat UI with WS auto-reconnect                          |
-| [docs/](docs/)                                                                                | Fleet, orchestration proposals, fleet-config usability            |
+| [frontend/src/components/ChatPane.tsx](frontend/src/components/ChatPane.tsx)                  | Streaming chat UI with WS auto-reconnect + mid-turn refetch       |
+| [frontend/src/components/CrewBar.tsx](frontend/src/components/CrewBar.tsx)                    | Per-agent status indicator (running / done / NACK)                |
+| [frontend/src/components/FleetConfigEditor.tsx](frontend/src/components/FleetConfigEditor.tsx) | Modal that emits per-session fleet override                      |
+| [docs/](docs/)                                                                                | Fleet concept, configuration UX, architecture deep-dive, design history |
 
 ## Setup
 
@@ -96,15 +104,17 @@ Per-turn cost (USD) is reported by each provider in the `assistant.done` event a
 
 ## Documentation
 
-- [docs/fleet.md](docs/fleet.md) — fleet design, role semantics, event protocol.
-- [docs/fleet-config.md](docs/fleet-config.md) — fleet configuration UX, recipes, troubleshooting.
-- [docs/orchestration-proposals.md](docs/orchestration-proposals.md) — design exploration for multi-backend orchestration; status flags marking what shipped.
+- [docs/fleet.md](docs/fleet.md) — fleet concept: roles, when to use it, what you see in chat.
+- [docs/fleet-config.md](docs/fleet-config.md) — configuration UX, presets, recipes, troubleshooting.
+- [docs/architecture.md](docs/architecture.md) — orchestrator + dispatch + event-flow technical deep-dive.
+- [docs/orchestration-proposals.md](docs/orchestration-proposals.md) — design history; the linear-pipeline → orchestrator-as-agent journey.
+- [docs/superpowers/plans/](docs/superpowers/plans/) — implementation plans for major features (writing-plans-style).
 
 ## What's next (good first issues)
 
 - **Per-turn model switching in the UI.** The model picker still pins at chat creation. Surface a per-message override and a `/use <provider>:<model>` slash command (Proposal A in the orchestration doc).
 - **Daily token meter.** Sum the tokens from each `assistant.done` over the day and render a per-day usage bar.
-- **Multi-turn Claude session reuse.** Switch from one-shot `query()` to `ClaudeSDKClient` and persist the upstream session id.
-- **Forward sub-step tool events.** Today the fleet's coder/developer steps stream their tool-use cards internally but the UI only sees the final text — wrap them with a `step_id` envelope.
-- **Auto-retry on reviewer NACK.** Surface NACKs as a re-run on the failing step.
+- **Multi-turn Claude session reuse.** Switch from one-shot `query()` to `ClaudeSDKClient` and persist the upstream session id so multi-turn chats keep state inside the SDK.
+- **Parallel sub-agent dispatch.** The orchestrator can call `dispatch_subagent` multiple times in one turn — the SDK runs them concurrently. Today our dispatch tool body is sequential per call; teach the orchestrator to batch independent dispatches (e.g. reviewer + tester after a coder LGTM).
+- **Per-tool permission enforcement.** Both Claude Code and OpenCode let agents declare allowed/denied tools. Wire `AgentDef.permission_mode` and a per-agent tool allowlist through to the providers so the reviewer is genuinely read-only at the tool layer.
 - **Alembic migrations.** `db_init.py` uses `metadata.create_all`.

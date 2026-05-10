@@ -2,7 +2,11 @@
 
 Design exploration for letting one chat session use both backends, picking the right one per turn based on user preference, task type, and budget.
 
-> **Status as of 2026-05-09:** Proposal G is **shipped** ([docs/fleet.md](fleet.md), [docs/fleet-config.md](fleet-config.md)). All others remain proposals.
+> **Status as of 2026-05-10:** **Proposal G's linear-pipeline implementation has been superseded by the orchestrator-as-agent rewrite** (May 2026). See [docs/architecture.md](architecture.md) for the current architecture and [docs/superpowers/plans/2026-05-10-orchestrator-architecture.md](superpowers/plans/2026-05-10-orchestrator-architecture.md) for the rewrite plan.
+>
+> The shipped fleet now uses an LLM-driven orchestrator with a custom MCP `dispatch_subagent` tool — structurally identical to Claude Code's main-session-with-Task pattern. The Proposal G entry below is preserved for design rationale.
+>
+> Proposals A–F remain unshipped; the orchestrator-as-agent rewrite incidentally absorbs several of their goals (dynamic dispatch, parallelism-ready, registry-driven workflows). The provider-agnostic dispatch — claude- and opencode-backed subagents in a single workflow — is the architectural unlock that wasn't on any of the original proposals.
 
 ## Cross-cutting constraints
 
@@ -151,9 +155,13 @@ Fire the same prompt at multiple agents simultaneously. Show their responses sid
 
 ---
 
-## Proposal G — Specialist fleet (Planner / Developer / Coder / Reviewer) ✅ shipped
+## Proposal G — Specialist fleet (Planner / Developer / Coder / Reviewer) ✅ shipped — **architecture superseded May 2026**
 
-> Implemented in [backend/app/orchestrator/fleet.py](../backend/app/orchestrator/fleet.py). Configuration UX in [docs/fleet-config.md](fleet-config.md). Picked as `fleet:default` in the model picker.
+> **Original v1** (Mar–May 2026): linear pipeline in [backend/app/orchestrator/fleet.py](../backend/app/orchestrator/fleet.py) — JSON-step plan, fixed execution order, hardcoded retry topology.
+>
+> **Current implementation** (May 2026 onwards): orchestrator-as-agent — an LLM-driven dispatcher uses a custom MCP `dispatch_subagent` tool to route to claude- or opencode-backed specialists. See [docs/architecture.md](architecture.md). The role set (planner / developer / coder / reviewer / **tester**) is preserved; the dispatch mechanism is rewritten.
+>
+> Configuration UX in [docs/fleet-config.md](fleet-config.md). Picked as `fleet:default` in the model picker.
 
 Decompose every high-level prompt into a small ordered list: a Planner (Sonnet) drafts steps; an optional Developer (Opus) designs the approach; a Coder (gpt-5.3-codex) executes each step; a Reviewer (Haiku) gates results. One user prompt → orchestrated multi-agent run. Composes naturally with B, C, D.
 
@@ -164,12 +172,13 @@ Decompose every high-level prompt into a small ordered list: a Planner (Sonnet) 
 - Each role's `provider`/`model`/`system_prompt` is independently tunable via [.localcode/fleet.yaml](../.localcode/fleet.yaml.example) or `.json` — no code changes.
 - Best ceiling for hard tasks.
 
-**Cons (still true after shipping v1)**
+**Cons (post-rewrite)**
 
-- Needs a real workflow engine for parallel branches, retries, checkpointing — v1 is linear-only.
+- ~~Needs a real workflow engine for parallel branches, retries, checkpointing — v1 is linear-only.~~ Resolved: the orchestrator handles retries via its own ReAct loop and the SDK supports parallel `dispatch_subagent` calls (frontend rendering for parallel branches is the only remaining gap).
 - Heavy prompt-engineering tax (the default prompts in `fleet.py` work, but you'll want to override for project conventions).
-- Long latency per top-level prompt; bad for short questions.
-- Can *underperform* a single capable agent on tasks that don't decompose cleanly.
+- Long latency per top-level prompt; bad for short questions. Mitigated by the orchestrator's "skip planner for trivial tasks" rule.
+- Can *underperform* a single capable agent on tasks that don't decompose cleanly. The orchestrator's freedom to dispatch fewer agents helps but doesn't eliminate this.
+- Cost: orchestrator is an extra LLM call per turn. We use claude-sonnet by default to keep this cheap; opus would double the meta-cost.
 
 **v1 limitations to be aware of**
 
