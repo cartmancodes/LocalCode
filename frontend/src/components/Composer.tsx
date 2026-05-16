@@ -39,6 +39,7 @@ export default function Composer({ session, disabled, onSend }: Props) {
   const placeholder = !session
     ? "Pick or create a chat to start…"
     : `Message ${session.provider}:${session.model}…`;
+  const charCap = 200_000;
 
   return (
     <div className="lc-composer">
@@ -83,7 +84,9 @@ export default function Composer({ session, disabled, onSend }: Props) {
             </button>
           </div>
           <div className="lc-composer__right">
-            <span className="lc-tokencount">{text.length} chars</span>
+            <span className="lc-tokencount">
+              {text.length} / {(charCap / 1000).toFixed(0)}k
+            </span>
             <button
               className={`lc-send ${ready ? "is-ready" : ""}`}
               disabled={!ready}

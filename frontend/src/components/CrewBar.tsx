@@ -1,5 +1,6 @@
+import React from "react";
 import type { FleetConfig, FleetRole, RoleStatus, SessionRow } from "../types";
-import { IconCheck, IconCpu, IconRetry, IconX } from "./icons";
+import { IconCheck, IconCpu, IconRetry, IconStop, IconX } from "./icons";
 
 interface Props {
   fleet: FleetConfig;
@@ -31,9 +32,9 @@ function isRoleOverridden(
 }
 
 /**
- * Renders the agents that are part of THIS workflow — only roles present in
- * `fleet.roles` are shown. Click a card to filter the stream to that agent's
- * messages.
+ * Slim inline workflow strip (Panel A · "Inline / Calm"). The pipeline is a
+ * tight P→C→R row of role nodes joined by connectors; below it a single
+ * current-step line. Click a node to filter the transcript to that agent.
  */
 export default function CrewBar({
   fleet,
@@ -45,9 +46,6 @@ export default function CrewBar({
 }: Props) {
   const presentRoles = ROLE_ORDER.filter((r) => fleet.roles[r] != null);
 
-  // Progress headline: "X of Y done", or the role currently running, or
-  // "ready" between turns. Cheap derivation, lives next to the bar so it
-  // gives users a single glanceable status without reading every card.
   const total = presentRoles.length;
   const doneCount = presentRoles.filter((r) => roleStatuses[r] === "done").length;
   const errorCount = presentRoles.filter((r) => roleStatuses[r] === "error").length;
@@ -55,21 +53,32 @@ export default function CrewBar({
   let progressLabel: string;
   let progressTone: "idle" | "running" | "done" | "error";
   if (runningRole) {
-    progressLabel = `Running · ${runningRole}`;
+    progressLabel = `running · ${runningRole}`;
     progressTone = "running";
   } else if (doneCount + errorCount === 0) {
-    progressLabel = "Ready";
+    progressLabel = "ready";
     progressTone = "idle";
   } else if (errorCount > 0) {
-    progressLabel = `${doneCount}/${total} done · ${errorCount} error${errorCount === 1 ? "" : "s"}`;
+    progressLabel = `${doneCount}/${total} · ${errorCount} error${errorCount === 1 ? "" : "s"}`;
     progressTone = "error";
   } else if (doneCount === total) {
-    progressLabel = "All done";
+    progressLabel = "all done";
     progressTone = "done";
   } else {
     progressLabel = `${doneCount}/${total} done`;
     progressTone = "done";
   }
+
+  // A connector lights up once the node to its left has progressed
+  // (done or currently running) — mirrors the prototype's active P→C link.
+  const litUpTo = (() => {
+    let idx = -1;
+    presentRoles.forEach((r, i) => {
+      const st = roleStatuses[r];
+      if (st === "done" || st === "running") idx = i;
+    });
+    return idx;
+  })();
 
   return (
     <div className="lc-crew">
@@ -79,12 +88,6 @@ export default function CrewBar({
           <h1 className="lc-crew__name">{fleet.name}</h1>
           <span className="lc-crew__sub">
             {presentRoles.length} agent{presentRoles.length === 1 ? "" : "s"}
-            {fleet.entry_role && (!fleet.roles.planner || presentRoles.length === 1)
-              ? ` · entry: ${fleet.entry_role}`
-              : ""}
-            {session.cwd
-              ? ` · cwd: ${session.cwd.replace(/^\/Users\/[^/]+/, "~")}`
-              : ""}
             {session.additional_dirs && session.additional_dirs.length > 0
               ? ` · +${session.additional_dirs.length} dir${session.additional_dirs.length === 1 ? "" : "s"}`
               : ""}
@@ -93,67 +96,88 @@ export default function CrewBar({
         <div className="lc-crew__tools">
           <span
             className={`lc-progress lc-progress--${progressTone}`}
-            title={`Pipeline status — ${doneCount}/${total} done${errorCount ? `, ${errorCount} error${errorCount === 1 ? "" : "s"}` : ""}`}
+            title={`Pipeline — ${doneCount}/${total} done${errorCount ? `, ${errorCount} error${errorCount === 1 ? "" : "s"}` : ""}`}
           >
             <span className={`lc-progress__dot lc-progress__dot--${progressTone}`} />
-            <span className="lc-progress__lbl">{progressLabel}</span>
+            <span>{progressLabel}</span>
           </span>
-          <button className="lc-ghostbtn" title="Retry turn (not yet wired)">
-            <IconRetry size={14} /> Retry turn
-          </button>
           {onConfigure && (
             <button className="lc-ghostbtn" onClick={onConfigure} title="Configure agents">
-              <IconCpu size={14} /> Configure
+              <IconCpu size={13} />
             </button>
           )}
+          <button className="lc-ghostbtn" title={runningRole ? "Stop run" : "Retry turn"}>
+            {runningRole ? <IconStop size={13} /> : <IconRetry size={13} />}
+          </button>
         </div>
       </div>
-      <div
-        className="lc-crew__row"
-        style={{
-          gridTemplateColumns: `repeat(${Math.max(1, presentRoles.length)}, 1fr)`,
-        }}
-      >
-        {presentRoles.map((role) => {
+
+      <div className="lc-crew__row">
+        {presentRoles.map((role, i) => {
           const r = fleet.roles[role]!;
           const colors = ROLE_COLORS[role];
           const isActive = activeRole === role;
           const overridden = isRoleOverridden(role, session.fleet_config_override);
           const status: RoleStatus = roleStatuses[role] ?? "idle";
           return (
-            <button
-              key={role}
-              className={`lc-agent lc-agent--${status} ${isActive ? "is-active" : ""}`}
-              onClick={() => onPickRole(isActive ? null : role)}
-              style={
-                {
-                  "--agc-fg": colors.fg,
-                  "--agc-bg": colors.bg,
-                  "--agc-bd": colors.bd,
-                } as React.CSSProperties
-              }
-              title={`${role} — ${r.provider}:${r.model}${overridden ? " (UI override)" : ""} · ${status}`}
-            >
-              <span className="lc-agent__avatar">{role.charAt(0).toUpperCase()}</span>
-              <span className="lc-agent__txt">
-                <span className="lc-agent__role">
-                  {role}
-                  {overridden && (
-                    <span className="lc-agent__overridden" title="UI override">●</span>
-                  )}
+            <React.Fragment key={role}>
+              {i > 0 && (
+                <span className={`lc-pipe-conn ${i - 1 <= litUpTo ? "is-active" : ""}`} />
+              )}
+              <button
+                className={`lc-agent lc-agent--${status} ${isActive ? "is-active" : ""}`}
+                onClick={() => onPickRole(isActive ? null : role)}
+                style={
+                  {
+                    "--agc-fg": colors.fg,
+                    "--agc-bg": colors.bg,
+                    "--agc-bd": colors.bd,
+                  } as React.CSSProperties
+                }
+                title={`${role} — ${r.provider}:${r.model}${overridden ? " (UI override)" : ""} · ${status}`}
+              >
+                <span className="lc-agent__avatar">{role.charAt(0).toUpperCase()}</span>
+                <span className="lc-agent__txt">
+                  <span className="lc-agent__role">
+                    {role}
+                    {overridden && (
+                      <span className="lc-agent__overridden" title="UI override">●</span>
+                    )}
+                  </span>
+                  <span className="lc-agent__model">{r.model}</span>
                 </span>
-                <span className="lc-agent__model">
-                  {r.provider}
-                  <span className="lc-agent__sep">·</span>
-                  {r.model}
-                </span>
-              </span>
-              <RoleStatusBadge status={status} />
-            </button>
+                <RoleStatusBadge status={status} />
+              </button>
+            </React.Fragment>
           );
         })}
       </div>
+
+      {runningRole && (
+        <div className="lc-curstep">
+          <RoleBadge role={runningRole} />
+          <span style={{ color: "var(--ink)" }}>working</span>
+          <span className="lc-curstep__meta">
+            · {doneCount + 1} / {total}
+          </span>
+        </div>
+      )}
     </div>
+  );
+}
+
+function RoleBadge({ role }: { role: FleetRole }) {
+  const c = ROLE_COLORS[role];
+  return (
+    <span
+      className="role-badge"
+      style={
+        { "--agc-fg": c.fg, "--agc-bg": c.bg, "--agc-bd": c.bd } as React.CSSProperties
+      }
+    >
+      <span className="role-dot" />
+      {role.slice(0, 3).toUpperCase()}
+    </span>
   );
 }
 

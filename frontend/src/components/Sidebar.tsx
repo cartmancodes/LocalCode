@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { CatalogModel, SessionRow } from "../types";
-import { IconPlus, IconSearch, IconTrash, IconX } from "./icons";
+import { IconCpu, IconPlus, IconSearch, IconTrash, IconX } from "./icons";
 
 interface Props {
   sessions: SessionRow[];
@@ -75,14 +75,29 @@ export default function Sidebar(p: Props) {
     <aside className="lc-sidebar">
       <div className="lc-side__top">
         <button className="lc-newchat" onClick={p.onCreate}>
-          <IconPlus size={14} />
+          <IconPlus size={13} />
           <span>New chat</span>
           <kbd className="lc-kbd">⌘N</kbd>
         </button>
+        {/* Compact fleet/model picker for the next new chat. The big vertical
+            models wall is gone — models otherwise live in fleet.yaml. */}
+        <div className="lc-modelsel" title="Fleet / model for the next new chat">
+          <IconCpu size={13} />
+          <select
+            value={p.pendingModelId}
+            onChange={(e) => p.onPickModel(e.target.value)}
+          >
+            {p.models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.provider}:{m.model}
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="lc-search">
-          <IconSearch size={14} />
+          <IconSearch size={13} />
           <input
-            placeholder="Search chats"
+            placeholder="Search chats…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
@@ -94,58 +109,34 @@ export default function Sidebar(p: Props) {
         </div>
       </div>
 
-      <div className="lc-side__section">
-        <div className="lc-side__hdr">Models</div>
-        <div className="lc-modelpicker">
-          {p.models.map((m) => (
-            <button
-              key={m.id}
-              className={`lc-model ${p.pendingModelId === m.id ? "is-active" : ""}`}
-              onClick={() => p.onPickModel(m.id)}
-              title={m.id}
-            >
-              <span className="lc-model__name">{m.model}</span>
-              <span className="lc-model__meta">{m.provider}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
       <div className="lc-side__section lc-side__section--scroll">
-        {p.sessions.length > 0 && (
-          <button
-            className="lc-clear-all"
-            onClick={() => {
-              if (confirm(`Delete all ${p.sessions.length} chats? Cannot be undone.`)) {
-                p.onClearAll();
-              }
-            }}
-          >
-            Clear all chats
-          </button>
-        )}
         {p.sessions.length === 0 && (
-          <div className="lc-side__hdr" style={{ textAlign: "center" }}>
+          <div className="lc-side__hdr" style={{ justifyContent: "center" }}>
             No chats yet
           </div>
         )}
         {BUCKET_ORDER.map((bucket) =>
           grouped[bucket].length === 0 ? null : (
             <div key={bucket} className="lc-side__group">
-              <div className="lc-side__hdr">{bucket}</div>
+              <div className="lc-side__hdr">
+                <span>{bucket}</span>
+                <span className="lc-side__hdr-act">{grouped[bucket].length}</span>
+              </div>
               {grouped[bucket].map((s) => (
                 <div
                   key={s.id}
                   className={`lc-chatrow ${s.id === p.activeId ? "is-active" : ""}`}
                   onClick={() => p.onSelect(s.id)}
                 >
-                  <span className="lc-chatrow__dot" />
                   <span className="lc-chatrow__title">{s.title}</span>
-                  <span className="lc-chatrow__fleet">
-                    {s.provider}:{s.model}
-                  </span>
-                  <span className="lc-chatrow__time">
-                    {formatRelativeTime(s.updated_at)}
+                  <span className="lc-chatrow__meta">
+                    <span className="lc-chatrow__fleet">
+                      {s.provider}:{s.model}
+                    </span>
+                    <span className="lc-chatrow__sep" />
+                    <span className="lc-chatrow__time">
+                      {formatRelativeTime(s.updated_at)}
+                    </span>
                   </span>
                   <button
                     className="lc-chatrow__del"
@@ -162,6 +153,18 @@ export default function Sidebar(p: Props) {
             </div>
           )
         )}
+        {p.sessions.length > 0 && (
+          <button
+            className="lc-clear-all"
+            onClick={() => {
+              if (confirm(`Delete all ${p.sessions.length} chats? Cannot be undone.`)) {
+                p.onClearAll();
+              }
+            }}
+          >
+            Clear all chats
+          </button>
+        )}
       </div>
 
       <div className="lc-side__foot">
@@ -169,7 +172,9 @@ export default function Sidebar(p: Props) {
           <div className="lc-avatar">SK</div>
           <div className="lc-user__txt">
             <div className="lc-user__name">localhost</div>
-            <div className="lc-user__sub">{p.sessions.length} chats</div>
+            <div className="lc-user__sub">
+              {p.sessions.length} chat{p.sessions.length === 1 ? "" : "s"}
+            </div>
           </div>
         </div>
       </div>

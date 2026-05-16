@@ -1,12 +1,5 @@
 import type { SessionRow } from "../types";
-import {
-  IconDots,
-  IconLogo,
-  IconMoon,
-  IconPlus,
-  IconSidebar,
-  IconSun,
-} from "./icons";
+import { IconDots, IconLayers, IconMoon, IconPlus, IconSidebar, IconSun } from "./icons";
 import ProjectPicker from "./ProjectPicker";
 
 interface Props {
@@ -34,58 +27,73 @@ export default function Topbar({
   onToggleSidebar,
   onNewChat,
 }: Props) {
-  // Map WS state → user-facing pip status. With no active session we show idle.
-  const status: "running" | "done" | "error" | "idle" =
-    !session ? "idle"
-    : wsState === "connecting" ? "running"
-    : wsState === "closed" ? "error"
-    : "done";
-  const statusLabel = !session
+  // Connection dot: idle when no session, pulsing accent while connecting,
+  // red on a dropped socket, green when live.
+  const conn: "ok" | "err" | "run" | "idle" = !session
     ? "idle"
-    : wsState === "connecting" ? "reconnecting"
-    : wsState === "closed" ? "disconnected"
-    : "connected";
+    : wsState === "connecting"
+      ? "run"
+      : wsState === "closed"
+        ? "err"
+        : "ok";
+  const connTitle = !session
+    ? "no active chat"
+    : wsState === "connecting"
+      ? "reconnecting…"
+      : wsState === "closed"
+        ? "disconnected"
+        : "connected";
+
+  const fleetLabel = session ? `${session.provider}:${session.model}` : "no fleet";
 
   return (
     <header className="lc-topbar">
-      <div className="lc-topbar__left">
+      <div className="lc-titlebar">
         <button className="lc-iconbtn" onClick={onToggleSidebar} aria-label="Toggle sidebar">
-          <IconSidebar />
+          <IconSidebar size={14} />
         </button>
-        <div className="lc-brand">
-          <span className="lc-brand__mark"><IconLogo /></span>
-          <span className="lc-brand__name">LocalCode</span>
-        </div>
-        <span className="lc-divider" />
-        <nav className="lc-breadcrumb">
-          <span className="lc-bc__fleet">{session?.provider ?? "—"}</span>
-          <span className="lc-bc__sep">/</span>
-          <span className="lc-bc__chat">{session?.title ?? "New chat"}</span>
-          <span className={`lc-pip lc-pip--${status}`}>
-            <span className="lc-pip__dot" />
-            {statusLabel}
-          </span>
-        </nav>
+        <span className="lc-tb-title">
+          LOCALCODE
+          <span className="lc-tb-sep">·</span>
+          <span className="lc-tb-sub">{session?.title ?? "Chat"}</span>
+        </span>
+        <span className="lc-tb-actions">
+          <button
+            className="lc-iconbtn"
+            onClick={onToggleTheme}
+            aria-label="Toggle theme"
+            title={theme === "dark" ? "Switch to light" : "Switch to dark"}
+          >
+            {theme === "dark" ? <IconSun size={14} /> : <IconMoon size={14} />}
+          </button>
+          <button className="lc-iconbtn" aria-label="More">
+            <IconDots size={14} />
+          </button>
+          <button className="lc-primary lc-primary--sm" onClick={onNewChat}>
+            <IconPlus size={12} /> New chat
+          </button>
+        </span>
       </div>
-      <div className="lc-topbar__right">
+
+      <div className="lc-subhead">
+        <span className="lc-mark">{"{}"}</span>
+        <span className="lc-wordmark">LocalCode</span>
+        <span className="lc-pill" title={`Active fleet — ${fleetLabel}`}>
+          <IconLayers size={11} />
+          <span className="lc-pill__txt">{fleetLabel}</span>
+        </span>
+        <div style={{ flex: 1 }} />
         <ProjectPicker
           cwd={cwd}
           defaultCwd={defaultCwd}
           additionalDirs={additionalDirs}
           onChange={onChangeProject}
         />
-        <button
-          className="lc-iconbtn"
-          onClick={onToggleTheme}
-          aria-label="Toggle theme"
-          title={theme === "dark" ? "Switch to light" : "Switch to dark"}
-        >
-          {theme === "dark" ? <IconSun /> : <IconMoon />}
-        </button>
-        <button className="lc-iconbtn" aria-label="More"><IconDots /></button>
-        <button className="lc-primary lc-primary--sm" onClick={onNewChat}>
-          <IconPlus size={14} /> New chat
-        </button>
+        <span
+          className={`lc-dot lc-dot--${conn}`}
+          title={connTitle}
+          aria-label={connTitle}
+        />
       </div>
     </header>
   );

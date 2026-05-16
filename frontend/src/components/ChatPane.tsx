@@ -604,7 +604,7 @@ function TurnView({ turn, activeRole }: { turn: ChatTurn; activeRole: FleetRole 
         </div>
       )}
       {!turn.inProgress && (turn.costUsd != null || turn.durationMs != null) && (
-        <div className="lc-msg__head" style={{ paddingLeft: 48, marginTop: -4 }}>
+        <div className="lc-msg__head" style={{ padding: "0 16px 10px", marginTop: -4 }}>
           {turn.durationMs != null && (
             <span className="lc-msg__dur">{(turn.durationMs / 1000).toFixed(2)}s</span>
           )}

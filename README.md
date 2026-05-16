@@ -105,6 +105,7 @@ Per-turn cost (USD) is reported by each provider in the `assistant.done` event a
 
 ## Documentation
 
+- See [ARCHITECTURE.md](./ARCHITECTURE.md) for a detailed architecture overview.
 - [docs/fleet.md](docs/fleet.md) — fleet concept: roles, when to use it, what you see in chat.
 - [docs/fleet-config.md](docs/fleet-config.md) — configuration UX, presets, recipes, troubleshooting.
 - [docs/architecture.md](docs/architecture.md) — orchestrator + dispatch + event-flow technical deep-dive.
