@@ -16,9 +16,9 @@ Three configuration layers, applied in order (later overrides earlier):
 
 | Layer            | Where                                                | When to use                                         |
 | :--------------- | :--------------------------------------------------- | :-------------------------------------------------- |
-| Built-in defaults | code in [fleet.py](../backend/app/orchestrator/fleet.py) | Always available — full crew, no setup required    |
+| Built-in defaults | code in [fleet/defaults.py](../backend/app/orchestrator/fleet/defaults.py) | Always available — full crew, no setup required    |
 | File config       | `.localcode/fleet.{yaml,yml,json}` (or env override) | Per-project, version-controllable                   |
-| **UI override**   | Modal that pops up when you click **+ New chat** with a fleet model selected | Per-session, stored on the session row in the DB    |
+| **UI override**   | Modal that pops up when you click **+ New chat** with a fleet model selected | Per-session, persisted in the session's `meta.json` (no database) |
 
 ---
 
@@ -147,7 +147,7 @@ Format the value as `<providerID>/<modelID>` exactly as printed.
 
 1. Your prompt + the registry go to the orchestrator (claude-agent-sdk session with the dispatch MCP server registered).
 2. The orchestrator's ReAct loop calls `dispatch_subagent(name, prompt)` to delegate. Each dispatch:
-   - Runs the named subagent via [_run_step_with_role](../backend/app/orchestrator/fleet.py) (heartbeats, per-step timeout, gate classifier).
+   - Runs the named subagent via [_run_step_with_role](../backend/app/orchestrator/fleet/provider.py) (heartbeats, per-step timeout, gate classifier).
    - Streams per-subagent events to the WS in real time via an `EventSink` queue.
    - Returns the subagent's final text to the orchestrator.
 3. The orchestrator reads the result and decides next: dispatch another agent, retry on NACK, or summarise + stop.
@@ -228,5 +228,5 @@ fleet config: 'roles.coder.provider'='openai' invalid (allowed: ('claude', 'open
 - [docs/architecture.md](architecture.md) — deep technical reference (orchestrator + dispatch + event flow).
 - [.localcode/fleet.yaml.example](../.localcode/fleet.yaml.example) — annotated YAML starter.
 - [.localcode/fleet.json.example](../.localcode/fleet.json.example) — JSON starter.
-- [backend/app/orchestrator/fleet.py](../backend/app/orchestrator/fleet.py) — config loader, validator, runner.
+- [backend/app/orchestrator/fleet/](../backend/app/orchestrator/fleet/) — config loader/validator (`loader.py`), defaults (`defaults.py`), runner (`provider.py`).
 - [frontend/src/components/FleetConfigEditor.tsx](../frontend/src/components/FleetConfigEditor.tsx) — UI modal that emits the per-session override.

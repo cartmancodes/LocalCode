@@ -76,11 +76,11 @@ Heartbeats are filtered out of persisted message history (live UI only); everyth
 
 | Feature | Where | Behaviour |
 | :------ | :---- | :-------- |
-| Per-step timeout | `STEP_TIMEOUT_S = 600s` in `_run_step_with_role` | Hung sub-providers raise `StepTimeoutError`; orchestrator sees `is_error=True` and decides whether to retry or abort. |
+| Per-step timeout | `STEP_TIMEOUT_S = 600s` in `fleet/provider.py:_run_step_with_role` | Hung sub-providers raise `StepTimeoutError`; orchestrator sees `is_error=True` and decides whether to retry or abort. |
 | Heartbeats | Every 30s during a long sub-provider call | Streams "still working" pings so the UI doesn't look frozen during opus's 2–3 min thinking. |
 | Mid-turn persistence | UPSERT on every `tool_use` and `tool.result` | A page refresh during a multi-minute workflow shows the latest checkpoint, not just the user prompt. |
 | WS reconnect refetch | Frontend `loadMessages()` runs on WS reopen | New WS replaces stale local state with the latest persisted blocks; mid-flight `tool_use` without matching result is marked `inProgress`. |
-| Last-line classifier | `_classify_gate(output, role)` | Reads the LAST non-empty line of a gate output. Unclassified output is treated as a fail-safe NACK rather than silently advancing. |
+| Last-line classifier | `fleet/gate.py:classify_gate(output, role)` | Reads the LAST non-empty line of a gate output. Unclassified output is treated as a fail-safe NACK rather than silently advancing. |
 | Bounded retry budget | `cfg.max_review_retries` | The orchestrator's system prompt tells it the budget; orchestrator self-bounds. |
 
 ## Config
@@ -117,7 +117,7 @@ For configuration UX, presets, troubleshooting, see [docs/fleet-config.md](fleet
 
 ## Why this shape
 
-We previously shipped a **fixed linear pipeline** (planner JSON-decomposes → linear step execution → fixed retry topology) — see [docs/orchestration-proposals.md](orchestration-proposals.md), Proposal G. That worked but was rigid: adding an agent meant a code change, the orchestrator's "intelligence" was hardcoded Python, and parallel dispatch was impossible.
+We previously shipped a **fixed linear pipeline** (planner JSON-decomposes → linear step execution → fixed retry topology). That worked but was rigid: adding an agent meant a code change, the orchestrator's "intelligence" was hardcoded Python, and parallel dispatch was impossible.
 
 The orchestrator-as-agent rewrite (May 2026) brings us structurally identical to Claude Code's main-session-with-Task and OpenCode's primary-agent-with-subagents architectures. Specifically:
 
@@ -134,7 +134,7 @@ Sources for the design:
 
 ## Source
 
-- [backend/app/orchestrator/fleet.py](../backend/app/orchestrator/fleet.py) — `FleetProvider`, config types, the per-step runner (`_run_step_with_role`), gate classifier.
+- [backend/app/orchestrator/fleet/](../backend/app/orchestrator/fleet/) — `FleetProvider` package: `provider.py` (per-step runner `_run_step_with_role`), `loader.py` (config resolution), `gate.py` (classifier), `models.py` / `defaults.py` / `presets.py` / `prompts.py`. `__init__.py` re-exports the public API.
 - [backend/app/orchestrator/orchestrator.py](../backend/app/orchestrator/orchestrator.py) — `OrchestratorAgent` (claude-agent-sdk session + merged event stream).
 - [backend/app/orchestrator/dispatch.py](../backend/app/orchestrator/dispatch.py) — in-process MCP server with `dispatch_subagent` and `request_plan_approval` tools.
 - [backend/app/orchestrator/agent_def.py](../backend/app/orchestrator/agent_def.py) — `AgentDef` (registry shape), conversion from legacy `RoleConfig`.

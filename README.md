@@ -58,7 +58,7 @@ See [docs/fleet.md](docs/fleet.md) for the fleet concept, [docs/fleet-config.md]
 | [backend/app/orchestrator/base.py](backend/app/orchestrator/base.py)                          | `Provider` protocol + `RunContext` + unified `Event` types        |
 | [backend/app/orchestrator/claude.py](backend/app/orchestrator/claude.py)                      | Claude SDK adapter (partial-message streaming, native auth)       |
 | [backend/app/orchestrator/opencode.py](backend/app/orchestrator/opencode.py)                  | OpenCode HTTP/SSE adapter                                         |
-| [backend/app/orchestrator/fleet.py](backend/app/orchestrator/fleet.py)                        | `FleetProvider`, config types, per-step runner (heartbeats + timeout + classifier) |
+| [backend/app/orchestrator/fleet/](backend/app/orchestrator/fleet/)                            | `FleetProvider` package — config loader, defaults, gate classifier, per-step runner (heartbeats + timeout) |
 | [backend/app/orchestrator/orchestrator.py](backend/app/orchestrator/orchestrator.py)          | `OrchestratorAgent` — claude-agent-sdk session + merged event stream |
 | [backend/app/orchestrator/dispatch.py](backend/app/orchestrator/dispatch.py)                  | In-process MCP server: `dispatch_subagent` + `request_plan_approval` tools |
 | [backend/app/orchestrator/agent_def.py](backend/app/orchestrator/agent_def.py)                | `AgentDef` — registry entry shape (mirrors Claude Code's `AgentDefinition`) |
@@ -69,7 +69,7 @@ See [docs/fleet.md](docs/fleet.md) for the fleet concept, [docs/fleet-config.md]
 | [frontend/src/components/CrewBar.tsx](frontend/src/components/CrewBar.tsx)                    | Per-agent status indicator (running / done / NACK)                |
 | [frontend/src/components/FleetConfigEditor.tsx](frontend/src/components/FleetConfigEditor.tsx) | Modal that emits per-session fleet override                      |
 | [vscode-extension/](vscode-extension/)                                                        | Optional VS Code extension that embeds the LocalCode UI in a webview beside your code (see [docs/vscode-integration.md](docs/vscode-integration.md)) |
-| [docs/](docs/)                                                                                | Fleet concept, configuration UX, architecture deep-dive, design history |
+| [docs/](docs/)                                                                                | Fleet concept, configuration UX, architecture deep-dive, storage, VS Code integration |
 
 ## Setup
 
@@ -105,14 +105,11 @@ Per-turn cost (USD) is reported by each provider in the `assistant.done` event a
 
 ## Documentation
 
-- See [ARCHITECTURE.md](./ARCHITECTURE.md) for a detailed architecture overview.
+- [docs/architecture.md](docs/architecture.md) — the technical deep-dive: providers, runner, orchestrator + dispatch, event flow, storage, configuration.
 - [docs/fleet.md](docs/fleet.md) — fleet concept: roles, when to use it, what you see in chat.
 - [docs/fleet-config.md](docs/fleet-config.md) — configuration UX, presets, recipes, troubleshooting.
-- [docs/architecture.md](docs/architecture.md) — orchestrator + dispatch + event-flow technical deep-dive.
 - [docs/storage.md](docs/storage.md) — filesystem session store: paths, file shapes, atomicity, cleanup, comparison with Claude Code / OpenCode.
 - [docs/vscode-integration.md](docs/vscode-integration.md) — VS Code extension that embeds the LocalCode UI beside your code (sidebar + editor-panel surfaces, install steps, architecture).
-- [docs/orchestration-proposals.md](docs/orchestration-proposals.md) — design history; the linear-pipeline → orchestrator-as-agent journey.
-- [docs/superpowers/plans/](docs/superpowers/plans/) — implementation plans for major features (writing-plans-style).
 
 ## What's next (good first issues)
 

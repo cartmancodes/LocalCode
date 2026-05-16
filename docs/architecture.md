@@ -80,7 +80,6 @@ The two architectural unlocks worth naming up front:
 ```text
 .
 |-- README.md                       Project overview, setup entry point
-|-- ARCHITECTURE.md                 Top-level architecture summary
 |-- Makefile                        Developer shortcuts (some docker/db targets are stale)
 |-- pyproject.toml                  Backend package + Python deps + ruff/pytest config
 |-- setup.sh                        Host bootstrap: deps, .env, .venv, login, start/stop/status/logs
@@ -106,7 +105,17 @@ The two architectural unlocks worth naming up front:
 |       |   |-- registry.py         Lazy provider singleton registry (warm_up / shutdown_all)
 |       |   |-- claude.py           ClaudeProvider — wraps claude-agent-sdk.query()
 |       |   |-- opencode.py         OpenCodeProvider — HTTP + SSE against opencode serve
-|       |   |-- fleet.py            FleetProvider, FleetConfig/RoleConfig/Step, presets, _classify_gate
+|       |   |-- fleet/              FleetProvider package (split by concern — see below)
+|       |   |   |-- __init__.py     Public-API facade (re-exports the names below)
+|       |   |   |-- constants.py    VALID_ROLES/PROVIDERS, timeouts, StepTimeoutError
+|       |   |   |-- models.py       RoleConfig, FleetConfig, Step dataclasses
+|       |   |   |-- prompts.py      Per-role system prompts (PLANNER_SYSTEM, …)
+|       |   |   |-- presets.py      WORKFLOW_PRESETS
+|       |   |   |-- defaults.py     ROLE_LIBRARY, DEFAULT_FLEET_CONFIG
+|       |   |   |-- loader.py       Locate/parse/merge/cache/serialize config
+|       |   |   |-- gate.py         Reviewer/tester classifier (classify_gate)
+|       |   |   |-- collect.py      Sub-provider stream → reviewable text + digest
+|       |   |   `-- provider.py     FleetProvider + _run_step_with_role
 |       |   |-- orchestrator.py     OrchestratorAgent — claude-agent-sdk session + merged event stream
 |       |   `-- dispatch.py         In-process MCP server: dispatch_subagent + request_plan_approval
 |       |-- routes/
@@ -122,7 +131,7 @@ The two architectural unlocks worth naming up front:
 |   |-- package.json                Frontend deps + scripts
 |   |-- vite.config.ts              Vite config, /api → backend proxy with ws: true
 |   |-- tsconfig.json / tsconfig.node.json
-|   |-- index.html                  HTML shell + Google Fonts (Geist, Geist Mono, Instrument Serif)
+|   |-- index.html                  HTML shell + Google Fonts (Inter, JetBrains Mono)
 |   `-- src/
 |       |-- main.tsx                React entrypoint (StrictMode + createRoot)
 |       |-- App.tsx                 Global state: theme/accent, sessions, models, cwd, additional_dirs
@@ -149,10 +158,7 @@ The two architectural unlocks worth naming up front:
 |   |-- fleet.md                    Fleet concept, roles, UX
 |   |-- fleet-config.md             Configuration UX, presets, recipes
 |   |-- storage.md                  Filesystem session store
-|   |-- vscode-integration.md       VS Code extension docs
-|   |-- orchestration-proposals.md  Design history
-|   |-- code-review.md / responsive-ui.md
-|   `-- superpowers/plans/          Implementation plans for major features
+|   `-- vscode-integration.md       VS Code extension docs
 |-- stable_json/stable_json.py      Deterministic compact JSON helper
 `-- opencode/
     |-- opencode.json               Minimal config used when setup.sh starts `opencode serve`
@@ -326,8 +332,20 @@ by `save_plan()` in `dispatch.py`.
   binds each session to a single project; multi-dir grants only affect
   Claude-provider roles.
 
-#### `backend/app/orchestrator/fleet.py`
-- Constants:
+#### `backend/app/orchestrator/fleet/`
+
+Originally one ~1k-line `fleet.py`; split into a package by concern. The
+import surface is unchanged — `fleet/__init__.py` is a facade that
+re-exports every previously-importable name (including back-compat
+aliases `_classify_gate`, `_collect_text`, `_merge_config`), so external
+importers (`routes/fleet.py`, `registry.py`, `dispatch.py`) are
+untouched. Dependency flow is one-way:
+`constants → models → defaults → loader/provider`; the cross-package
+imports (`registry`, `agent_def`, `orchestrator`) stay lazy to avoid
+cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
+`defaults`, `loader`, `gate`, `collect`, `provider`.
+
+- Constants (`fleet/constants.py`):
   - `VALID_PROVIDERS = ("claude", "opencode")`
   - `VALID_ROLES = ("planner", "developer", "coder", "reviewer", "tester")`
   - `WORKER_ROLES = ("developer", "coder", "reviewer", "tester")`
@@ -340,18 +358,21 @@ by `save_plan()` in `dispatch.py`.
   (`name`, `roles`, `entry_role`, `max_steps=6`,
   `max_review_retries=1`, `require_plan_approval=False`,
   `config_source`).
-- `ROLE_LIBRARY` — built-in default `RoleConfig` per role with
-  carefully scoped system prompts (`_PLANNER_SYSTEM`, etc.).
-- `DEFAULT_FLEET_CONFIG` — `planner + coder + reviewer + tester`,
-  `entry_role="coder"`.
-- `load_fleet_config(cwd)` walks the candidate list (see
+- `ROLE_LIBRARY` (`fleet/defaults.py`) — built-in default `RoleConfig`
+  per role with carefully scoped system prompts from `fleet/prompts.py`
+  (`PLANNER_SYSTEM`, etc.).
+- `DEFAULT_FLEET_CONFIG` (`fleet/defaults.py`) — `planner + coder +
+  reviewer + tester`, `entry_role="coder"`.
+- `WORKFLOW_PRESETS` lives in `fleet/presets.py`; `RoleConfig` /
+  `FleetConfig` / `Step` in `fleet/models.py`.
+- `load_fleet_config(cwd)` (`fleet/loader.py`) walks the candidate list (see
   [Configuration](#configuration)), parses YAML/JSON, merges through
   `_merge_config`, and caches by `(path, mtime)` in a 16-entry FIFO
   cache. Invalid fields are dropped with a warning rather than failing.
-- `_merge_config` semantics: when `override["roles"]` is supplied it
+- `_merge_config` (`fleet/loader.py`) semantics: when `override["roles"]` is supplied it
   *replaces* workflow membership; otherwise base membership survives
   and per-field overrides merge.
-- `FleetProvider.run()` loads file config, merges any per-session UI
+- `FleetProvider` (`fleet/provider.py`). `run()` loads file config, merges any per-session UI
   override (`ctx.extras["fleet_config_override"]`), and dispatches to
   `_run_orchestrated()` which builds an `AgentDef` registry via
   `registry_from_role_library(cfg.roles)`, instantiates
@@ -368,11 +389,13 @@ by `save_plan()` in `dispatch.py`.
     `tool.result is_error=True`.
   - Classifies reviewer/tester gates via `_classify_gate` and marks
     the `tool.result` as `is_error=True` for non-LGTM outcomes.
-- `_collect_text()` calls the sub-provider and concatenates assistant
-  text. When tools fired, it appends a `\n---\n(tool activity from
-  <provider>:<model>)\n…` digest so reviewers/testers can verify what
-  the worker actually did rather than trusting its narrative.
-- `_classify_gate(output, role)` strips the tool digest, walks the
+- `collect_text()` (`fleet/collect.py`, aliased `_collect_text`) calls
+  the sub-provider and concatenates assistant text. When tools fired, it
+  appends a `\n---\n(tool activity from <provider>:<model>)\n…` digest so
+  reviewers/testers can verify what the worker actually did rather than
+  trusting its narrative.
+- `classify_gate(output, role)` (`fleet/gate.py`, aliased
+  `_classify_gate`) strips the tool digest, walks the
   body backwards for the last classifier-shaped line, tolerates
   Markdown decoration, and returns `"lgtm"`, `"nack"`, `"nack_code"`,
   or `"nack_tests"`. Fail-safe: unclassified reviewer output is
@@ -821,7 +844,7 @@ also writes `<cwd>/.localcode/plans/<timestamp>-<slug>.md`.
 the orchestrator. Auto-approves when `approval_channel is None`
 (headless mode).
 
-### Gate classification (`_classify_gate`)
+### Gate classification (`fleet/gate.py:classify_gate`)
 
 1. Strip everything after `\n---\n(tool activity from `.
 2. Walk lines backwards; the first line whose uppercase form starts
@@ -1050,8 +1073,9 @@ than failing the load.
 - Claude Agent SDK: local CLI spawn + stream API.
 - OpenCode HTTP: `POST /session`, `POST /session/{id}/prompt_async`,
   `GET /global/event` (SSE).
-- Google Fonts CDN: Geist, Geist Mono, Instrument Serif, loaded by
-  `frontend/index.html`.
+- Google Fonts CDN: Inter, JetBrains Mono, loaded by
+  `frontend/index.html`. (The UI is a native VS Code-style dark theme;
+  a light theme is kept as a fallback.)
 
 > **Auth note.** Anthropic blocked Claude OAuth tokens for third-party
 > tools in early 2026. Native auth works only because the agent we

@@ -105,14 +105,16 @@ VS Code webviews run with a synthetic `vscode-webview://...` origin and CORS rul
 - **`portMapping`.** Even with the iframe, the extension host has to grant permission for the webview to reach those ports. `portMapping` declares the allowed `(webviewPort, extensionHostPort)` pairs; we map 5173 (frontend), the configurable backend port (default 8080), and 4096 (opencode). Without this, even an iframe gets blocked.
 
 ```js
+// extension.js — portMappings() builds this per call so the backend
+// port follows the `localcode.backendPort` setting.
 portMapping: [
-  { webviewPort: 5173, extensionHostPort: 5173 },
-  { webviewPort: 8080, extensionHostPort: 8080 },
-  { webviewPort: 4096, extensionHostPort: 4096 },
+  { webviewPort: 5173, extensionHostPort: 5173 },          // vite frontend
+  { webviewPort: backend, extensionHostPort: backend },     // FastAPI (default 8080)
+  { webviewPort: 4096, extensionHostPort: 4096 },           // opencode
 ]
 ```
 
-See [extension.js:30-39](../vscode-extension/extension.js#L30-L39).
+See `portMappings()` in [extension.js](../vscode-extension/extension.js).
 
 ### CSP
 
@@ -128,7 +130,7 @@ style-src 'unsafe-inline';
 
 `ws://` and `connect-src` directives are intentionally absent: the wrapper itself never makes WebSocket or fetch calls, and the iframe's connections are governed by *its* CSP, not the wrapper's. Including them here would be cargo-culting.
 
-See [extension.js:53-60](../vscode-extension/extension.js#L53-L60).
+See [extension.js](../vscode-extension/extension.js).
 
 ### `retainContextWhenHidden`
 
@@ -142,7 +144,7 @@ There is a memory cost: a hidden webview keeps its DOM, JS heap, and open connec
 
 `createWebviewPanel` is *not* idempotent — calling it twice gives you two panels. The extension keeps a module-level `panelRef` and reveals the existing panel rather than creating a new one. If you dispose the panel (close its tab), `panelRef` is set back to null on the `onDidDispose` callback so the next invocation creates a fresh one.
 
-See [extension.js:115-130](../vscode-extension/extension.js#L115-L130).
+See [extension.js](../vscode-extension/extension.js).
 
 ### Why an iframe and not a native React mount
 
@@ -198,7 +200,7 @@ For backend issues, `tail -f .run/backend.log` is still the better tool.
 Almost always: the frontend isn't running. Run `./setup.sh up` and then `LocalCode: Reload Webview`.
 
 If the frontend *is* running but the panel still shows blank:
-- Check the webview DevTools (`Developer: Open Webview Developer Tools`) for CSP errors. If the user changed `localcode.url` to a non-localhost URL, the CSP `frame-src http://localhost:*` will block it. Either use a localhost URL, or extend the CSP in [extension.js:55](../vscode-extension/extension.js#L55).
+- Check the webview DevTools (`Developer: Open Webview Developer Tools`) for CSP errors. If the user changed `localcode.url` to a non-localhost URL, the CSP `frame-src http://localhost:*` will block it. Either use a localhost URL, or extend the CSP in [extension.js](../vscode-extension/extension.js).
 - Check that `portMapping` covers your backend port. Default is 8080; if you customised it, set `localcode.backendPort` to match.
 
 ### "WebSocket connection failed" inside the iframe
@@ -208,7 +210,7 @@ Means `portMapping` doesn't cover the WS endpoint. Open the webview DevTools →
 ### "Webview is reloading every time I click another file"
 
 `retainContextWhenHidden` should prevent that. If it isn't:
-- Confirm both `webviewView.webview.options` and the `WebviewPanel` options include `retainContextWhenHidden: true` ([extension.js:97-104](../vscode-extension/extension.js#L97-L104) for the sidebar; the panel options object [extension.js:120](../vscode-extension/extension.js#L120) sets it).
+- Confirm both `webviewView.webview.options` and the `WebviewPanel` options include `retainContextWhenHidden: true` ([extension.js](../vscode-extension/extension.js) for the sidebar; the panel options object [extension.js](../vscode-extension/extension.js) sets it).
 - Note that `webviewOptions` for `registerWebviewViewProvider` is *separate* from the per-view options set inside `resolveWebviewView`. Both need to be set for the sidebar to retain.
 
 ### "I edited extension.js but VS Code still runs the old code"
@@ -217,7 +219,7 @@ VS Code doesn't watch `~/.vscode/extensions/`. After re-running the install `cp`
 
 ### "The icon doesn't show in the activity bar"
 
-The activity bar entry is contributed via the `viewsContainers` field in [package.json:31-39](../vscode-extension/package.json#L31-L39). The icon path is `media/icon.svg` *relative to the extension folder*. If you copied `package.json` but forgot the `media/` folder, the entry shows up but is iconless.
+The activity bar entry is contributed via the `viewsContainers` field in [package.json](../vscode-extension/package.json). The icon path is `media/icon.svg` *relative to the extension folder*. If you copied `package.json` but forgot the `media/` folder, the entry shows up but is iconless.
 
 ---
 

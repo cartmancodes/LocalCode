@@ -351,63 +351,6 @@ both upstream models lack: **explicit compaction** of checkpoint
 duplicates. The rest is essentially Claude Code's pattern with a
 user-global index added because we needed cross-project listing.
 
-## Migration from Postgres
-
-If you had data in the old Postgres-backed schema, here's a one-shot
-migration script. Run it once, then drop the database.
-
-```python
-# tools/migrate_pg_to_filestore.py
-import asyncio
-import os
-
-import asyncpg
-
-from backend.app.storage.sessions import store
-
-
-async def main():
-    db_url = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://", 1)
-    conn = await asyncpg.connect(db_url)
-    try:
-        sessions = await conn.fetch("SELECT * FROM sessions ORDER BY created_at")
-        for s in sessions:
-            new = await store.create_session(
-                provider=s["provider"],
-                model=s["model"],
-                cwd=s["cwd"],
-                additional_dirs=s["additional_dirs"],
-                title=s["title"],
-                upstream_id=s["upstream_id"],
-                fleet_config_override=s["fleet_config_override"],
-            )
-            # Preserve the original id so any in-flight references keep working
-            await store.update_session(new["id"], id=s["id"])
-            msgs = await conn.fetch(
-                "SELECT * FROM messages WHERE session_id=$1 ORDER BY created_at", s["id"]
-            )
-            for m in msgs:
-                await store.append_message(s["id"], {
-                    "id": m["id"],
-                    "role": m["role"],
-                    "content": m["content"],
-                    "cost_usd": float(m["cost_usd"]) if m["cost_usd"] is not None else None,
-                    "duration_ms": m["duration_ms"],
-                    "created_at": m["created_at"].isoformat(),
-                })
-            print(f"migrated {s['id']}: {len(msgs)} messages")
-    finally:
-        await conn.close()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-This is **not shipped** — copy/paste it if you need it. The current
-codebase has no Postgres dependencies, so you'd need to add `asyncpg`
-to your local environment temporarily.
-
 ## Operational tips
 
 ### Inspecting a session manually
