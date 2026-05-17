@@ -5,7 +5,12 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import FleetConfigEditor from "./components/FleetConfigEditor";
 import Sidebar from "./components/Sidebar";
 import Topbar from "./components/Topbar";
-import type { CatalogModel, FleetConfigOverride, SessionRow } from "./types";
+import type {
+  CatalogModel,
+  FleetConfigOverride,
+  PermissionMode,
+  SessionRow,
+} from "./types";
 
 type Theme = "light" | "dark";
 type Accent = "clay" | "violet" | "blue";
@@ -14,6 +19,7 @@ const THEME_KEY = "lc-theme";
 const ACCENT_KEY = "lc-accent";
 const CWD_KEY = "lc-cwd";          // user's chosen project root for new chats; null = use backend default
 const ADD_DIRS_KEY = "lc-add-dirs"; // user's additional-dirs grant list for new chats (JSON-encoded array)
+const PERM_KEY = "lc-permission-mode"; // permission/auto mode for new chats
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(() => {
@@ -31,6 +37,13 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [pendingModelId, setPendingModelId] = useState<string>("");
   const [fleetEditorOpen, setFleetEditorOpen] = useState(false);
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => {
+    const saved = localStorage.getItem(PERM_KEY) as PermissionMode | null;
+    return saved &&
+      ["acceptEdits", "default", "plan", "bypassPermissions"].includes(saved)
+      ? saved
+      : "acceptEdits";
+  });
 
   // Working directory + additional-dirs for newly-created chats.
   // - `cwd` (state): user's explicit override, persisted to localStorage. null = follow defaultCwd.
@@ -48,6 +61,10 @@ export default function App() {
     }
   });
   const effectiveCwd = cwd ?? defaultCwd;
+
+  useEffect(() => {
+    localStorage.setItem(PERM_KEY, permissionMode);
+  }, [permissionMode]);
 
   // Apply theme/accent to <html> data attrs.
   useEffect(() => {
@@ -120,6 +137,7 @@ export default function App() {
       model,
       cwd: effectiveCwd ?? undefined,
       additional_dirs: additionalDirs.length > 0 ? additionalDirs : null,
+      permission_mode: permissionMode,
       fleet_config_override: provider === "fleet" ? override : null,
     });
     setSessions((cur) => [fresh, ...cur]);
@@ -176,6 +194,8 @@ export default function App() {
           models={models}
           pendingModelId={pendingModelId}
           onPickModel={setPendingModelId}
+          permissionMode={permissionMode}
+          onPickPermissionMode={setPermissionMode}
           onSelect={setActiveId}
           onCreate={onCreate}
           onDelete={onDelete}

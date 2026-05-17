@@ -45,6 +45,21 @@ HEARTBEAT_INTERVAL_S = 30.0
 # ``assistant.done`` close-out instead of silently waiting.
 STEP_TIMEOUT_S = 600.0
 
+# Startup grace: a *healthy* sub-provider streams its first event within a
+# few seconds (model warm-up + first token). If we get ZERO events from it
+# within this window, the backend is almost certainly wedged (auth prompt,
+# nested-SDK deadlock, dead socket) — fail fast and loud instead of pretending
+# "still working" for the full STEP_TIMEOUT_S. This is the single biggest
+# anti-"silent communication break" guardrail: a 10-minute silent hang
+# becomes a ~1-minute clearly-surfaced error.
+STARTUP_GRACE_S = 75.0
+
+# How many times the orchestrator may re-dispatch the SAME role after it
+# hard-fails (timeout / unresponsive backend) before dispatch refuses and
+# tells the orchestrator to abort. Stops the unbounded silent retry loop
+# where a wedged planner is re-dispatched forever.
+DISPATCH_HARD_FAIL_CAP = 2
+
 
 class StepTimeoutError(RuntimeError):
     """Raised by ``_run_step_with_role`` when a sub-provider exceeds the

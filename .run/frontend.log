@@ -447,3 +447,74 @@ AggregateError [ECONNREFUSED]:
 3:10:46 AM [vite] hmr update /src/components/ChatPane.tsx
 3:10:56 AM [vite] page reload index.html
 3:11:03 AM [vite] hmr update /src/styles.css
+3:53:35 AM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+3:53:35 AM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 99 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.10:5173/
+4:00:18 AM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 98 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.10:5173/
+4:21:23 AM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 100 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.10:5173/
+4:33:09 AM [vite] hmr update /src/App.tsx, /src/components/FleetConfigEditor.tsx, /src/components/ChatPane.tsx
+4:33:38 AM [vite] hmr update /src/App.tsx
+4:33:46 AM [vite] hmr update /src/App.tsx
+4:33:53 AM [vite] hmr update /src/App.tsx
+4:34:05 AM [vite] hmr update /src/App.tsx
+4:34:21 AM [vite] hmr update /src/App.tsx
+4:34:31 AM [vite] hmr update /src/App.tsx
+4:34:39 AM [vite] hmr update /src/components/Sidebar.tsx
+4:34:45 AM [vite] hmr update /src/components/Sidebar.tsx
+4:35:01 AM [vite] hmr update /src/components/Sidebar.tsx
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 92 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.10:5173/
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 98 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.10:5173/

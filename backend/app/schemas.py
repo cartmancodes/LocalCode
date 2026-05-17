@@ -17,6 +17,13 @@ class CreateSessionRequest(BaseModel):
     # is configured; otherwise permissive).
     additional_dirs: list[str] | None = None
     title: str | None = None
+    # Permission/auto mode for the upstream agent (Claude:
+    # acceptEdits / default / plan / bypassPermissions). None → provider
+    # default (acceptEdits). Pinned at session creation; for fleet sessions
+    # it's threaded into every dispatched subagent.
+    permission_mode: (
+        Literal["acceptEdits", "default", "plan", "bypassPermissions"] | None
+    ) = None
     # When provider == "fleet", a partial config dict (matches the YAML schema)
     # that overrides the file-level config for this session only. Anything you
     # omit inherits the file-level / built-in default.
@@ -33,6 +40,7 @@ class SessionOut(BaseModel):
     cwd: str | None = None
     additional_dirs: list[str] | None = None
     upstream_id: str | None = None
+    permission_mode: str | None = None
     fleet_config_override: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime

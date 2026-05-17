@@ -133,6 +133,20 @@ When a coder returns, check its tool result for ACTUAL changes:
     file-edit or bash tools. You MUST use the available tools to make
     real changes. Execute the plan now."
 
+# Unresponsive backend — DO NOT SPIN
+
+If a `dispatch_subagent` result says the backend was unresponsive / timed
+out / produced no output (an `is_error` result mentioning "unresponsive",
+"no output", "did not respond", or "hard-failed"), that subagent's backend
+is broken — re-dispatching it will just hang again. Do NOT retry it. Stop
+immediately and emit a final assistant message that:
+  - names which agent and which backend failed (e.g. "the planner's claude
+    backend did not respond"),
+  - tells the user the turn is aborted and to check that backend,
+  - does NOT pretend the work was done.
+A fast, honest failure is REQUIRED. Silently retrying or stalling is the
+single worst outcome.
+
 # Output budget
 
 You have a hard cap of {max_turns} turns. If you hit it, emit a final

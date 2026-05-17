@@ -24,6 +24,7 @@ export const api = {
     cwd?: string | null;
     additional_dirs?: string[] | null;
     title?: string;
+    permission_mode?: string | null;
     fleet_config_override?: FleetConfigOverride | null;
   }) => json<SessionRow>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
   fleetConfig: () => json<FleetConfigResponse>("/api/fleet/config"),

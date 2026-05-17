@@ -236,6 +236,7 @@ class SessionStore:
         additional_dirs: list[str] | None = None,
         title: str = "New chat",
         upstream_id: str | None = None,
+        permission_mode: str | None = None,
         fleet_config_override: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         sid = _new_id()
@@ -248,6 +249,7 @@ class SessionStore:
             "cwd": cwd,
             "additional_dirs": additional_dirs,
             "upstream_id": upstream_id,
+            "permission_mode": permission_mode,
             "fleet_config_override": fleet_config_override,
             "created_at": now,
             "updated_at": now,

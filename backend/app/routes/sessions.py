@@ -92,6 +92,7 @@ async def create_session(body: CreateSessionRequest) -> SessionOut:
         cwd=_validate_cwd(body.cwd),
         additional_dirs=_validate_additional_dirs(body.additional_dirs),
         title=body.title or "New chat",
+        permission_mode=body.permission_mode,
         fleet_config_override=body.fleet_config_override,
     )
     return SessionOut.model_validate(meta)
@@ -188,6 +189,7 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
     cwd = sess.get("cwd")
     additional_dirs = list(sess.get("additional_dirs") or [])
     upstream_id = sess.get("upstream_id")
+    permission_mode = sess.get("permission_mode")
     fleet_override = sess.get("fleet_config_override")
 
     runner = await get_runner(session_id)
@@ -275,6 +277,7 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
                 additional_dirs=additional_dirs,
                 upstream_id=upstream_id,
                 fleet_override=fleet_override,
+                permission_mode=permission_mode,
                 prompt=prompt,
             )
             if not started:

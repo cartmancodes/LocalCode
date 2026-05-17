@@ -34,7 +34,19 @@ class ClaudeProvider:
         # rebuild context from message history when we extend to multi-turn.
         return ctx.upstream_session_id or ""
 
+    # claude-agent-sdk's accepted permission modes. Anything else falls back
+    # to the safe default rather than letting a typo crash the CLI spawn.
+    _VALID_PERMISSION_MODES = frozenset(
+        {"acceptEdits", "default", "plan", "bypassPermissions"}
+    )
+
     async def run(self, ctx: RunContext) -> AsyncIterator[Event]:
+        mode = ctx.permission_mode
+        if mode not in self._VALID_PERMISSION_MODES:
+            # None / unknown → acceptEdits: the long-standing default that
+            # lets the subagent actually edit files without a prompt the
+            # headless backend could never answer (a classic silent hang).
+            mode = "acceptEdits"
         options = ClaudeAgentOptions(
             model=ctx.model,
             cwd=ctx.cwd,
@@ -42,7 +54,7 @@ class ClaudeProvider:
             # restricts tools to `cwd` by default; this opens up sibling repos.
             add_dirs=list(ctx.additional_dirs or []),
             system_prompt=ctx.system_prompt,
-            permission_mode="acceptEdits",
+            permission_mode=mode,
             include_partial_messages=True,  # surface token-level deltas to the UI
         )
 

@@ -8,15 +8,119 @@ unified event stream so the chat UI renders them as expandable cards.
 from __future__ import annotations
 
 import asyncio
+import json
+import sys
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from ..base import Event, RunContext
-from .collect import collect_text
-from .constants import HEARTBEAT_INTERVAL_S, STEP_TIMEOUT_S, StepTimeoutError
+from .constants import (
+    HEARTBEAT_INTERVAL_S,
+    STARTUP_GRACE_S,
+    STEP_TIMEOUT_S,
+    StepTimeoutError,
+)
 from .gate import classify_gate
 from .loader import _merge_config, load_fleet_config
 from .models import FleetConfig, RoleConfig, Step
+
+# Worker module + the directory it must be importable from. Derived from this
+# module's own dotted name / file location so it's correct whether the app is
+# launched as ``backend.app...`` or ``app...``.
+_WORKER_MODULE = __name__.rsplit(".", 1)[0] + ".subproc"
+# fleet/provider.py → parents: [fleet, orchestrator, app, backend, <root>].
+# The number of parents to climb == package depth of __name__.
+_REPO_ROOT = str(Path(__file__).resolve().parents[__name__.count(".")])
+
+
+class _SubprocHandle:
+    """One out-of-process sub-provider run.
+
+    Owns the child process and exposes:
+      - ``first`` : an ``asyncio.Event`` set the instant the child reports its
+        first sub-provider event (drives honest heartbeats / fast-fail);
+      - ``result``: a future resolving to the collected text, or raising;
+      - ``kill()``: true OS-level cancellation of a wedged ``claude`` CLI.
+    """
+
+    def __init__(self) -> None:
+        self.first: asyncio.Event = asyncio.Event()
+        self.result: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._proc: asyncio.subprocess.Process | None = None
+
+    async def start(
+        self,
+        role_cfg: RoleConfig,
+        prompt: str,
+        cwd: str | None,
+        additional_dirs: list[str] | None,
+        permission_mode: str | None,
+    ) -> None:
+        req = json.dumps(
+            {
+                "provider": role_cfg.provider,
+                "model": role_cfg.model,
+                "system_prompt": role_cfg.system_prompt,
+                "prompt": prompt,
+                "cwd": cwd,
+                "additional_dirs": additional_dirs or [],
+                "permission_mode": permission_mode,
+            }
+        )
+        self._proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            _WORKER_MODULE,
+            cwd=_REPO_ROOT,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        assert self._proc.stdin and self._proc.stdout
+        self._proc.stdin.write((req + "\n").encode())
+        await self._proc.stdin.drain()
+        self._proc.stdin.close()
+        asyncio.create_task(self._pump())
+
+    async def _pump(self) -> None:
+        assert self._proc and self._proc.stdout
+        payload: dict | None = None
+        try:
+            while True:
+                raw = await self._proc.stdout.readline()
+                if not raw:
+                    break
+                line = raw.decode(errors="replace").rstrip("\n")
+                if line == "@@FIRST@@":
+                    self.first.set()
+                elif line.startswith("@@RESULT@@ "):
+                    payload = json.loads(line[len("@@RESULT@@ ") :])
+                    break
+        except Exception:  # noqa: BLE001
+            payload = None
+        finally:
+            try:
+                await self._proc.wait()
+            except Exception:
+                pass
+        if self.result.done():
+            return
+        if payload and payload.get("ok"):
+            self.result.set_result(payload.get("text", ""))
+        else:
+            err = (payload or {}).get("error") if payload else None
+            self.result.set_exception(
+                RuntimeError(err or "sub-provider worker exited without a result")
+            )
+
+    def kill(self) -> None:
+        p = self._proc
+        if p is not None and p.returncode is None:
+            try:
+                p.kill()
+            except ProcessLookupError:
+                pass
 
 
 class FleetProvider:
@@ -122,12 +226,22 @@ class FleetProvider:
             },
         )
 
-        # Run collect_text concurrently with a heartbeat ticker. shield()
-        # protects the inner task from wait_for's cancel-on-timeout — we want
-        # the timeout to fire the heartbeat, not abort the inner work.
-        collect = asyncio.create_task(
-            collect_text(role_cfg, step.prompt, ctx.cwd, ctx.additional_dirs)
+        # Run the sub-provider in a SEPARATE OS PROCESS (see _SubprocHandle /
+        # subproc.py). A thread+loop is not enough — claude-agent-sdk has
+        # process-global async-generator state, so a nested query() under the
+        # orchestrator's query() raises "aclose(): asynchronous generator is
+        # already running". A child process is fully isolated, and lets us
+        # KILL a wedged `claude` CLI for real. `handle.first` flips the
+        # instant the child reports its first event.
+        handle = _SubprocHandle()
+        await handle.start(
+            role_cfg,
+            step.prompt,
+            ctx.cwd,
+            ctx.additional_dirs,
+            ctx.permission_mode,
         )
+        collect = handle.result
         elapsed_s = 0
         output: str | None = None
         error_text: str | None = None
@@ -141,37 +255,55 @@ class FleetProvider:
                     break
                 except TimeoutError:
                     elapsed_s += int(HEARTBEAT_INTERVAL_S)
+                    started = handle.first.is_set()
+                    # Fast-fail: zero output within the startup grace window
+                    # means the backend is wedged (auth prompt, dead socket,
+                    # nested-SDK deadlock). Don't pretend to wait the full
+                    # STEP_TIMEOUT_S — abort loudly now.
+                    if not started and elapsed_s >= STARTUP_GRACE_S:
+                        timed_out = True
+                        error_text = (
+                            f"{step.role}: the {role_cfg.provider} backend "
+                            f"produced NO output within {int(STARTUP_GRACE_S)}s "
+                            f"— treating it as unresponsive and aborting this "
+                            f"step. The backend is likely not authenticated, "
+                            f"hung, or unreachable; this is NOT a slow model."
+                        )
+                        break
+                    # Absolute ceiling for a backend that streams but never
+                    # finishes.
                     if elapsed_s >= STEP_TIMEOUT_S:
                         timed_out = True
                         error_text = (
-                            f"{step.role} step exceeded {int(STEP_TIMEOUT_S)}s budget "
-                            f"with no response — aborting turn. Check that the "
+                            f"{step.role} step exceeded {int(STEP_TIMEOUT_S)}s "
+                            f"budget — aborting. Check that the "
                             f"{role_cfg.provider} backend is healthy."
                         )
                         break
+                    # Honest heartbeat: don't say "still working" when we've
+                    # heard nothing at all.
+                    if started:
+                        msg = f"_…{step.role} still working ({elapsed_s}s)…_\n"
+                    else:
+                        msg = (
+                            f"_…waiting for the {role_cfg.provider} backend — "
+                            f"no response yet ({elapsed_s}s)…_\n"
+                        )
                     yield Event(
                         type="assistant.text",
-                        data={
-                            "text": f"_…{step.role} still working ({elapsed_s}s)…_\n",
-                            "heartbeat": True,
-                        },
+                        data={"text": msg, "heartbeat": True},
                     )
         except Exception as exc:
-            # Sub-provider raised (or our own cancellation cascaded). Capture
-            # the message for the tool_result; the finally block will cancel
-            # the inner task.
+            # Sub-provider raised in the child (propagated through result).
             error_text = str(exc) or repr(exc)
         finally:
-            # Belt-and-braces: cancel the inner task on every exit path so
-            # it doesn't leak past this scope (the outer generator may be
-            # aclose()'d on WS disconnect, in which case the try blocks above
-            # don't catch it).
+            # True cancellation: kill the child process. Reclaims a wedged
+            # `claude` CLI immediately (no daemon-thread leak, no hung
+            # session-delete). Safe on every exit path — normal completion,
+            # timeout, fast-fail, or generator aclose() on WS disconnect.
+            handle.kill()
             if not collect.done():
                 collect.cancel()
-                try:
-                    await collect
-                except (asyncio.CancelledError, Exception):
-                    pass
 
         if error_text is not None:
             yield Event(

@@ -1,5 +1,20 @@
 export type Provider = "claude" | "opencode" | "fleet";
 
+// Permission/auto mode forwarded to the upstream agent (Claude:
+// acceptEdits / default / plan / bypassPermissions). Chosen per-session.
+export type PermissionMode =
+  | "acceptEdits"
+  | "default"
+  | "plan"
+  | "bypassPermissions";
+
+export const PERMISSION_MODES: { id: PermissionMode; label: string; hint: string }[] = [
+  { id: "acceptEdits", label: "Auto (accept edits)", hint: "Agent edits files without asking — default" },
+  { id: "default", label: "Ask", hint: "Agent uses default permission prompts" },
+  { id: "plan", label: "Plan only", hint: "Agent plans but does not modify files" },
+  { id: "bypassPermissions", label: "Full auto (bypass)", hint: "Bypass all permission checks — use with care" },
+];
+
 export interface CatalogModel {
   id: string;
   provider: Provider;
@@ -15,6 +30,7 @@ export interface SessionRow {
   /** Extra absolute paths the agent's tools may operate on beyond `cwd`. */
   additional_dirs: string[] | null;
   upstream_id: string | null;
+  permission_mode: PermissionMode | null;
   fleet_config_override: FleetConfigOverride | null;
   created_at: string;
   updated_at: string;

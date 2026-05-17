@@ -44,6 +44,11 @@ class RunContext:
     additional_dirs: list[str] = field(default_factory=list)
     upstream_session_id: str | None = None
     system_prompt: str | None = None
+    # Permission/auto mode forwarded to the upstream agent. For Claude this
+    # maps to claude-agent-sdk's ``permission_mode`` (acceptEdits / default /
+    # plan / bypassPermissions). None → the provider's safe default. Chosen
+    # per-session in the UI; threaded through to sub-providers in the fleet.
+    permission_mode: str | None = None
     # Provider-specific extras. Currently only used by the fleet provider
     # (a per-session partial config dict that overrides the file-level YAML).
     extras: dict[str, Any] = field(default_factory=dict)

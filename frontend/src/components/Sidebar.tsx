@@ -1,6 +1,11 @@
 import { useMemo, useState } from "react";
-import type { CatalogModel, SessionRow } from "../types";
-import { IconCpu, IconPlus, IconSearch, IconTrash, IconX } from "./icons";
+import {
+  PERMISSION_MODES,
+  type CatalogModel,
+  type PermissionMode,
+  type SessionRow,
+} from "../types";
+import { IconBolt, IconCpu, IconPlus, IconSearch, IconTrash, IconX } from "./icons";
 
 interface Props {
   sessions: SessionRow[];
@@ -8,6 +13,8 @@ interface Props {
   models: CatalogModel[];
   pendingModelId: string;
   onPickModel: (id: string) => void;
+  permissionMode: PermissionMode;
+  onPickPermissionMode: (m: PermissionMode) => void;
   onSelect: (id: string) => void;
   onCreate: () => void;
   onDelete: (id: string) => void;
@@ -90,6 +97,29 @@ export default function Sidebar(p: Props) {
             {p.models.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.provider}:{m.model}
+              </option>
+            ))}
+          </select>
+        </div>
+        {/* Permission / auto mode for the next new chat — passed straight
+            through to claude/opencode (and every fleet subagent). */}
+        <div
+          className="lc-modelsel"
+          title={
+            PERMISSION_MODES.find((x) => x.id === p.permissionMode)?.hint ??
+            "Permission / auto mode for the next new chat"
+          }
+        >
+          <IconBolt size={13} />
+          <select
+            value={p.permissionMode}
+            onChange={(e) =>
+              p.onPickPermissionMode(e.target.value as PermissionMode)
+            }
+          >
+            {PERMISSION_MODES.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
               </option>
             ))}
           </select>

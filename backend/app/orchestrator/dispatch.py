@@ -104,7 +104,14 @@ def build_dispatch_mcp(
     each other.
     """
     # Importing here to avoid a circular import at module load time.
-    from .fleet import RoleConfig, Step
+    from .fleet import DISPATCH_HARD_FAIL_CAP, RoleConfig, Step, StepTimeoutError
+
+    # Per-TURN hard-failure ledger (this closure is rebuilt every turn). A
+    # role that times out / reports an unresponsive backend lands here; once
+    # it hits the cap we refuse further dispatches of it and tell the
+    # orchestrator to abort — killing the unbounded silent retry loop where
+    # a wedged planner is re-dispatched forever.
+    hard_fail: dict[str, int] = {}
 
     @tool(
         "dispatch_subagent",
@@ -135,6 +142,15 @@ def build_dispatch_mcp(
                 f"{', '.join(sorted(registry.keys())) or '(none)'}"
             )
 
+        if hard_fail.get(name, 0) >= DISPATCH_HARD_FAIL_CAP:
+            return _err(
+                f"REFUSING to dispatch {name!r}: it has already hard-failed "
+                f"{hard_fail[name]} time(s) this turn (unresponsive backend). "
+                f"Do NOT retry {name}. ABORT the workflow now and tell the "
+                f"user the {name} backend is unavailable — name it explicitly "
+                f"and stop. Re-dispatching will only hang again."
+            )
+
         agent = registry[name]
         step_id = _next_step_id(name)
         role_cfg = RoleConfig(
@@ -151,6 +167,27 @@ def build_dispatch_mcp(
         try:
             async for ev in run_step_fn(step, role_cfg, ctx, outputs):
                 await sink.put(ev)
+        except StepTimeoutError as exc:
+            # Backend unresponsive / wedged. Count it; escalate to a hard
+            # ABORT instruction once we hit the cap so the orchestrator can't
+            # spin on it. Even the first time, tell it not to blindly retry.
+            n = hard_fail.get(name, 0) + 1
+            hard_fail[name] = n
+            logger.warning("dispatch_subagent: %s hard-failed (%dx): %s", name, n, exc)
+            if n >= DISPATCH_HARD_FAIL_CAP:
+                return _err(
+                    f"subagent {name!r} hard-failed {n}x — the "
+                    f"{role_cfg.provider} backend is unresponsive. STOP. Do "
+                    f"NOT dispatch {name} again. Abort the workflow and tell "
+                    f"the user the {name} backend ({role_cfg.provider}) is "
+                    f"unavailable. Detail: {exc}"
+                )
+            return _err(
+                f"subagent {name!r} did not respond (backend likely "
+                f"unresponsive): {exc}. Do NOT immediately re-dispatch the "
+                f"same agent — if you have nothing else productive to do, "
+                f"abort and report the backend problem to the user."
+            )
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("dispatch_subagent: %s raised", name)
             return _err(f"subagent {name!r} raised: {exc}")
