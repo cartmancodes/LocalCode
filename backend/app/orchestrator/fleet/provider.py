@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from ...config import get_settings
 from ..base import Event, RunContext
 from .constants import (
     HEARTBEAT_INTERVAL_S,
@@ -21,6 +23,8 @@ from .constants import (
     STEP_TIMEOUT_S,
     StepTimeoutError,
 )
+
+logger = logging.getLogger(__name__)
 from .gate import classify_gate
 from .loader import _merge_config, load_fleet_config
 from .models import FleetConfig, RoleConfig, Step
@@ -48,6 +52,7 @@ class _SubprocHandle:
         self.first: asyncio.Event = asyncio.Event()
         self.result: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._proc: asyncio.subprocess.Process | None = None
+        self._stderr: str = ""
 
     async def start(
         self,
@@ -75,13 +80,26 @@ class _SubprocHandle:
             cwd=_REPO_ROOT,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            # Capture (don't discard) stderr — when the worker dies without a
+            # result this is the ONLY window into why. Discarding it (the
+            # earlier mistake) made the failure undiagnosable.
+            stderr=asyncio.subprocess.PIPE,
         )
         assert self._proc.stdin and self._proc.stdout
         self._proc.stdin.write((req + "\n").encode())
         await self._proc.stdin.drain()
         self._proc.stdin.close()
+        asyncio.create_task(self._drain_stderr())
         asyncio.create_task(self._pump())
+
+    async def _drain_stderr(self) -> None:
+        if not self._proc or not self._proc.stderr:
+            return
+        try:
+            data = await self._proc.stderr.read()
+            self._stderr = data.decode(errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
 
     async def _pump(self) -> None:
         assert self._proc and self._proc.stdout
@@ -110,9 +128,15 @@ class _SubprocHandle:
             self.result.set_result(payload.get("text", ""))
         else:
             err = (payload or {}).get("error") if payload else None
-            self.result.set_exception(
-                RuntimeError(err or "sub-provider worker exited without a result")
-            )
+            if not err:
+                rc = self._proc.returncode if self._proc else None
+                tail = (self._stderr or "").strip().splitlines()[-6:]
+                detail = (" | stderr: " + " ⏎ ".join(tail)) if tail else ""
+                err = (
+                    f"sub-provider worker exited without a result "
+                    f"(exit={rc}){detail}"
+                )
+            self.result.set_exception(RuntimeError(err))
 
     def kill(self) -> None:
         p = self._proc
@@ -233,6 +257,9 @@ class FleetProvider:
         # already running". A child process is fully isolated, and lets us
         # KILL a wedged `claude` CLI for real. `handle.first` flips the
         # instant the child reports its first event.
+        _s = get_settings()
+        grace_s = float(getattr(_s, "fleet_startup_grace_s", STARTUP_GRACE_S))
+        step_budget_s = float(getattr(_s, "fleet_step_timeout_s", STEP_TIMEOUT_S))
         handle = _SubprocHandle()
         await handle.start(
             role_cfg,
@@ -260,24 +287,33 @@ class FleetProvider:
                     # means the backend is wedged (auth prompt, dead socket,
                     # nested-SDK deadlock). Don't pretend to wait the full
                     # STEP_TIMEOUT_S — abort loudly now.
-                    if not started and elapsed_s >= STARTUP_GRACE_S:
+                    if not started and elapsed_s >= grace_s:
                         timed_out = True
                         error_text = (
                             f"{step.role}: the {role_cfg.provider} backend "
-                            f"produced NO output within {int(STARTUP_GRACE_S)}s "
+                            f"produced NO output within {int(grace_s)}s "
                             f"— treating it as unresponsive and aborting this "
                             f"step. The backend is likely not authenticated, "
                             f"hung, or unreachable; this is NOT a slow model."
                         )
+                        logger.warning(
+                            "fleet step %s (%s:%s) fast-failed: no output in %ds",
+                            step.role, role_cfg.provider, role_cfg.model, int(grace_s),
+                        )
                         break
                     # Absolute ceiling for a backend that streams but never
                     # finishes.
-                    if elapsed_s >= STEP_TIMEOUT_S:
+                    if elapsed_s >= step_budget_s:
                         timed_out = True
                         error_text = (
-                            f"{step.role} step exceeded {int(STEP_TIMEOUT_S)}s "
+                            f"{step.role} step exceeded {int(step_budget_s)}s "
                             f"budget — aborting. Check that the "
                             f"{role_cfg.provider} backend is healthy."
+                        )
+                        logger.warning(
+                            "fleet step %s (%s:%s) hit %ds ceiling",
+                            step.role, role_cfg.provider, role_cfg.model,
+                            int(step_budget_s),
                         )
                         break
                     # Honest heartbeat: don't say "still working" when we've
@@ -295,7 +331,14 @@ class FleetProvider:
                     )
         except Exception as exc:
             # Sub-provider raised in the child (propagated through result).
+            # Includes the worker's stderr tail + exit code (see
+            # _SubprocHandle._pump) so this is diagnosable from backend.log,
+            # never an opaque "exited without a result".
             error_text = str(exc) or repr(exc)
+            logger.warning(
+                "fleet step %s (%s:%s) failed: %s",
+                step.role, role_cfg.provider, role_cfg.model, error_text,
+            )
         finally:
             # True cancellation: kill the child process. Reclaims a wedged
             # `claude` CLI immediately (no daemon-thread leak, no hung

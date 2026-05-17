@@ -55,6 +55,15 @@ class Settings(BaseSettings):
     # config — predictable rather than secretly hot-reloading.
     localcode_fleet_config: str | None = None
 
+    # Per sub-provider STEP budget (seconds). A claude-opus planner auditing
+    # a large repo with tools legitimately runs many minutes, so the ceiling
+    # is generous but bounded. Env: FLEET_STEP_TIMEOUT_S.
+    fleet_step_timeout_s: float = 1200.0
+    # If a sub-provider emits ZERO events within this window it's treated as
+    # wedged (auth prompt / dead socket) and fast-failed — distinct from
+    # "slow but streaming". Env: FLEET_STARTUP_GRACE_S.
+    fleet_startup_grace_s: float = 90.0
+
     # Comma-separated CORS origins. Override per env (e.g. add a staging URL).
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
