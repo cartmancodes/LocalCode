@@ -115,6 +115,7 @@ The two architectural unlocks worth naming up front:
 |       |   |   |-- loader.py       Locate/parse/merge/cache/serialize config
 |       |   |   |-- gate.py         Reviewer/tester classifier (classify_gate)
 |       |   |   |-- collect.py      Sub-provider stream → reviewable text + digest
+|       |   |   |-- subproc.py      Out-of-process sub-provider worker
 |       |   |   `-- provider.py     FleetProvider + _run_step_with_role
 |       |   |-- orchestrator.py     OrchestratorAgent — claude-agent-sdk session + merged event stream
 |       |   `-- dispatch.py         In-process MCP server: dispatch_subagent + request_plan_approval
@@ -182,8 +183,9 @@ Every backend exposes `open_session(ctx)`, `run(ctx)` (async iterator of
 **`RunContext`.** Dataclass carrying everything a provider needs for one
 turn: `model`, `prompt`, `cwd`, `additional_dirs`, `upstream_session_id`,
 optional `system_prompt`, `extras` (used by the fleet for per-session
-config overrides), and `approval_channel` (the HITL back-channel — an
-`asyncio.Queue` of approval messages).
+config overrides and role-specific provider controls), and
+`approval_channel` (the HITL back-channel — an `asyncio.Queue` of approval
+messages).
 
 **`Event`.** Unified streaming event yielded by every provider. Types are:
 `session.started`, `assistant.text`, `assistant.tool_use`, `tool.result`,
@@ -211,7 +213,10 @@ turn exposing two tools: `dispatch_subagent(name, prompt)` and
 `request_plan_approval(plan_summary)`. The orchestrator's allowed-tool
 list contains *only* these two — built-in Claude Code tools (Read, Edit,
 Bash, Skill, Agent, Task, etc.) are explicitly denied so the
-orchestrator can't bypass the registry.
+orchestrator can't bypass the registry. The dispatch layer also preserves
+per-role outputs for the turn and normalizes downstream prompts: planner
+receives the original user request, coder receives the full planner
+artifact, and reviewer receives both the full plan and coder result.
 
 **Plan.** When `dispatch_subagent` is invoked with the `planner` agent,
 its Markdown output is written to `<cwd>/.localcode/plans/<timestamp>-<slug>.md`
@@ -390,6 +395,8 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
   executor that the MCP `dispatch_subagent` tool delegates to:
   - Emits a visible `assistant.tool_use` (name
     `"<role> [<provider>:<model>]"`, input `{prompt: <≤600 chars>}`).
+  - Passes the role name to the out-of-process worker so `collect_text()`
+    can apply role-specific provider controls.
   - Concurrently runs `_collect_text` and a heartbeat ticker. Every
     `HEARTBEAT_INTERVAL_S` it yields an `assistant.text` heartbeat
     (`"_…<role> still working (Ns)…_\n"`) until `STEP_TIMEOUT_S` is
@@ -402,6 +409,10 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
   appends a `\n---\n(tool activity from <provider>:<model>)\n…` digest so
   reviewers/testers can verify what the worker actually did rather than
   trusting its narrative.
+  For planner roles, it sets Claude provider extras that disable Claude Code
+  settings/skills/tool loading and disallow mutating or indirect execution
+  tools. The planner should produce a plan artifact only; implementation is
+  reserved for coder and verification for reviewer/tester.
 - `classify_gate(output, role)` (`fleet/gate.py`, aliased
   `_classify_gate`) strips the tool digest, walks the
   body backwards for the last classifier-shaped line, tolerates
@@ -455,9 +466,18 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
   `mcp__fleet_dispatch__dispatch_subagent` and
   `mcp__fleet_dispatch__request_plan_approval`. A fresh server is
   built per turn so closures capture this turn's `registry/ctx/sink`.
+  The closure also keeps a `role_outputs` ledger so later roles can receive
+  the full upstream artifacts even if the orchestrator abbreviates a dispatch
+  prompt.
 - `dispatch_subagent(name, prompt)`:
   - Validates `name` against the registry; returns an `is_error` text
     payload otherwise.
+  - Rewrites the effective prompt by role before running the subagent:
+    planner receives `ctx.prompt` exactly, coder receives its dispatch prompt
+    plus the full planner artifact, and reviewer receives its dispatch prompt
+    plus both the full planner artifact and coder result. This keeps the
+    mandatory planner → coder → reviewer contract deterministic even though
+    the orchestrator is an LLM.
   - Builds a `RoleConfig` from the `AgentDef`, a `Step` with an id
     like `orch.<agent>.<n>`, runs `run_step_fn(step, role_cfg, ctx,
     outputs)`, and pushes every yielded event onto the sink.
@@ -465,6 +485,8 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
     `save_plan(result, ctx.cwd)` writes
     `<cwd>/.localcode/plans/YYYYMMDD-HHMMSS-<slug>.md` and the path is
     appended to the returned text.
+  - Records each successful role result in `role_outputs` for downstream
+    prompt normalization.
 - `request_plan_approval(plan_summary)`:
   - If `ctx.approval_channel is None` (headless / no WS), auto-approves
     so unit tests and direct provider usage don't deadlock.
@@ -836,6 +858,19 @@ with `max_steps: 4`, `entry_role: coder`, no tester.
 - `permission_mode="default"` (the orchestrator never writes; only
   subagents do, and they use `acceptEdits`).
 
+### Planner subagent tool lockdown
+
+Planner runs may still use a Claude-backed provider, but they are treated as
+artifact-only planning passes. When `collect_text()` sees `role_name == "planner"`,
+it sets `ctx.extras` for `ClaudeProvider` so the spawned Claude Code session uses
+`allowed_tools=[]`, `setting_sources=[]`, `skills=[]`, and a
+disallowed-tools list covering mutating tools (`Edit`, `Write`, `MultiEdit`,
+`NotebookEdit`, `Bash`, `BashOutput`, `KillBash`) plus indirect execution or
+tool-discovery paths (`Agent`, `Task`, `Skill`, `ToolSearch`, `Monitor`,
+`RemoteTrigger`, `TaskStop`). This prevents the planner from implementing the
+task before the coder runs, even if user/project Claude settings would normally
+expose extra tools.
+
 ### Dispatch MCP tools
 
 **`dispatch_subagent(name, prompt)`** — looks up the `AgentDef` in the
@@ -843,7 +878,11 @@ registry, builds a `RoleConfig`, invokes
 `FleetProvider._run_step_with_role` (heartbeats every 30s, hard timeout
 at 600s, gate classification on completion), pushes every event onto
 the sink, returns the subagent's final text. When `name == "planner"`,
-also writes `<cwd>/.localcode/plans/<timestamp>-<slug>.md`.
+also writes `<cwd>/.localcode/plans/<timestamp>-<slug>.md`. The tool keeps
+a per-turn role-output ledger and applies deterministic prompt normalization:
+planner always gets the original user prompt, coder always gets the full
+planner artifact, and reviewer always gets the full planner artifact plus
+coder result.
 
 **`request_plan_approval(plan_summary)`** — pushes
 `pipeline.awaiting_approval` onto the sink, blocks on

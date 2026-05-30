@@ -1,161 +1,267 @@
-// LocalCode VS Code extension — embeds the LocalCode frontend in a VS Code
-// webview so the chat lives next to your code.
-//
-// Two surfaces:
-//   1. A sidebar view (activity bar → LocalCode → "Chat") — always visible,
-//      narrow but persistent. Good while editing.
-//   2. A wider panel opened in the editor area beside the current file —
-//      better for actively driving the agents.
-//
-// Both surfaces load the same `localcode.url` (the vite dev server, default
-// http://localhost:5173) inside an iframe. `portMapping` lets the webview's
-// CORS-restricted context reach the backend WS at :8080 and opencode at :4096.
+"use strict";
 
+const crypto = require("crypto");
 const vscode = require("vscode");
 
+const EXTENSION_ID = "localcode";
 const VIEW_ID = "localcode.chat";
+const PANEL_VIEW_TYPE = "localcode.panel";
+const PANEL_TITLE = "LocalCode";
 
-function getUrl() {
-  return (
-    vscode.workspace.getConfiguration("localcode").get("url") ||
-    "http://localhost:5173"
-  );
+const DEFAULT_FRONTEND_URL = "http://localhost:5173";
+const DEFAULT_BACKEND_PORT = 8080;
+const OPENCODE_PORT = 4096;
+
+const CONFIG_KEYS = Object.freeze({
+  url: "url",
+  backendPort: "backendPort",
+  openOnStartup: "openOnStartup",
+});
+
+let activeExtension;
+
+/**
+ * Sidebar webview provider. It delegates all rendering decisions to the owner
+ * so the panel and sidebar always use identical HTML and port mappings.
+ */
+class LocalCodeViewProvider {
+  constructor(renderWebview) {
+    this.renderWebview = renderWebview;
+    this.view = undefined;
+  }
+
+  resolveWebviewView(webviewView) {
+    this.view = webviewView;
+    this.renderWebview(webviewView.webview);
+  }
+
+  reload() {
+    if (this.view) {
+      this.renderWebview(this.view.webview);
+    }
+  }
+
+  dispose() {
+    this.view = undefined;
+  }
 }
 
-function getBackendPort() {
-  return (
-    vscode.workspace.getConfiguration("localcode").get("backendPort") || 8080
-  );
+class LocalCodeExtension {
+  constructor(context) {
+    this.context = context;
+    this.panel = undefined;
+    this.viewProvider = new LocalCodeViewProvider((webview) => this.renderWebview(webview));
+  }
+
+  activate() {
+    this.context.subscriptions.push(
+      vscode.window.registerWebviewViewProvider(VIEW_ID, this.viewProvider, {
+        webviewOptions: { retainContextWhenHidden: true },
+      }),
+      vscode.commands.registerCommand("localcode.open", () => this.openPanel()),
+      vscode.commands.registerCommand("localcode.openSidebar", () => this.focusSidebar()),
+      vscode.commands.registerCommand("localcode.reload", () => this.reloadAll()),
+      vscode.workspace.onDidChangeConfiguration((event) => this.onConfigurationChanged(event)),
+      { dispose: () => this.dispose() },
+    );
+
+    if (readConfiguration().openOnStartup) {
+      this.openPanel();
+    }
+  }
+
+  openPanel() {
+    if (this.panel) {
+      this.panel.reveal(vscode.ViewColumn.Beside, false);
+      return;
+    }
+
+    this.panel = vscode.window.createWebviewPanel(
+      PANEL_VIEW_TYPE,
+      PANEL_TITLE,
+      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        portMapping: buildPortMappings(),
+      },
+    );
+
+    this.renderWebview(this.panel.webview);
+    this.panel.onDidDispose(
+      () => {
+        this.panel = undefined;
+      },
+      undefined,
+      this.context.subscriptions,
+    );
+  }
+
+  focusSidebar() {
+    vscode.commands.executeCommand(`${VIEW_ID}.focus`);
+  }
+
+  reloadAll() {
+    if (this.panel) {
+      this.renderWebview(this.panel.webview);
+    }
+    this.viewProvider.reload();
+  }
+
+  renderWebview(webview) {
+    webview.options = {
+      enableScripts: true,
+      portMapping: buildPortMappings(),
+    };
+    webview.html = buildHtml(readConfiguration().frontendUrl);
+  }
+
+  onConfigurationChanged(event) {
+    if (
+      event.affectsConfiguration(`${EXTENSION_ID}.${CONFIG_KEYS.url}`) ||
+      event.affectsConfiguration(`${EXTENSION_ID}.${CONFIG_KEYS.backendPort}`)
+    ) {
+      this.reloadAll();
+    }
+  }
+
+  dispose() {
+    if (this.panel) {
+      this.panel.dispose();
+      this.panel = undefined;
+    }
+    this.viewProvider.dispose();
+  }
 }
 
-// Webviews can't reach localhost on the host directly — they run in their own
-// frame with a synthetic origin. `portMapping` makes the listed ports tunnel
-// through to the extension host so iframe `fetch` and WebSocket calls land.
-function portMappings() {
-  const backend = getBackendPort();
-  return [
-    { webviewPort: 5173, extensionHostPort: 5173 }, // vite (frontend)
-    { webviewPort: backend, extensionHostPort: backend }, // FastAPI
-    { webviewPort: 4096, extensionHostPort: 4096 }, // opencode
-  ];
+function activate(context) {
+  activeExtension = new LocalCodeExtension(context);
+  activeExtension.activate();
 }
 
-// CSP for the wrapper page only. The inner iframe is a separate browsing
-// context with its own CSP (served by the LocalCode app), so WebSocket and
-// fetch directives belong there, not here. We just need to permit the
-// iframe load (`frame-src`) and the inline `<style>` block.
-function buildHtml(url) {
+function deactivate() {
+  if (activeExtension) {
+    activeExtension.dispose();
+    activeExtension = undefined;
+  }
+}
+
+function readConfiguration() {
+  const config = vscode.workspace.getConfiguration(EXTENSION_ID);
+  const rawUrl = config.get(CONFIG_KEYS.url, DEFAULT_FRONTEND_URL);
+  const rawBackendPort = config.get(CONFIG_KEYS.backendPort, DEFAULT_BACKEND_PORT);
+
+  return {
+    frontendUrl: normalizeFrontendUrl(rawUrl),
+    backendPort: normalizePort(rawBackendPort, DEFAULT_BACKEND_PORT),
+    openOnStartup: config.get(CONFIG_KEYS.openOnStartup, false) === true,
+  };
+}
+
+function normalizeFrontendUrl(value) {
+  const candidate = typeof value === "string" && value.trim() ? value.trim() : DEFAULT_FRONTEND_URL;
+
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch (_) {
+    // Fall through to the default.
+  }
+
+  return DEFAULT_FRONTEND_URL;
+}
+
+function normalizePort(value, fallback) {
+  const port = Number(value);
+  if (Number.isInteger(port) && port > 0 && port <= 65535) {
+    return port;
+  }
+  return fallback;
+}
+
+function buildPortMappings() {
+  const { frontendUrl, backendPort } = readConfiguration();
+  const frontendPort = getUrlPort(frontendUrl) || 5173;
+  const ports = new Set([frontendPort, backendPort, OPENCODE_PORT]);
+
+  return Array.from(ports, (port) => ({
+    webviewPort: port,
+    extensionHostPort: port,
+  }));
+}
+
+function getUrlPort(value) {
+  try {
+    const parsed = new URL(value);
+    if (parsed.port) {
+      return normalizePort(parsed.port, undefined);
+    }
+    return parsed.protocol === "https:" ? 443 : 80;
+  } catch (_) {
+    return undefined;
+  }
+}
+
+function buildHtml(frontendUrl) {
+  const nonce = crypto.randomBytes(16).toString("base64");
+  const frontendOrigin = getOrigin(frontendUrl);
+  const frameSources = [frontendOrigin, "http://localhost:*", "http://127.0.0.1:*"]
+    .filter(Boolean)
+    .join(" ");
   const csp = [
     "default-src 'none'",
-    "frame-src http://localhost:* http://127.0.0.1:*",
-    "style-src 'unsafe-inline'",
+    `frame-src ${frameSources}`,
+    `style-src 'nonce-${nonce}'`,
   ].join("; ");
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="${csp}">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="${escapeAttribute(csp)}">
   <title>LocalCode</title>
-  <style>
-    html, body { margin: 0; padding: 0; height: 100vh; width: 100vw; overflow: hidden; background: #1e1e1e; }
-    iframe { border: 0; height: 100%; width: 100%; display: block; }
+  <style nonce="${nonce}">
+    html,
+    body {
+      width: 100vw;
+      height: 100vh;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #1e1e1e;
+    }
+
+    iframe {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border: 0;
+    }
   </style>
 </head>
 <body>
-  <iframe src="${url}" allow="clipboard-read; clipboard-write; web-share"></iframe>
+  <iframe src="${escapeAttribute(frontendUrl)}" title="LocalCode" allow="clipboard-read; clipboard-write; web-share"></iframe>
 </body>
 </html>`;
 }
 
-class LocalCodeViewProvider {
-  constructor(context) {
-    this.context = context;
-    this.view = null;
-  }
-
-  resolveWebviewView(webviewView) {
-    this.view = webviewView;
-    webviewView.webview.options = {
-      enableScripts: true,
-      portMapping: portMappings(),
-    };
-    webviewView.webview.html = buildHtml(getUrl());
-  }
-
-  reload() {
-    if (this.view) {
-      this.view.webview.html = buildHtml(getUrl());
-    }
+function getOrigin(value) {
+  try {
+    return new URL(value).origin;
+  } catch (_) {
+    return new URL(DEFAULT_FRONTEND_URL).origin;
   }
 }
 
-let panelRef = null;
-let providerRef = null;
-
-function openPanel() {
-  // If the panel already exists, just bring it to front instead of stacking
-  // duplicates. ViewColumn.Beside opens it next to the active editor, so
-  // code stays on the left and LocalCode lands on the right.
-  if (panelRef) {
-    panelRef.reveal(vscode.ViewColumn.Beside, false);
-    return;
-  }
-  panelRef = vscode.window.createWebviewPanel(
-    "localcode.panel",
-    "LocalCode",
-    { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
-    {
-      enableScripts: true,
-      retainContextWhenHidden: true, // keep WS alive when the tab loses focus
-      portMapping: portMappings(),
-    },
-  );
-  panelRef.webview.html = buildHtml(getUrl());
-  panelRef.onDidDispose(() => {
-    panelRef = null;
-  });
-}
-
-function activate(context) {
-  providerRef = new LocalCodeViewProvider(context);
-
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(VIEW_ID, providerRef, {
-      webviewOptions: { retainContextWhenHidden: true },
-    }),
-    vscode.commands.registerCommand("localcode.open", openPanel),
-    vscode.commands.registerCommand("localcode.openSidebar", () => {
-      vscode.commands.executeCommand(`${VIEW_ID}.focus`);
-    }),
-    vscode.commands.registerCommand("localcode.reload", () => {
-      if (panelRef) panelRef.webview.html = buildHtml(getUrl());
-      if (providerRef) providerRef.reload();
-    }),
-    // If the user changes localcode.url at runtime, refresh both surfaces so
-    // they pick up the new URL without a window reload.
-    vscode.workspace.onDidChangeConfiguration((ev) => {
-      if (
-        ev.affectsConfiguration("localcode.url") ||
-        ev.affectsConfiguration("localcode.backendPort")
-      ) {
-        if (panelRef) panelRef.webview.html = buildHtml(getUrl());
-        if (providerRef) providerRef.reload();
-      }
-    }),
-  );
-
-  if (
-    vscode.workspace.getConfiguration("localcode").get("openOnStartup") === true
-  ) {
-    openPanel();
-  }
-}
-
-function deactivate() {
-  if (panelRef) panelRef.dispose();
-  panelRef = null;
-  providerRef = null;
+function escapeAttribute(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 module.exports = { activate, deactivate };
