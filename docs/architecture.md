@@ -290,8 +290,10 @@ by `save_plan()` in `dispatch.py`.
   `aclose()` on each.
 
 #### `backend/app/orchestrator/claude.py`
-- `ClaudeProvider`. `open_session()` is a no-op (claude-agent-sdk's
-  `query()` is stateless per call).
+- `ClaudeProvider`. Claude Code creates the provider-native session lazily
+  inside `query()`. LocalCode persists the SDK `ResultMessage.session_id`
+  into session `upstream_id`; follow-up turns pass it back through
+  `ClaudeAgentOptions.resume` so the SDK resumes the same transcript.
 - `run()` builds `ClaudeAgentOptions(model=ctx.model, cwd=ctx.cwd,
   add_dirs=ctx.additional_dirs, system_prompt=ctx.system_prompt,
   permission_mode="acceptEdits", include_partial_messages=True)` and
@@ -308,9 +310,12 @@ by `save_plan()` in `dispatch.py`.
   `OPENCODE_BASE_URL` (default `http://localhost:4096`) with a 60s
   connect timeout, `read=None` (SSE is open-ended), and
   `Limits(max_connections=5, max_keepalive_connections=2)`.
-- `open_session()` POSTs to `/session?directory=<cwd>` and returns
-  `{"id": ...}`. `directory` is a *query* param, not a body field
-  (OpenCode silently drops unknown body keys).
+- `open_session()` reuses the persisted OpenCode session id from
+  `upstream_id` when present, otherwise POSTs to `/session?directory=<cwd>`
+  and returns `{"id": ...}`. `directory` is a *query* param, not a body
+  field (OpenCode silently drops unknown body keys). If an upstream session
+  was deleted and returns 404, LocalCode creates a replacement and persists
+  the new id.
 - `run()`:
   - Splits `ctx.model` on `/` into `providerID` / `modelID` and emits a
     clear error event if the slash is missing (no silent "openai"

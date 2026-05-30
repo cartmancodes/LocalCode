@@ -518,3 +518,20 @@ AggregateError [ECONNREFUSED]:
 
   ➜  Local:   http://localhost:5173/
   ➜  Network: http://192.168.1.10:5173/
+5:48:38 PM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+5:48:38 PM [vite] ws proxy error:
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1193:18)
+    at afterConnectMultiple (node:net:1783:7)
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 114 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.10:5173/

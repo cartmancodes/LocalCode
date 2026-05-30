@@ -40,7 +40,17 @@ class OpenCodeProvider:
 
     async def open_session(self, ctx: RunContext) -> str:
         if ctx.upstream_session_id:
-            return ctx.upstream_session_id
+            # Keep using the OpenCode conversation tied to this LocalCode
+            # session. If the upstream row was removed, create a replacement
+            # instead of making every follow-up prompt fail with a 404.
+            resp = await self._client.get(f"/session/{ctx.upstream_session_id}")
+            if resp.status_code != 404:
+                resp.raise_for_status()
+                return ctx.upstream_session_id
+
+        return await self._create_session(ctx)
+
+    async def _create_session(self, ctx: RunContext) -> str:
         # `directory` is a QUERY parameter on /session, not a body field —
         # opencode silently drops unknown body keys, so a body-borne directory
         # is a no-op and the session ends up rooted in whatever dir
@@ -59,7 +69,10 @@ class OpenCodeProvider:
             yield Event(
                 type="error",
                 data={
-                    "message": f"could not reach opencode at {self._settings.opencode_base_url}: {exc}",
+                    "message": (
+                        f"could not reach opencode at "
+                        f"{self._settings.opencode_base_url}: {exc}"
+                    ),
                     "provider": self.name,
                 },
             )
@@ -146,9 +159,10 @@ class OpenCodeProvider:
                         continue
 
                     for ev in _translate(inner, session_id, state):
-                        yield ev
                         if ev.type == "assistant.done":
+                            ev.data.setdefault("upstream_session_id", session_id)
                             done = True
+                        yield ev
                     if done:
                         break
         except httpx.HTTPError as exc:

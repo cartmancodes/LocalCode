@@ -347,6 +347,9 @@ class SessionStore:
         self,
         session_id: str,
         message: dict[str, Any],
+        *,
+        bump_updated_at: bool = True,
+        fsync: bool = True,
     ) -> dict[str, Any]:
         """Append a message line to the session's messages.jsonl.
 
@@ -355,6 +358,18 @@ class SessionStore:
         rewrite the file on each checkpoint because append is atomic and
         cheap; a crash loses at most the trailing checkpoint, never the
         whole turn.
+
+        ``bump_updated_at`` controls whether we also rewrite ``meta.json``
+        and the user-global index to update the session's ``updated_at``.
+        For mid-turn checkpoints set this to ``False`` — they fire on every
+        tool boundary and the meta+index rewrite (3 extra file ops per
+        checkpoint) dominates the hot path. The turn's ``finally`` clause
+        does a single ``update_session`` at end-of-turn to keep the sidebar
+        sorted accurately.
+
+        ``fsync`` forces the appended line to disk before returning. Default
+        True so a backend crash can't silently lose the last few
+        checkpoints. The cost is a single ``fdatasync`` per call.
         """
         cwd = _resolve_cwd(session_id)
         sdir = _session_dir(session_id, cwd)
@@ -366,12 +381,15 @@ class SessionStore:
         line = json.dumps(_to_jsonable(msg), ensure_ascii=False)
         path = sdir / "messages.jsonl"
         # O_APPEND on POSIX is atomic for writes up to PIPE_BUF; concurrent
-        # writers in the same process serialise via the per-session lock in
-        # routes/sessions.py.
+        # writers within the process serialise via the per-session lock that
+        # SessionRunner holds around turn execution.
         with path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
-        # Bump updated_at so list_sessions reflects activity.
-        await self.update_session(session_id)
+            if fsync:
+                f.flush()
+                os.fsync(f.fileno())
+        if bump_updated_at:
+            await self.update_session(session_id)
         return msg
 
     async def list_messages(
@@ -401,18 +419,22 @@ class SessionStore:
             return [], None, False
 
         # Dedup keeps insertion order via dict, then we sort by created_at.
+        # Stream line-by-line rather than read_text().splitlines() so big
+        # logs (long-lived sessions, many mid-turn checkpoints) don't
+        # double-allocate the file in memory just to split it.
         latest: dict[str, dict[str, Any]] = {}
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            mid = obj.get("id")
-            if mid:
-                latest[mid] = obj
+        with path.open("r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                mid = obj.get("id")
+                if mid:
+                    latest[mid] = obj
 
         msgs = list(latest.values())
         msgs.sort(key=lambda m: m.get("created_at", ""))
@@ -543,17 +565,18 @@ def _compact_messages(path: Path) -> bool:
         return False
     original_size = path.stat().st_size
     latest: dict[str, dict[str, Any]] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        mid = obj.get("id")
-        if mid:
-            latest[mid] = obj
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            mid = obj.get("id")
+            if mid:
+                latest[mid] = obj
     rebuilt = sorted(latest.values(), key=lambda m: m.get("created_at", ""))
     new_text = "\n".join(
         json.dumps(_to_jsonable(m), ensure_ascii=False) for m in rebuilt

@@ -115,7 +115,6 @@ Per-turn cost (USD) is reported by each provider in the `assistant.done` event a
 
 - **Per-turn model switching in the UI.** The model picker still pins at chat creation. Surface a per-message override and a `/use <provider>:<model>` slash command (Proposal A in the orchestration doc).
 - **Daily token meter.** Sum the tokens from each `assistant.done` over the day and render a per-day usage bar.
-- **Multi-turn Claude session reuse.** Switch from one-shot `query()` to `ClaudeSDKClient` and persist the upstream session id so multi-turn chats keep state inside the SDK.
 - **Parallel sub-agent dispatch.** The orchestrator can call `dispatch_subagent` multiple times in one turn — the SDK runs them concurrently. Today our dispatch tool body is sequential per call; teach the orchestrator to batch independent dispatches (e.g. reviewer + tester after a coder LGTM).
 - **Per-tool permission enforcement.** Both Claude Code and OpenCode let agents declare allowed/denied tools. Wire `AgentDef.permission_mode` and a per-agent tool allowlist through to the providers so the reviewer is genuinely read-only at the tool layer.
 - **Alembic migrations.** `db_init.py` uses `metadata.create_all`.

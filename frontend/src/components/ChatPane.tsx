@@ -19,7 +19,17 @@ interface Props {
   onConfigureFleet?: () => void;
 }
 
-type WsState = "connecting" | "open" | "closed";
+type WsState = "connecting" | "open" | "closed" | "gave-up";
+
+// Cap reconnect attempts before surfacing the failure. Past this, the WS
+// is left closed and the user gets a visible "disconnected" indicator
+// instead of an invisible infinite retry loop pinning the network tab.
+const MAX_RECONNECT_ATTEMPTS = 8;
+
+// Distance (px) from the bottom of the scroll container at which we still
+// consider the user "following along" and safe to auto-scroll. Past this,
+// any auto-scroll would yank them away from the scrollback they're reading.
+const STICKY_BOTTOM_PX = 120;
 
 const ROLE_COLORS: Record<FleetRole | "user" | "assistant", { fg: string; bg: string; bd: string }> = {
   planner:   { fg: "var(--ag-violet-fg)",  bg: "var(--ag-violet-bg)",  bd: "var(--ag-violet-bd)" },
@@ -91,6 +101,10 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
   const reconnectAttempt = useRef(0);
   const pendingSend = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Whether the user has scrolled away from the bottom. While true we skip
+  // auto-scrolling on new turn deltas — otherwise a streaming assistant
+  // yanks them back down on every token while they're trying to read.
+  const userScrolledUp = useRef(false);
   // Highest event id observed from the backend's broadcast. The backend
   // stamps every event with a monotonic `_id`; on reconnect we pass it as
   // `?since=<id>` so the runner replays anything we missed during the gap
@@ -156,8 +170,24 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
 
-  // Auto-scroll on new content.
+  // Track whether the user has scrolled away from the bottom. While they
+  // are reading scrollback we skip auto-scrolling on new turn deltas so the
+  // viewport doesn't fight them. Reset to "following" when they scroll
+  // back near the bottom on their own.
   useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      userScrolledUp.current = distance > STICKY_BOTTOM_PX;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Auto-scroll on new content, but only when the user is following along.
+  useEffect(() => {
+    if (userScrolledUp.current) return;
     scrollRef.current?.scrollTo({
       top: scrollRef.current.scrollHeight,
       behavior: "smooth",
@@ -174,6 +204,11 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
     // Resetting on session change is correct — events from a different
     // session's runner have an unrelated id space.
     lastEventId.current = 0;
+    // A queued prompt from the previous session must not be forwarded to
+    // the new one. Same for the "user scrolled up" sticky state — fresh
+    // chat starts at the bottom.
+    pendingSend.current = null;
+    userScrolledUp.current = false;
     connect(session.id);
     return () => {
       teardown();
@@ -252,9 +287,23 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
       }
     };
 
-    const scheduleReconnect = () => {
+    const scheduleReconnect = (ev?: CloseEvent) => {
       if (!session || wsRef.current !== ws) return;
       setStreaming(false);
+      // Codes 1000 (normal) and 1008 (policy violation, e.g. session
+      // missing on server) signal a deliberate close — looping reconnect
+      // just spams the backend with the same rejection. Stop and surface
+      // the disconnected state to the user; reconnect on next session
+      // selection.
+      const code = ev?.code;
+      if (code === 1000 || code === 1008) {
+        setWsState("gave-up");
+        return;
+      }
+      if (reconnectAttempt.current >= MAX_RECONNECT_ATTEMPTS) {
+        setWsState("gave-up");
+        return;
+      }
       setWsState("closed");
       const delay = Math.min(1000 * 2 ** reconnectAttempt.current, 8000);
       reconnectAttempt.current += 1;
@@ -511,6 +560,31 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
             onRespond={respondApproval}
           />
         )}
+        {session && wsState === "gave-up" && (
+          <div
+            className="lc-result lc-result--error"
+            style={{
+              margin: "0 16px 8px",
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              justifyContent: "space-between",
+            }}
+          >
+            <span>
+              Disconnected from server. Live events are paused.
+            </span>
+            <button
+              className="lc-chip"
+              onClick={() => {
+                reconnectAttempt.current = 0;
+                connect(session.id);
+              }}
+            >
+              Reconnect
+            </button>
+          </div>
+        )}
         <Composer
           session={session}
           disabled={!session || streaming || wsState !== "open"}
@@ -737,8 +811,13 @@ function CodeBlock({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [copied, setCopied] = useState(false);
-  const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
-  const lines = text.split("\n").length;
+  // JSON.stringify on a multi-KB tool_result is the expensive bit. Cache
+  // the formatted text + line count so re-renders from the open/copied
+  // toggles don't re-serialize the same payload.
+  const { text, lines } = useMemo(() => {
+    const t = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    return { text: t, lines: t.split("\n").length };
+  }, [data]);
   const sum =
     summary ??
     (lang === "json" && typeof data === "object" && data

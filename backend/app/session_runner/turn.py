@@ -63,6 +63,15 @@ async def execute_turn(
         permission_mode=permission_mode,
     )
 
+    try:
+        opened_upstream_id = await provider.open_session(ctx)
+    except Exception:
+        opened_upstream_id = None
+    if opened_upstream_id and opened_upstream_id != upstream_id:
+        upstream_id = opened_upstream_id
+        ctx.upstream_session_id = opened_upstream_id
+        await session_store.update_session(session_id, upstream_id=opened_upstream_id)
+
     acc = TurnAccumulator()
     saw_done = False
     try:
@@ -80,6 +89,12 @@ async def execute_turn(
                 await acc.checkpoint(session_id)
             elif ev.type == "assistant.done":
                 saw_done = True
+                new_upstream_id = ev.data.get("upstream_session_id")
+                if new_upstream_id and new_upstream_id != upstream_id:
+                    upstream_id = new_upstream_id
+                    await session_store.update_session(
+                        session_id, upstream_id=new_upstream_id
+                    )
                 acc.set_done(
                     cost_usd=ev.data.get("cost_usd"),
                     duration_ms=ev.data.get("duration_ms"),
@@ -104,7 +119,17 @@ async def execute_turn(
         acc.flush_text()
         acc.synthesize_missing_results()
         if acc.blocks:
-            await acc.checkpoint(session_id)
+            # final=True bumps updated_at once; mid-turn checkpoints skip
+            # the bump to keep the per-tool I/O cost down.
+            await acc.checkpoint(session_id, final=True)
+        else:
+            # No blocks were ever emitted (provider errored before any
+            # output). Still bump updated_at so the session moves to the
+            # top of the sidebar — the user just sent a prompt.
+            try:
+                await session_store.update_session(session_id)
+            except Exception:
+                logger.debug("end-of-turn touch failed for %s", session_id)
         if not saw_done:
             # Always emit assistant.done so subscribers' UIs clear their
             # working indicator, even on error / cancellation.

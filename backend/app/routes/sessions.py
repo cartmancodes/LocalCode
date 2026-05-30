@@ -101,10 +101,11 @@ async def create_session(body: CreateSessionRequest) -> SessionOut:
 @router.delete("", status_code=204, response_model=None)
 async def delete_all_sessions() -> None:
     """Wipe every session — removes the on-disk session dirs and the
-    user-global index. In-memory runners are torn down too (any in-flight
-    turn is cancelled) so a reused id doesn't inherit stale state."""
-    await session_store.delete_all_sessions()
+    user-global index. In-memory runners are torn down first so any
+    in-flight checkpoint doesn't race the rmtree and raise
+    FileNotFoundError mid-write."""
     await drop_all_runners()
+    await session_store.delete_all_sessions()
 
 
 @router.get("/{session_id}/messages", response_model=MessagesPage)
@@ -127,10 +128,14 @@ async def get_messages(
 
 @router.delete("/{session_id}", status_code=204, response_model=None)
 async def delete_session(session_id: str) -> None:
+    # Cancel the runner BEFORE removing the dir so any in-flight checkpoint
+    # finishes against a valid path. Otherwise the rmtree races the
+    # accumulator and the trailing checkpoint disappears with a swallowed
+    # FileNotFoundError.
+    await drop_runner(session_id)
     existed = await session_store.delete_session(session_id)
     if not existed:
         raise HTTPException(404)
-    await drop_runner(session_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -267,6 +272,13 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
                     {"type": "error", "data": {"message": "empty prompt"}}
                 )
                 continue
+
+            # Provider session ids are learned after the first turn. Refresh
+            # metadata so follow-up prompts sent over this same WebSocket
+            # resume the provider-native conversation instead of starting over.
+            refreshed = await session_store.get_session(session_id)
+            if refreshed:
+                upstream_id = refreshed.get("upstream_id")
 
             provider = await get_provider(provider_name)  # type: ignore[arg-type]
             started = runner.start_turn(

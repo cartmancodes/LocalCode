@@ -29,9 +29,8 @@ class ClaudeProvider:
     name = "claude"
 
     async def open_session(self, ctx: RunContext) -> str:
-        # claude-agent-sdk's `query()` is stateless per call — there is no upstream
-        # session id to preserve. We treat each WebSocket turn as a fresh query and
-        # rebuild context from message history when we extend to multi-turn.
+        # Claude Code creates the session lazily when query() runs. If LocalCode
+        # already captured that id, hand it back so the runner can resume it.
         return ctx.upstream_session_id or ""
 
     # claude-agent-sdk's accepted permission modes. Anything else falls back
@@ -55,6 +54,7 @@ class ClaudeProvider:
             add_dirs=list(ctx.additional_dirs or []),
             system_prompt=ctx.system_prompt,
             permission_mode=mode,
+            resume=ctx.upstream_session_id,
             include_partial_messages=True,  # surface token-level deltas to the UI
         )
 
@@ -129,6 +129,7 @@ async def _translate(message: Any) -> AsyncIterator[Event]:
                 "cost_usd": getattr(message, "total_cost_usd", None),
                 "duration_ms": getattr(message, "duration_ms", None),
                 "num_turns": getattr(message, "num_turns", None),
+                "upstream_session_id": getattr(message, "session_id", None),
             },
         )
     elif isinstance(message, SystemMessage):

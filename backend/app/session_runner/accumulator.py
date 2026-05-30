@@ -72,9 +72,16 @@ class TurnAccumulator:
             snap.append({"type": "text", "text": "".join(self._text_buf)})
         return snap
 
-    async def checkpoint(self, session_id: str) -> None:
+    async def checkpoint(self, session_id: str, *, final: bool = False) -> None:
         """Append an idempotent snapshot of the turn so far. Reuses a stable
-        message id across checkpoints so the store dedups to the latest."""
+        message id across checkpoints so the store dedups to the latest.
+
+        Mid-turn checkpoints skip the ``updated_at`` bump — that triggers a
+        meta.json+index rewrite per call, which dominated the per-tool I/O
+        cost on long turns. ``final=True`` (used by the turn's ``finally``
+        clause) does the bump once at the end so the sidebar reflects
+        activity. Persistence (the JSONL append) still happens every call.
+        """
         flushed = self._snapshot()
         if not flushed:
             return
@@ -87,7 +94,9 @@ class TurnAccumulator:
             }
             if self._message_id is not None:
                 payload["id"] = self._message_id
-            stored = await session_store.append_message(session_id, payload)
+            stored = await session_store.append_message(
+                session_id, payload, bump_updated_at=final
+            )
             if self._message_id is None:
                 self._message_id = stored["id"]
         except FileNotFoundError:
