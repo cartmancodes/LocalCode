@@ -7009,3 +7009,62 @@ INFO:     127.0.0.1:53998 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d
 INFO:     connection open
 INFO:     127.0.0.1:54001 - "GET /api/health HTTP/1.1" 200 OK
 INFO:     127.0.0.1:54004 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:54059 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54060 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54061 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54062 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54065 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54066 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54070 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54071 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     127.0.0.1:54072 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:54088 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54090 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54127 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54147 - "WebSocket /api/sessions/f2645f7b049f4e2c95d8415c98e48550/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     connection closed
+INFO:     127.0.0.1:54484 - "GET /api/sessions/f2645f7b049f4e2c95d8415c98e48550/messages?limit=20 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [24437]
+INFO:     Started server process [27401]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:54859 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54885 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54902 - "WebSocket /api/sessions/b4fef6db52df49f4aad2059528373b29/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:55155 - "GET /api/sessions/b4fef6db52df49f4aad2059528373b29/messages?limit=20 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [27401]
+INFO:     Started server process [28232]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:55237 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55262 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55280 - "WebSocket /api/sessions/5e6d385c396b46809ee8e33f0a3fd76d/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [28232]
+INFO:     Started server process [29446]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:55925 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55941 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55954 - "WebSocket /api/sessions/8c45dff929764a1293e6112f51aeb0f9/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed

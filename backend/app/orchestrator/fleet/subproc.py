@@ -93,6 +93,7 @@ async def _main() -> None:
             req.get("cwd"),
             req.get("additional_dirs") or [],
             permission_mode=req.get("permission_mode"),
+            role_name=req.get("role_name"),
             progress=_StdoutFirstSignal(),
         )
         _emit_result({"ok": True, "text": text})

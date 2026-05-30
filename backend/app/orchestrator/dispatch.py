@@ -112,6 +112,7 @@ def build_dispatch_mcp(
     # orchestrator to abort — killing the unbounded silent retry loop where
     # a wedged planner is re-dispatched forever.
     hard_fail: dict[str, int] = {}
+    role_outputs: dict[str, str] = {}
 
     @tool(
         "dispatch_subagent",
@@ -152,6 +153,7 @@ def build_dispatch_mcp(
             )
 
         agent = registry[name]
+        prompt = _effective_prompt(name, prompt, ctx.prompt, role_outputs)
         step_id = _next_step_id(name)
         role_cfg = RoleConfig(
             provider=agent.provider,
@@ -209,6 +211,8 @@ def build_dispatch_mcp(
                 result = f"{result}\n\n---\n_Plan saved to_ `{plan_path}`"
             except OSError as exc:
                 logger.warning("failed to save plan to disk: %s", exc)
+
+        role_outputs[name] = result
 
         return {"content": [{"type": "text", "text": result}]}
 
@@ -344,7 +348,7 @@ def save_plan(plan_text: str, cwd: str | None) -> Path:
 async def await_approval(
     channel: asyncio.Queue[dict[str, Any]],
     approval_id: str,
-    timeout: float,
+    timeout_s: float,
 ) -> dict[str, Any]:
     """Block until the user accepts/rejects this approval, or timeout fires.
 
@@ -352,7 +356,7 @@ async def await_approval(
     second approval gate in the same turn ignore a late click on the
     previous gate's button.
     """
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + timeout_s
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -394,3 +398,34 @@ def _err(message: str) -> dict[str, Any]:
     """Standard error shape for an MCP tool — orchestrator sees this as a
     tool result with is_error=True and can decide to retry or escalate."""
     return {"content": [{"type": "text", "text": message}], "is_error": True}
+
+
+def _effective_prompt(
+    name: str,
+    prompt: str,
+    user_prompt: str,
+    role_outputs: dict[str, str],
+) -> str:
+    if name == "planner":
+        return user_prompt
+    if name == "coder" and role_outputs.get("planner"):
+        return (
+            f"{prompt}\n\n"
+            "You MUST execute the FULL planner artifact below task-by-task. "
+            "Do not rely on the abbreviated prompt above.\n\n"
+            "# Full Planner Artifact\n\n"
+            f"{role_outputs['planner']}"
+        )
+    if name == "reviewer":
+        sections = [prompt]
+        if role_outputs.get("planner"):
+            sections.append("# Full Planner Artifact\n\n" + role_outputs["planner"])
+        if role_outputs.get("coder"):
+            sections.append("# Coder Result\n\n" + role_outputs["coder"])
+        sections.append(
+            "Review against the full planner artifact and coder result above, "
+            "not just the final file state. If any planned task or verification "
+            "was skipped, end with `NACK: <reason>`."
+        )
+        return "\n\n".join(sections)
+    return prompt

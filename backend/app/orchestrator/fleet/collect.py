@@ -32,6 +32,7 @@ async def collect_text(
     additional_dirs: list[str] | None = None,
     *,
     permission_mode: str | None = None,
+    role_name: str | None = None,
     progress: threading.Event | None = None,
 ) -> str:
     """Invoke a sub-provider and return its concatenated assistant text.
@@ -60,6 +61,7 @@ async def collect_text(
         additional_dirs=list(additional_dirs or []),
         system_prompt=role.system_prompt,
         permission_mode=permission_mode,
+        extras=_role_extras(role_name),
     )
     chunks: list[str] = []
     tool_calls: list[tuple[str, str, Any]] = []  # (id, name, input)
@@ -127,3 +129,29 @@ async def collect_text(
 
 # Back-compat alias — the original module exposed this underscore name.
 _collect_text = collect_text
+
+
+def _role_extras(role_name: str | None) -> dict[str, Any]:
+    if role_name != "planner":
+        return {}
+    # The planner must produce a plan artifact only; implementation belongs to
+    # the coder and review belongs to the reviewer.
+    return {
+        "claude_no_tools": True,
+        "claude_disallowed_tools": [
+            "Edit",
+            "Write",
+            "MultiEdit",
+            "NotebookEdit",
+            "Bash",
+            "BashOutput",
+            "KillBash",
+            "Agent",
+            "Task",
+            "Skill",
+            "ToolSearch",
+            "Monitor",
+            "RemoteTrigger",
+            "TaskStop",
+        ]
+    }

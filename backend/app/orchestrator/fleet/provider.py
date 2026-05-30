@@ -23,11 +23,11 @@ from .constants import (
     STEP_TIMEOUT_S,
     StepTimeoutError,
 )
-
-logger = logging.getLogger(__name__)
 from .gate import classify_gate
 from .loader import _merge_config, load_fleet_config
 from .models import FleetConfig, RoleConfig, Step
+
+logger = logging.getLogger(__name__)
 
 # Worker module + the directory it must be importable from. Derived from this
 # module's own dotted name / file location so it's correct whether the app is
@@ -61,6 +61,7 @@ class _SubprocHandle:
         cwd: str | None,
         additional_dirs: list[str] | None,
         permission_mode: str | None,
+        role_name: str,
     ) -> None:
         req = json.dumps(
             {
@@ -71,6 +72,7 @@ class _SubprocHandle:
                 "cwd": cwd,
                 "additional_dirs": additional_dirs or [],
                 "permission_mode": permission_mode,
+                "role_name": role_name,
             }
         )
         self._proc = await asyncio.create_subprocess_exec(
@@ -267,6 +269,7 @@ class FleetProvider:
             ctx.cwd,
             ctx.additional_dirs,
             ctx.permission_mode,
+            step.role,
         )
         collect = handle.result
         elapsed_s = 0

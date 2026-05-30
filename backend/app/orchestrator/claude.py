@@ -46,6 +46,14 @@ class ClaudeProvider:
             # lets the subagent actually edit files without a prompt the
             # headless backend could never answer (a classic silent hang).
             mode = "acceptEdits"
+        option_extras: dict[str, Any] = {}
+        if ctx.extras.get("claude_no_tools"):
+            option_extras = {
+                "allowed_tools": [],
+                "setting_sources": [],
+                "skills": [],
+            }
+        disallowed_tools = list(ctx.extras.get("claude_disallowed_tools") or [])
         options = ClaudeAgentOptions(
             model=ctx.model,
             cwd=ctx.cwd,
@@ -55,7 +63,9 @@ class ClaudeProvider:
             system_prompt=ctx.system_prompt,
             permission_mode=mode,
             resume=ctx.upstream_session_id,
+            disallowed_tools=disallowed_tools,
             include_partial_messages=True,  # surface token-level deltas to the UI
+            **option_extras,
         )
 
         try:
