@@ -6757,3 +6757,255 @@ INFO:     127.0.0.1:60953 - "GET /api/fleet/config HTTP/1.1" 200 OK
 INFO:     connection closed
 fleet step planner (claude:claude-sonnet-4-6) failed: sub-provider worker exited without a result (exit=0)
 INFO:     connection closed
+INFO:     Started server process [21300]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:52114 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52143 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52144 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52145 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52149 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52150 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52151 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52155 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52158 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52169 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52177 - "GET /api/sessions/7b9edf20e47f42c1bbf9143322adfabb/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52178 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52179 - "WebSocket /api/sessions/7b9edf20e47f42c1bbf9143322adfabb/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:52338 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52340 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52347 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:52353 - "GET /api/sessions/47689123a33a473fb070578029408e34/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52355 - "WebSocket /api/sessions/47689123a33a473fb070578029408e34/ws" [accepted]
+INFO:     127.0.0.1:52356 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:52364 - "GET /api/sessions/7b9edf20e47f42c1bbf9143322adfabb/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52366 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52367 - "WebSocket /api/sessions/7b9edf20e47f42c1bbf9143322adfabb/ws" [accepted]
+INFO:     connection open
+INFO:     Started server process [22498]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:52970 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52990 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52991 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52992 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52993 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52996 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52997 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53003 - "GET /api/sessions/7b9edf20e47f42c1bbf9143322adfabb/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53004 - "WebSocket /api/sessions/7b9edf20e47f42c1bbf9143322adfabb/ws" [accepted]
+INFO:     127.0.0.1:53006 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:53007 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53016 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53018 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53022 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53025 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53029 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:53035 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53037 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53038 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:53055 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53056 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53057 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53058 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53059 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53060 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53063 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53064 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53067 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [22498]
+INFO:     Started server process [22819]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53130 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53139 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53140 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53141 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53142 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53143 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53144 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53148 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53149 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53150 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53191 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53192 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53193 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53194 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53196 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53197 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53201 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53202 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53203 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53208 - "GET /api/sessions/7b9edf20e47f42c1bbf9143322adfabb/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53209 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53210 - "WebSocket /api/sessions/7b9edf20e47f42c1bbf9143322adfabb/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:53216 - "DELETE /api/sessions/7b9edf20e47f42c1bbf9143322adfabb HTTP/1.1" 204 No Content
+INFO:     connection closed
+INFO:     127.0.0.1:53219 - "DELETE /api/sessions/47689123a33a473fb070578029408e34 HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:53224 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53225 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53226 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:53268 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53269 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53274 - "POST /api/sessions HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:53279 - "GET /api/sessions/761dee53e0224343a64e94c361190fa1/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53280 - "WebSocket /api/sessions/761dee53e0224343a64e94c361190fa1/ws" [accepted]
+INFO:     127.0.0.1:53281 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53285 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53287 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53288 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53300 - "GET /api/sessions/761dee53e0224343a64e94c361190fa1/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53301 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53302 - "WebSocket /api/sessions/761dee53e0224343a64e94c361190fa1/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53310 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53311 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53312 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53352 - "GET /api/sessions/761dee53e0224343a64e94c361190fa1/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53353 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53355 - "WebSocket /api/sessions/761dee53e0224343a64e94c361190fa1/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53360 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53361 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53362 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53366 - "GET /api/sessions/761dee53e0224343a64e94c361190fa1/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53368 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53369 - "WebSocket /api/sessions/761dee53e0224343a64e94c361190fa1/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53374 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53375 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53376 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [22819]
+INFO:     Started server process [23053]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53546 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53550 - "GET /api/sessions/761dee53e0224343a64e94c361190fa1/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53551 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53552 - "WebSocket /api/sessions/761dee53e0224343a64e94c361190fa1/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53557 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53558 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53565 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53566 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53567 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53568 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53569 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53570 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53573 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53574 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53576 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53629 - "GET /api/sessions/761dee53e0224343a64e94c361190fa1/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53630 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53631 - "WebSocket /api/sessions/761dee53e0224343a64e94c361190fa1/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53635 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53637 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53638 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53658 - "GET /api/sessions/761dee53e0224343a64e94c361190fa1/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53660 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53661 - "WebSocket /api/sessions/761dee53e0224343a64e94c361190fa1/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53664 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53666 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53667 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53681 - "GET /api/sessions/761dee53e0224343a64e94c361190fa1/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53683 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53684 - "WebSocket /api/sessions/761dee53e0224343a64e94c361190fa1/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53688 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53690 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53691 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [23053]
+INFO:     Started server process [23292]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53787 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53788 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [23292]
+INFO:     Started server process [24437]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53971 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53972 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53973 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53974 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53975 - "GET /api/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53976 - "GET /api/system/cwd HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53980 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53981 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53982 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53989 - "GET /api/sessions/761dee53e0224343a64e94c361190fa1/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53990 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53991 - "WebSocket /api/sessions/761dee53e0224343a64e94c361190fa1/ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53995 - "GET /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53997 - "GET /api/fleet/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53998 - "WebSocket /api/sessions/5d0e538b30dd4adbbbfed2aea5d69971/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:54001 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54004 - "GET /api/fleet/config HTTP/1.1" 200 OK

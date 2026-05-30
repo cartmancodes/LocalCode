@@ -535,3 +535,53 @@ AggregateError [ECONNREFUSED]:
 
   ➜  Local:   http://localhost:5173/
   ➜  Network: http://192.168.1.10:5173/
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 276 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.10:5173/
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 98 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.10:5173/
+1:00:27 AM [vite] vite.config.ts changed, restarting server...
+1:00:27 AM [vite] server restarted.
+1:00:36 AM [vite] ws proxy error:
+Error: connect ECONNREFUSED 127.0.0.1:8080
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1705:16)
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 93 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.10:5173/
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 92 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.10:5173/
+
+> localcode-frontend@0.1.0 dev
+> vite --host
+
+
+  VITE v5.4.21  ready in 152 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.10:5173/

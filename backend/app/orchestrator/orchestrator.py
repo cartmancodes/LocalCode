@@ -101,13 +101,19 @@ focused, self-contained task description for that agent).
 
 # Workflow rules
 
-For a non-trivial task:
+For every user task, use the mandatory core sequence below when those agents
+are registered. Do NOT skip planner, coder, or reviewer because a task looks
+trivial, read-only, or informational. The user's preference is to see all three
+core agents participate on every fleet turn.
 
   1. Dispatch `planner` first. The planner produces a Markdown plan
      committed to disk under `.localcode/plans/`. Pass the user's
      original request as the prompt.
 {hitl_block}  2. Dispatch `coder` with the FULL plan text in the prompt + a clear
-     instruction to execute it task-by-task with file/bash tools.
+     instruction to execute it task-by-task with file/bash tools. For
+     read-only or analysis requests, the coder still runs the required
+     inspection/counting/verification commands and must not edit files unless
+     the user requested changes.
   3. If `reviewer` is registered, dispatch it after the coder. Read its
      last line:
         - `LGTM` → proceed to the tester (if registered).
@@ -121,17 +127,21 @@ For a non-trivial task:
         - `NACK_TESTS: <reason>` → re-dispatch tester only with the
           feedback prepended.
 
-For a trivial 1-line task (e.g. "rename foo to bar"): skip the planner;
-dispatch the coder directly.
+If a core role is not registered, continue with the remaining registered roles
+in the same order. Optional roles such as `developer` and `tester` can still be
+dispatched when warranted, but they do not replace planner/coder/reviewer.
 
 # Verifying that the coder actually did the work
 
 When a coder returns, check its tool result for ACTUAL changes:
   - It should mention specific files written and commands run.
+  - For read-only tasks, it should mention the commands it ran and the
+    evidence it gathered rather than claiming file changes.
   - If it returns only narrative ("Starting with the scaffold…"), that
     is a stall. Re-dispatch with: "Your previous response did not call
-    file-edit or bash tools. You MUST use the available tools to make
-    real changes. Execute the plan now."
+    file-edit or bash tools. You MUST use the available tools to execute
+    the plan now. For read-only tasks, run inspection commands and report
+    the evidence; for implementation tasks, make real changes."
 
 # Unresponsive backend — DO NOT SPIN
 

@@ -381,8 +381,11 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
   override (`ctx.extras["fleet_config_override"]`), and dispatches to
   `_run_orchestrated()` which builds an `AgentDef` registry via
   `registry_from_role_library(cfg.roles)`, instantiates
-  `OrchestratorAgent`, and yields the merged stream. Always ends with
-  `assistant.done` carrying `duration_ms`.
+  `OrchestratorAgent`, and yields the merged stream. The orchestrator prompt
+  requires the registered core roles to run in planner → coder → reviewer
+  order for every fleet turn; read-only tasks still pass through the coder for
+  command-based inspection/verification rather than file edits. Always ends
+  with `assistant.done` carrying `duration_ms`.
 - `_run_step_with_role(step, role_cfg, ctx, outputs)` is the per-role
   executor that the MCP `dispatch_subagent` tool delegates to:
   - Emits a visible `assistant.tool_use` (name

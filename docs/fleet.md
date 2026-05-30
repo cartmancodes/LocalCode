@@ -16,7 +16,7 @@ For the deep technical reference (event streams, cancellation, MCP layer, design
 | **Reviewer** | Verifies plan compliance + code quality on disk. Replies `LGTM` or `NACK: <reason>`. | `claude-sonnet-4-6`      |
 | **Tester**   | Final gate. Writes executable tests and runs them. Replies `LGTM`, `NACK_CODE` (impl bug), or `NACK_TESTS` (test bug). | `claude-haiku-4-5`       |
 
-The orchestrator picks the order and which agents to dispatch based on the task. For non-trivial tasks the canonical order is:
+The orchestrator always dispatches the core agents in order when they are registered, even for trivial or read-only tasks:
 
 ```
 planner → coder → reviewer → tester
@@ -28,7 +28,7 @@ planner → coder → reviewer → tester
               coder again (with feedback)
 ```
 
-The orchestrator can also skip the planner for trivial tasks, dispatch the developer when architectural ambiguity warrants it, or run any subset of agents the registry contains.
+If one of the core roles is not registered, the orchestrator continues with the remaining registered roles in the same order. It can also dispatch the developer when architectural ambiguity warrants it. For read-only tasks, the coder executes inspection/verification commands instead of editing files unless the user explicitly requested changes.
 
 ## When to use it
 
@@ -46,7 +46,7 @@ When **not** to use it: short factual questions, one-shots, or tasks where you'd
    - Streams per-subagent events (tool_use card → heartbeats → tool_result) to the chat in real time via an `EventSink` queue.
    - Returns the subagent's final summary text to the orchestrator.
 3. **Reasoning between dispatches.** The orchestrator reads the subagent's output and decides next steps:
-   - Coder returned only narrative without tool calls? Re-dispatch with "you MUST use tools to make real changes."
+    - Coder returned only narrative without tool calls? Re-dispatch with "you MUST use tools to execute the plan." For read-only tasks this means inspection commands; for implementation tasks this means real changes.
    - Reviewer NACKed? Re-dispatch the coder with the NACK feedback prepended.
    - Tester returned `NACK_CODE`? Re-dispatch coder + reviewer + tester. `NACK_TESTS`? Re-dispatch tester only with a "fix the test files" instruction.
 4. **HITL gate** *(optional)*. When `require_plan_approval` is set, the orchestrator's system prompt instructs it to call `request_plan_approval` after the planner. The chat shows an Approve/Reject card; the user's decision feeds back to the orchestrator.
