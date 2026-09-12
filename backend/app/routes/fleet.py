@@ -10,7 +10,7 @@ from ..orchestrator.fleet import (
     VALID_ROLES,
     WORKFLOW_PRESETS,
     config_to_dict,
-    load_fleet_config,
+    load_fleet_config_async,
     role_library_dict,
 )
 
@@ -22,7 +22,7 @@ async def get_fleet_config() -> dict[str, Any]:
     """Return the active fleet config + the metadata the UI needs to render
     its editor (role library for "add role" defaults, presets, vocabularies).
     """
-    cfg = load_fleet_config()
+    cfg = await load_fleet_config_async()
     return {
         "config": config_to_dict(cfg),
         "is_default": cfg.config_source is None,

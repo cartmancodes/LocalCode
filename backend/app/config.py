@@ -76,6 +76,20 @@ class Settings(BaseSettings):
     messages_page_default: int = 50
     messages_page_max: int = 500
 
+    # A checkpoint exists so a crash does not lose the whole turn. One per tool
+    # boundary is more often than that needs, and on a tool-heavy turn the
+    # writes dominate. Throttle by both time and growth; a final checkpoint
+    # always writes regardless.
+    #
+    # The growth arm is amortized against the last checkpoint's size (see
+    # ``TurnAccumulator._should_write``): a fixed byte threshold alone still
+    # rewrites a growing snapshot O(size/threshold) times, which is the
+    # quadratic write volume this throttle exists to remove. These two numbers
+    # are the floors — below them, rewriting the in-progress message is cheap
+    # enough that time alone decides.
+    checkpoint_min_interval_s: float = 2.0
+    checkpoint_min_growth_bytes: int = 64 * 1024
+
     @field_validator("default_provider")
     @classmethod
     def _validate_default_provider(cls, v: str) -> str:

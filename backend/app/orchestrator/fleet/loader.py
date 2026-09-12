@@ -8,6 +8,7 @@ Configuration sources (first hit wins):
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -42,7 +43,30 @@ def load_fleet_config(cwd: str | None = None) -> FleetConfig:
     Validation is best-effort: invalid fields revert to the default rather
     than failing the whole load, so a typo in one role doesn't break the
     workflow.
+
+    Synchronous: a cache miss reads and parses YAML. Callers on the event
+    loop should use ``load_fleet_config_async``.
     """
+    return _resolve_fleet_config(cwd, parse=True) or DEFAULT_FLEET_CONFIG
+
+
+async def load_fleet_config_async(cwd: str | None = None) -> FleetConfig:
+    """``load_fleet_config`` for callers on the event loop.
+
+    The cache-hit path is a ``stat()`` per candidate — measured negligible —
+    so it stays inline; only the read+parse of a changed (or first-seen) file
+    goes to a thread.
+    """
+    cached = _resolve_fleet_config(cwd, parse=False)
+    if cached is not None:
+        return cached
+    return await asyncio.to_thread(load_fleet_config, cwd)
+
+
+def _resolve_fleet_config(cwd: str | None, *, parse: bool) -> FleetConfig | None:
+    """Shared resolution walk. With ``parse=False`` it returns None instead of
+    reading a file the cache doesn't already hold — that's the signal to the
+    async wrapper that this call needs a thread."""
     candidates: list[Path] = []
     env_path = get_settings().localcode_fleet_config
     if env_path:
@@ -72,6 +96,8 @@ def load_fleet_config(cwd: str | None = None) -> FleetConfig:
         cached = _CFG_CACHE.get(str(resolved))
         if cached is not None and cached[0] == stat.st_mtime:
             return cached[1]
+        if not parse:
+            return None
 
         raw = _parse_config_file(resolved)
         if raw is None:

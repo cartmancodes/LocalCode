@@ -5,12 +5,20 @@ This centralizes logic that was previously duplicated across the turn loop:
 flushing the streaming-text buffer into a block (it appeared three times),
 the checkpoint-persist closure, and the dangling-tool_use repair. One place,
 one set of invariants.
+
+Checkpoints are throttled. A checkpoint writes the *whole* message
+accumulated so far, so writing one per tool boundary costs
+O(boundaries x final size) — a 200-tool turn ending at 2 MB wrote ~200 MB.
+The throttle keeps total checkpoint volume proportional to the final message
+instead, while still bounding how much work a crash can discard.
 """
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
+from ..config import get_settings
 from ..storage.sessions import store as session_store
 
 logger = logging.getLogger(__name__)
@@ -24,6 +32,23 @@ _INCOMPLETE_RESULT = (
 )
 
 
+def _approx_size(value: Any) -> int:
+    """Cheap stand-in for the serialized size of one block.
+
+    The throttle only needs to know when the message has grown by tens of
+    kilobytes, so counting the characters in the strings involved is close
+    enough — and it runs once per block added, not once per checkpoint over
+    the whole snapshot, which is the cost it exists to avoid.
+    """
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, dict):
+        return sum(len(str(k)) + _approx_size(v) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return sum(_approx_size(v) for v in value)
+    return 16  # numbers, bools, None — small and fixed-ish
+
+
 class TurnAccumulator:
     """Builds the assistant turn incrementally and writes idempotent
     checkpoints keyed by a stable message id.
@@ -33,7 +58,16 @@ class TurnAccumulator:
     contiguous text run as one block.
     """
 
-    __slots__ = ("blocks", "_text_buf", "cost_usd", "duration_ms", "_message_id")
+    __slots__ = (
+        "blocks",
+        "_text_buf",
+        "cost_usd",
+        "duration_ms",
+        "_message_id",
+        "_size",
+        "_last_write_at",
+        "_last_write_size",
+    )
 
     def __init__(self) -> None:
         self.blocks: list[dict[str, Any]] = []
@@ -41,10 +75,17 @@ class TurnAccumulator:
         self.cost_usd: float | None = None
         self.duration_ms: int | None = None
         self._message_id: str | None = None
+        # Running size estimate of the message, plus what it was the last time
+        # we wrote. Maintained as blocks arrive so the throttle never has to
+        # serialize the snapshot just to decide whether to skip it.
+        self._size = 0
+        self._last_write_at: float | None = None
+        self._last_write_size = 0
 
     # ── streaming text ───────────────────────────────────────────────────
     def add_text(self, text: str) -> None:
         self._text_buf.append(text)
+        self._size += len(text)
 
     def flush_text(self) -> None:
         """Promote buffered text to a block (destructive). No-op if empty."""
@@ -55,9 +96,11 @@ class TurnAccumulator:
     # ── tool blocks ──────────────────────────────────────────────────────
     def add_tool_use(self, data: dict[str, Any]) -> None:
         self.blocks.append({"type": "tool_use", **data})
+        self._size += _approx_size(data)
 
     def add_tool_result(self, data: dict[str, Any]) -> None:
         self.blocks.append({"type": "tool_result", **data})
+        self._size += _approx_size(data)
 
     def set_done(self, *, cost_usd: float | None, duration_ms: int | None) -> None:
         self.cost_usd = cost_usd
@@ -72,18 +115,53 @@ class TurnAccumulator:
             snap.append({"type": "text", "text": "".join(self._text_buf)})
         return snap
 
-    async def checkpoint(self, session_id: str, *, final: bool = False) -> None:
-        """Append an idempotent snapshot of the turn so far. Reuses a stable
-        message id across checkpoints so the store dedups to the latest.
+    def _should_write(self) -> bool:
+        """Is this mid-turn checkpoint worth its bytes?
 
-        Mid-turn checkpoints skip the ``updated_at`` bump — that triggers a
-        meta.json+index rewrite per call, which dominated the per-tool I/O
-        cost on long turns. ``final=True`` (used by the turn's ``finally``
-        clause) does the bump once at the end so the sidebar reflects
-        activity. Persistence (the JSONL append) still happens every call.
+        Two arms, either of which is enough:
+
+          * **Growth**, amortized against the last checkpoint's size. A fixed
+            byte threshold on its own still rewrites a growing message
+            ``size / threshold`` times — that is the quadratic volume we are
+            removing. Requiring the message to have grown by at least as much
+            as the last write caps total checkpoint bytes at roughly twice the
+            final message, however long the turn runs.
+          * **Time**, while the message is still smaller than the growth
+            floor. A slow turn that emits very little must still be
+            recoverable, and rewriting something under 64 KiB every couple of
+            seconds costs nothing. Above that floor the growth arm governs, so
+            the time arm can never dominate the write volume.
+        """
+        s = get_settings()
+        growth = self._size - self._last_write_size
+        if growth <= 0:
+            return False  # nothing new to protect
+        if growth >= max(s.checkpoint_min_growth_bytes, self._last_write_size):
+            return True
+        elapsed = (
+            float("inf")
+            if self._last_write_at is None
+            else time.monotonic() - self._last_write_at
+        )
+        return (
+            elapsed >= s.checkpoint_min_interval_s
+            and self._size <= s.checkpoint_min_growth_bytes
+        )
+
+    async def checkpoint(self, session_id: str, *, final: bool = False) -> None:
+        """Persist the turn so far under a stable message id.
+
+        Mid-turn checkpoints overwrite ``current.json`` (atomic replace, no
+        fsync, no ``updated_at`` bump) and are throttled by
+        ``_should_write``. ``final=True`` — used by the turn's ``finally``
+        clause — always writes: it appends the message to ``messages.jsonl``
+        once, fsyncs, clears ``current.json`` and bumps ``updated_at`` so the
+        sidebar reflects the activity.
         """
         flushed = self._snapshot()
         if not flushed:
+            return
+        if not final and not self._should_write():
             return
         try:
             payload: dict[str, Any] = {
@@ -94,11 +172,16 @@ class TurnAccumulator:
             }
             if self._message_id is not None:
                 payload["id"] = self._message_id
-            stored = await session_store.append_message(
-                session_id, payload, bump_updated_at=final
-            )
+            if final:
+                stored = await session_store.append_message(
+                    session_id, payload, bump_updated_at=True
+                )
+            else:
+                stored = await session_store.write_current(session_id, payload)
             if self._message_id is None:
                 self._message_id = stored["id"]
+            self._last_write_at = time.monotonic()
+            self._last_write_size = self._size
         except FileNotFoundError:
             # Session was deleted while the turn was still draining
             # (drop_runner cancelled us). Persistence is moot at this point —

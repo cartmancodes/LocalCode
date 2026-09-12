@@ -60,6 +60,7 @@ from .loader import (
     _validate_entry_role,
     config_to_dict,
     load_fleet_config,
+    load_fleet_config_async,
     role_library_dict,
 )
 from .models import FleetConfig, RoleConfig, Step
@@ -99,6 +100,7 @@ __all__ = [
     "TESTER_SYSTEM",
     # config loading / serialization
     "load_fleet_config",
+    "load_fleet_config_async",
     "config_to_dict",
     "role_library_dict",
     # gate / collect
