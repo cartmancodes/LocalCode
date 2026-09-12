@@ -113,6 +113,8 @@ def build_dispatch_mcp(
     # a wedged planner is re-dispatched forever.
     hard_fail: dict[str, int] = {}
     role_outputs: dict[str, str] = {}
+    # Per-TURN step ids, for the same reason: see StepIdSequence.
+    step_ids = StepIdSequence()
 
     @tool(
         "dispatch_subagent",
@@ -154,7 +156,7 @@ def build_dispatch_mcp(
 
         agent = registry[name]
         prompt = _effective_prompt(name, prompt, ctx.prompt, role_outputs)
-        step_id = _next_step_id(name)
+        step_id = step_ids.next_id(name)
         role_cfg = RoleConfig(
             provider=agent.provider,
             model=agent.model,
@@ -377,21 +379,30 @@ async def await_approval(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-# Module-level counter is fine: each turn builds a fresh MCP server with
-# its own closure but step ids are namespaced by agent name AND counter
-# so collisions don't matter across turns.
-_step_counters: dict[str, int] = {}
+class StepIdSequence:
+    """Per-agent step-id counters for ONE turn.
 
+    Scoped to the turn, like ``hard_fail``, and that scope is the point: the
+    module-level dict this replaces kept a counter per role name for the life
+    of the process, so a long-running backend never gave those keys back. Step
+    ids only have to be unique within a turn — the accumulator pairs
+    ``tool_use``/``tool_result`` inside a single message — so nothing needs the
+    counter to survive the turn that produced it.
 
-def _next_step_id(agent_name: str) -> str:
-    n = _step_counters.get(agent_name, 0) + 1
-    _step_counters[agent_name] = n
-    return f"orch.{agent_name}.{n}"
+    Not shared between turns either, which matters: a process-global counter
+    that some turn boundary resets can hand two steps of a *concurrent* turn
+    the same id, and then one step's result is paired with the other's call.
+    """
 
+    __slots__ = ("_counts",)
 
-def reset_step_counters() -> None:
-    """Reset per-agent step counters. Call between independent test runs."""
-    _step_counters.clear()
+    def __init__(self) -> None:
+        self._counts: dict[str, int] = {}
+
+    def next_id(self, agent_name: str) -> str:
+        n = self._counts.get(agent_name, 0) + 1
+        self._counts[agent_name] = n
+        return f"orch.{agent_name}.{n}"
 
 
 def _err(message: str) -> dict[str, Any]:

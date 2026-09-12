@@ -201,6 +201,15 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
     fleet_override = sess.get("fleet_config_override")
 
     runner = await get_runner(session_id)
+    if runner is None:
+        # The session was deleted between the lookup above and now. The
+        # registry refuses to resurrect it rather than hand this viewer a live
+        # bus for a session that can never persist anything again.
+        await websocket.send_json(
+            {"type": "error", "data": {"message": "session not found"}}
+        )
+        await websocket.close()
+        return
 
     # Optional `?since=<id>` query for replay. The frontend tracks the
     # highest `_id` it received and passes it on reconnect; we replay any
@@ -298,17 +307,20 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
             if not started:
                 # Reject silently-queueing a prompt — the user expects their
                 # message to either start running now or get a clear error.
+                # A retired runner means this session was deleted under the
+                # socket, which is a different story from a busy session.
+                if runner.is_retired:
+                    reason = (
+                        "this session was deleted — open a new chat to "
+                        "continue."
+                    )
+                else:
+                    reason = (
+                        "another turn is already running on this session — "
+                        "wait for it to finish, or open a new chat."
+                    )
                 await websocket.send_json(
-                    {
-                        "type": "error",
-                        "data": {
-                            "message": (
-                                "another turn is already running on this "
-                                "session — wait for it to finish, or open a "
-                                "new chat."
-                            )
-                        },
-                    }
+                    {"type": "error", "data": {"message": reason}}
                 )
     finally:
         heartbeat.cancel()

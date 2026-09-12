@@ -8,8 +8,11 @@ unified event stream so the chat UI renders them as expandable cards.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
+import signal
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -53,6 +56,11 @@ class _SubprocHandle:
         self.result: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._proc: asyncio.subprocess.Process | None = None
         self._stderr: str = ""
+        # Process-group id of the worker, captured at spawn time because the
+        # group outlives the worker: once the worker is gone its pid can no
+        # longer be translated to a pgid, and the vendor CLI still in that
+        # group would be unreachable. See `kill`.
+        self._pgid: int | None = None
 
     async def start(
         self,
@@ -86,7 +94,19 @@ class _SubprocHandle:
             # result this is the ONLY window into why. Discarding it (the
             # earlier mistake) made the failure undiagnosable.
             stderr=asyncio.subprocess.PIPE,
+            # Put the worker in its own session/process group so one killpg
+            # reaps the vendor CLI it spawns too (see `kill`). The trade-off
+            # is deliberate: the worker no longer receives the terminal's
+            # SIGINT, so the backend MUST cancel turns on shutdown — which is
+            # what `drop_all_runners()` in the lifespan now guarantees.
+            start_new_session=True,
         )
+        try:
+            self._pgid = os.getpgid(self._proc.pid)
+        except OSError:
+            # Worker already gone. `start_new_session` made it the group
+            # leader, so its pid is the group id either way.
+            self._pgid = self._proc.pid
         assert self._proc.stdin and self._proc.stdout
         self._proc.stdin.write((req + "\n").encode())
         await self._proc.stdin.drain()
@@ -141,12 +161,30 @@ class _SubprocHandle:
             self.result.set_exception(RuntimeError(err))
 
     def kill(self) -> None:
+        """SIGKILL the worker *and everything it spawned*.
+
+        The worker starts the vendor CLI as its own child, so the CLI is the
+        backend's grandchild. Killing only the worker re-parents the CLI to
+        ``launchd``/``init`` and it keeps running — burning the user's paid
+        subscription with no interface attached. That orphan, not the worker,
+        was the leak: signalling the whole process group is the fix, and
+        ``start()`` creates that group for exactly this call.
+        """
+        if self._pgid is not None:
+            try:
+                os.killpg(self._pgid, signal.SIGKILL)
+                return
+            except ProcessLookupError:
+                return  # whole group already gone
+            except OSError:
+                logger.warning(
+                    "killpg(%d) failed; falling back to killing the worker only",
+                    self._pgid,
+                )
         p = self._proc
         if p is not None and p.returncode is None:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 p.kill()
-            except ProcessLookupError:
-                pass
 
 
 class FleetProvider:
@@ -176,6 +214,13 @@ class FleetProvider:
             cfg = _merge_config(cfg, ui_override)
             cfg.config_source = f"{base_src} + UI override"
 
+        # Exactly one `assistant.done` per turn: every subscriber clears its
+        # working indicator on it, and the turn accumulator persists the LAST
+        # one it sees. A second, orchestrator-less done therefore overwrote
+        # `cost_usd` with None and every fleet turn showed up free in history.
+        # So we pass the orchestrator's done through — it is the only event
+        # that knows the cost — with our wall time merged into it.
+        saw_done = False
         if not cfg.role_names():
             yield Event(
                 type="error",
@@ -188,12 +233,28 @@ class FleetProvider:
             # agent), so we don't need separate single-agent or linear-
             # pipeline branches.
             async for ev in self._run_orchestrated(ctx, cfg):
+                if ev.type == "assistant.done":
+                    saw_done = True
+                    ev = Event(
+                        type="assistant.done",
+                        data={**ev.data, "duration_ms": self._elapsed_ms(t0)},
+                    )
                 yield ev
 
-        yield Event(
-            type="assistant.done",
-            data={"duration_ms": int((time.time() - t0) * 1000)},
-        )
+        if not saw_done:
+            # Error paths never reach a ResultMessage, so nothing upstream
+            # terminated the turn. Emit the one terminal event ourselves.
+            yield Event(
+                type="assistant.done",
+                data={"duration_ms": self._elapsed_ms(t0)},
+            )
+
+    @staticmethod
+    def _elapsed_ms(t0: float) -> int:
+        """Wall time for the whole fleet turn — which only ``run()`` spans.
+        The orchestrator's own ``duration_ms`` covers its model loop, so we
+        overwrite it rather than leave the UI showing part of the turn."""
+        return int((time.time() - t0) * 1000)
 
     async def _run_orchestrated(
         self, ctx: RunContext, cfg: FleetConfig

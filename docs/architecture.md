@@ -234,7 +234,10 @@ by `save_plan()` in `dispatch.py`.
 - The lifespan context calls `warm_up()` to construct provider
   singletons up front and `session_store.cleanup_expired(...)` to sweep
   stale sessions on startup (no-op when the 24-hour sentinel is fresh).
-  Shutdown calls `shutdown_all()`.
+  Shutdown calls `drop_all_runners()` **before** `shutdown_all()`: turns
+  must be cancelled while the loop and their providers are still alive,
+  or the per-step `finally` that kills the sub-provider child never runs
+  and the vendor CLI survives the restart as an orphan.
 
 #### `backend/app/config.py`
 - `Settings` (pydantic-settings, env file `.env`, `extra="ignore"`)
@@ -257,7 +260,10 @@ by `save_plan()` in `dispatch.py`.
 - Constants: `_REPLAY_BUFFER_SIZE = 256`, `_SUBSCRIBER_QUEUE_MAX = 512`.
 - Public API: `subscribe(since_id)` → `(queue, replay_list)`,
   `unsubscribe(queue)`, `submit_approval(msg)`, `start_turn(...)` (rejects
-  a second turn while one is running), `cancel_turn()`.
+  a second turn while one is running, and any turn once the runner is
+  retired), `retire()` / `is_retired`, `cancel_turn()` (bounded by
+  `_CANCEL_GRACE_S`; returns the turn task when it had to be detached,
+  propagates a `CancelledError` raised against its own caller).
 - `_execute_turn`:
   - Persists the user message first so a failure later still leaves a
     visible prompt in history.
@@ -279,9 +285,12 @@ by `save_plan()` in `dispatch.py`.
 - `_broadcast()` stamps each event with a monotonic `_id`, appends to
   the replay ring, and `put_nowait`s into every subscriber queue. Full
   queues are skipped (a slow viewer can't pin the producer).
-- Module-level `get_runner(session_id)` is lazy + lock-guarded;
-  `drop_runner(session_id)` and `drop_all_runners()` cancel turns and
-  forget runners.
+- Module-level `get_runner(session_id)` is lazy + lock-guarded, and
+  returns `None` for a session whose directory is gone rather than
+  resurrecting it; `drop_runner(session_id)` and `drop_all_runners()`
+  retire runners *before* popping them, then cancel their turns. Turns
+  that outlive the grace window are kept in `_detached_turns` so
+  `drop_all_runners()` can make one final attempt at shutdown.
 
 #### `backend/app/orchestrator/base.py`
 - `EventType` literal, `Event` dataclass, `RunContext` dataclass,
@@ -389,8 +398,10 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
   `OrchestratorAgent`, and yields the merged stream. The orchestrator prompt
   requires the registered core roles to run in planner → coder → reviewer
   order for every fleet turn; read-only tasks still pass through the coder for
-  command-based inspection/verification rather than file edits. Always ends
-  with `assistant.done` carrying `duration_ms`.
+  command-based inspection/verification rather than file edits. Ends with
+  **exactly one** `assistant.done`: the orchestrator's own (the only event
+  carrying `cost_usd`) re-emitted with the turn's `duration_ms` merged in,
+  or — if the orchestrator never got that far — one synthesized here.
 - `_run_step_with_role(step, role_cfg, ctx, outputs)` is the per-role
   executor that the MCP `dispatch_subagent` tool delegates to:
   - Emits a visible `assistant.tool_use` (name
@@ -404,6 +415,11 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
     `tool.result is_error=True`.
   - Classifies reviewer/tester gates via `_classify_gate` and marks
     the `tool.result` as `is_error=True` for non-LGTM outcomes.
+  - Always `handle.kill()`s in its `finally`. The worker is spawned with
+    `start_new_session=True` and killed with `os.killpg(SIGKILL)` on the
+    pgid captured at spawn, because the vendor CLI is the worker's child:
+    killing only the worker leaves the CLI running on the user's
+    subscription.
 - `collect_text()` (`fleet/collect.py`, aliased `_collect_text`) calls
   the sub-provider and concatenates assistant text. When tools fired, it
   appends a `\n---\n(tool activity from <provider>:<model>)\n…` digest so
@@ -500,8 +516,10 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
     `"Approval timed out..."`).
 - `slugify_plan_title(plan_text)` extracts the first H1 and slugifies
   to a 60-char filename-safe string; falls back to `"plan"`.
-- `_step_counters` is module-level; `reset_step_counters()` is exposed
-  for tests.
+- `StepIdSequence` hands out `orch.<agent>.<n>` step ids and is built
+  per turn inside `build_dispatch_mcp` (alongside `hard_fail`), so the
+  counters die with the turn instead of accumulating one key per role
+  for the life of the process.
 
 #### `backend/app/routes/sessions.py`
 - Prefix `/api/sessions`.
@@ -810,7 +828,10 @@ the same `Event` stream as Claude or OpenCode.
 4. `OrchestratorAgent(registry, run_step_fn,
    require_plan_approval=cfg.require_plan_approval)` runs and yields
    events.
-5. A terminal `assistant.done` carries `duration_ms`.
+5. Exactly one terminal `assistant.done`, carrying `duration_ms` plus
+   whatever the orchestrator reported (`cost_usd`, `num_turns`). Two
+   dones would have the accumulator persist the last one, which is how
+   fleet turns used to lose their cost.
 
 There is no separate "single-agent" or "linear pipeline" branch — the
 orchestrator handles a one-role registry the same way it handles a

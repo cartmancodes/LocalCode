@@ -11,11 +11,14 @@ is deleted (see :mod:`.registry`).
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from ..orchestrator.base import Provider
 from .bus import EventBus
 from .turn import execute_turn
+
+logger = logging.getLogger(__name__)
 
 
 class SessionRunner:
@@ -26,10 +29,16 @@ class SessionRunner:
     on disconnect; the turn keeps running across reconnects.
     """
 
-    __slots__ = ("session_id", "_lock", "_bus", "_turn_task", "_approval_q")
+    __slots__ = ("session_id", "_lock", "_bus", "_turn_task", "_approval_q", "_retired")
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
+        # One-way: set by `retire()` when the registry drops this runner, and
+        # never cleared. A WS handler can still hold a reference to a dropped
+        # runner, and a turn started through that stale reference would run
+        # beside the turn of whatever runner now serves the session id — two
+        # turns for one session, each with its own lock and its own bus.
+        self._retired = False
         # Serializes turn execution within a session so a second prompt
         # arriving mid-turn waits (or is rejected — see `start_turn`).
         self._lock = asyncio.Lock()
@@ -45,6 +54,19 @@ class SessionRunner:
     def is_running(self) -> bool:
         t = self._turn_task
         return t is not None and not t.done()
+
+    @property
+    def is_retired(self) -> bool:
+        return self._retired
+
+    def retire(self) -> None:
+        """Mark this runner as no longer serving its session.
+
+        Called by the registry *before* it pops the runner, so there is no
+        window in which a dropped-but-not-yet-cancelled runner still accepts
+        a turn.
+        """
+        self._retired = True
 
     @property
     def last_event_id(self) -> int:
@@ -82,12 +104,12 @@ class SessionRunner:
     ) -> bool:
         """Kick off a turn as a background task.
 
-        Returns False if a turn is already running on this session — the
-        caller should surface that to the user (don't queue silently; a
-        queued prompt arriving later is surprising). Returns True if the
-        task was scheduled.
+        Returns False if a turn is already running on this session, or if this
+        runner has been retired (its session was deleted) — the caller should
+        surface either to the user (don't queue silently; a queued prompt
+        arriving later is surprising). Returns True if the task was scheduled.
         """
-        if self.is_running:
+        if self._retired or self.is_running:
             return False
         self._turn_task = asyncio.create_task(
             self._execute_turn(
@@ -110,24 +132,50 @@ class SessionRunner:
     # hang — we detach after this and let the daemon thread die at exit.
     _CANCEL_GRACE_S = 5.0
 
-    async def cancel_turn(self) -> None:
+    async def cancel_turn(self) -> asyncio.Task[None] | None:
         """Cancel the running turn (used on session delete or shutdown).
 
-        Bounded: if the task doesn't unwind within the grace window we give
-        up waiting and return anyway. Previously an unbounded ``await t`` on
-        a wedged turn made ``DELETE /api/sessions/{id}`` hang indefinitely.
+        Returns the turn task if it had to be **detached** — it did not unwind
+        within the grace window — and None otherwise. The caller is expected
+        to keep detached tasks so shutdown can make one final attempt; they
+        may still own a child process.
+
+        Bounded: if the task doesn't unwind within the grace window we give up
+        waiting and return anyway. Previously an unbounded ``await t`` on a
+        wedged turn made ``DELETE /api/sessions/{id}`` hang indefinitely.
+
+        ``asyncio.wait`` rather than ``wait_for(shield(t))`` because the two
+        cancellations have to stay distinguishable: a turn that unwinds by
+        cancelling is this method's success path, while a ``CancelledError``
+        raised *here* means our own caller was cancelled and must propagate —
+        swallowing it let a cancelled ``DELETE`` handler carry on and rmtree
+        the session anyway.
         """
         t = self._turn_task
         if t is None or t.done():
-            return
+            return None
         t.cancel()
-        try:
-            await asyncio.wait_for(asyncio.shield(t), timeout=self._CANCEL_GRACE_S)
-        except (TimeoutError, asyncio.CancelledError, Exception):
-            # TimeoutError → turn is wedged; detach and move on. The turn
-            # task and its daemon sub-provider thread are abandoned (daemon
-            # threads die with the process); the session is still removed.
-            pass
+        done, _pending = await asyncio.wait({t}, timeout=self._CANCEL_GRACE_S)
+        if not done:
+            # Wedged — e.g. blocked in a non-cancellable native call on a
+            # daemon thread. This log line is the only evidence that an
+            # orphaned child process may now exist.
+            logger.warning(
+                "detaching turn for session %s: it did not unwind within %.0fs; "
+                "a sub-provider child process may survive",
+                self.session_id,
+                self._CANCEL_GRACE_S,
+            )
+            return t
+        if not t.cancelled():
+            # Retrieve any exception so the loop doesn't report it as never
+            # retrieved at GC. The turn has already broadcast it to viewers.
+            exc = t.exception()
+            if exc is not None:
+                logger.debug(
+                    "turn for %s ended with %r while cancelling", self.session_id, exc
+                )
+        return None
 
     async def _execute_turn(
         self,

@@ -37,21 +37,19 @@ async def execute_turn(
     """Run one turn end-to-end.
 
     The caller (``SessionRunner``) holds the per-session lock around this and
-    owns ``approval_q``'s lifecycle. We persist the user message first so a
-    later failure still leaves a coherent prompt in history, then drain the
-    provider, checkpointing on every tool boundary. The ``finally`` block is
-    load-bearing: it flushes trailing text, repairs dangling tool_use blocks,
-    writes a final checkpoint, and guarantees an ``assistant.done`` so every
-    viewer's UI clears its working indicator — even on error/cancellation.
-    """
-    await session_store.append_message(
-        session_id,
-        {"role": "user", "content": [{"type": "text", "text": prompt}]},
-    )
-    await bus.broadcast(
-        {"type": "session.started", "data": {"provider": provider_name, "model": model}}
-    )
+    owns ``approval_q``'s lifecycle. We persist the user message first — so a
+    later failure still leaves a coherent prompt in history — then drain the
+    provider, checkpointing on every tool boundary. Persisting the prompt is
+    *inside* the try: it is the one step that fails when the session directory
+    was deleted under us (a delete while a tab is open), and when it raised
+    outside the try the turn died with no ``error`` and no ``assistant.done``,
+    leaving every viewer's working indicator spinning until reload.
 
+    The ``finally`` block is load-bearing: it flushes trailing text, repairs
+    dangling tool_use blocks, writes a final checkpoint, and guarantees
+    exactly one ``assistant.done`` so every viewer's UI clears its working
+    indicator — even on error/cancellation.
+    """
     ctx = RunContext(
         model=model,
         prompt=prompt,
@@ -63,18 +61,53 @@ async def execute_turn(
         permission_mode=permission_mode,
     )
 
-    try:
-        opened_upstream_id = await provider.open_session(ctx)
-    except Exception:
-        opened_upstream_id = None
-    if opened_upstream_id and opened_upstream_id != upstream_id:
-        upstream_id = opened_upstream_id
-        ctx.upstream_session_id = opened_upstream_id
-        await session_store.update_session(session_id, upstream_id=opened_upstream_id)
-
     acc = TurnAccumulator()
     saw_done = False
     try:
+        try:
+            await session_store.append_message(
+                session_id,
+                {"role": "user", "content": [{"type": "text", "text": prompt}]},
+            )
+        except FileNotFoundError:
+            # The session directory is gone — deleted (or wiped) while this
+            # prompt was in flight. Nothing is left to persist into, so report
+            # it and return; `finally` still emits the single terminal event.
+            # Raising instead (what this did when the append sat outside the
+            # try) killed a detached task silently: no `error`, no
+            # `assistant.done`, a working indicator spinning until reload, and
+            # the only trace "Task exception was never retrieved" at GC.
+            logger.warning("prompt for deleted session %s discarded", session_id)
+            await bus.broadcast(
+                {
+                    "type": "error",
+                    "data": {
+                        "message": (
+                            "this session was deleted — the prompt was not "
+                            "run. Open a new chat to continue."
+                        )
+                    },
+                }
+            )
+            return
+        await bus.broadcast(
+            {
+                "type": "session.started",
+                "data": {"provider": provider_name, "model": model},
+            }
+        )
+
+        try:
+            opened_upstream_id = await provider.open_session(ctx)
+        except Exception:
+            opened_upstream_id = None
+        if opened_upstream_id and opened_upstream_id != upstream_id:
+            upstream_id = opened_upstream_id
+            ctx.upstream_session_id = opened_upstream_id
+            await session_store.update_session(
+                session_id, upstream_id=opened_upstream_id
+            )
+
         async for ev in provider.run(ctx):
             if ev.type == "assistant.text":
                 # Heartbeats are live-UI chrome only; skip persistence.

@@ -20,6 +20,7 @@ from .routes import (
 from .routes import (
     system as system_route,
 )
+from .session_runner import drop_all_runners
 from .storage.sessions import store as session_store
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,19 @@ async def lifespan(app: FastAPI):
         logger.exception("session cleanup at startup failed")
 
     yield
+
+    # Order matters. A turn runs as a detached task that outlives any WS, so
+    # on SIGINT nothing cancelled it: the per-step `finally` that kills the
+    # sub-provider child never ran, and because the vendor CLI is a grandchild
+    # it was re-parented and kept running — one orphaned `python` + `claude`
+    # pair per in-flight step, after every restart, still billing the user's
+    # subscription with no interface attached. Cancel turns first, while the
+    # loop is alive and the providers they are draining still exist; only then
+    # close the providers.
+    try:
+        await drop_all_runners()
+    except Exception:  # noqa: BLE001
+        logger.exception("cancelling in-flight turns at shutdown failed")
     await shutdown_all()
 
 
