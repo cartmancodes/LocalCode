@@ -20,8 +20,9 @@ Robustness affordances:
     ``?since=<id>`` and gets the tail it missed without refetching the whole
     message log.
   - **Bounded subscriber queues**: a slow consumer can't pin memory; once
-    its queue fills we drop further events for that subscriber (the client
-    can recover via ``loadMessages`` on its next reconnect).
+    its queue fills we drop further events for that subscriber — but we tell
+    it, with one ``stream.gap`` event per run of drops, and terminal events
+    are never dropped. The client refetches ``/messages`` on a gap.
   - **Synthetic tool_result on dangling tool_use**: guarantees persisted
     messages have well-formed tool_use/tool_result pairs even when a turn
     ends via cancellation.

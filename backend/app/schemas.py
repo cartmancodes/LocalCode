@@ -95,5 +95,7 @@ class StreamEvent(BaseModel):
         "error",
         "pipeline.awaiting_approval",
         "pipeline.approval_received",
+        # Bus-synthesized gap notice: `{dropped, resume_from}`. See EventBus.
+        "stream.gap",
     ]
     data: dict[str, Any] = Field(default_factory=dict)

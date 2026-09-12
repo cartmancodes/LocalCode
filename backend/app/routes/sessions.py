@@ -219,6 +219,11 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
     if since_raw and since_raw.isdigit():
         since_id = int(since_raw)
 
+    # Read the outstanding approval gate *before* subscribing. A gate raised
+    # after we subscribe arrives on the live queue on its own, and re-emitting
+    # that one as well would show the user the card twice.
+    pending = runner.pending_approval
+
     queue, replay = await runner.subscribe(since_id=since_id)
 
     # Replay buffered events first so the client catches up before live
@@ -227,6 +232,23 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
     for ev in replay:
         try:
             await websocket.send_json(ev)
+        except (WebSocketDisconnect, RuntimeError):
+            await runner.unsubscribe(queue)
+            return
+
+    # A turn blocked on an approval gate has nobody to answer it if the tab that
+    # asked is gone, and the card lives only in the replay ring — which a fresh
+    # connection (no `?since=`) never reads. Re-emit it here, after the replay so
+    # the card lands in chat order and before live events so a decision already
+    # in flight still wins. De-duplicated by approval id: a `?since=` replay that
+    # already carried the card must not produce a second one.
+    if pending is not None and not any(
+        ev.get("type") == "pipeline.awaiting_approval"
+        and str((ev.get("data") or {}).get("id") or "") == pending.approval_id
+        for ev in replay
+    ):
+        try:
+            await websocket.send_json(pending.event)
         except (WebSocketDisconnect, RuntimeError):
             await runner.unsubscribe(queue)
             return

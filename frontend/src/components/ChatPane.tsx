@@ -281,7 +281,7 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
         if (typeof id === "number" && id > lastEventId.current) {
           lastEventId.current = id;
         }
-        handleEvent(parsed as StreamEvent);
+        handleEvent(parsed as StreamEvent, sessionId);
       } catch {
         /* ignore malformed frame */
       }
@@ -313,7 +313,19 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
     ws.onerror = () => undefined;
   }
 
-  const handleEvent = (ev: StreamEvent) => {
+  const handleEvent = (ev: StreamEvent, sessionId: string) => {
+    if (ev.type === "stream.gap") {
+      // The server's queue for this viewer overflowed: `dropped` events after
+      // `resume_from` never reached us, so what we are rendering has a hole in
+      // it — a tool card with no result, or a turn that never gets its done.
+      // Recover the same way a reconnect does: refetch the persisted log,
+      // which includes every checkpoint written while we were behind.
+      console.warn(
+        `stream gap: ${ev.data.dropped} event(s) dropped after ${ev.data.resume_from}; refetching`
+      );
+      void loadMessages(sessionId);
+      return;
+    }
     setTurns((prev) => {
       const next = prev.slice();
       let cur = next[next.length - 1];

@@ -190,7 +190,9 @@ messages).
 **`Event`.** Unified streaming event yielded by every provider. Types are:
 `session.started`, `assistant.text`, `assistant.tool_use`, `tool.result`,
 `assistant.done`, `error`, `pipeline.awaiting_approval`,
-`pipeline.approval_received`.
+`pipeline.approval_received`. Plus `stream.gap`, which no provider emits —
+the `EventBus` synthesizes it per subscriber to report events that
+subscriber lost.
 
 **Session.** A chat pinned to one provider + model + cwd. Persisted on
 disk as `meta.json` + append-only `messages.jsonl`. No database.
@@ -257,7 +259,10 @@ by `save_plan()` in `dispatch.py`.
 #### `backend/app/session_runner.py`
 - `SessionRunner` decouples turn execution from any WebSocket
   connection. State lives on the runner, not on the WS handler.
-- Constants: `_REPLAY_BUFFER_SIZE = 256`, `_SUBSCRIBER_QUEUE_MAX = 512`.
+- Constants: `REPLAY_BUFFER_SIZE = 2048`, `SUBSCRIBER_QUEUE_MAX = 512`.
+  The ring must stay **larger** than a subscriber queue: it has to be able
+  to cover any gap a queue can open, or `?since=` cannot hand back what a
+  viewer dropped. Asserted by `backend/tests/test_event_integrity.py`.
 - Public API: `subscribe(since_id)` → `(queue, replay_list)`,
   `unsubscribe(queue)`, `submit_approval(msg)`, `start_turn(...)` (rejects
   a second turn while one is running, and any turn once the runner is
@@ -282,9 +287,29 @@ by `save_plan()` in `dispatch.py`.
     `tool_use` that never got one (cancellation mid-turn) and always
     emits an `assistant.done` even on error so the UI clears its
     spinner.
-- `_broadcast()` stamps each event with a monotonic `_id`, appends to
-  the replay ring, and `put_nowait`s into every subscriber queue. Full
-  queues are skipped (a slow viewer can't pin the producer).
+- `EventBus.broadcast()` stamps each event with a monotonic `_id`,
+  appends to the replay ring (`deque(maxlen=REPLAY_BUFFER_SIZE)`),
+  notifies the optional `on_event` observer, and `put_nowait`s into every
+  subscriber queue. A slow viewer still loses intermediate events — it
+  can't pin the producer — but never silently:
+  - Each contiguous run of drops yields that subscriber exactly one
+    `stream.gap` `{dropped, resume_from}`, positioned where the loss
+    began and updated in place as the run continues. Queues carry one
+    slot beyond `SUBSCRIBER_QUEUE_MAX` reserved for that marker, so
+    reporting a loss never causes one.
+  - Terminal events (`assistant.done`, `error`) bypass the cap: if the
+    queue cannot take one, the *oldest* queued event is displaced (and
+    counted into the gap report). A spinner that never clears is worse
+    than a missing delta.
+  - A per-subscriber delivery failure is logged, never propagated:
+    `execute_turn` treats a returning `broadcast` as proof the terminal
+    event reached the bus, so raising here would produce a second one.
+- `SessionRunner` passes `_note_event` as the bus observer to track the
+  outstanding `pipeline.awaiting_approval` (`runner.pending_approval`),
+  cleared on `pipeline.approval_received` or at turn end. The WS handler
+  re-emits that card to a newly-subscribed viewer (after replay, deduped
+  by approval id) so a reconnecting tab can answer a gate it never saw
+  instead of waiting out `APPROVAL_TIMEOUT_S`.
 - Module-level `get_runner(session_id)` is lazy + lock-guarded, and
   returns `None` for a session whose directory is gone rather than
   resurrecting it; `drop_runner(session_id)` and `drop_all_runners()`
@@ -534,8 +559,9 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
   - Constants: `WS_IDLE_TIMEOUT_S = 30 * 60`,
     `WS_HEARTBEAT_INTERVAL_S = 30`.
   - Resolves the session metadata, subscribes a runner (with optional
-    `?since=<id>` replay), forwards replay events synchronously, then
-    spawns two background tasks: `_ws_heartbeat(ws)` (server-initiated
+    `?since=<id>` replay), forwards replay events synchronously,
+    re-emits `runner.pending_approval` when a gate is outstanding and the
+    replay didn't already carry it, then spawns two background tasks: `_ws_heartbeat(ws)` (server-initiated
     `{"type":"ping"}` every 30s) and `_forward_events()` (drains the
     subscriber queue to the socket).
   - Main loop reads frames with a 30-minute idle timeout. Frame
@@ -635,7 +661,10 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
 - Handles inbound events: `assistant.text` accumulates into a text
   block; `assistant.tool_use` and `tool.result` produce paired blocks;
   `pipeline.awaiting_approval` materialises a tool_use + tool_result
-  pair *and* sets `pendingApproval` for the live approval card.
+  pair *and* sets `pendingApproval` for the live approval card;
+  `stream.gap` means this viewer's server-side queue overflowed, so it
+  refetches the persisted log via `loadMessages` rather than rendering a
+  hole.
 - `respondApproval(value, feedback)` sends `{type: "approval", id,
   value, feedback?}` and clears the card optimistically.
 - `deriveRoleStatuses()` walks the latest assistant turn and produces
@@ -970,6 +999,10 @@ the orchestrator. Auto-approves when `approval_channel is None`
 - `pipeline.awaiting_approval` `{id, kind: "plan", plan, message,
   timeout_s}`
 - `pipeline.approval_received` `{id, value, feedback?, auto?}`
+- `stream.gap` `{dropped, resume_from}` — bus-synthesized, per subscriber,
+  unstamped (it is not part of the replayable stream). "You missed
+  `dropped` events after `resume_from`"; the client refetches
+  `/messages`.
 - WebSocket-layer keepalive: `{"type": "ping", "data": {}}` (every 30s,
   unstamped).
 

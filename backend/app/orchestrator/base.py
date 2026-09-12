@@ -17,6 +17,10 @@ EventType = Literal[
     # so the chat history reflects what happened.
     "pipeline.awaiting_approval",
     "pipeline.approval_received",
+    # Synthesized per subscriber by the EventBus, never by a provider: "you
+    # missed `dropped` events after `resume_from` because your queue filled".
+    # The UI refetches `/messages` rather than rendering a hole.
+    "stream.gap",
 ]
 
 

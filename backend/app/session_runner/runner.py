@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from ..orchestrator.base import Provider
@@ -19,6 +20,24 @@ from .bus import EventBus
 from .turn import execute_turn
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class PendingApproval:
+    """The approval gate a turn is currently blocked on.
+
+    The gate's card used to live only in the bus's replay ring, and replay only
+    happens when a client supplies ``?since=``. A user who closed their only tab
+    and reopened it therefore saw no card, could not answer, and the turn sat
+    there until ``APPROVAL_TIMEOUT_S`` (5 minutes) aborted it. The runner
+    outlives every WS, so it is the right place to hold the question.
+
+    ``approval_id`` is kept beside the event so a WS handler can tell whether a
+    ``?since=`` replay already carried this card and skip re-emitting it.
+    """
+
+    approval_id: str
+    event: dict[str, Any]
 
 
 class SessionRunner:
@@ -29,7 +48,15 @@ class SessionRunner:
     on disconnect; the turn keeps running across reconnects.
     """
 
-    __slots__ = ("session_id", "_lock", "_bus", "_turn_task", "_approval_q", "_retired")
+    __slots__ = (
+        "session_id",
+        "_lock",
+        "_bus",
+        "_turn_task",
+        "_approval_q",
+        "_retired",
+        "_pending_approval",
+    )
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
@@ -42,7 +69,11 @@ class SessionRunner:
         # Serializes turn execution within a session so a second prompt
         # arriving mid-turn waits (or is rejected — see `start_turn`).
         self._lock = asyncio.Lock()
-        self._bus = EventBus(session_id)
+        # Tracked off the bus rather than set at the call site: the gate is
+        # raised deep inside the provider's tool handler, and every event it
+        # emits passes through here on its way to the viewers.
+        self._pending_approval: PendingApproval | None = None
+        self._bus = EventBus(session_id, on_event=self._note_event)
         self._turn_task: asyncio.Task[None] | None = None
         # Refreshed per turn so a stale approval click from a previous turn
         # can't satisfy the next turn's gate. Routed in via `submit_approval`.
@@ -71,6 +102,32 @@ class SessionRunner:
     @property
     def last_event_id(self) -> int:
         return self._bus.last_event_id
+
+    @property
+    def pending_approval(self) -> PendingApproval | None:
+        """The approval card a viewer joining now still has to answer, if any."""
+        return self._pending_approval
+
+    def _note_event(self, ev: dict[str, Any]) -> None:
+        """Observe every broadcast event to track the outstanding approval.
+
+        Called by the bus (see ``EventBus.on_event``) before fan-out, so the
+        card is already recorded by the time a WS handler could ask for it.
+        """
+        ev_type = ev.get("type")
+        if ev_type == "pipeline.awaiting_approval":
+            approval_id = str((ev.get("data") or {}).get("id") or "")
+            self._pending_approval = PendingApproval(approval_id=approval_id, event=ev)
+        elif ev_type == "pipeline.approval_received":
+            # Answered (or timed out) — the gate is no longer waiting on anyone.
+            # Cleared regardless of the id it carries: only one gate can be open
+            # at a time, so a mismatch would mean a stuck card, not a second gate.
+            self._pending_approval = None
+        elif ev_type == "assistant.done":
+            # Turn end. `execute_turn` emits exactly one of these however the
+            # turn finishes, so this also covers a cancelled or failed turn
+            # whose gate never got an answer.
+            self._pending_approval = None
 
     async def subscribe(
         self, since_id: int | None = None

@@ -108,6 +108,10 @@ export type StreamEvent =
       type: "pipeline.awaiting_approval";
       data: { id: string; kind: "plan"; plan: string; message: string; timeout_s: number };
     }
+  // Synthesized by the backend's event bus for *this* viewer when its queue
+  // overflowed: `dropped` events after `resume_from` never arrived. Unstamped
+  // (no `_id`) — it is not part of the runner's replayable event stream.
+  | { type: "stream.gap"; data: { dropped: number; resume_from: number } }
   | {
       type: "pipeline.approval_received";
       data: {
