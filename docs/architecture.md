@@ -409,10 +409,11 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
   appends a `\n---\n(tool activity from <provider>:<model>)\n…` digest so
   reviewers/testers can verify what the worker actually did rather than
   trusting its narrative.
-  For planner roles, it sets Claude provider extras that disable Claude Code
-  settings/skills/tool loading and disallow mutating or indirect execution
-  tools. The planner should produce a plan artifact only; implementation is
-  reserved for coder and verification for reviewer/tester.
+  For planner roles, it sets Claude provider extras that allow only read-only
+  inspection tools (`Read`, `Glob`, `Grep`, `LS`), disable Claude Code
+  settings/skills loading, and disallow mutating or indirect execution tools.
+  The planner should inspect the repo and produce a plan artifact only;
+  implementation is reserved for coder and verification for reviewer/tester.
 - `classify_gate(output, role)` (`fleet/gate.py`, aliased
   `_classify_gate`) strips the tool digest, walks the
   body backwards for the last classifier-shaped line, tolerates
@@ -861,15 +862,16 @@ with `max_steps: 4`, `entry_role: coder`, no tester.
 ### Planner subagent tool lockdown
 
 Planner runs may still use a Claude-backed provider, but they are treated as
-artifact-only planning passes. When `collect_text()` sees `role_name == "planner"`,
-it sets `ctx.extras` for `ClaudeProvider` so the spawned Claude Code session uses
-`allowed_tools=[]`, `setting_sources=[]`, `skills=[]`, and a
-disallowed-tools list covering mutating tools (`Edit`, `Write`, `MultiEdit`,
-`NotebookEdit`, `Bash`, `BashOutput`, `KillBash`) plus indirect execution or
-tool-discovery paths (`Agent`, `Task`, `Skill`, `ToolSearch`, `Monitor`,
-`RemoteTrigger`, `TaskStop`). This prevents the planner from implementing the
-task before the coder runs, even if user/project Claude settings would normally
-expose extra tools.
+artifact-only planning passes with read-only inspection. When `collect_text()`
+sees `role_name == "planner"`, it sets `ctx.extras` for `ClaudeProvider` so the
+spawned Claude Code session uses `allowed_tools=[Read, Glob, Grep, LS]`,
+`setting_sources=[]`, and `skills=[]`. The disallowed-tools list still blocks
+mutating tools (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Bash`,
+`BashOutput`, `KillBash`) plus indirect execution or tool-discovery paths
+(`Agent`, `Task`, `Skill`, `ToolSearch`, `Monitor`, `RemoteTrigger`,
+`TaskStop`). This lets the planner analyze the repo like a Superpowers
+writing-plans pass while preventing it from implementing the task before the
+coder runs.
 
 ### Dispatch MCP tools
 

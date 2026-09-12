@@ -135,9 +135,12 @@ def _role_extras(role_name: str | None) -> dict[str, Any]:
     if role_name != "planner":
         return {}
     # The planner must produce a plan artifact only; implementation belongs to
-    # the coder and review belongs to the reviewer.
+    # the coder and review belongs to the reviewer. Superpowers-style planning
+    # still needs read/search access to inspect the repo before writing a plan.
     return {
-        "claude_no_tools": True,
+        "claude_allowed_tools": ["Read", "Glob", "Grep", "LS"],
+        "claude_disable_settings": True,
+        "claude_disable_skills": True,
         "claude_disallowed_tools": [
             "Edit",
             "Write",

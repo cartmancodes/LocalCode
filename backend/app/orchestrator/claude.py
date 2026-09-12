@@ -47,12 +47,15 @@ class ClaudeProvider:
             # headless backend could never answer (a classic silent hang).
             mode = "acceptEdits"
         option_extras: dict[str, Any] = {}
-        if ctx.extras.get("claude_no_tools"):
-            option_extras = {
-                "allowed_tools": [],
-                "setting_sources": [],
-                "skills": [],
-            }
+        allowed_tools = ctx.extras.get("claude_allowed_tools")
+        if isinstance(allowed_tools, list):
+            option_extras["allowed_tools"] = [str(tool) for tool in allowed_tools]
+        elif ctx.extras.get("claude_no_tools"):
+            option_extras["allowed_tools"] = []
+        if ctx.extras.get("claude_disable_settings") or ctx.extras.get("claude_no_tools"):
+            option_extras["setting_sources"] = []
+        if ctx.extras.get("claude_disable_skills") or ctx.extras.get("claude_no_tools"):
+            option_extras["skills"] = []
         disallowed_tools = list(ctx.extras.get("claude_disallowed_tools") or [])
         options = ClaudeAgentOptions(
             model=ctx.model,
