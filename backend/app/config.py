@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     # How long a tool-approval card waits for the user before it is denied.
     tool_approval_timeout_s: float = 300.0
 
+    # How many live `claude` CLI clients the Claude provider may hold at once.
+    # Each one is a connected `ClaudeSDKClient`, and behind it a real `claude`
+    # subprocess with its own memory — so this is the bound on "the user left
+    # forty sessions open and the machine swapped". Past the cap the least
+    # recently used client is disconnected; its session is not lost, the next
+    # turn there reconnects and resumes. Env: CLAUDE_MAX_LIVE_CLIENTS.
+    claude_max_live_clients: int = 8
+
     # Bound on per-session lock map and per-message pagination caps.
     messages_page_default: int = 50
     messages_page_max: int = 500

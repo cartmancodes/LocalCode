@@ -82,6 +82,33 @@ def _validate_additional_dirs(dirs: list[str] | None) -> list[str] | None:
     return out or None
 
 
+async def _close_provider_session(provider_name: str | None, session_id: str | None) -> None:
+    """Tell the provider that one session is gone.
+
+    Dropping the runner cancels the turn but tells the *provider* nothing, and
+    a provider can hold live per-session state: ClaudeProvider keeps a
+    connected ``ClaudeSDKClient``, and behind it a `claude` subprocess, which
+    would otherwise outlive the session the user just deleted.
+
+    Never raises. The session directory is going away either way, so a teardown
+    failure must not turn a successful delete into a 500 — it is logged and the
+    delete continues.
+    """
+    if not provider_name or not session_id:
+        return
+    try:
+        provider = await get_provider(provider_name)  # type: ignore[arg-type]
+        await provider.close_session(session_id)
+    except Exception:
+        logger.warning(
+            "closing provider %s for session %s failed; it may still hold a "
+            "client for it",
+            provider_name,
+            session_id,
+            exc_info=True,
+        )
+
+
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
@@ -115,7 +142,12 @@ async def delete_all_sessions() -> None:
     user-global index. In-memory runners are torn down first so any
     in-flight checkpoint doesn't race the rmtree and raise
     FileNotFoundError mid-write."""
+    # Listed before the wipe: the rows are the only record of which provider
+    # owns which session, and after the rmtree there is nothing left to ask.
+    rows = await session_store.list_sessions()
     await drop_all_runners()
+    for row in rows:
+        await _close_provider_session(row.get("provider"), row.get("id"))
     await session_store.delete_all_sessions()
 
 
@@ -147,7 +179,13 @@ async def delete_session(session_id: str) -> None:
     # finishes against a valid path. Otherwise the rmtree races the
     # accumulator and the trailing checkpoint disappears with a swallowed
     # FileNotFoundError.
+    #
+    # Read the row first: it carries the provider name, and the provider has to
+    # be told to release whatever it holds for this session (Claude's live
+    # client). After the delete that name is gone.
+    sess = await session_store.get_session(session_id)
     await drop_runner(session_id)
+    await _close_provider_session((sess or {}).get("provider"), session_id)
     existed = await session_store.delete_session(session_id)
     if not existed:
         raise HTTPException(404)

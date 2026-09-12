@@ -25,7 +25,6 @@ import pytest
 from claude_agent_sdk import (
     PermissionResultAllow,
     PermissionResultDeny,
-    ResultMessage,
     ToolPermissionContext,
 )
 from fastapi import HTTPException
@@ -43,6 +42,11 @@ from backend.app.orchestrator.approvals import (
 from backend.app.orchestrator.base import RunContext
 from backend.app.orchestrator.permissions import ToolPolicy, policy_for_role
 from backend.app.routes.sessions import _validate_cwd
+from backend.tests.fakes.claude_client import (
+    FakeClientFactory,
+    raising,
+    result_message,
+)
 
 # Generous enough that a loaded machine doesn't fail the test, short enough
 # that a genuinely stuck gate doesn't hang the suite.
@@ -612,61 +616,49 @@ class TestApprovalRouting:
 # ── claude.py wiring ─────────────────────────────────────────────────────
 
 
-def _fake_result_message() -> ResultMessage:
-    return ResultMessage(
-        subtype="success",
-        duration_ms=12,
-        duration_api_ms=10,
-        is_error=False,
-        num_turns=1,
-        session_id="upstream-1",
-        total_cost_usd=0.25,
-        result="done",
-    )
+def _provider(factory: FakeClientFactory) -> claude_mod.ClaudeProvider:
+    """A provider that builds fake clients instead of spawning `claude`.
+
+    The provider holds one live client per session now, so these tests inject
+    through its factory seam rather than monkeypatching a module-level
+    function — see ``backend/tests/fakes/claude_client.py``.
+    """
+    provider = claude_mod.ClaudeProvider()
+    provider._factory = factory
+    return provider
 
 
 class TestClaudeProviderWiring:
     async def test_run_builds_a_callback_and_does_not_escalate_the_mode(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fresh_settings
+        self, tmp_path: Path, fresh_settings
     ) -> None:
-        captured: dict[str, Any] = {}
-
-        async def fake_query(*, prompt: str, options: Any):
-            captured["prompt"] = prompt
-            captured["options"] = options
-            yield _fake_result_message()
-
-        monkeypatch.setattr(claude_mod, "query", fake_query)
+        factory = FakeClientFactory()
 
         events = [
             ev
-            async for ev in claude_mod.ClaudeProvider().run(
+            async for ev in _provider(factory).run(
                 RunContext(model="m", prompt="hello", cwd=str(tmp_path))
             )
         ]
 
         assert [ev.type for ev in events] == ["assistant.done"]
         assert events[0].data["upstream_session_id"] == "upstream-1"
-        options = captured["options"]
+        client = factory.clients[0]
+        assert client.prompts == ["hello"]
+        options = client.options
         # None → "default" (ask), never "acceptEdits": that escalation is the
         # defect this task removes.
         assert options.permission_mode == "default"
         assert options.can_use_tool is not None
 
     async def test_run_unions_policy_denials_with_the_extras_list(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fresh_settings
+        self, tmp_path: Path, fresh_settings
     ) -> None:
-        captured: dict[str, Any] = {}
-
-        async def fake_query(*, prompt: str, options: Any):
-            captured["options"] = options
-            yield _fake_result_message()
-
-        monkeypatch.setattr(claude_mod, "query", fake_query)
+        factory = FakeClientFactory()
 
         events = [
             ev
-            async for ev in claude_mod.ClaudeProvider().run(
+            async for ev in _provider(factory).run(
                 RunContext(
                     model="m",
                     prompt="hello",
@@ -678,25 +670,21 @@ class TestClaudeProviderWiring:
         ]
 
         assert [ev.type for ev in events] == ["assistant.done"]
-        disallowed = captured["options"].disallowed_tools
+        disallowed = factory.clients[0].options.disallowed_tools
         # Both sources survive: dropping either re-grants a tool someone
         # deliberately took away.
         assert "WebFetch" in disallowed
         assert "Write" in disallowed  # from the planner role policy
         assert len(disallowed) == len(set(disallowed))
 
-    async def test_a_raising_query_still_yields_an_error_event(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fresh_settings
+    async def test_a_raising_stream_still_yields_an_error_event(
+        self, tmp_path: Path, fresh_settings
     ) -> None:
-        async def boom(*, prompt: str, options: Any):
-            raise RuntimeError("cli vanished")
-            yield  # pragma: no cover - makes this an async generator
-
-        monkeypatch.setattr(claude_mod, "query", boom)
+        factory = FakeClientFactory(raising("cli vanished"))
 
         events = [
             ev
-            async for ev in claude_mod.ClaudeProvider().run(
+            async for ev in _provider(factory).run(
                 RunContext(model="m", prompt="hello", cwd=str(tmp_path))
             )
         ]
@@ -705,7 +693,7 @@ class TestClaudeProviderWiring:
         assert "cli vanished" in events[0].data["message"]
 
     async def test_callback_events_reach_the_consumer_while_the_turn_runs(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fresh_settings
+        self, tmp_path: Path, fresh_settings
     ) -> None:
         """The reason run() is a two-producer merge.
 
@@ -716,20 +704,20 @@ class TestClaudeProviderWiring:
         """
         approval_q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
-        async def fake_query(*, prompt: str, options: Any):
+        async def asks_permission(client: Any) -> Any:
             # Stand in for the CLI asking for permission mid-stream.
-            result = await options.can_use_tool(
+            result = await client.options.can_use_tool(
                 "Write",
                 {"file_path": str(tmp_path / "a.py"), "content": "x"},
                 ctx(),
             )
             assert isinstance(result, PermissionResultAllow)
-            yield _fake_result_message()
+            yield result_message()
 
-        monkeypatch.setattr(claude_mod, "query", fake_query)
+        factory = FakeClientFactory(asks_permission)
 
         seen: list[str] = []
-        run = claude_mod.ClaudeProvider().run(
+        run = _provider(factory).run(
             RunContext(
                 model="m",
                 prompt="hello",
