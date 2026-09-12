@@ -25,7 +25,6 @@ tool gives us the unified provider-agnostic dispatch.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import time
@@ -36,6 +35,16 @@ from typing import Any
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from .agent_def import AgentDef
+
+# EventSink / await_approval live in approvals.py now — the tool gate uses
+# the same queue and the same stale-click filtering. Re-exported here so
+# every existing importer (orchestrator.py, tests) keeps working.
+from .approvals import (
+    PLAN_APPROVAL_ID_PREFIX,
+    EventSink,
+    await_approval,
+    next_approval_id,
+)
 from .base import Event, RunContext
 
 logger = logging.getLogger(__name__)
@@ -45,41 +54,6 @@ logger = logging.getLogger(__name__)
 # 5 min is long enough for the user to read the plan, short enough that a
 # tab left open overnight doesn't pin a session forever.
 APPROVAL_TIMEOUT_S = 300.0
-
-
-# Sentinel pushed onto an EventSink to signal "no more events". Distinct
-# object so we never confuse it with a real Event.
-_SINK_DONE = object()
-
-
-class EventSink:
-    """A bounded asyncio.Queue with sentinel-based shutdown.
-
-    The dispatch / approval MCP tools push events here while they run; the
-    OrchestratorAgent drains it concurrently with its model loop and
-    forwards the events to the WS. ``close()`` lets the consumer know
-    no more events will arrive.
-    """
-
-    __slots__ = ("_q",)
-
-    def __init__(self, maxsize: int = 256) -> None:
-        # Bounded so a runaway subagent producing thousands of token deltas
-        # can't grow the queue without limit.
-        self._q: asyncio.Queue[Event | object] = asyncio.Queue(maxsize=maxsize)
-
-    async def put(self, ev: Event) -> None:
-        await self._q.put(ev)
-
-    async def close(self) -> None:
-        await self._q.put(_SINK_DONE)
-
-    async def get(self) -> Event | None:
-        """Returns the next event, or ``None`` when the sink is closed."""
-        item = await self._q.get()
-        if item is _SINK_DONE:
-            return None
-        return item  # type: ignore[return-value]
 
 
 # Type alias — ``FleetProvider._run_step_with_role``-shaped callable.
@@ -252,7 +226,10 @@ def build_dispatch_mcp(
                 ]
             }
 
-        approval_id = "approval.plan"
+        # Unique per gate, not a fixed string: ``await_approval`` filters
+        # inbound clicks by id, so two gates in one turn sharing an id is
+        # how a stale click on the first card satisfies the second.
+        approval_id = next_approval_id(PLAN_APPROVAL_ID_PREFIX)
         await sink.put(
             Event(
                 type="pipeline.awaiting_approval",
@@ -340,38 +317,6 @@ def save_plan(plan_text: str, cwd: str | None) -> Path:
     path = plans_dir / f"{timestamp}-{slugify_plan_title(plan_text)}.md"
     path.write_text(plan_text, encoding="utf-8")
     return path
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HITL approval helper
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-async def await_approval(
-    channel: asyncio.Queue[dict[str, Any]],
-    approval_id: str,
-    timeout_s: float,
-) -> dict[str, Any]:
-    """Block until the user accepts/rejects this approval, or timeout fires.
-
-    Stale messages (different ``id``) are dropped — this is what lets a
-    second approval gate in the same turn ignore a late click on the
-    previous gate's button.
-    """
-    deadline = time.monotonic() + timeout_s
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return {"id": approval_id, "value": "timeout", "feedback": None}
-        try:
-            msg = await asyncio.wait_for(channel.get(), timeout=remaining)
-        except TimeoutError:
-            return {"id": approval_id, "value": "timeout", "feedback": None}
-        msg_id = msg.get("id")
-        if msg_id and msg_id != approval_id:
-            continue
-        value = "yes" if msg.get("value") == "yes" else "no"
-        return {"id": approval_id, "value": value, "feedback": msg.get("feedback")}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

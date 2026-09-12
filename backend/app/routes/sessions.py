@@ -16,6 +16,7 @@ from fastapi import (
 
 from ..config import get_settings
 from ..orchestrator import get_provider
+from ..orchestrator.permissions import is_within
 from ..schemas import CreateSessionRequest, MessageOut, MessagesPage, SessionOut
 from ..session_runner import drop_all_runners, drop_runner, get_runner
 from ..storage.sessions import store as session_store
@@ -41,6 +42,17 @@ def _validate_cwd(cwd: str | None) -> str | None:
     s = get_settings()
     roots = s.cwd_allowlist()
     p = Path(cwd).expanduser().resolve()
+    # Denied roots are checked FIRST, and before the "empty allowlist is
+    # permissive" shortcut below: `~` is an allowed root, so without this a
+    # session could be rooted at `~/.ssh` or `~/.claude` and every tool the
+    # spawned CLI runs would be inside a credential store. `is_within`
+    # re-resolves both sides, so a symlink pointing into one is caught too.
+    for denied_root in s.denied_path_list():
+        if is_within(p, (denied_root,)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"cwd {p!s} is under a denied directory: {denied_root!s}",
+            )
     if not roots:
         return str(p)
     for r in roots:
@@ -239,9 +251,10 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
     # in flight still wins.
     #
     # Read *after* subscribing, and decided by event id rather than approval id:
-    # `dispatch` hardcodes the id to "approval.plan", so comparing ids cannot
-    # tell two gates apart. The three ways a viewer can already be getting this
-    # card — and each is a duplicate if we send it too:
+    # approval ids are unique per gate now (`next_approval_id`), but an id says
+    # nothing about whether *this* viewer has already been handed the card,
+    # which is the only question here. The three ways it can already have it —
+    # and each is a duplicate if we send it too:
     if (pending := runner.pending_approval) is not None:
         card_id = int(pending.event.get("_id") or 0)
         already_seen = card_id <= (since_id or 0)  # it had the card before reconnecting

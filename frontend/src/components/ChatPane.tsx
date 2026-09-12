@@ -87,13 +87,17 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [wsState, setWsState] = useState<WsState>("closed");
-  // HITL plan-approval gate. When set, an approval card is rendered above
-  // the composer; sending `{type: "approval", ...}` over the WS clears it.
+  // HITL approval gate — either the fleet's plan pause (`kind: "plan"`) or a
+  // single tool call a permission callback is asking about (`kind: "tool"`).
+  // When set, an approval card is rendered above the composer; sending
+  // `{type: "approval", ...}` over the WS clears it.
   const [pendingApproval, setPendingApproval] = useState<{
     id: string;
-    kind: "plan";
+    kind: "plan" | "tool";
     plan: string;
     message: string;
+    tool: string;
+    input: Record<string, any>;
     expiresAt: number;
   } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -398,12 +402,18 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
             kind: "tool_use",
             toolUseId: ev.data.id,
             toolName: "approval-gate",
-            toolInput: { kind: ev.data.kind, message: ev.data.message },
+            toolInput: {
+              kind: ev.data.kind,
+              message: ev.data.message ?? ev.data.reason,
+              ...(ev.data.tool ? { tool: ev.data.tool } : {}),
+            },
           });
           a.blocks.push({
             kind: "tool_result",
             toolUseId: ev.data.id,
-            toolOutput: ev.data.plan,
+            // The plan gate's body is its plan; the tool gate's is the
+            // argument preview the backend already truncated.
+            toolOutput: ev.data.plan ?? approvalInputText(ev.data.input),
             isError: false,
           });
           break;
@@ -421,8 +431,12 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
       setPendingApproval({
         id: ev.data.id,
         kind: ev.data.kind,
-        plan: ev.data.plan,
-        message: ev.data.message,
+        plan: ev.data.plan ?? "",
+        // The plan gate writes `message`; the tool gate writes `reason` (why
+        // the policy wants a human for this call).
+        message: ev.data.message ?? ev.data.reason ?? "",
+        tool: ev.data.tool ?? "",
+        input: ev.data.input ?? {},
         expiresAt: Date.now() + ev.data.timeout_s * 1000,
       });
     } else if (ev.type === "pipeline.approval_received") {
@@ -566,7 +580,10 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
       <div className="lc-bottom">
         {pendingApproval && (
           <ApprovalCard
+            kind={pendingApproval.kind}
+            tool={pendingApproval.tool}
             plan={pendingApproval.plan}
+            input={pendingApproval.input}
             message={pendingApproval.message}
             expiresAt={pendingApproval.expiresAt}
             onRespond={respondApproval}
@@ -868,16 +885,31 @@ function CodeBlock({
 }
 
 /* ─────────────────────────────────────────────────────────────────────── */
-/*  HITL: plan-approval card                                              */
+/*  HITL: approval card (plan gate + tool gate)                           */
 /* ─────────────────────────────────────────────────────────────────────── */
 
+/** Render a tool-gate argument preview for the card's <pre>. Already
+ *  truncated by the backend (`summarize_tool_input`), so this only formats. */
+function approvalInputText(input: Record<string, any> | undefined): string {
+  if (!input || Object.keys(input).length === 0) return "(no arguments)";
+  return Object.entries(input)
+    .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+    .join("\n");
+}
+
 function ApprovalCard({
+  kind,
+  tool,
   plan,
+  input,
   message,
   expiresAt,
   onRespond,
 }: {
+  kind: "plan" | "tool";
+  tool: string;
   plan: string;
+  input: Record<string, any>;
   message: string;
   expiresAt: number;
   onRespond: (value: "yes" | "no", feedback?: string) => void;
@@ -902,14 +934,16 @@ function ApprovalCard({
   return (
     <div className="lc-approval">
       <div className="lc-approval__head">
-        <span className="lc-approval__title">Plan approval required</span>
+        <span className="lc-approval__title">
+          {kind === "tool" ? tool || "Tool approval required" : "Plan approval required"}
+        </span>
         <span className="lc-approval__timer" title="Approval timeout">
           {timeLbl}
         </span>
       </div>
       <p className="lc-approval__msg">{message}</p>
       <pre className="lc-approval__plan">
-        <code>{plan}</code>
+        <code>{kind === "tool" ? approvalInputText(input) : plan}</code>
       </pre>
       {showFeedback && (
         <textarea
@@ -932,14 +966,14 @@ function ApprovalCard({
             className="lc-approval__btn lc-approval__btn--no"
             onClick={() => setShowFeedback(true)}
           >
-            Reject…
+            {kind === "tool" ? "Deny…" : "Reject…"}
           </button>
         ) : (
           <button
             className="lc-approval__btn lc-approval__btn--no"
             onClick={() => onRespond("no", feedback)}
           >
-            Send rejection
+            {kind === "tool" ? "Send denial" : "Send rejection"}
           </button>
         )}
       </div>

@@ -168,6 +168,11 @@ class OpenCodeProvider:
         except httpx.HTTPError as exc:
             yield Event(type="error", data={"message": str(exc), "provider": self.name})
 
+    async def close_session(self, session_id: str) -> None:
+        # Nothing is held per LocalCode session: OpenCode owns its own session
+        # state server-side and this provider keeps only the shared HTTP client.
+        return None
+
     async def aclose(self) -> None:
         await self._client.aclose()
 

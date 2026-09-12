@@ -56,6 +56,9 @@ async def execute_turn(
     ctx = RunContext(
         model=model,
         prompt=prompt,
+        # Providers key per-session state on this (Task 4's persistent SDK
+        # client); without it every turn looks like a new session to them.
+        session_id=session_id,
         cwd=cwd,
         additional_dirs=additional_dirs,
         upstream_session_id=upstream_id,

@@ -104,9 +104,26 @@ export type StreamEvent =
   | { type: "tool.result"; data: { tool_use_id: string; content: any; is_error: boolean } }
   | { type: "assistant.done"; data: { cost_usd?: number; duration_ms?: number } }
   | { type: "error"; data: { message: string } }
+  // Two gates share this event, and `kind` says which: "plan" is the fleet's
+  // HITL pause after the planner (`plan` + `message`), "tool" is a permission
+  // callback asking before one tool call (`tool` + `input` + `reason`). Both
+  // are answered with the same `{type:"approval", id, value, feedback}` frame —
+  // one approval UI for both vendors is the point.
   | {
       type: "pipeline.awaiting_approval";
-      data: { id: string; kind: "plan"; plan: string; message: string; timeout_s: number };
+      data: {
+        id: string;
+        kind: "plan" | "tool";
+        timeout_s: number;
+        /** plan gate */
+        plan?: string;
+        message?: string;
+        /** tool gate */
+        tool?: string;
+        /** display-safe preview of the tool's arguments, already truncated */
+        input?: Record<string, any>;
+        reason?: string;
+      };
     }
   // Synthesized by the backend's event bus for *this* viewer when its queue
   // overflowed: `dropped` events after `resume_from` never arrived. Unstamped

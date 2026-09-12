@@ -199,6 +199,11 @@ class FleetProvider:
     async def open_session(self, ctx: RunContext) -> str:
         return ctx.upstream_session_id or ""
 
+    async def close_session(self, session_id: str) -> None:
+        # Stateless across turns by design (see the class docstring): every
+        # per-turn datum is a local in ``run()``, so there is nothing to free.
+        return None
+
     async def aclose(self) -> None:
         return None
 

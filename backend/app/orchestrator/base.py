@@ -42,6 +42,13 @@ class RunContext:
     model: str
     prompt: str
     cwd: str | None = None
+    # The LocalCode session this turn belongs to. Providers key persistent
+    # per-session state (an SDK client, a quota window) on it. None in
+    # headless/unit use.
+    session_id: str | None = None
+    # The fleet role this context is running as ("planner", "coder", ...) or
+    # None for a plain single-agent session. Selects the ToolPolicy.
+    role: str | None = None
     # Extra absolute paths the agent's tools may operate on beyond `cwd`.
     # Supported by ClaudeProvider via `add_dirs`; OpenCode currently has no
     # equivalent so they're informational there.
@@ -59,7 +66,8 @@ class RunContext:
     # Back-channel for HITL: when set, the WebSocket handler routes inbound
     # approval messages into this queue. Providers that implement an approval
     # gate `await` on it; providers that don't can ignore it. Each message is
-    # a dict like {"id": "approval.plan", "value": "yes"|"no", "feedback": "..."}.
+    # a dict like {"id": "approval.tool.3", "value": "yes"|"no", "feedback": "..."}
+    # where the id is the one the gate published (see `next_approval_id`).
     approval_channel: asyncio.Queue[dict[str, Any]] | None = None
 
 
@@ -81,6 +89,17 @@ class Provider(Protocol):
 
     async def run(self, ctx: RunContext) -> AsyncIterator[Event]:
         """Stream a single user turn as Events."""
+        ...
+
+    async def close_session(self, session_id: str) -> None:
+        """Release any state held for one session. Default: nothing.
+
+        A provider that keeps a live per-session handle (Task 4 gives Claude a
+        persistent ``ClaudeSDKClient``) has to be told when a session goes
+        away, or the handle — and the CLI process behind it — outlives the
+        session that owned it. Providers holding nothing implement this as a
+        no-op rather than leaving the protocol unsatisfied.
+        """
         ...
 
     async def aclose(self) -> None:
