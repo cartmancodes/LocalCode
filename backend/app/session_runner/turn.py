@@ -46,9 +46,12 @@ async def execute_turn(
     leaving every viewer's working indicator spinning until reload.
 
     The ``finally`` block is load-bearing: it flushes trailing text, repairs
-    dangling tool_use blocks, writes a final checkpoint, and guarantees
-    exactly one ``assistant.done`` so every viewer's UI clears its working
-    indicator — even on error/cancellation.
+    dangling tool_use blocks, writes a final checkpoint, and emits
+    ``assistant.done`` unless the provider's own one already *reached the bus*.
+    That is the terminal-event contract — exactly one per turn, however the
+    turn ends — and it matters in both directions, because every viewer clears
+    its working indicator on that event: zero leaves it spinning until reload,
+    two clears it for a turn that is still running.
     """
     ctx = RunContext(
         model=model,
@@ -62,7 +65,9 @@ async def execute_turn(
     )
 
     acc = TurnAccumulator()
-    saw_done = False
+    # "A terminal event has reached the bus", not "a done event arrived" — see
+    # where it is set in the drain loop.
+    done_broadcast = False
     try:
         try:
             await session_store.append_message(
@@ -121,7 +126,6 @@ async def execute_turn(
                 acc.add_tool_result(ev.data)
                 await acc.checkpoint(session_id)
             elif ev.type == "assistant.done":
-                saw_done = True
                 new_upstream_id = ev.data.get("upstream_session_id")
                 if new_upstream_id and new_upstream_id != upstream_id:
                     upstream_id = new_upstream_id
@@ -133,6 +137,15 @@ async def execute_turn(
                     duration_ms=ev.data.get("duration_ms"),
                 )
             await bus.broadcast(ev.to_json())
+            if ev.type == "assistant.done":
+                # Set only once the done has actually reached the bus. The
+                # `finally` reads this to decide whether the turn still owes
+                # subscribers a terminal event, and the work above can raise —
+                # persisting a changed upstream_session_id does I/O. Setting it
+                # on arrival instead meant such a failure broadcast an `error`
+                # and then skipped the terminal event: zero `assistant.done`,
+                # and a working indicator spinning until reload.
+                done_broadcast = True
     except asyncio.CancelledError:
         # Backend shutdown / session delete. Finally still runs and writes
         # the synthetic tool_result so persisted state stays consistent.
@@ -163,7 +176,7 @@ async def execute_turn(
                 await session_store.update_session(session_id)
             except Exception:
                 logger.debug("end-of-turn touch failed for %s", session_id)
-        if not saw_done:
+        if not done_broadcast:
             # Always emit assistant.done so subscribers' UIs clear their
             # working indicator, even on error / cancellation.
             await bus.broadcast({"type": "assistant.done", "data": {}})

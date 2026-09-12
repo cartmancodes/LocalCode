@@ -392,6 +392,64 @@ async def test_turn_surfaces_an_unexpected_persist_failure_and_terminates(
     assert bus.types.count("assistant.done") == 1
 
 
+async def test_turn_emits_a_done_when_persisting_the_new_upstream_id_fails(
+    isolated_store: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The narrowest path to zero terminal events.
+
+    Handling ``assistant.done`` persists a changed ``upstream_session_id``
+    (the claude provider reports one routinely) *before* the event reaches the
+    bus. If that write fails, the turn takes the error path having already
+    recorded that it had seen a done — so the ``finally`` skipped the
+    terminal event and nothing ever cleared the working indicator. The flag
+    has to mean "a done reached the bus", not "a done arrived".
+    """
+    session_id = await _new_session(isolated_store)
+    real_update = session_store.update_session
+
+    async def update_or_fail(sid: str, **fields: Any) -> dict[str, Any] | None:
+        # Only the upstream-id write fails: the prompt append and the
+        # end-of-turn touch go through `update_session` too, and failing those
+        # would exercise a different path than the one under test.
+        if "upstream_id" in fields:
+            raise OSError("meta.json write failed")
+        return await real_update(sid, **fields)
+
+    monkeypatch.setattr(session_store, "update_session", update_or_fail)
+    provider = StubProvider(
+        [
+            Event(type="assistant.text", data={"text": "hi"}),
+            Event(
+                type="assistant.done",
+                data={"upstream_session_id": "new-upstream", "cost_usd": 0.5},
+            ),
+        ]
+    )
+    bus = RecordingBus(session_id)
+
+    await execute_turn(
+        session_id=session_id,
+        bus=bus,  # type: ignore[arg-type]
+        approval_q=asyncio.Queue(),
+        provider=provider,  # type: ignore[arg-type]
+        provider_name="stub",
+        model="m",
+        cwd=None,
+        additional_dirs=[],
+        upstream_id="old-upstream",
+        fleet_override=None,
+        permission_mode=None,
+        prompt="hi",
+    )
+
+    assert bus.types.count("assistant.done") == 1, bus.types
+    assert any(
+        "meta.json write failed" in e["data"]["message"] for e in bus.of_type("error")
+    ), bus.events
+    # Terminal means last, so a viewer that only watches for it still clears.
+    assert bus.types[-1] == "assistant.done"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # D14.1 — shutdown cancels turns, and the kill reaches the whole tree
 # ─────────────────────────────────────────────────────────────────────────────
