@@ -248,26 +248,19 @@ def decide(
     if mode == "plan" and tool_name in WRITE_TOOLS | EXEC_TOOLS:
         return Decision("deny", "plan mode forbids write/exec tools")
 
-    # 9. acceptEdits auto-approves what the role already permits: writes, and
-    #    exec for a role whose policy grants exec.
-    #
-    #    Exec is included because an `ask` nobody can answer is a deny (see
-    #    `approvals.evaluate_tool_request`), and every fleet step runs headless
-    #    in a child process with no approval channel. Without this line every
-    #    `pytest`, `git diff` and `rg` in every fleet step is refused — and the
-    #    reviewer role exists to run exactly those.
-    #
-    #    This is not the escalation this module removed. The grant comes from
-    #    the role's own `exec_allowed`, which is a structural limit checked at
-    #    branch 4 *above* this line: a role with `exec_allowed=False` is
-    #    already denied and never reaches here, in any mode, including
-    #    `bypassPermissions` (branch 6 is likewise below the role gates). The
-    #    mode only accepts what the role already permits, which is why the
-    #    `exec_allowed` test is repeated here explicitly rather than left
-    #    implicit in the branch order.
-    if mode == "acceptEdits" and (
-        tool_name in WRITE_TOOLS or (tool_name in EXEC_TOOLS and policy.exec_allowed)
-    ):
+    # 9. acceptEdits auto-approves writes only. Exec is deliberately NOT
+    #    included here: `ctx.role` is set nowhere in the tree (turn.py and
+    #    fleet/collect.py both build a RunContext without it), so every
+    #    interactive session reaches `policy_for_role(None, ...)` and gets the
+    #    permissive "session" policy — the same policy this branch would use
+    #    to auto-approve Bash for a plain chat session, with no card, because
+    #    the UI's default mode IS acceptEdits. Widening this branch to exec
+    #    would silently auto-approve every shell command in the one mode most
+    #    users run in. The headless case this used to serve (a fleet step has
+    #    no approval channel, so an `ask` is unanswerable) is handled in
+    #    `approvals.evaluate_tool_request` instead, where "no human is
+    #    attached" is actually known — see the comment there.
+    if mode == "acceptEdits" and tool_name in WRITE_TOOLS:
         return Decision(
             "allow", f"acceptEdits mode auto-approves {tool_name} for role {policy.name}"
         )

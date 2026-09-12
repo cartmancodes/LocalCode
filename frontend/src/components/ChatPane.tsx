@@ -87,19 +87,27 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [wsState, setWsState] = useState<WsState>("closed");
-  // HITL approval gate — either the fleet's plan pause (`kind: "plan"`) or a
-  // single tool call a permission callback is asking about (`kind: "tool"`).
-  // When set, an approval card is rendered above the composer; sending
-  // `{type: "approval", ...}` over the WS clears it.
-  const [pendingApproval, setPendingApproval] = useState<{
-    id: string;
-    kind: "plan" | "tool";
-    plan: string;
-    message: string;
-    tool: string;
-    input: Record<string, any>;
-    expiresAt: number;
-  } | null>(null);
+  // HITL approval gates — the fleet's plan pause (`kind: "plan"`) or a tool
+  // call a permission callback is asking about (`kind: "tool"`). Keyed by
+  // approval id, not a single slot: parallel tool calls in one assistant
+  // message raise more than one gate on the same turn, and a single slot
+  // would drop whichever card arrived first the moment a second one showed
+  // up. Each open card renders above the composer; sending
+  // `{type: "approval", id, ...}` over the WS clears only that one.
+  const [pendingApprovals, setPendingApprovals] = useState<
+    Record<
+      string,
+      {
+        id: string;
+        kind: "plan" | "tool";
+        plan: string;
+        message: string;
+        tool: string;
+        input: Record<string, any>;
+        expiresAt: number;
+      }
+    >
+  >({});
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | null>(null);
   const reconnectAttempt = useRef(0);
@@ -159,10 +167,10 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
   useEffect(() => {
     if (!session) {
       setTurns([]);
-      setPendingApproval(null);
+      setPendingApprovals({});
       return;
     }
-    setPendingApproval(null);
+    setPendingApprovals({});
     let cancelled = false;
     (async () => {
       if (cancelled) return;
@@ -428,19 +436,32 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
     });
     // State updates outside the turns reducer.
     if (ev.type === "pipeline.awaiting_approval") {
-      setPendingApproval({
-        id: ev.data.id,
-        kind: ev.data.kind,
-        plan: ev.data.plan ?? "",
-        // The plan gate writes `message`; the tool gate writes `reason` (why
-        // the policy wants a human for this call).
-        message: ev.data.message ?? ev.data.reason ?? "",
-        tool: ev.data.tool ?? "",
-        input: ev.data.input ?? {},
-        expiresAt: Date.now() + ev.data.timeout_s * 1000,
-      });
+      const id = ev.data.id;
+      setPendingApprovals((prev) => ({
+        ...prev,
+        [id]: {
+          id,
+          kind: ev.data.kind,
+          plan: ev.data.plan ?? "",
+          // The plan gate writes `message`; the tool gate writes `reason`
+          // (why the policy wants a human for this call).
+          message: ev.data.message ?? ev.data.reason ?? "",
+          tool: ev.data.tool ?? "",
+          input: ev.data.input ?? {},
+          expiresAt: Date.now() + ev.data.timeout_s * 1000,
+        },
+      }));
     } else if (ev.type === "pipeline.approval_received") {
-      setPendingApproval(null);
+      // Remove only the card this decision names — a second gate can still
+      // be open (parallel tool calls), and clearing every card here would
+      // hide one the user hasn't answered yet.
+      const id = ev.data.id;
+      setPendingApprovals((prev) => {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
   };
 
@@ -462,21 +483,27 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
     }
   };
 
-  const respondApproval = (value: "yes" | "no", feedback?: string) => {
-    if (!pendingApproval) return;
+  const respondApproval = (id: string, value: "yes" | "no", feedback?: string) => {
+    if (!(id in pendingApprovals)) return;
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(
       JSON.stringify({
         type: "approval",
-        id: pendingApproval.id,
+        id,
         value,
         ...(feedback && feedback.trim() ? { feedback: feedback.trim() } : {}),
       })
     );
-    // Clear optimistically — the server will also send approval_received,
-    // which is a no-op once the card is gone.
-    setPendingApproval(null);
+    // Clear optimistically — the server will also send approval_received for
+    // this id, which is a no-op once the card is gone. Only this card: a
+    // second gate can still be open and awaiting its own answer.
+    setPendingApprovals((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   };
 
   // For fleet sessions, pull the live config (incl. UI override merge) so the
@@ -578,17 +605,18 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
       </div>
 
       <div className="lc-bottom">
-        {pendingApproval && (
+        {Object.values(pendingApprovals).map((pa) => (
           <ApprovalCard
-            kind={pendingApproval.kind}
-            tool={pendingApproval.tool}
-            plan={pendingApproval.plan}
-            input={pendingApproval.input}
-            message={pendingApproval.message}
-            expiresAt={pendingApproval.expiresAt}
-            onRespond={respondApproval}
+            key={pa.id}
+            kind={pa.kind}
+            tool={pa.tool}
+            plan={pa.plan}
+            input={pa.input}
+            message={pa.message}
+            expiresAt={pa.expiresAt}
+            onRespond={(value, feedback) => respondApproval(pa.id, value, feedback)}
           />
-        )}
+        ))}
         {session && wsState === "gave-up" && (
           <div
             className="lc-result lc-result--error"

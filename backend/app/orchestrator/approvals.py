@@ -32,6 +32,16 @@ human attached would not hang on a prompt nobody could answer; that traded a
 hang for a silent grant of filesystem writes on every fleet step. A refusal
 the model can read ("nobody is attached to approve this") costs one wasted
 tool call and grants nothing.
+
+The one exception is exec (``Bash``/``BashOutput``/``KillBash``): when no
+channel is attached AND the role's own policy already grants exec, the
+headless branch allows rather than denies — a fleet step is *always*
+headless, so without this every ``pytest``/``git diff``/``rg`` a fleet role
+runs would refuse. This lives here, keyed on "no channel attached", rather
+than as a mode branch in ``permissions.decide``: ``ctx.role`` is unset for
+every interactive session too, so a mode-keyed version of this concession
+would auto-approve shell commands in a plain chat session under the UI's
+default (``acceptEdits``) mode with no card ever shown.
 """
 from __future__ import annotations
 
@@ -49,7 +59,7 @@ from claude_agent_sdk import (
 )
 
 from .base import Event
-from .permissions import Decision, ToolPolicy, decide
+from .permissions import EXEC_TOOLS, Decision, ToolPolicy, decide
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +247,20 @@ def open_approval_gate(
 
     Call this *before* emitting the card, then ``await gate.answer(timeout)``,
     then ``gate.close()`` in a ``finally``.
+
+    The future and the reader task this creates are bound to the *calling*
+    event loop (``asyncio.get_running_loop()`` / ``asyncio.create_task``), not
+    to whatever loop the channel's queue was constructed under. That is fine
+    for the fleet today because a fleet step's `RunContext` carries no
+    `approval_channel` at all (see `fleet/collect.py`) — but a fleet step
+    itself runs on an *isolated thread with its own event loop*
+    (`collect.py`'s module docstring), so if Task 9/10 ever thread an approval
+    channel into a fleet step, a gate opened from inside that thread would
+    build its future on the child loop while `submit_approval` feeds the
+    channel from the main loop's WS handler. `asyncio.Queue` is not
+    thread-safe across loops, and neither is the future this returns —
+    wiring a fleet step's approvals through this function needs a
+    loop-crossing bridge (e.g. `run_coroutine_threadsafe`), not a bare call.
     """
     router = _routers.get(channel)
     if router is None:
@@ -346,7 +370,25 @@ async def evaluate_tool_request(
 
         if approval_channel is None or sink is None:
             # Headless: no human is attached, so there is nobody to say yes.
-            # Deny rather than escalate — see the module docstring.
+            # Deny rather than escalate — see the module docstring. The one
+            # exception is exec: a fleet step runs in a child process with no
+            # approval channel by construction (this is the fact that makes
+            # the branch headless, not a mode), so an unanswerable `ask` for
+            # `Bash`/`BashOutput`/`KillBash` is allowed when the role's own
+            # policy already grants exec. This concession belongs HERE, not
+            # in `decide`'s acceptEdits branch: `ctx.role` is set nowhere in
+            # the tree, so every interactive session also reaches that branch
+            # with the permissive default policy, and the UI's default mode
+            # IS acceptEdits — widening it there would auto-approve every
+            # shell command in a plain chat session with no card. Here, the
+            # absence of `approval_channel`/`sink` is the actual, load-bearing
+            # signal that no human is attached.
+            if tool_name in EXEC_TOOLS and policy.exec_allowed:
+                return Decision(
+                    "allow",
+                    f"{tool_name} pre-approved for role {policy.name}: no operator is "
+                    f"attached to this headless run to ask ({result.reason})",
+                )
             return _deny(
                 tool_name,
                 policy,

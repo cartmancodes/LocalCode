@@ -245,28 +245,17 @@ DECIDE_ROWS = [
         "acceptEdits",
     ),
     (
-        # Amended (Task 3): exec under acceptEdits is allowed when the ROLE
-        # grants exec. A headless fleet step has no human to answer an `ask`,
-        # and an unanswerable ask is a deny — so the previous behaviour refused
-        # every command in every fleet step, including the reviewer's whole
-        # reason for existing. The grant is the role's, not the mode's.
-        "branch9-acceptEdits-allows-exec-when-the-role-grants-exec",
-        dict(exec_allowed=True),
+        # acceptEdits auto-approves writes only, never exec — see the comment
+        # on branch 9. An interactive session's default mode is acceptEdits,
+        # and `ctx.role` is unset everywhere, so widening this to exec would
+        # silently auto-approve every shell command with no card.
+        "branch9-acceptEdits-does-not-allow-exec",
+        {},
         "Bash",
         {},
         "acceptEdits",
-        ALLOW,
-        "acceptEdits",
-    ),
-    (
-        # ...and the role still decides: branch 4 refuses first.
-        "branch9-acceptEdits-does-not-grant-exec-to-a-role-without-it",
-        dict(exec_allowed=False),
-        "Bash",
-        {},
-        "acceptEdits",
-        DENY,
-        "may not execute",
+        ASK,
+        "confirmation",
     ),
     (
         "branch10-default-mode-asks-for-write",
@@ -388,18 +377,6 @@ class TestDecideTable:
         result = decide("Bash", {}, policy, mode="bypassPermissions")
         assert result.outcome == "allow"
         assert "bypassPermissions" in result.reason
-
-    @pytest.mark.parametrize("role", ["coder", "tester", "reviewer"])
-    @pytest.mark.parametrize("tool", ["Bash", "BashOutput", "KillBash"])
-    def test_branch9_every_exec_role_can_run_commands_headless(
-        self, role: str, tool: str, tmp_path
-    ) -> None:
-        # A fleet step runs in a child process with no approval channel, so an
-        # `ask` there resolves to a deny. Under acceptEdits these roles must get
-        # a straight allow or the fleet cannot run a single command.
-        policy = policy_for_role(role, roots=(tmp_path,), denied=())
-        result = decide(tool, {"command": "pytest -q"}, policy, mode="acceptEdits")
-        assert result.outcome == "allow", f"{role}/{tool}: {result}"
 
     @pytest.mark.parametrize(
         "mode", ["default", "acceptEdits", "plan", "bypassPermissions"]

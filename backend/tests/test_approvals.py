@@ -41,7 +41,7 @@ from backend.app.orchestrator.approvals import (
     summarize_tool_input,
 )
 from backend.app.orchestrator.base import RunContext
-from backend.app.orchestrator.permissions import ToolPolicy
+from backend.app.orchestrator.permissions import ToolPolicy, policy_for_role
 from backend.app.routes.sessions import _validate_cwd
 
 # Generous enough that a loaded machine doesn't fail the test, short enough
@@ -271,6 +271,45 @@ class TestEvaluateToolRequest:
         assert card.type == "pipeline.awaiting_approval"
         assert received.data["value"] == "timeout"
 
+    async def test_interactive_accept_edits_with_a_channel_still_cards_bash(
+        self, tmp_path: Path
+    ) -> None:
+        # Controller Ruling 22, the regression this fix round exists to
+        # prevent: `ctx.role` is unset for every interactive session, so a
+        # plain chat session in the UI's default mode (acceptEdits) gets the
+        # permissive "session" policy (`exec_allowed=True`) — exactly the
+        # shape a fleet role also has. With a human actually attached (a real
+        # approval_channel), Bash must still raise a card and wait for a
+        # decision, never auto-allow the way the reverted branch-9 amendment
+        # would have. This is what tells the headless concession (scoped to
+        # "no channel") apart from a mode-keyed one (which cannot tell an
+        # interactive session from a fleet step).
+        sink = EventSink()
+        channel: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        task = asyncio.create_task(
+            evaluate_tool_request(
+                "Bash",
+                {"command": "rm -rf build"},
+                policy=mk_policy(roots=(tmp_path,)),  # the "session" shape: exec_allowed=True
+                mode="acceptEdits",
+                sink=sink,
+                approval_channel=channel,
+                timeout_s=WAIT_S,
+            )
+        )
+
+        card = await asyncio.wait_for(sink.get(), WAIT_S)
+        assert card is not None
+        assert card.type == "pipeline.awaiting_approval"
+        assert card.data["tool"] == "Bash"
+
+        await channel.put({"id": card.data["id"], "value": "yes"})
+        decision = await asyncio.wait_for(task, WAIT_S)
+        assert decision.outcome == "allow"
+
+        received = await asyncio.wait_for(sink.get(), WAIT_S)
+        assert received is not None and received.type == "pipeline.approval_received"
+
     async def test_ask_without_an_approval_channel_denies(self, tmp_path: Path) -> None:
         # THE headless decision: the replaced code escalated to acceptEdits
         # here, which granted every write on every fleet step.
@@ -356,6 +395,66 @@ class TestEvaluateToolRequest:
         )
 
         assert decision.outcome == "allow"
+
+    @pytest.mark.parametrize("role", ["coder", "tester", "reviewer"])
+    @pytest.mark.parametrize("tool", ["Bash", "BashOutput", "KillBash"])
+    async def test_branch9_every_exec_role_can_run_commands_headless(
+        self, role: str, tool: str, tmp_path: Path
+    ) -> None:
+        # Moved from test_permissions.py (controller Ruling 22): the previous
+        # round pinned this premise against `policy_for_role` alone, never
+        # against the real headless path. The grant now lives in
+        # `evaluate_tool_request`'s no-channel branch, not in `decide`'s
+        # acceptEdits branch, so this exercises that live path directly — a
+        # fleet step really does call with `approval_channel=None`.
+        policy = policy_for_role(role, roots=(tmp_path,), denied=())
+        decision = await evaluate_tool_request(
+            tool,
+            {"command": "pytest -q"},
+            policy=policy,
+            mode="acceptEdits",
+            sink=None,
+            approval_channel=None,
+            timeout_s=WAIT_S,
+        )
+        assert decision.outcome == "allow", f"{role}/{tool}: {decision}"
+
+    async def test_headless_exec_still_denies_a_role_without_exec(
+        self, tmp_path: Path
+    ) -> None:
+        # The exec concession is scoped to `policy.exec_allowed`; a headless
+        # `ask` for anything else — including exec a role does not have —
+        # still denies rather than becoming a second silent allow.
+        policy = policy_for_role("planner", roots=(tmp_path,), denied=())
+        decision = await evaluate_tool_request(
+            "Bash",
+            {"command": "ls"},
+            policy=policy,
+            mode="acceptEdits",
+            sink=None,
+            approval_channel=None,
+            timeout_s=WAIT_S,
+        )
+        assert decision.outcome == "deny"
+        assert decision.outcome != "allow"
+
+    async def test_headless_ask_for_a_non_exec_tool_still_denies(
+        self, tmp_path: Path
+    ) -> None:
+        # The exec concession must not widen into a general headless allow:
+        # a role-gated ask_tools entry with no channel still refuses.
+        policy = mk_policy(roots=(tmp_path,), ask_tools=frozenset({"Read"}))
+        decision = await evaluate_tool_request(
+            "Read",
+            {"file_path": str(tmp_path / "a.py")},
+            policy=policy,
+            mode="default",
+            sink=None,
+            approval_channel=None,
+            timeout_s=WAIT_S,
+        )
+        assert decision.outcome == "deny"
+        assert "no operator" in decision.reason
 
 
 # ── answer routing: many gates, one channel ──────────────────────────────

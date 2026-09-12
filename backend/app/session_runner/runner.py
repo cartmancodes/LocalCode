@@ -55,7 +55,7 @@ class SessionRunner:
         "_turn_task",
         "_approval_q",
         "_retired",
-        "_pending_approval",
+        "_pending_approvals",
     )
 
     def __init__(self, session_id: str) -> None:
@@ -69,10 +69,15 @@ class SessionRunner:
         # Serializes turn execution within a session so a second prompt
         # arriving mid-turn waits (or is rejected — see `start_turn`).
         self._lock = asyncio.Lock()
-        # Tracked off the bus rather than set at the call site: the gate is
+        # Tracked off the bus rather than set at the call site: a gate is
         # raised deep inside the provider's tool handler, and every event it
-        # emits passes through here on its way to the viewers.
-        self._pending_approval: PendingApproval | None = None
+        # emits passes through here on its way to the viewers. Keyed by
+        # approval id, not a single slot: parallel tool calls in one assistant
+        # message raise several gates on the same turn (each permission
+        # request runs in its own task — see `approvals._ApprovalRouter`), and
+        # a single slot would drop whichever card arrived first the moment a
+        # second one showed up, live, not only on reconnect.
+        self._pending_approvals: dict[str, PendingApproval] = {}
         self._bus = EventBus(session_id, on_event=self._note_event)
         self._turn_task: asyncio.Task[None] | None = None
         # Refreshed per turn so a stale approval click from a previous turn
@@ -105,29 +110,46 @@ class SessionRunner:
 
     @property
     def pending_approval(self) -> PendingApproval | None:
-        """The approval card a viewer joining now still has to answer, if any."""
-        return self._pending_approval
+        """One outstanding card, for a caller that only handles a single gate.
+
+        Back-compat / convenience accessor: returns the oldest still-open gate,
+        or None. A turn can have more than one open at once (parallel tool
+        calls); a caller that must see all of them needs ``pending_approvals``.
+        """
+        return next(iter(self._pending_approvals.values()), None)
+
+    @property
+    def pending_approvals(self) -> tuple[PendingApproval, ...]:
+        """Every approval card a viewer joining now still has to answer,
+        oldest first."""
+        return tuple(self._pending_approvals.values())
 
     def _note_event(self, ev: dict[str, Any]) -> None:
-        """Observe every broadcast event to track the outstanding approval.
+        """Observe every broadcast event to track the outstanding approvals.
 
-        Called by the bus (see ``EventBus.on_event``) before fan-out, so the
+        Called by the bus (see ``EventBus.on_event``) before fan-out, so a
         card is already recorded by the time a WS handler could ask for it.
         """
         ev_type = ev.get("type")
         if ev_type == "pipeline.awaiting_approval":
             approval_id = str((ev.get("data") or {}).get("id") or "")
-            self._pending_approval = PendingApproval(approval_id=approval_id, event=ev)
+            self._pending_approvals[approval_id] = PendingApproval(
+                approval_id=approval_id, event=ev
+            )
         elif ev_type == "pipeline.approval_received":
-            # Answered (or timed out) — the gate is no longer waiting on anyone.
-            # Cleared regardless of the id it carries: only one gate can be open
-            # at a time, so a mismatch would mean a stuck card, not a second gate.
-            self._pending_approval = None
+            # Answered (or timed out) — clear only the gate this decision
+            # names. Several gates can be open on one turn at once (parallel
+            # tool calls each raise their own — see
+            # `approvals._ApprovalRouter`), so clearing every open card here
+            # would make a reconnecting viewer believe an unrelated,
+            # still-open gate had been answered too.
+            approval_id = str((ev.get("data") or {}).get("id") or "")
+            self._pending_approvals.pop(approval_id, None)
         elif ev_type == "assistant.done":
             # Turn end. `execute_turn` emits exactly one of these however the
             # turn finishes, so this also covers a cancelled or failed turn
-            # whose gate never got an answer.
-            self._pending_approval = None
+            # whose gate(s) never got an answer.
+            self._pending_approvals.clear()
 
     async def subscribe(self, since_id: int | None = None) -> Subscription:
         """Register a subscriber; returns its queue, replay and watermark."""

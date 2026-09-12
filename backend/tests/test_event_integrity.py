@@ -506,6 +506,41 @@ async def test_the_runner_clears_a_pending_gate_on_the_decision_and_on_turn_end(
     assert runner.pending_approval is None
 
 
+async def test_two_open_gates_one_answered_leaves_the_other_pending() -> None:
+    """Finding 2 (Task 3 fix round 1): parallel tool calls raise more than one
+    gate on the same turn (each permission request runs in its own task — see
+    ``approvals._ApprovalRouter``). Before this, the runner's single-slot
+    tracker replaced the first card with the second live, and cleared it on
+    *any* ``approval_received`` — so answering the second gate erased the
+    first's card and a reconnecting viewer had nothing to answer with, while
+    the turn stayed blocked until ``tool_approval_timeout_s`` expired."""
+    runner = SessionRunner("s")
+    other_id = "approval.tool.other"
+
+    await runner._bus.broadcast(_approval_event())
+    await runner._bus.broadcast(
+        {
+            "type": "pipeline.awaiting_approval",
+            "data": {
+                "id": other_id,
+                "kind": "tool",
+                "tool": "Bash",
+                "reason": "confirm",
+                "timeout_s": 300,
+            },
+        }
+    )
+    assert {p.approval_id for p in runner.pending_approvals} == {_APPROVAL_ID, other_id}
+
+    # Answer the second gate. The first must still be open afterwards.
+    await runner._bus.broadcast(
+        {"type": "pipeline.approval_received", "data": {"id": other_id, "value": "yes"}}
+    )
+
+    remaining = runner.pending_approvals
+    assert [p.approval_id for p in remaining] == [_APPROVAL_ID]
+
+
 async def _session_with_open_gate(home: Path) -> tuple[str, Any, ApprovalGateProvider]:
     """Start a real turn and leave it blocked on its approval gate."""
     meta = await session_store.create_session(

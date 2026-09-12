@@ -248,14 +248,18 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
     # asked is gone, and the card lives only in the replay ring — which a fresh
     # connection (no `?since=`) never reads. Re-emit it here, after the replay so
     # the card lands in chat order and before live events so a decision already
-    # in flight still wins.
+    # in flight still wins. A turn can have several gates open at once
+    # (parallel tool calls each raise their own — see
+    # `approvals._ApprovalRouter`), so every open card gets this treatment, not
+    # just the newest: a single-card check here would silently drop whichever
+    # gate isn't picked, and the caller would have no way to answer it.
     #
-    # Read *after* subscribing, and decided by event id rather than approval id:
-    # approval ids are unique per gate now (`next_approval_id`), but an id says
-    # nothing about whether *this* viewer has already been handed the card,
-    # which is the only question here. The three ways it can already have it —
-    # and each is a duplicate if we send it too:
-    if (pending := runner.pending_approval) is not None:
+    # Read *after* subscribing, and decided per-card by event id rather than
+    # approval id: approval ids are unique per gate now (`next_approval_id`),
+    # but an id says nothing about whether *this* viewer has already been
+    # handed the card, which is the only question here. The three ways it can
+    # already have it — and each is a duplicate if we send it too:
+    for pending in runner.pending_approvals:
         card_id = int(pending.event.get("_id") or 0)
         already_seen = card_id <= (since_id or 0)  # it had the card before reconnecting
         incoming = card_id > subscription.watermark  # the live queue carries it
