@@ -14,7 +14,6 @@ from ..orchestrator.fleet import (
     role_library_dict,
 )
 
-
 router = APIRouter(prefix="/api/fleet", tags=["fleet"])
 
 

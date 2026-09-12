@@ -16,10 +16,9 @@ from fastapi import (
 
 from ..config import get_settings
 from ..orchestrator import get_provider
-from ..schemas import CreateSessionRequest, MessagesPage, MessageOut, SessionOut
+from ..schemas import CreateSessionRequest, MessageOut, MessagesPage, SessionOut
 from ..session_runner import drop_all_runners, drop_runner, get_runner
 from ..storage.sessions import store as session_store
-
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +110,12 @@ async def delete_all_sessions() -> None:
 @router.get("/{session_id}/messages", response_model=MessagesPage)
 async def get_messages(
     session_id: str,
-    before: datetime | None = Query(default=None, description="ISO datetime — return messages older than this"),
-    limit: int | None = Query(default=None, ge=1, description="Page size; defaults from settings"),
+    before: datetime | None = Query(
+        default=None, description="ISO datetime — return messages older than this"
+    ),
+    limit: int | None = Query(
+        default=None, ge=1, description="Page size; defaults from settings"
+    ),
 ) -> MessagesPage:
     s = get_settings()
     page_size = min(limit or s.messages_page_default, s.messages_page_max)
@@ -240,7 +243,7 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
                 )
             except WebSocketDisconnect:
                 return
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.info("ws %s closed: idle timeout", session_id)
                 try:
                     await websocket.close(code=1001, reason="idle timeout")

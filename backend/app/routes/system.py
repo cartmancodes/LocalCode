@@ -7,7 +7,6 @@ from fastapi import APIRouter
 
 from ..config import get_settings
 
-
 router = APIRouter(prefix="/api/system", tags=["system"])
 
 

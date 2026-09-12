@@ -21,11 +21,31 @@ from .prompts import (
 # The UI uses this to pre-fill a role card when the user adds a
 # previously-absent role to their workflow.
 ROLE_LIBRARY: dict[str, RoleConfig] = {
-    "planner":   RoleConfig(provider="claude",   model="claude-opus-4-7",       system_prompt=PLANNER_SYSTEM),
-    "developer": RoleConfig(provider="claude",   model="claude-sonnet-4-6",     system_prompt=DEVELOPER_SYSTEM),
-    "coder":     RoleConfig(provider="opencode", model="openai/gpt-5.3-codex",  system_prompt=CODER_SYSTEM),
-    "tester":    RoleConfig(provider="claude",   model="claude-haiku-4-5",      system_prompt=TESTER_SYSTEM),
-    "reviewer":  RoleConfig(provider="claude",   model="claude-sonnet-4-6",     system_prompt=REVIEWER_SYSTEM),
+    "planner": RoleConfig(
+        provider="claude",
+        model="claude-opus-4-7",
+        system_prompt=PLANNER_SYSTEM,
+    ),
+    "developer": RoleConfig(
+        provider="claude",
+        model="claude-sonnet-4-6",
+        system_prompt=DEVELOPER_SYSTEM,
+    ),
+    "coder": RoleConfig(
+        provider="opencode",
+        model="openai/gpt-5.3-codex",
+        system_prompt=CODER_SYSTEM,
+    ),
+    "tester": RoleConfig(
+        provider="claude",
+        model="claude-haiku-4-5",
+        system_prompt=TESTER_SYSTEM,
+    ),
+    "reviewer": RoleConfig(
+        provider="claude",
+        model="claude-sonnet-4-6",
+        system_prompt=REVIEWER_SYSTEM,
+    ),
 }
 
 

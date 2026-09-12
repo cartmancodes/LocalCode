@@ -174,7 +174,9 @@ def _merge_config(base: FleetConfig, override: dict[str, Any]) -> FleetConfig:
             logger.warning("fleet config: 'roles.%s.model' empty; using default", name)
             model = role_base.model
         system_prompt = str(per_role.get("system_prompt") or role_base.system_prompt).strip()
-        resolved_roles[name] = RoleConfig(provider=provider, model=model, system_prompt=system_prompt)
+        resolved_roles[name] = RoleConfig(
+            provider=provider, model=model, system_prompt=system_prompt
+        )
 
     entry_role = _validate_entry_role(
         override.get("entry_role", base.entry_role),

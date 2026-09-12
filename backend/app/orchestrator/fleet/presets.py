@@ -12,7 +12,10 @@ from typing import Any
 WORKFLOW_PRESETS: dict[str, dict[str, Any]] = {
     "full": {
         "label": "Full crew",
-        "description": "Planner writes a detailed plan; coder implements; reviewer gates plan compliance; tester writes & runs tests as the final smoke check.",
+        "description": (
+            "Planner writes a detailed plan; coder implements; reviewer gates "
+            "plan compliance; tester writes & runs tests as the final smoke check."
+        ),
         "roles": ["planner", "coder", "reviewer", "tester"],
         "entry_role": "coder",
     },
@@ -60,13 +63,18 @@ WORKFLOW_PRESETS: dict[str, dict[str, Any]] = {
     },
     "plan-only": {
         "label": "Plan only",
-        "description": "Just the planner — produces the markdown plan, no execution. Useful for review.",
+        "description": (
+            "Just the planner — produces the markdown plan, no execution. "
+            "Useful for review."
+        ),
         "roles": ["planner"],
         "entry_role": "planner",
     },
     "review-only": {
         "label": "Review only",
-        "description": "Single reviewer turn — paste content into the prompt for an LGTM/NACK pass.",
+        "description": (
+            "Single reviewer turn — paste content into the prompt for an LGTM/NACK pass."
+        ),
         "roles": ["reviewer"],
         "entry_role": "reviewer",
     },

@@ -53,7 +53,7 @@ from .constants import (
     StepTimeoutError,
 )
 from .defaults import DEFAULT_FLEET_CONFIG, ROLE_LIBRARY
-from .gate import _classify_gate, _TOOL_DIGEST_MARKER, classify_gate
+from .gate import _TOOL_DIGEST_MARKER, _classify_gate, classify_gate
 from .loader import (
     _merge_config,
     _parse_config_file,
@@ -106,4 +106,13 @@ __all__ = [
     "collect_text",
     # provider
     "FleetProvider",
+    # back-compat underscore aliases — the pre-split module exposed these;
+    # keep them importable so an external `from .fleet import _classify_gate`
+    # doesn't break silently.
+    "_collect_text",
+    "_TOOL_DIGEST_MARKER",
+    "_classify_gate",
+    "_merge_config",
+    "_parse_config_file",
+    "_validate_entry_role",
 ]

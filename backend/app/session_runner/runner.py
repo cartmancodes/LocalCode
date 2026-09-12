@@ -123,7 +123,7 @@ class SessionRunner:
         t.cancel()
         try:
             await asyncio.wait_for(asyncio.shield(t), timeout=self._CANCEL_GRACE_S)
-        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+        except (TimeoutError, asyncio.CancelledError, Exception):
             # TimeoutError → turn is wedged; detach and move on. The turn
             # task and its daemon sub-provider thread are abandoned (daemon
             # threads die with the process); the session is still removed.

@@ -5,7 +5,6 @@ from fastapi import APIRouter
 from ..config import get_settings
 from ..schemas import CatalogModel
 
-
 router = APIRouter(prefix="/api/models", tags=["models"])
 
 
