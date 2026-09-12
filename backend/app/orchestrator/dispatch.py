@@ -36,15 +36,20 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from .agent_def import AgentDef
 
-# EventSink / await_approval live in approvals.py now — the tool gate uses
-# the same queue and the same stale-click filtering. Re-exported here so
-# every existing importer (orchestrator.py, tests) keeps working.
+# The approval machinery lives in approvals.py now — the tool gate uses the
+# same queue, and answers are routed to the gate that asked. Re-exported from
+# here so every existing importer (orchestrator.py, tests) keeps working.
 from .approvals import (
     PLAN_APPROVAL_ID_PREFIX,
     EventSink,
-    await_approval,
     next_approval_id,
+    open_approval_gate,
 )
+
+# Re-exported, not used here: the plan gate now registers before publishing its
+# card (``open_approval_gate``), but this name has been importable from this
+# module since the gate was written and outside callers may still use it.
+from .approvals import await_approval as await_approval
 from .base import Event, RunContext
 
 logger = logging.getLogger(__name__)
@@ -226,28 +231,32 @@ def build_dispatch_mcp(
                 ]
             }
 
-        # Unique per gate, not a fixed string: ``await_approval`` filters
-        # inbound clicks by id, so two gates in one turn sharing an id is
-        # how a stale click on the first card satisfies the second.
+        # Unique per gate, not a fixed string: a decision is routed to a gate
+        # by id, so two gates in one turn sharing an id is how a stale click on
+        # the first card satisfies the second.
         approval_id = next_approval_id(PLAN_APPROVAL_ID_PREFIX)
-        await sink.put(
-            Event(
-                type="pipeline.awaiting_approval",
-                data={
-                    "id": approval_id,
-                    "kind": "plan",
-                    "plan": summary,
-                    "message": (
-                        "Approve this plan to run the worker steps, or "
-                        "reject with feedback to abort the turn."
-                    ),
-                    "timeout_s": APPROVAL_TIMEOUT_S,
-                },
+        # Registered before the card goes out, so a fast answer cannot land
+        # before anything is waiting for it (see ``open_approval_gate``).
+        gate = open_approval_gate(ctx.approval_channel, approval_id)
+        try:
+            await sink.put(
+                Event(
+                    type="pipeline.awaiting_approval",
+                    data={
+                        "id": approval_id,
+                        "kind": "plan",
+                        "plan": summary,
+                        "message": (
+                            "Approve this plan to run the worker steps, or "
+                            "reject with feedback to abort the turn."
+                        ),
+                        "timeout_s": APPROVAL_TIMEOUT_S,
+                    },
+                )
             )
-        )
-        decision = await await_approval(
-            ctx.approval_channel, approval_id, APPROVAL_TIMEOUT_S
-        )
+            decision = await gate.answer(APPROVAL_TIMEOUT_S)
+        finally:
+            gate.close()
         await sink.put(Event(type="pipeline.approval_received", data=decision))
 
         # Return a text describing the outcome that the orchestrator can

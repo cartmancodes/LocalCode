@@ -17,6 +17,7 @@ translation is all it is allowed to do.
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,7 @@ from backend.app.orchestrator.approvals import (
     build_can_use_tool,
     evaluate_tool_request,
     next_approval_id,
+    open_approval_gate,
     summarize_tool_input,
 )
 from backend.app.orchestrator.base import RunContext
@@ -354,6 +356,158 @@ class TestEvaluateToolRequest:
         )
 
         assert decision.outcome == "allow"
+
+
+# ── answer routing: many gates, one channel ──────────────────────────────
+
+
+class TestApprovalRouting:
+    """A turn can have several gates open at once.
+
+    claude-agent-sdk handles each permission request in its own task
+    (``_internal/query.py``: ``_spawn_control_request_handler``), so two
+    parallel tool calls open two gates on one approval channel. Before the
+    router, each waiter read the channel itself and discarded any message whose
+    id was not its own — so gate B destroyed gate A's answer and A waited out
+    its whole timeout for a decision the user had already made.
+    """
+
+    async def test_two_open_gates_answered_out_of_order_both_resolve(
+        self, tmp_path: Path
+    ) -> None:
+        channel: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        gate_a = open_approval_gate(channel, "approval.tool.a")
+        gate_b = open_approval_gate(channel, "approval.tool.b")
+
+        a = asyncio.create_task(gate_a.answer(WAIT_S))
+        b = asyncio.create_task(gate_b.answer(WAIT_S))
+        # Answered B first, then A: the out-of-order case is the one that used
+        # to lose an answer.
+        await channel.put({"id": "approval.tool.b", "value": "no", "feedback": "nope"})
+        await channel.put({"id": "approval.tool.a", "value": "yes"})
+
+        try:
+            answer_a = await asyncio.wait_for(a, WAIT_S)
+            answer_b = await asyncio.wait_for(b, WAIT_S)
+        finally:
+            gate_a.close()
+            gate_b.close()
+
+        assert answer_a == {"id": "approval.tool.a", "value": "yes", "feedback": None}
+        assert answer_b == {"id": "approval.tool.b", "value": "no", "feedback": "nope"}
+
+    async def test_two_tool_gates_through_the_core_both_resolve(
+        self, tmp_path: Path
+    ) -> None:
+        # The same thing end-to-end: two concurrent `evaluate_tool_request`
+        # calls, as two parallel tool calls would produce.
+        sink = EventSink()
+        channel: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        def ask(tool: str, path: str) -> asyncio.Task[Any]:
+            return asyncio.create_task(
+                evaluate_tool_request(
+                    tool,
+                    {"file_path": path, "content": "x"},
+                    policy=mk_policy(roots=(tmp_path,)),
+                    mode="default",
+                    sink=sink,
+                    approval_channel=channel,
+                    timeout_s=WAIT_S,
+                )
+            )
+
+        first = ask("Write", str(tmp_path / "one.py"))
+        second = ask("Edit", str(tmp_path / "two.py"))
+        cards = [await asyncio.wait_for(sink.get(), WAIT_S) for _ in range(2)]
+        by_tool = {c.data["tool"]: c.data["id"] for c in cards if c is not None}
+        assert set(by_tool) == {"Write", "Edit"}
+
+        # Answer the second card first.
+        await channel.put({"id": by_tool["Edit"], "value": "yes"})
+        await channel.put({"id": by_tool["Write"], "value": "no", "feedback": "not that one"})
+
+        assert (await asyncio.wait_for(second, WAIT_S)).outcome == "allow"
+        denied = await asyncio.wait_for(first, WAIT_S)
+        assert denied.outcome == "deny"
+        assert "not that one" in denied.reason
+
+    async def test_an_answer_for_no_open_gate_is_dropped_and_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        channel: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        gate = open_approval_gate(channel, "approval.tool.real")
+        task = asyncio.create_task(gate.answer(WAIT_S))
+        try:
+            with caplog.at_level(logging.INFO, logger="backend.app.orchestrator.approvals"):
+                await channel.put({"id": "approval.tool.ghost", "value": "yes"})
+                await channel.put({"id": "approval.tool.real", "value": "yes"})
+                answer = await asyncio.wait_for(task, WAIT_S)
+        finally:
+            gate.close()
+
+        # Dropped deliberately — not left in the queue where it would satisfy
+        # whatever gate opens next.
+        assert answer["value"] == "yes"
+        assert any(
+            "matches no open gate" in r.getMessage() and "ghost" in r.getMessage()
+            for r in caplog.records
+        )
+
+    async def test_a_timeout_on_one_gate_leaves_another_waiting(self) -> None:
+        channel: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        short = open_approval_gate(channel, "approval.tool.short")
+        long = open_approval_gate(channel, "approval.tool.long")
+        long_task = asyncio.create_task(long.answer(WAIT_S))
+
+        timed_out = await asyncio.wait_for(short.answer(0.0), WAIT_S)
+        short.close()
+        assert timed_out["value"] == "timeout"
+
+        # The surviving gate still gets its answer: the timed-out gate took
+        # neither the reader nor the message with it.
+        await channel.put({"id": "approval.tool.long", "value": "yes"})
+        try:
+            assert (await asyncio.wait_for(long_task, WAIT_S))["value"] == "yes"
+        finally:
+            long.close()
+
+    async def test_an_answer_with_no_id_reaches_the_only_open_gate(self) -> None:
+        # Backwards compatibility with a client that omits the id. Attributable
+        # only while exactly one gate is open.
+        channel: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        gate = open_approval_gate(channel, "approval.tool.only")
+        task = asyncio.create_task(gate.answer(WAIT_S))
+        try:
+            await channel.put({"value": "yes"})
+            assert (await asyncio.wait_for(task, WAIT_S))["value"] == "yes"
+        finally:
+            gate.close()
+
+    async def test_a_reused_approval_id_is_refused(self) -> None:
+        channel: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        gate = open_approval_gate(channel, "approval.tool.dup")
+        try:
+            with pytest.raises(ValueError):
+                open_approval_gate(channel, "approval.tool.dup")
+        finally:
+            gate.close()
+
+    async def test_the_channel_reader_stops_when_the_last_gate_closes(self) -> None:
+        # Otherwise every turn leaves a task parked on its queue forever.
+        channel: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        before = len(asyncio.all_tasks())
+        gate = open_approval_gate(channel, "approval.tool.solo")
+        assert len(asyncio.all_tasks()) == before + 1
+        gate.close()
+        # Poll rather than assume one loop iteration is enough to retire a
+        # cancelled task — how many it takes is not part of the contract.
+        for _ in range(100):
+            if len(asyncio.all_tasks()) == before:
+                break
+            await asyncio.sleep(0)
+
+        assert len(asyncio.all_tasks()) == before
 
 
 # ── claude.py wiring ─────────────────────────────────────────────────────

@@ -245,13 +245,28 @@ DECIDE_ROWS = [
         "acceptEdits",
     ),
     (
-        "branch9-acceptEdits-does-not-allow-exec",
-        {},
+        # Amended (Task 3): exec under acceptEdits is allowed when the ROLE
+        # grants exec. A headless fleet step has no human to answer an `ask`,
+        # and an unanswerable ask is a deny — so the previous behaviour refused
+        # every command in every fleet step, including the reviewer's whole
+        # reason for existing. The grant is the role's, not the mode's.
+        "branch9-acceptEdits-allows-exec-when-the-role-grants-exec",
+        dict(exec_allowed=True),
         "Bash",
         {},
         "acceptEdits",
-        ASK,
-        "confirmation",
+        ALLOW,
+        "acceptEdits",
+    ),
+    (
+        # ...and the role still decides: branch 4 refuses first.
+        "branch9-acceptEdits-does-not-grant-exec-to-a-role-without-it",
+        dict(exec_allowed=False),
+        "Bash",
+        {},
+        "acceptEdits",
+        DENY,
+        "may not execute",
     ),
     (
         "branch10-default-mode-asks-for-write",
@@ -373,6 +388,60 @@ class TestDecideTable:
         result = decide("Bash", {}, policy, mode="bypassPermissions")
         assert result.outcome == "allow"
         assert "bypassPermissions" in result.reason
+
+    @pytest.mark.parametrize("role", ["coder", "tester", "reviewer"])
+    @pytest.mark.parametrize("tool", ["Bash", "BashOutput", "KillBash"])
+    def test_branch9_every_exec_role_can_run_commands_headless(
+        self, role: str, tool: str, tmp_path
+    ) -> None:
+        # A fleet step runs in a child process with no approval channel, so an
+        # `ask` there resolves to a deny. Under acceptEdits these roles must get
+        # a straight allow or the fleet cannot run a single command.
+        policy = policy_for_role(role, roots=(tmp_path,), denied=())
+        result = decide(tool, {"command": "pytest -q"}, policy, mode="acceptEdits")
+        assert result.outcome == "allow", f"{role}/{tool}: {result}"
+
+    @pytest.mark.parametrize(
+        "mode", ["default", "acceptEdits", "plan", "bypassPermissions"]
+    )
+    def test_exec_stays_denied_for_a_role_without_exec_in_every_mode(
+        self, mode: str
+    ) -> None:
+        # The acceptEdits exec allowance is the role's grant, not the mode's:
+        # branches 1-5 run first, so no mode — bypassPermissions included —
+        # hands exec to a role that does not have it.
+        policy = mk_policy(exec_allowed=False)
+        result = decide("Bash", {"command": "ls"}, policy, mode=mode)
+        assert result.outcome == "deny", f"{mode}: {result}"
+        assert "may not execute" in result.reason
+
+    @pytest.mark.parametrize("role", ["planner", "developer"])
+    def test_read_only_roles_still_cannot_exec_under_accept_edits(
+        self, role: str, tmp_path
+    ) -> None:
+        policy = policy_for_role(role, roots=(tmp_path,), denied=())
+        assert decide("Bash", {"command": "ls"}, policy, mode="acceptEdits").outcome == (
+            "deny"
+        )
+
+    def test_branch10_reason_names_the_live_mode(self) -> None:
+        # `decide` takes the mode as a plain string and does not assume it was
+        # normalized, so the reason must interpolate it. It used to say
+        # "default mode requires confirmation" whatever the mode actually was,
+        # which points whoever reads the audit line at the wrong setting.
+        result = decide("Write", {}, mk_policy(), mode="dontAsk")
+        assert result.outcome == "ask"
+        assert result.reason.startswith("dontAsk mode requires confirmation")
+        assert "Write" in result.reason
+
+    def test_a_policy_with_no_roots_says_the_session_has_no_cwd(self, tmp_path) -> None:
+        # "outside all allowed roots []" reads as a bug in the gate; the real
+        # cause is a session created without a working directory.
+        result = decide(
+            "Read", {"file_path": str(tmp_path / "f.py")}, mk_policy(roots=()), mode="default"
+        )
+        assert result.outcome == "deny"
+        assert "no working directory" in result.reason
 
 
 # ── policy_for_role ───────────────────────────────────────────────────────

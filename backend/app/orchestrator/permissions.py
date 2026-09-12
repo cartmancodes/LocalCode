@@ -152,6 +152,16 @@ def path_decision(path: Path, policy: ToolPolicy) -> Decision:
         return Decision("deny", f"path {resolved} is under a denied directory")
     if is_within(resolved, policy.roots):
         return Decision("allow", f"path {resolved} is within an allowed root")
+    if not policy.roots:
+        # No roots at all means the session was created without a working
+        # directory, so every path is outside. Say that, rather than reporting
+        # the path as "outside all allowed roots []" — an empty list in a deny
+        # reason reads as a bug in the gate instead of a missing cwd.
+        return Decision(
+            "deny",
+            f"path {resolved} is refused: this session has no working directory, "
+            f"so no path is inside an allowed root",
+        )
     roots_desc = [str(r) for r in policy.roots]
     return Decision("deny", f"path {resolved} is outside all allowed roots {roots_desc}")
 
@@ -238,13 +248,38 @@ def decide(
     if mode == "plan" and tool_name in WRITE_TOOLS | EXEC_TOOLS:
         return Decision("deny", "plan mode forbids write/exec tools")
 
-    # 9. acceptEdits auto-approves writes (but not exec — that still asks).
-    if mode == "acceptEdits" and tool_name in WRITE_TOOLS:
-        return Decision("allow", "acceptEdits mode auto-approves writes")
+    # 9. acceptEdits auto-approves what the role already permits: writes, and
+    #    exec for a role whose policy grants exec.
+    #
+    #    Exec is included because an `ask` nobody can answer is a deny (see
+    #    `approvals.evaluate_tool_request`), and every fleet step runs headless
+    #    in a child process with no approval channel. Without this line every
+    #    `pytest`, `git diff` and `rg` in every fleet step is refused — and the
+    #    reviewer role exists to run exactly those.
+    #
+    #    This is not the escalation this module removed. The grant comes from
+    #    the role's own `exec_allowed`, which is a structural limit checked at
+    #    branch 4 *above* this line: a role with `exec_allowed=False` is
+    #    already denied and never reaches here, in any mode, including
+    #    `bypassPermissions` (branch 6 is likewise below the role gates). The
+    #    mode only accepts what the role already permits, which is why the
+    #    `exec_allowed` test is repeated here explicitly rather than left
+    #    implicit in the branch order.
+    if mode == "acceptEdits" and (
+        tool_name in WRITE_TOOLS or (tool_name in EXEC_TOOLS and policy.exec_allowed)
+    ):
+        return Decision(
+            "allow", f"acceptEdits mode auto-approves {tool_name} for role {policy.name}"
+        )
 
-    # 10. default mode: write/exec tools need a human yes.
+    # 10. Anything left that writes or executes needs a human yes. Usually
+    #     `default` mode, but `acceptEdits` also lands here for an exec tool a
+    #     role does not pre-approve, so the reason interpolates the live mode
+    #     rather than hardcoding "default" — this string is the audit record of
+    #     why a tool was gated, and naming the wrong mode in it sends whoever
+    #     reads it looking at the wrong setting.
     if tool_name in WRITE_TOOLS | EXEC_TOOLS:
-        return Decision("ask", "default mode requires confirmation for write/exec tools")
+        return Decision("ask", f"{mode} mode requires confirmation for {tool_name}")
 
     # 11. Everything else (reads, search, network) is allowed.
     return Decision("allow", "no restriction applies")

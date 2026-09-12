@@ -19,10 +19,12 @@ forgotten. So this module is split in two deliberately:
     would be a branch Codex does not get, which is the whole failure this
     split prevents.
 
-``EventSink`` and :func:`await_approval` moved here unchanged from
-``dispatch.py`` (which still re-exports them) because they are no longer the
-plan gate's private machinery — the tool gate uses the same queue and the
-same stale-click filtering.
+``EventSink`` and :func:`await_approval` moved here from ``dispatch.py``
+(which still re-exports them) because they are no longer the plan gate's
+private machinery — the tool gate uses the same queue. Answers are routed to
+the gate that asked by ``_ApprovalRouter``, since a turn can now have several
+gates open at once and a waiter that reads the channel itself destroys the
+other gate's answer.
 
 The headless answer to ``ask`` is **deny**, not allow. The code this replaces
 escalated an unknown permission mode to ``acceptEdits`` so a run with no
@@ -36,9 +38,9 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
-import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from claude_agent_sdk import (
     PermissionResultAllow,
@@ -52,9 +54,9 @@ from .permissions import Decision, ToolPolicy, decide
 logger = logging.getLogger(__name__)
 
 
-# Approval-id prefixes. The id is what ``await_approval`` filters inbound
-# clicks on, so it must be unique per gate: two gates in one turn sharing an
-# id is exactly how a stale click on the first card could satisfy the second.
+# Approval-id prefixes. The id is what an inbound decision is routed by, so it
+# must be unique per gate: two gates in one turn sharing an id is exactly how a
+# stale click on the first card satisfies the second.
 APPROVAL_ID_PREFIX = "approval.tool"
 PLAN_APPROVAL_ID_PREFIX = "approval.plan"
 
@@ -113,31 +115,153 @@ class EventSink:
         return item  # type: ignore[return-value]
 
 
+class _ApprovalRouter:
+    """One reader per approval channel, dispatching each answer by its id.
+
+    Every waiter used to read the channel itself and ``continue`` past any
+    message whose id was not its own — which *discarded* it. That was harmless
+    while a turn had at most one gate, and wrong the moment a turn can have
+    several: claude-agent-sdk handles each permission request in its own task
+    (``_internal/query.py``, ``_spawn_control_request_handler``), so two
+    parallel tool calls open two gates on the same channel, and gate B would
+    eat gate A's answer and leave A waiting out its full timeout for a decision
+    the user had already made.
+
+    So exactly one task reads the channel and hands each message to the gate
+    that asked for it. An answer for no open gate is dropped *deliberately* and
+    logged, instead of being left in the queue to satisfy the next gate.
+    """
+
+    __slots__ = ("_waiters", "_reader")
+
+    def __init__(self) -> None:
+        self._waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._reader: asyncio.Task[None] | None = None
+
+    def register(
+        self, channel: asyncio.Queue[dict[str, Any]], approval_id: str
+    ) -> asyncio.Future[dict[str, Any]]:
+        if approval_id in self._waiters:
+            # ``next_approval_id`` makes this impossible; if it ever happens,
+            # failing here is better than silently orphaning the first gate.
+            raise ValueError(f"approval id {approval_id!r} is already open")
+        fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._waiters[approval_id] = fut
+        if self._reader is None or self._reader.done():
+            self._reader = asyncio.create_task(self._read(channel))
+        return fut
+
+    def release(self, approval_id: str, fut: asyncio.Future[dict[str, Any]]) -> None:
+        if self._waiters.get(approval_id) is fut:
+            del self._waiters[approval_id]
+        if not self._waiters and self._reader is not None:
+            # Nothing is open: stop reading rather than leave a task parked on
+            # a finished turn's queue for the life of the process. Cancelling a
+            # pending ``Queue.get()`` leaves the item in the queue, so no
+            # answer is lost by stopping — and the next gate starts a reader
+            # again *before* its card is published.
+            if not self._reader.done():
+                self._reader.cancel()
+            self._reader = None
+
+    async def _read(self, channel: asyncio.Queue[dict[str, Any]]) -> None:
+        while self._waiters:
+            self._dispatch(await channel.get())
+
+    def _dispatch(self, msg: dict[str, Any]) -> None:
+        approval_id = str(msg.get("id") or "")
+        fut = self._waiters.get(approval_id)
+        if fut is None and not approval_id:
+            # An older client can send a decision with no id at all. It is
+            # attributable only when exactly one gate is open; with two open
+            # there is no way to tell which one the user clicked, and guessing
+            # would answer the wrong question.
+            if len(self._waiters) == 1:
+                fut = next(iter(self._waiters.values()))
+        if fut is None or fut.done():
+            logger.info(
+                "approval decision %r matches no open gate (open: %s) — dropped",
+                approval_id or "<no id>",
+                sorted(self._waiters) or "none",
+            )
+            return
+        fut.set_result(msg)
+
+
+# One router per approval channel. Weak-keyed so a finished turn's queue (and
+# its router) is collected with the turn; the router deliberately holds no
+# reference to the channel itself, which would otherwise keep its own key
+# alive forever.
+_routers: WeakKeyDictionary[asyncio.Queue[dict[str, Any]], _ApprovalRouter] = (
+    WeakKeyDictionary()
+)
+
+
+class ApprovalGate:
+    """One open question, registered on the channel before its card is shown.
+
+    Registration happens in ``open_approval_gate`` rather than inside
+    ``answer()`` on purpose: the card is published to the UI between the two,
+    and an answer that arrives before the gate is registered would be dropped
+    as unattributable.
+    """
+
+    __slots__ = ("approval_id", "_router", "_future")
+
+    def __init__(
+        self, approval_id: str, router: _ApprovalRouter, fut: asyncio.Future[dict[str, Any]]
+    ) -> None:
+        self.approval_id = approval_id
+        self._router = router
+        self._future = fut
+
+    async def answer(self, timeout_s: float) -> dict[str, Any]:
+        """Wait for this gate's decision. ``value`` is "yes", "no" or "timeout"."""
+        try:
+            msg = await asyncio.wait_for(self._future, timeout=timeout_s)
+        except TimeoutError:
+            # Only this gate gives up; every other open gate keeps waiting.
+            return {"id": self.approval_id, "value": "timeout", "feedback": None}
+        value = "yes" if msg.get("value") == "yes" else "no"
+        return {"id": self.approval_id, "value": value, "feedback": msg.get("feedback")}
+
+    def close(self) -> None:
+        """Stop waiting. Idempotent; safe to call from a ``finally``."""
+        self._router.release(self.approval_id, self._future)
+
+
+def open_approval_gate(
+    channel: asyncio.Queue[dict[str, Any]], approval_id: str
+) -> ApprovalGate:
+    """Register ``approval_id`` on ``channel`` so an answer can be routed to it.
+
+    Call this *before* emitting the card, then ``await gate.answer(timeout)``,
+    then ``gate.close()`` in a ``finally``.
+    """
+    router = _routers.get(channel)
+    if router is None:
+        router = _ApprovalRouter()
+        _routers[channel] = router
+    return ApprovalGate(approval_id, router, router.register(channel, approval_id))
+
+
 async def await_approval(
     channel: asyncio.Queue[dict[str, Any]],
     approval_id: str,
     timeout_s: float,
 ) -> dict[str, Any]:
-    """Block until the user accepts/rejects this approval, or timeout fires.
+    """Open a gate, wait for its decision, and release it.
 
-    Stale messages (different ``id``) are dropped — this is what lets a
-    second approval gate in the same turn ignore a late click on the
-    previous gate's button.
+    Kept as the one-call form for callers that have nothing to do between
+    publishing a card and waiting (and because ``dispatch`` has imported this
+    name since the plan gate was written). Callers that publish a card should
+    prefer ``open_approval_gate`` so the gate is registered first.
     """
-    deadline = time.monotonic() + timeout_s
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return {"id": approval_id, "value": "timeout", "feedback": None}
-        try:
-            msg = await asyncio.wait_for(channel.get(), timeout=remaining)
-        except TimeoutError:
-            return {"id": approval_id, "value": "timeout", "feedback": None}
-        msg_id = msg.get("id")
-        if msg_id and msg_id != approval_id:
-            continue
-        value = "yes" if msg.get("value") == "yes" else "no"
-        return {"id": approval_id, "value": value, "feedback": msg.get("feedback")}
+    gate = open_approval_gate(channel, approval_id)
+    try:
+        return await gate.answer(timeout_s)
+    finally:
+        gate.close()
 
 
 def next_approval_id(prefix: str) -> str:
@@ -231,20 +355,28 @@ async def evaluate_tool_request(
             )
 
         approval_id = next_approval_id(APPROVAL_ID_PREFIX)
-        await sink.put(
-            Event(
-                type="pipeline.awaiting_approval",
-                data={
-                    "id": approval_id,
-                    "kind": "tool",
-                    "tool": tool_name,
-                    "input": summarize_tool_input(tool_input),
-                    "reason": result.reason,
-                    "timeout_s": timeout_s,
-                },
+        # Registered before the card is published: an answer that arrives
+        # between the two would otherwise belong to no open gate and be
+        # dropped. Several gates can be open at once (parallel tool calls), and
+        # the router is what keeps each one's answer its own.
+        gate = open_approval_gate(approval_channel, approval_id)
+        try:
+            await sink.put(
+                Event(
+                    type="pipeline.awaiting_approval",
+                    data={
+                        "id": approval_id,
+                        "kind": "tool",
+                        "tool": tool_name,
+                        "input": summarize_tool_input(tool_input),
+                        "reason": result.reason,
+                        "timeout_s": timeout_s,
+                    },
+                )
             )
-        )
-        answer = await await_approval(approval_channel, approval_id, timeout_s)
+            answer = await gate.answer(timeout_s)
+        finally:
+            gate.close()
         # Emitted on every path (yes / no / timeout) because the UI clears the
         # card on it and the runner clears its pending-approval record on it.
         await sink.put(Event(type="pipeline.approval_received", data=answer))
