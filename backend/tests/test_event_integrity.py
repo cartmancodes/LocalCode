@@ -20,6 +20,20 @@ gap it had just opened. The defects, and the test that pins each:
     it is a ``deque(maxlen=...)`` now. What is observable (and tested) is the
     retention contract: exactly the last ``REPLAY_BUFFER_SIZE`` events.
 
+Three more holes in that claim, found in review of the first pass and closed
+here:
+
+  * A gap report that was queued but no longer tracked could be displaced by a
+    terminal event, taking the drops it described with it — a transcript with a
+    hole and no signal, which is the one thing this module exists to prevent.
+    A report is now *owed* until something queued carries it.
+  * The approval-card re-emission de-duplicated by approval id, which
+    ``dispatch`` hardcodes, and only against the replay — so an ordinary
+    reconnect re-sent a card the client had already rendered. It is decided by
+    event id against the subscription watermark now.
+  * A replay that cannot reach back to the client's ``since_id`` began
+    mid-stream in silence. It opens with a gap report instead.
+
 Everything here is driven by explicit broadcasts and ``asyncio.Event`` handoffs
 — no sleeps, no wall-clock thresholds.
 """
@@ -89,10 +103,18 @@ def _approval_event() -> dict[str, Any]:
 
 class ExplodingQueue(asyncio.Queue):  # type: ignore[type-arg]
     """A subscriber queue whose ``put_nowait`` fails in a way the bus does not
-    expect — the shape of a corrupted or monkeypatched consumer."""
+    expect — the shape of a corrupted or monkeypatched consumer.
+
+    ``seed`` fills it through the base implementation so a test can push it over
+    the cap and reach the terminal-displacement path, which is where the
+    delivery code does its most intricate work.
+    """
 
     def put_nowait(self, item: Any) -> None:
         raise RuntimeError("this queue is broken")
+
+    def seed(self, item: Any) -> None:
+        asyncio.Queue.put_nowait(self, item)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -110,7 +132,7 @@ async def test_replay_covers_a_gap_as_wide_as_a_subscriber_queue() -> None:
     """The behaviour the size change buys: a viewer that went away for longer
     than its queue is deep still resumes from the ring, with no hole."""
     bus = EventBus("s")
-    q, _ = await bus.subscribe()
+    q = (await bus.subscribe()).queue
     await bus.broadcast({"type": "session.started", "data": {}})
     seen = _drain(q)
     assert [e["_id"] for e in seen] == [1]
@@ -119,7 +141,8 @@ async def test_replay_covers_a_gap_as_wide_as_a_subscriber_queue() -> None:
     # Wider than the old 256-event ring and wider than a subscriber queue.
     await _fill(bus, 600)
 
-    q2, replay = await bus.subscribe(since_id=1)
+    resumed = await bus.subscribe(since_id=1)
+    q2, replay = resumed.queue, resumed.replay
     assert [e["_id"] for e in replay] == list(range(2, 602))
     assert _gaps(replay) == []
     # A fresh subscriber is whole as of its subscription, so nothing is
@@ -133,11 +156,54 @@ async def test_the_ring_retains_exactly_the_last_replay_buffer_size_events() -> 
     bus = EventBus("s")
     await _fill(bus, REPLAY_BUFFER_SIZE + 10)
 
-    _q, replay = await bus.subscribe(since_id=0)
-    assert len(replay) == REPLAY_BUFFER_SIZE
-    assert replay[0]["_id"] == 11
-    assert replay[-1]["_id"] == REPLAY_BUFFER_SIZE + 10
-    assert [e["_id"] for e in replay] == sorted(e["_id"] for e in replay)
+    replay = (await bus.subscribe(since_id=0)).replay
+    retained = _real(replay)
+    assert len(retained) == REPLAY_BUFFER_SIZE
+    assert retained[0]["_id"] == 11
+    assert retained[-1]["_id"] == REPLAY_BUFFER_SIZE + 10
+    assert [e["_id"] for e in retained] == sorted(e["_id"] for e in retained)
+
+
+async def test_a_replay_that_cannot_reach_back_to_since_id_opens_with_a_gap() -> None:
+    """The ring evicted events this client never saw, so the replay starts
+    mid-stream. Unreported, the client appends a tail onto a transcript with a
+    hole in it — and `ChatPane` refetches only when a replay is *empty*, so
+    nothing would ever repair it."""
+    bus = EventBus("s")
+    await _fill(bus, REPLAY_BUFFER_SIZE + 10)
+
+    replay = (await bus.subscribe(since_id=3)).replay
+
+    assert replay[0]["type"] == "stream.gap"
+    # Events 4…10 were evicted; the replay resumes at 11.
+    assert replay[0]["data"] == {"dropped": 7, "resume_from": 3}
+    assert _real(replay)[0]["_id"] == 11
+    assert len(_gaps(replay)) == 1
+
+
+async def test_a_replay_that_reaches_back_far_enough_reports_no_gap() -> None:
+    bus = EventBus("s")
+    await _fill(bus, 20)
+
+    replay = (await bus.subscribe(since_id=5)).replay
+
+    assert _gaps(replay) == []
+    assert [e["_id"] for e in replay] == list(range(6, 21))
+
+
+async def test_subscribe_reports_the_watermark_it_registered_at() -> None:
+    """The WS handler needs the boundary between "hand this over yourself" and
+    "the live queue will carry it" to re-emit an approval card exactly once."""
+    bus = EventBus("s")
+    await _fill(bus, 7)
+
+    first = await bus.subscribe()
+    assert first.watermark == 7
+
+    await _fill(bus, 2, start=7)
+    second = await bus.subscribe(since_id=7)
+    assert second.watermark == 9
+    assert [e["_id"] for e in second.replay] == [8, 9]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -147,7 +213,7 @@ async def test_the_ring_retains_exactly_the_last_replay_buffer_size_events() -> 
 
 async def test_a_subscriber_that_never_drains_is_told_exactly_what_it_lost() -> None:
     bus = EventBus("s")
-    q, _ = await bus.subscribe()
+    q = (await bus.subscribe()).queue
     total = SUBSCRIBER_QUEUE_MAX + 50
 
     await _fill(bus, total)
@@ -171,7 +237,7 @@ async def test_a_terminal_event_displaces_the_oldest_instead_of_being_dropped() 
     """The spinner-forever failure. The queue here is physically full (data
     events plus the gap marker), so the done can only land by displacing."""
     bus = EventBus("s")
-    q, _ = await bus.subscribe()
+    q = (await bus.subscribe()).queue
     await _fill(bus, SUBSCRIBER_QUEUE_MAX + 50)
     assert q.full()
 
@@ -191,7 +257,7 @@ async def test_a_terminal_event_displaces_the_oldest_instead_of_being_dropped() 
 async def test_an_error_event_also_bypasses_the_queue_cap() -> None:
     """``error`` is terminal for the UI in the same way ``assistant.done`` is."""
     bus = EventBus("s")
-    q, _ = await bus.subscribe()
+    q = (await bus.subscribe()).queue
     await _fill(bus, SUBSCRIBER_QUEUE_MAX + 50)
 
     await bus.broadcast({"type": "error", "data": {"message": "provider died"}})
@@ -209,7 +275,7 @@ async def test_two_runs_of_drops_produce_two_reports_not_one_and_not_fifty(
     may already have consumed."""
     monkeypatch.setattr(bus_mod, "SUBSCRIBER_QUEUE_MAX", 4)
     bus = EventBus("s")
-    q, _ = await bus.subscribe()
+    q = (await bus.subscribe()).queue
 
     await _fill(bus, 4)  # ids 1-4 fill the queue to its cap
     await _fill(bus, 3, start=4)  # ids 5-7 dropped → one report, total 3
@@ -228,12 +294,49 @@ async def test_two_runs_of_drops_produce_two_reports_not_one_and_not_fifty(
     assert len(_real(seen)) + sum(g["data"]["dropped"] for g in gaps) == 10
 
 
+async def test_a_queued_report_displaced_by_a_terminal_event_is_not_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hole the review found, and the reason ``pending_drops`` is only ever
+    cleared by queueing the report that carries it.
+
+    The interleaving is the ordinary one: the forwarder is blocked in
+    ``send_json`` on a stalled socket, so the gap marker sits at the head while
+    the producer refills behind it; the reserved slot then goes to an ``error``
+    (no marker needed), and ``assistant.done`` displaces the marker itself. Both
+    the report and its count used to vanish there, leaving the spinner to clear
+    over a transcript with an unannounced hole.
+    """
+    monkeypatch.setattr(bus_mod, "SUBSCRIBER_QUEUE_MAX", 4)
+    bus = EventBus("s")
+    q = (await bus.subscribe()).queue
+
+    await _fill(bus, 4)  # ids 1-4 fill the queue to its cap
+    await _fill(bus, 1, start=4)  # id 5 dropped → a marker in the reserved slot
+    early = [q.get_nowait() for _ in range(4)]  # the viewer reads 1-4 only
+    await _fill(bus, 3, start=5)  # ids 6-8 deliver, so the marker is untracked
+    await bus.broadcast({"type": "error", "data": {"message": "boom"}})  # id 9
+    await bus.broadcast({"type": "assistant.done", "data": {}})  # id 10
+
+    seen = early + _drain(q)
+    gaps = _gaps(seen)
+    assert gaps, [(e.get("type"), e.get("_id")) for e in seen]
+    # Both terminal events still arrive, and the turn still ends.
+    assert [e["type"] for e in seen[-2:]] == ["stream.gap", "assistant.done"]
+    assert any(e["type"] == "error" for e in seen)
+    # And every one of the 10 broadcasts is either delivered or reported.
+    reported = sum(g["data"]["dropped"] for g in gaps)
+    assert len(_real(seen)) + reported == 10, (
+        f"delivered {len(_real(seen))} + reported {reported}"
+    )
+
+
 async def test_delivered_ids_stay_monotonic_across_drops_and_a_forced_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(bus_mod, "SUBSCRIBER_QUEUE_MAX", 8)
     bus = EventBus("s")
-    q, _ = await bus.subscribe()
+    q = (await bus.subscribe()).queue
 
     await _fill(bus, 20)
     q.get_nowait()
@@ -257,16 +360,33 @@ async def test_one_broken_subscriber_costs_neither_the_others_nor_the_caller() -
     subscribers already hold — the duplicate the terminal contract forbids.
     """
     bus = EventBus("s")
-    broken, _ = await bus.subscribe()
-    healthy, _ = await bus.subscribe()
-    # Swap in a queue that fails in a way the delivery path does not expect.
-    bus._subscribers[0].queue = ExplodingQueue()
+    await bus.subscribe()  # becomes the empty broken queue
+    await bus.subscribe()  # becomes the full broken queue
+    healthy = (await bus.subscribe()).queue
+
+    # Two shapes of broken, so both delivery paths are covered: an empty queue
+    # takes the ordinary put, and a seeded-full one takes the terminal-event
+    # displacement path, which is where the delivery code does its most
+    # intricate work.
+    empty_broken = ExplodingQueue(maxsize=SUBSCRIBER_QUEUE_MAX + 1)
+    full_broken = ExplodingQueue(maxsize=SUBSCRIBER_QUEUE_MAX + 1)
+    for i in range(SUBSCRIBER_QUEUE_MAX + 1):
+        full_broken.seed({"type": "assistant.text", "data": {}, "_id": -i})
+    assert full_broken.full()
+    bus._subscribers[0].queue = empty_broken
+    bus._subscribers[1].queue = full_broken
 
     await bus.broadcast({"type": "assistant.text", "data": {"text": "hi"}})
     await bus.broadcast({"type": "assistant.done", "data": {}})
 
+    # Nothing propagated (either broadcast would have raised otherwise) and the
+    # healthy viewer is whole — including the terminal event, so the turn's
+    # "the done reached the bus" bookkeeping stays correct.
     assert [e["type"] for e in _drain(healthy)] == ["assistant.text", "assistant.done"]
-    assert _drain(broken) == []
+    assert _drain(empty_broken) == []
+    # The full one kept only its pre-seeded contents, minus what displacement
+    # removed: no new event could be written to it.
+    assert all(e["_id"] <= 0 for e in _drain(full_broken))
 
 
 async def test_a_failing_event_observer_does_not_cost_a_subscriber_its_events() -> None:
@@ -274,7 +394,7 @@ async def test_a_failing_event_observer_does_not_cost_a_subscriber_its_events() 
         raise RuntimeError("observer is broken")
 
     bus = EventBus("s", on_event=observer)
-    q, _ = await bus.subscribe()
+    q = (await bus.subscribe()).queue
 
     await bus.broadcast({"type": "assistant.done", "data": {}})
 
@@ -436,6 +556,28 @@ async def test_a_replayed_gate_is_not_offered_twice(isolated_store: Path) -> Non
     await chat_ws(ws, session_id)  # type: ignore[arg-type]
 
     assert len(ws.of_type("pipeline.awaiting_approval")) == 1, [
+        e.get("type") for e in ws.sent
+    ]
+
+
+async def test_a_reconnect_that_already_rendered_the_card_is_not_sent_it_again(
+    isolated_store: Path,
+) -> None:
+    """The common reconnect path, and the one an approval-id comparison got
+    wrong: the tab rendered the card, lost its socket, and reconnects with
+    ``since=<card id>``. The replay cannot contain the card (it is not newer than
+    ``since``), so only the event id tells us the client already has it —
+    ``ChatPane`` appends the card's blocks unconditionally, so a second copy
+    renders a second card."""
+    _session_unused, runner, _provider = await _session_with_open_gate(isolated_store)
+    pending = runner.pending_approval
+    assert pending is not None
+    card_id = pending.event["_id"]
+
+    ws = FakeWebSocket(since=str(card_id))
+    await chat_ws(ws, _session_unused)  # type: ignore[arg-type]
+
+    assert ws.of_type("pipeline.awaiting_approval") == [], [
         e.get("type") for e in ws.sent
     ]
 

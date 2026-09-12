@@ -219,12 +219,8 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
     if since_raw and since_raw.isdigit():
         since_id = int(since_raw)
 
-    # Read the outstanding approval gate *before* subscribing. A gate raised
-    # after we subscribe arrives on the live queue on its own, and re-emitting
-    # that one as well would show the user the card twice.
-    pending = runner.pending_approval
-
-    queue, replay = await runner.subscribe(since_id=since_id)
+    subscription = await runner.subscribe(since_id=since_id)
+    queue, replay = subscription.queue, subscription.replay
 
     # Replay buffered events first so the client catches up before live
     # events arrive. If the client died between subscribe and replay, the
@@ -240,18 +236,28 @@ async def chat_ws(websocket: WebSocket, session_id: str) -> None:
     # asked is gone, and the card lives only in the replay ring — which a fresh
     # connection (no `?since=`) never reads. Re-emit it here, after the replay so
     # the card lands in chat order and before live events so a decision already
-    # in flight still wins. De-duplicated by approval id: a `?since=` replay that
-    # already carried the card must not produce a second one.
-    if pending is not None and not any(
-        ev.get("type") == "pipeline.awaiting_approval"
-        and str((ev.get("data") or {}).get("id") or "") == pending.approval_id
-        for ev in replay
-    ):
-        try:
-            await websocket.send_json(pending.event)
-        except (WebSocketDisconnect, RuntimeError):
-            await runner.unsubscribe(queue)
-            return
+    # in flight still wins.
+    #
+    # Read *after* subscribing, and decided by event id rather than approval id:
+    # `dispatch` hardcodes the id to "approval.plan", so comparing ids cannot
+    # tell two gates apart. The three ways a viewer can already be getting this
+    # card — and each is a duplicate if we send it too:
+    if (pending := runner.pending_approval) is not None:
+        card_id = int(pending.event.get("_id") or 0)
+        already_seen = card_id <= (since_id or 0)  # it had the card before reconnecting
+        incoming = card_id > subscription.watermark  # the live queue carries it
+        in_replay = any(ev.get("_id") == card_id for ev in replay)
+        if not (already_seen or incoming or in_replay):
+            logger.info(
+                "ws %s: re-offering outstanding approval %s to a new viewer",
+                session_id,
+                pending.approval_id,
+            )
+            try:
+                await websocket.send_json(pending.event)
+            except (WebSocketDisconnect, RuntimeError):
+                await runner.unsubscribe(queue)
+                return
 
     heartbeat = asyncio.create_task(_ws_heartbeat(websocket))
 

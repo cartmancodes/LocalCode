@@ -5,18 +5,24 @@ did they miss" concern from turn execution. The bus knows nothing about
 providers, prompts, or persistence — it just stamps, retains, and fans out.
 
 Delivery is lossy by design (one stalled browser must not pin the producer) but
-never *silently* lossy, which is what the audit found. Three rules make a drop
+never *silently* lossy, which is what the audit found. Four rules make a drop
 survivable:
 
   * A drop is reported to the subscriber it happened to, as one ``stream.gap``
     event per contiguous run of drops carrying that run's total. The frontend
     refetches ``/messages`` when it sees one.
+  * A report is *owed* until it is queued, and it is never written off. Nothing
+    resets the count except queueing the report that carries it, and a terminal
+    event — which may be the last thing a viewer ever receives — takes whatever
+    is owed out with it.
   * Terminal events (``assistant.done`` / ``error``) are never dropped — they
-    displace the oldest queued event instead. A UI whose working indicator
-    never clears is the worst failure mode in this system; losing an
-    intermediate delta is not.
+    displace the oldest queued event instead. A UI whose working indicator never
+    clears is the worst failure mode in this system; losing an intermediate
+    delta is not.
   * The replay ring is larger than a subscriber queue, so ``?since=`` can cover
-    any gap a queue is able to open (see :mod:`.config`).
+    any gap a queue is able to open (see :mod:`.config`) — and when the ring has
+    nevertheless evicted past a client's ``since_id``, the replay itself starts
+    with a gap report rather than silently beginning mid-stream.
 """
 from __future__ import annotations
 
@@ -24,7 +30,7 @@ import asyncio
 import logging
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .config import REPLAY_BUFFER_SIZE, SUBSCRIBER_QUEUE_MAX
@@ -36,28 +42,50 @@ logger = logging.getLogger(__name__)
 # spinner running until the user reloads the page.
 TERMINAL_EVENT_TYPES = frozenset({"assistant.done", "error"})
 
+_GAP = "stream.gap"
+
+
+def _gap_event(*, dropped: int, resume_from: int) -> dict[str, Any]:
+    """A gap report. Deliberately unstamped: a gap is synthesized per
+    subscriber and is not in the replay ring, so it must not burn an ``_id``
+    that a ``?since=`` replay would then be unable to account for."""
+    return {"type": _GAP, "data": {"dropped": dropped, "resume_from": resume_from}}
+
+
+@dataclass(slots=True)
+class Subscription:
+    """What a new viewer needs to become whole.
+
+    ``watermark`` is the highest ``_id`` stamped at the moment this subscriber
+    was registered — the boundary between "the caller must be handed this
+    itself" and "the live queue will carry it". The WS handler needs it to
+    decide whether to re-emit an outstanding approval card without risking
+    either a duplicate or a miss.
+    """
+
+    queue: asyncio.Queue[dict[str, Any]]
+    replay: list[dict[str, Any]] = field(default_factory=list)
+    watermark: int = 0
+
 
 @dataclass(slots=True)
 class _Subscriber:
-    """One viewer's queue plus the bookkeeping a gap report needs.
-
-    ``dropped`` and ``gap`` describe the *current* run of drops only: any
-    successful delivery ends the run, so the next drop opens a fresh report
-    instead of inflating one the viewer may already have consumed.
-    """
+    """One viewer's queue plus the bookkeeping a gap report needs."""
 
     queue: asyncio.Queue[dict[str, Any]]
     # Highest `_id` actually handed to this subscriber — the `resume_from` a
     # gap report carries, i.e. the last point this viewer is known to be whole.
     last_delivered_id: int = 0
-    # Events lost in the run of drops currently in progress.
-    dropped: int = 0
-    # The `stream.gap` event already queued for that run, if any. Held by
-    # reference so further drops in the same run update its total in place
-    # rather than queueing a second report. Mutating it is safe: a gap sits at
-    # the tail of a queue that is by definition full, so the consumer cannot
-    # have read it yet — reaching it means draining the queue, and the first
-    # delivery that then succeeds ends the run and drops this reference.
+    # Drops this subscriber has NOT yet been told about. Only `_report_gap`
+    # clears it, and only by queueing the report that carries the count: a
+    # number written off here is an event lost in silence.
+    pending_drops: int = 0
+    # The `stream.gap` event queued for the run of drops in progress, if any.
+    # Held by reference so further drops in the same run update its total in
+    # place rather than queueing a second report. Mutating it is safe: a tracked
+    # marker sits at the tail of a queue that is by definition full, so the
+    # consumer cannot have read it yet — reaching it means draining the queue,
+    # and the first delivery that then succeeds drops this reference.
     gap: dict[str, Any] | None = None
 
 
@@ -106,14 +134,18 @@ class EventBus:
     def last_event_id(self) -> int:
         return self._next_id
 
-    async def subscribe(
-        self, since_id: int | None = None
-    ) -> tuple[asyncio.Queue[dict[str, Any]], list[dict[str, Any]]]:
-        """Register a subscriber and return its queue plus any replay events.
+    async def subscribe(self, since_id: int | None = None) -> Subscription:
+        """Register a subscriber and return its queue, replay and watermark.
 
-        ``since_id`` is the highest ``_id`` the caller already received;
-        events with id > since_id from the recent buffer are returned for
-        replay. Pass ``None`` on first connect to skip replay.
+        ``since_id`` is the highest ``_id`` the caller already received; events
+        newer than that are returned for replay. Pass ``None`` on first connect
+        to skip replay.
+
+        If the ring has already evicted past ``since_id`` the replay cannot
+        start where the client stopped, so it is prefixed with a gap report.
+        Without it the client appends a tail onto a transcript with a hole and
+        nothing ever triggers a refetch — ``ChatPane`` falls back to
+        ``loadMessages`` only when the replay is *empty*.
         """
         # One slot beyond the advertised cap, reserved for the out-of-band
         # `stream.gap` marker — it has to fit into a queue that is, by
@@ -122,15 +154,28 @@ class EventBus:
         # gap it is reporting.
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_MAX + 1)
         async with self._subs_lock:
-            if since_id is None:
-                replay: list[dict[str, Any]] = []
-            else:
+            watermark = self._next_id
+            replay: list[dict[str, Any]] = []
+            if since_id is not None:
                 replay = [ev for ev in self._recent if ev["_id"] > since_id]
-            # After replay this viewer is whole up to whatever has been stamped
-            # so far. Events from before it subscribed were never dropped *on
-            # it* and must not show up in a gap report.
-            self._subscribers.append(_Subscriber(queue=q, last_delivered_id=self._next_id))
-        return q, replay
+                oldest = self._recent[0]["_id"] if self._recent else None
+                if oldest is not None and oldest > since_id + 1:
+                    replay.insert(
+                        0,
+                        _gap_event(dropped=oldest - since_id - 1, resume_from=since_id),
+                    )
+                    logger.warning(
+                        "session %s: replay from %d starts at %d; the ring had "
+                        "already evicted the gap",
+                        self.session_id,
+                        since_id,
+                        oldest,
+                    )
+            # After replay this viewer is whole up to the watermark. Events from
+            # before it subscribed were never dropped *on it* and must not show
+            # up in a gap report.
+            self._subscribers.append(_Subscriber(queue=q, last_delivered_id=watermark))
+        return Subscription(queue=q, replay=replay, watermark=watermark)
 
     async def unsubscribe(self, q: asyncio.Queue[dict[str, Any]]) -> None:
         async with self._subs_lock:
@@ -181,79 +226,97 @@ class EventBus:
             # A delivery closes the current run of drops: any later drop gets
             # its own report, positioned after this event rather than folded
             # into a marker the viewer has already gone past.
-            sub.dropped = 0
             sub.gap = None
+            # Anything still owed (a report that found no room earlier) goes
+            # out now that there is some. The count is never written off.
+            if sub.pending_drops:
+                self._report_gap(sub)
             return
         if terminal:
             self._deliver_terminal(sub, wrapped)
             return
-        sub.dropped += 1
+        sub.pending_drops += 1
         self._report_gap(sub)
 
     def _deliver_terminal(self, sub: _Subscriber, wrapped: dict[str, Any]) -> None:
-        """Enqueue a terminal event into a queue that is already at its cap.
+        """Enqueue a terminal event into a queue that is already at its cap,
+        taking any owed gap report out with it.
 
-        The reserved slot usually absorbs it. When even that is taken (a gap
-        marker is sitting there) the *oldest* queued event gives way: an
-        intermediate delta the viewer will refetch anyway is a far smaller loss
-        than a working indicator that never clears.
+        A terminal event may be the last thing this subscriber ever receives, so
+        a report still owed afterwards is a report that is never delivered. That
+        was the hole: a queued-but-untracked marker displaced here vanished along
+        with the drops it described, ``assistant.done`` then cleared the working
+        indicator, and the viewer was left looking at a transcript with an
+        unannounced gap in it and no reason to refetch.
+
+        Room is made for the event first and the report second, at most one
+        displacement each: a second victim can only add to the count the one
+        report already carries.
         """
-        try:
-            sub.queue.put_nowait(wrapped)
-        except asyncio.QueueFull:
-            try:
-                displaced: dict[str, Any] | None = sub.queue.get_nowait()
-            except asyncio.QueueEmpty:  # pragma: no cover - full, then empty
-                displaced = None
-            # The terminal event takes the slot we just freed *first*: a gap
-            # report squeezing in ahead of it would fill that slot and cost
-            # this subscriber the very event that cannot be dropped.
-            sub.queue.put_nowait(wrapped)
-            if displaced is not None:
-                if displaced is sub.gap:
-                    # We discarded this subscriber's own report; the next drop
-                    # queues a fresh one.
-                    sub.gap = None
-                elif displaced.get("type") != "stream.gap":
-                    # A real event just went missing. Fold it into the report
-                    # so the total still accounts for everything the viewer
-                    # lacks, even though the marker sits after it.
-                    sub.dropped += 1
-                    self._report_gap(sub)
+        q = sub.queue
+        if q.full():
+            self._displace_oldest(sub)
+        if sub.pending_drops and sub.gap is None and q.maxsize and q.maxsize - q.qsize() < 2:
+            # Something is owed and no queued marker can carry it, so the report
+            # needs a slot of its own beside the terminal event's.
+            self._displace_oldest(sub)
+        # `reserve=1` keeps the terminal event's slot inviolate: a report that
+        # squeezed into it would cost this subscriber the one event that must
+        # never be dropped.
+        self._report_gap(sub, reserve=1)
+        q.put_nowait(wrapped)
         sub.last_delivered_id = wrapped["_id"]
 
-    def _report_gap(self, sub: _Subscriber) -> None:
-        """Ensure this subscriber is carrying a gap report for the run of drops
-        in progress, with the run's current total.
+    def _displace_oldest(self, sub: _Subscriber) -> None:
+        """Drop the head of a full queue to make room, accounting for what was
+        lost. A displaced marker carries a total of its own — adding it to the
+        owed count is what keeps that total alive; over-reporting is harmless
+        (the client's response is a full ``/messages`` refetch either way),
+        losing it is not."""
+        try:
+            displaced = sub.queue.get_nowait()
+        except asyncio.QueueEmpty:  # pragma: no cover - full, then empty
+            return
+        if displaced.get("type") == _GAP:
+            if displaced is sub.gap:
+                sub.gap = None
+            sub.pending_drops += int((displaced.get("data") or {}).get("dropped") or 0)
+        else:
+            sub.pending_drops += 1
+
+    def _report_gap(self, sub: _Subscriber, *, reserve: int = 0) -> None:
+        """Hand this subscriber's owed drops to a queued gap report.
 
         One report per contiguous run: the first drop queues it, later drops in
-        the same run update it in place. ``resume_from`` is the last id the
+        the same run fold into it in place. ``resume_from`` is the last id the
         viewer definitely holds, so a client knows where its picture stopped
-        being complete.
+        being complete. ``pending_drops`` is cleared only here, and only once
+        the count is actually carried by something queued.
+
+        ``reserve`` is how many free slots must remain untouched — the caller
+        uses it to protect a slot it is about to need for an event of its own.
         """
-        if sub.gap is not None:
-            sub.gap["data"]["dropped"] = sub.dropped
+        if sub.pending_drops == 0:
             return
-        gap: dict[str, Any] = {
-            "type": "stream.gap",
-            # Deliberately unstamped: a gap is synthesized per subscriber and
-            # is not in the replay ring, so it must not burn an `_id` that a
-            # `?since=` replay would then be unable to account for.
-            "data": {"dropped": sub.dropped, "resume_from": sub.last_delivered_id},
-        }
-        try:
-            sub.queue.put_nowait(gap)
-        except asyncio.QueueFull:
-            # Even the reserved slot is taken (a terminal event displaced the
-            # previous marker). The count keeps accumulating and goes out with
-            # the next report that fits.
+        if sub.gap is not None:
+            # Folding into a queued marker needs no slot at all.
+            sub.gap["data"]["dropped"] += sub.pending_drops
+            sub.pending_drops = 0
+            return
+        q = sub.queue
+        if q.maxsize and q.maxsize - q.qsize() <= reserve:
+            # No room we are allowed to take. The count stays owed — the next
+            # delivery or terminal event carries it out.
             logger.warning(
                 "session %s: %d dropped events not yet reportable (queue full)",
                 self.session_id,
-                sub.dropped,
+                sub.pending_drops,
             )
             return
+        gap = _gap_event(dropped=sub.pending_drops, resume_from=sub.last_delivered_id)
+        q.put_nowait(gap)
         sub.gap = gap
+        sub.pending_drops = 0
         logger.warning(
             "session %s subscriber queue full; events after %d are being dropped",
             self.session_id,

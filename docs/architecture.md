@@ -263,12 +263,19 @@ by `save_plan()` in `dispatch.py`.
   The ring must stay **larger** than a subscriber queue: it has to be able
   to cover any gap a queue can open, or `?since=` cannot hand back what a
   viewer dropped. Asserted by `backend/tests/test_event_integrity.py`.
-- Public API: `subscribe(since_id)` → `(queue, replay_list)`,
-  `unsubscribe(queue)`, `submit_approval(msg)`, `start_turn(...)` (rejects
+- Public API: `subscribe(since_id)` → `Subscription(queue, replay,
+  watermark)`, `unsubscribe(queue)`, `submit_approval(msg)`,
+  `pending_approval`, `start_turn(...)` (rejects
   a second turn while one is running, and any turn once the runner is
   retired), `retire()` / `is_retired`, `cancel_turn()` (bounded by
   `_CANCEL_GRACE_S`; returns the turn task when it had to be detached,
   propagates a `CancelledError` raised against its own caller).
+- `Subscription.watermark` is the highest `_id` stamped when the subscriber
+  was registered: the boundary between "the caller must hand this over
+  itself" and "the live queue will carry it". When the ring has already
+  evicted past `since_id`, the replay *starts* with a `stream.gap` — a replay
+  that silently begins mid-stream leaves the client appending a tail onto a
+  transcript with a hole, and `ChatPane` refetches only on an *empty* replay.
 - `_execute_turn`:
   - Persists the user message first so a failure later still leaves a
     visible prompt in history.
@@ -307,9 +314,13 @@ by `save_plan()` in `dispatch.py`.
 - `SessionRunner` passes `_note_event` as the bus observer to track the
   outstanding `pipeline.awaiting_approval` (`runner.pending_approval`),
   cleared on `pipeline.approval_received` or at turn end. The WS handler
-  re-emits that card to a newly-subscribed viewer (after replay, deduped
-  by approval id) so a reconnecting tab can answer a gate it never saw
-  instead of waiting out `APPROVAL_TIMEOUT_S`.
+  re-emits that card to a newly-subscribed viewer, after replay, so a
+  reconnecting tab can answer a gate it never saw instead of waiting out
+  `APPROVAL_TIMEOUT_S`. It re-emits only when the viewer cannot already be
+  getting the card, judged by the card's `_id`: at or below `since_id` means
+  the client rendered it before reconnecting, above the watermark means the
+  live queue carries it, and present in the replay means it is already on its
+  way. (Not by approval id — `dispatch` hardcodes that to `"approval.plan"`.)
 - Module-level `get_runner(session_id)` is lazy + lock-guarded, and
   returns `None` for a session whose directory is gone rather than
   resurrecting it; `drop_runner(session_id)` and `drop_all_runners()`
@@ -560,8 +571,9 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
     `WS_HEARTBEAT_INTERVAL_S = 30`.
   - Resolves the session metadata, subscribes a runner (with optional
     `?since=<id>` replay), forwards replay events synchronously,
-    re-emits `runner.pending_approval` when a gate is outstanding and the
-    replay didn't already carry it, then spawns two background tasks: `_ws_heartbeat(ws)` (server-initiated
+    re-emits `runner.pending_approval` when a gate is outstanding and no
+    other path is delivering the card (see `SessionRunner` above), then
+    spawns two background tasks: `_ws_heartbeat(ws)` (server-initiated
     `{"type":"ping"}` every 30s) and `_forward_events()` (drains the
     subscriber queue to the socket).
   - Main loop reads frames with a 30-minute idle timeout. Frame

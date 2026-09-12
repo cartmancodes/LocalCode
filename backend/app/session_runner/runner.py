@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..orchestrator.base import Provider
-from .bus import EventBus
+from .bus import EventBus, Subscription
 from .turn import execute_turn
 
 logger = logging.getLogger(__name__)
@@ -129,10 +129,8 @@ class SessionRunner:
             # whose gate never got an answer.
             self._pending_approval = None
 
-    async def subscribe(
-        self, since_id: int | None = None
-    ) -> tuple[asyncio.Queue[dict[str, Any]], list[dict[str, Any]]]:
-        """Register a subscriber; returns its queue plus any replay events."""
+    async def subscribe(self, since_id: int | None = None) -> Subscription:
+        """Register a subscriber; returns its queue, replay and watermark."""
         return await self._bus.subscribe(since_id)
 
     async def unsubscribe(self, q: asyncio.Queue[dict[str, Any]]) -> None:
