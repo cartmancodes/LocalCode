@@ -61,6 +61,46 @@ CREDENTIAL_STORE_MARKERS: tuple[str, ...] = (
 # `MY_VENDOR_API_KEY`) — anything that looks like a secret by its suffix.
 SECRET_KEY_PATTERN = re.compile(r"(API_KEY|OAUTH_TOKEN|SESSION_KEY|AUTH_TOKEN)$")
 
+# The literal pair `_scan_call` looks for on a subprocess/create_subprocess_*
+# call to catch a direct keychain read. Named (rather than inlined) so it can
+# get the same by-identity exemption as CREDENTIAL_STORE_MARKERS below —
+# these two strings are the rule's own data, not a credential read.
+_KEYCHAIN_LITERALS: tuple[str, str] = ("security", "find-generic-password")
+
+# Names of this module's own pattern tables. A module-level tuple/list
+# literal assigned to one of these names is the rule *definition*, not rule
+# *usage* — the same reasoning that makes a docstring exempt. Exemption is
+# applied by AST node identity (see `_pattern_table_constants`), not by
+# filename: a file merely named `invariants.py` elsewhere in the tree gets
+# no special treatment, and nothing else in *this* file — a real
+# `os.environ[...]` assignment added anywhere else here — is exempted either.
+_PATTERN_TABLE_NAMES = frozenset({"CREDENTIAL_STORE_MARKERS", "_KEYCHAIN_LITERALS"})
+
+
+def _pattern_table_constants(tree: ast.AST) -> set[int]:
+    """Return the ``id()`` of every string ``ast.Constant`` that is an
+    element of a `_PATTERN_TABLE_NAMES` assignment (a plain or annotated
+    module-level ``NAME: tuple[str, ...] = (...)`` / ``NAME = (...)``)."""
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target] if node.target is not None else []
+            value = node.value
+        else:
+            continue
+        if value is None or len(targets) != 1 or not isinstance(targets[0], ast.Name):
+            continue
+        if targets[0].id not in _PATTERN_TABLE_NAMES:
+            continue
+        if not isinstance(value, (ast.Tuple, ast.List)):
+            continue
+        for elt in value.elts:
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                ids.add(id(elt))
+    return ids
+
 
 def _docstring_constants(tree: ast.AST) -> set[int]:
     """Return the ``id()`` of every ``ast.Constant`` that is a docstring.
@@ -159,7 +199,7 @@ def _scan_call(node: ast.Call) -> list[tuple[int, str, str]]:
     )
     if is_subprocess_call:
         literals = {_string_constant(a) for a in node.args}
-        if "security" in literals and "find-generic-password" in literals:
+        if set(_KEYCHAIN_LITERALS) <= literals:
             detail = f"{name}(...) reads the macOS keychain directly"
             hits.append((node.lineno, "keychain", detail))
 
@@ -173,12 +213,12 @@ def scan_source(source: str, filename: str) -> list[Violation]:
     can't read is a failure, not a silent pass.
     """
     tree = ast.parse(source, filename=filename)
-    docstring_ids = _docstring_constants(tree)
+    exempt_ids = _docstring_constants(tree) | _pattern_table_constants(tree)
     violations: list[Violation] = []
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if id(node) in docstring_ids:
+            if id(node) in exempt_ids:
                 continue
             for marker in CREDENTIAL_STORE_MARKERS:
                 if marker in node.value:
@@ -203,25 +243,19 @@ def scan_source(source: str, filename: str) -> list[Violation]:
     return violations
 
 
-# This module's own definitions necessarily contain the forbidden substrings
-# as data: CREDENTIAL_STORE_MARKERS enumerates them, and `_scan_call` compares
-# call arguments against the literal pair "security" / "find-generic-password".
-# A substring is always "in" itself, so scanning this file would flag its own
-# pattern table. It is excluded from `scan_tree` by name for that reason —
-# it never touches `os.environ` or spawns a subprocess, so the exclusion
-# doesn't open a gap anywhere the invariant actually matters.
-_GATE_MODULE_NAME = "invariants.py"
-
-
 def scan_tree(root: Path, *, skip_dirs: Iterable[str] = ("tests",)) -> list[Violation]:
     """Scan every ``*.py`` file under ``root``, skipping directories named in
-    ``skip_dirs`` (and always ``__pycache__``) at any depth below ``root``,
-    and this gate's own defining module (see ``_GATE_MODULE_NAME`` above)."""
+    ``skip_dirs`` (and always ``__pycache__``) at any depth below ``root``.
+
+    No file is exempt by name, including this gate's own module: only the
+    specific pattern-table AST nodes are exempt (see
+    ``_pattern_table_constants``), so a real violation added anywhere in
+    ``invariants.py`` itself — or in a decoy file that merely shares its
+    name — is still reported.
+    """
     skip = set(skip_dirs) | {"__pycache__"}
     violations: list[Violation] = []
     for path in sorted(root.rglob("*.py")):
-        if path.name == _GATE_MODULE_NAME:
-            continue
         if skip & set(path.relative_to(root).parts[:-1]):
             continue
         violations.extend(scan_source(path.read_text(encoding="utf-8"), str(path)))

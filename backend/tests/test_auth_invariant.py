@@ -116,15 +116,44 @@ def test_gate_passes_against_the_real_app_tree(app_root: Path) -> None:
     assert violations == [], format_violations(violations)
 
 
-def test_scan_tree_excludes_its_own_gate_module(app_root: Path) -> None:
-    # invariants.py necessarily lists every forbidden substring as data (that
-    # IS the marker table); scanning it would flag its own definitions. It's
-    # excluded from the walk by name, not silently dropped by accident.
-    scanned = {str(v.filename) for v in scan_tree(app_root)}
-    assert not any(name.endswith("invariants.py") for name in scanned)
-    # And scan_source on it directly, unfiltered, does self-flag — proving
-    # the exclusion in scan_tree is doing real work, not a no-op.
-    source = (app_root / "invariants.py").read_text(encoding="utf-8")
-    assert any(
-        v.rule == "credential-store" for v in scan_source(source, "invariants.py")
+def test_decoy_invariants_module_is_not_exempt(tmp_path: Path) -> None:
+    """A file merely *named* invariants.py elsewhere in the tree must not get
+    a free pass. Only specific AST nodes (the pattern-table literals) are
+    exempt — never a whole file by filename, which would be a trivial
+    escape hatch for a real leak (just name your file invariants.py)."""
+    decoy_dir = tmp_path / "sub"
+    decoy_dir.mkdir()
+    decoy = decoy_dir / "invariants.py"
+    decoy.write_text(
+        'import os\n\nos.environ["ANTHROPIC_API_KEY"] = "leaked"\n',
+        encoding="utf-8",
     )
+    violations = scan_tree(tmp_path)
+    assert any(v.rule == "key-assignment" for v in violations)
+
+
+def test_pattern_table_exemption_is_node_scoped_not_file_scoped() -> None:
+    """Exempting CREDENTIAL_STORE_MARKERS's own literal elements must not
+    exempt the rest of the module those literals live in. A real credential
+    leak added anywhere else in the same file — even reusing the exact same
+    string value — is still caught, proving the exemption is scoped to
+    specific AST node identities, not to a filename or a string value."""
+    source = (
+        "from __future__ import annotations\n\n"
+        "import os\n\n"
+        "CREDENTIAL_STORE_MARKERS: tuple[str, ...] = (\n"
+        '    "auth.json",\n'
+        '    "ANTHROPIC_API_KEY",\n'
+        ")\n\n"
+        "def leak(token: str) -> None:\n"
+        '    os.environ["ANTHROPIC_API_KEY"] = token\n'
+    )
+    violations = scan_source(source, "invariants.py")
+
+    # The pattern table's own elements (lines 6-7) are exempt.
+    assert not any(v.line in (6, 7) for v in violations)
+
+    # The identical string, used for a real assignment elsewhere in the same
+    # file (line 11), is still caught on both rules.
+    assert any(v.rule == "credential-store" and v.line == 11 for v in violations)
+    assert any(v.rule == "key-assignment" and v.line == 11 for v in violations)
