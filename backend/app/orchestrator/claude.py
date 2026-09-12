@@ -12,11 +12,19 @@ and there was no process left alive to ``interrupt()``. A ``ClaudeSDKClient``
 is connected once per LocalCode session and reused, keyed on
 ``ctx.session_id``.
 
-What keeps that reuse honest is ``_signature``: a client is rebuilt — not
-mutated — when the model, cwd, extra dirs, system prompt, permission mode or
-tool set change. Mutating a live client's prompt prefix or tool list is what
-*invalidates* the cache this whole design exists to keep, so there is no
-setter call anywhere in here.
+Two rules keep that reuse honest.
+
+``_signature``: a client is rebuilt — not mutated — when the model, cwd, extra
+dirs, system prompt, permission mode or tool set change. Mutating a live
+client's prompt prefix or tool list is what *invalidates* the cache this whole
+design exists to keep, so there is no setter call anywhere in here.
+
+**Only a turn that reached its ``ResultMessage`` leaves a reusable client.**
+Every turn's messages arrive on one per-connection stream and
+``receive_response()`` stops at the result, so a turn that ended early (Stop, a
+closed socket, a failed stream) leaves an unread tail that would be delivered
+to the *next* turn — see :meth:`ClaudeProvider._discard`. Anything else and the
+client is dropped and the next turn connects a fresh one.
 
 ``run()`` is a two-producer merge rather than a straight ``async for`` over
 the message stream, and that is not structural taste: the permission callback
@@ -113,6 +121,38 @@ class _ClientHandle:
     lock: asyncio.Lock
     binding: _TurnBinding
     last_used: float = field(default=0.0)
+    # Several paths can reach the same handle (a cancelled turn discards it
+    # while a session delete closes it). Disconnecting twice is harmless but
+    # noisy; this makes teardown idempotent per handle.
+    closed: bool = field(default=False)
+
+
+@dataclass
+class _Builder:
+    """Serialises *building* one key's client, outside the dict lock.
+
+    ``connect()`` spawns the `claude` CLI: ~a second when healthy, unbounded
+    when not. Holding the provider-wide ``_clients_lock`` across it would queue
+    every other session's first turn, plus ``close_session`` (a ``DELETE``) and
+    ``aclose`` (shutdown) behind one spawn — and ``session_runner/registry.py``
+    promises the opposite ("cancel_turn is bounded, so DELETE cannot hang").
+    So the dict lock is only ever held for dict mutation, and this per-key lock
+    is what stops two turns on one key from each building a client and leaking
+    the loser's CLI.
+
+    ``waiting`` is a refcount rather than ``lock.locked()``: a waiter that has
+    been woken but not yet resumed leaves ``locked()`` False, and dropping the
+    builder then would let a third caller build concurrently.
+    """
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    waiting: int = 0
+
+
+def _frozen(value: Any) -> Any:
+    """Make an options list hashable/comparable for the signature, preserving
+    the difference between absent (``None``) and empty (``()``)."""
+    return tuple(value) if isinstance(value, list) else value
 
 
 def _signature(
@@ -128,8 +168,12 @@ def _signature(
     on the first turn and set from then on, so including it would rebuild the
     client on turn 2 and throw away the very cache reuse is for. Neither are
     the sink and the approval channel — see :class:`_TurnBinding`.
+
+    ``setting_sources`` and ``skills`` ARE here even though nothing varies them
+    independently of ``allowed_tools`` today: once a role can (Task 9), a
+    reused client would keep serving the previous role's settings sources and
+    skills, which is a permissions difference the user cannot see.
     """
-    allowed = option_extras.get("allowed_tools")
     return (
         ctx.model,
         ctx.cwd,
@@ -138,8 +182,10 @@ def _signature(
         mode,
         # None ("no restriction") and () ("no tools at all") are different
         # clients, so the absent case cannot collapse to an empty tuple.
-        tuple(allowed) if allowed is not None else None,
+        _frozen(option_extras.get("allowed_tools")),
         tuple(disallowed_tools),
+        _frozen(option_extras.get("setting_sources")),
+        _frozen(option_extras.get("skills")),
     )
 
 
@@ -186,10 +232,13 @@ class ClaudeProvider:
         # One live client per LocalCode session id (plus short-lived anonymous
         # keys for headless/unit runs, closed at the end of their run).
         self._clients: dict[str, _ClientHandle] = {}
+        # Guards the dict and nothing else: never held across connect() or
+        # disconnect(). See _Builder for why that matters.
         # Created eagerly: asyncio.Lock binds to an event loop on first *use*,
         # not on construction, so building the provider outside a loop (the
         # orchestrator registry's warm_up) is safe.
         self._clients_lock: asyncio.Lock = asyncio.Lock()
+        self._builders: dict[str, _Builder] = {}
         self._factory: Any = _client_factory
 
     async def open_session(self, ctx: RunContext) -> str:
@@ -208,25 +257,68 @@ class ClaudeProvider:
         async with self._clients_lock:
             handle = self._clients.pop(session_id, None)
         if handle is not None:
-            await _disconnect(handle.client)
+            await self._close_handle(handle)
 
     async def aclose(self) -> None:
         async with self._clients_lock:
             handles = list(self._clients.values())
             self._clients.clear()
         for handle in handles:
-            await _disconnect(handle.client)
+            await self._close_handle(handle)
+
+    async def _close_handle(self, handle: _ClientHandle) -> None:
+        """Disconnect a handle's client once, whichever path got here first.
+
+        Always called with ``_clients_lock`` released: the disconnect talks to a
+        subprocess, and a delete or a shutdown must not queue behind it.
+        """
+        if handle.closed:
+            return
+        handle.closed = True
+        await _disconnect(handle.client)
 
     async def _discard(self, key: str, handle: _ClientHandle) -> None:
-        """Forget a client whose stream failed, so the next turn rebuilds.
+        """Forget a client that cannot safely serve another turn.
 
-        Reusing a wedged client would turn one broken turn into every
-        subsequent turn on that session failing the same way.
+        Two cases, and the second is the subtle one:
+
+          * its stream failed, and reusing a wedged client would turn one
+            broken turn into every later turn on that session failing the same
+            way;
+          * **the turn ended before its ``ResultMessage``** — an interrupt, a
+            closed WebSocket, a consumer that walked away. Every message of
+            every turn arrives on one per-connection stream, and
+            ``receive_response()`` stops at the result, so whatever this turn
+            left unread (trailing text deltas, and the result the CLI may still
+            emit for an interrupted turn) would be handed to the *next* turn:
+            the next answer prefixed with the previous turn's text, or
+            terminated by the previous turn's result so its ``assistant.done``
+            reports the wrong outcome and the real answer slides into the turn
+            after. Draining to the result would be the optimisation; dropping
+            the client is the correctness.
         """
         async with self._clients_lock:
             if self._clients.get(key) is handle:
                 del self._clients[key]
-        await _disconnect(handle.client)
+        await self._close_handle(handle)
+
+    async def _acquire_builder(self, key: str) -> _Builder:
+        async with self._clients_lock:
+            builder = self._builders.get(key)
+            if builder is None:
+                builder = _Builder()
+                self._builders[key] = builder
+            builder.waiting += 1
+            return builder
+
+    async def _release_builder(self, key: str, builder: _Builder) -> None:
+        async with self._clients_lock:
+            builder.waiting -= 1
+            # Dropped as soon as nobody else wants it: anonymous keys are
+            # unique per run, so a builder left behind per key would be a slow
+            # leak in the fleet's worker processes.
+            if builder.waiting <= 0 and self._builders.get(key) is builder:
+                del self._builders[key]
 
     async def _handle_for(
         self,
@@ -240,76 +332,125 @@ class ClaudeProvider:
         option_extras: dict[str, Any],
         disallowed_tools: list[str],
     ) -> _ClientHandle:
-        """Get-or-build the connected client for ``key``, then evict the excess."""
-        async with self._clients_lock:
-            handle = self._clients.get(key)
-            if handle is not None and handle.signature != signature:
-                # Prompt-prefix discipline: a changed model / cwd / add_dirs /
-                # system prompt / mode / tool set gets a brand-new client. The
-                # alternative — calling a setter on the live one — is exactly
-                # what silently invalidates the prompt cache and, for the tool
-                # set, would let a turn run under the previous turn's
-                # permissions.
-                del self._clients[key]
-                await _disconnect(handle.client)
-                handle = None
-            if handle is None:
-                binding = _TurnBinding(policy=policy, mode=mode, timeout_s=timeout_s)
-                options = ClaudeAgentOptions(
-                    model=ctx.model,
-                    cwd=ctx.cwd,
-                    # Extra paths the spawned `claude` CLI may read/write. The
-                    # SDK restricts tools to `cwd` by default; this opens up
-                    # sibling repos.
-                    add_dirs=list(ctx.additional_dirs or []),
-                    system_prompt=ctx.system_prompt,
-                    permission_mode=mode,
-                    can_use_tool=_rebindable_can_use_tool(binding),
-                    # Build-time only, and that is the whole point of holding
-                    # the client: resume replays a transcript into a *new* CLI.
-                    # The second turn of a live client needs nothing here — the
-                    # conversation is already in the process we are talking to.
-                    resume=ctx.upstream_session_id,
-                    disallowed_tools=disallowed_tools,
-                    include_partial_messages=True,  # token-level deltas for the UI
-                    **option_extras,
-                )
-                client = self._factory(options=options)
-                await client.connect()
-                handle = _ClientHandle(
-                    client=client,
-                    signature=signature,
-                    lock=asyncio.Lock(),
-                    binding=binding,
-                    last_used=time.monotonic(),
-                )
-                self._clients[key] = handle
-            handle.last_used = time.monotonic()
-            await self._evict_locked(keep=key)
-            return handle
+        """Get-or-build the connected client for ``key``, then evict the excess.
 
-    async def _evict_locked(self, *, keep: str) -> None:
-        """Close the least recently used clients above the cap.
+        ``_clients_lock`` is taken in short bursts around the dict only. The
+        slow parts — ``connect()``, ``disconnect()`` — happen outside it, under
+        this key's :class:`_Builder` instead.
+        """
+        builder = await self._acquire_builder(key)
+        try:
+            async with builder.lock:
+                async with self._clients_lock:
+                    handle = self._clients.get(key)
+                    stale = handle is not None and handle.signature != signature
+                    if stale:
+                        # Prompt-prefix discipline: a changed model / cwd /
+                        # add_dirs / system prompt / mode / tool set gets a
+                        # brand-new client. The alternative — calling a setter
+                        # on the live one — is exactly what silently
+                        # invalidates the prompt cache and, for the tool set,
+                        # would let a turn run under the previous turn's
+                        # permissions.
+                        del self._clients[key]
+                if stale and handle is not None:
+                    await self._close_handle(handle)
+                    handle = None
 
-        Caller holds ``self._clients_lock``. A handle whose own lock is held is
-        skipped: that client is streaming a turn right now, and disconnecting
-        it would kill that turn mid-sentence. The cap is therefore a target,
-        not a hard ceiling — overshooting by the number of concurrent turns is
-        the correct failure.
+                if handle is None:
+                    handle = await self._build(
+                        ctx=ctx,
+                        signature=signature,
+                        policy=policy,
+                        mode=mode,
+                        timeout_s=timeout_s,
+                        option_extras=option_extras,
+                        disallowed_tools=disallowed_tools,
+                    )
+                    async with self._clients_lock:
+                        self._clients[key] = handle
+
+                async with self._clients_lock:
+                    handle.last_used = time.monotonic()
+                    evicted = [
+                        self._clients.pop(victim)
+                        for victim in self._evictions_locked(keep=key)
+                    ]
+                # Popped under the dict lock, disconnected outside it — the
+                # disconnect is subprocess I/O and nothing else may queue on it.
+                for victim_handle in evicted:
+                    logger.debug("evicting a claude client (LRU)")
+                    await self._close_handle(victim_handle)
+                return handle
+        finally:
+            await self._release_builder(key, builder)
+
+    async def _build(
+        self,
+        *,
+        ctx: RunContext,
+        signature: tuple[Any, ...],
+        policy: ToolPolicy,
+        mode: str,
+        timeout_s: float,
+        option_extras: dict[str, Any],
+        disallowed_tools: list[str],
+    ) -> _ClientHandle:
+        binding = _TurnBinding(policy=policy, mode=mode, timeout_s=timeout_s)
+        options = ClaudeAgentOptions(
+            model=ctx.model,
+            cwd=ctx.cwd,
+            # Extra paths the spawned `claude` CLI may read/write. The SDK
+            # restricts tools to `cwd` by default; this opens up sibling repos.
+            add_dirs=list(ctx.additional_dirs or []),
+            system_prompt=ctx.system_prompt,
+            permission_mode=mode,
+            can_use_tool=_rebindable_can_use_tool(binding),
+            # Build-time only, and that is the whole point of holding the
+            # client: resume replays a transcript into a *new* CLI. The second
+            # turn of a live client needs nothing here — the conversation is
+            # already in the process we are talking to.
+            resume=ctx.upstream_session_id,
+            disallowed_tools=disallowed_tools,
+            include_partial_messages=True,  # token-level deltas for the UI
+            **option_extras,
+        )
+        client = self._factory(options=options)
+        try:
+            await client.connect()
+        except BaseException:
+            # connect() may have spawned the CLI before failing (or been
+            # cancelled mid-spawn). Nothing else holds this client, so without
+            # this the process is orphaned — the leak class Task 14 fought.
+            await _disconnect(client)
+            raise
+        return _ClientHandle(
+            client=client,
+            signature=signature,
+            lock=asyncio.Lock(),
+            binding=binding,
+            last_used=time.monotonic(),
+        )
+
+    def _evictions_locked(self, *, keep: str) -> list[str]:
+        """Which keys are over the cap, least recently used first.
+
+        Caller holds ``self._clients_lock``; this only reads the dict, so the
+        disconnects happen after the caller has let the lock go. A handle whose
+        own lock is held is skipped: that client is streaming a turn right now,
+        and disconnecting it would kill that turn mid-sentence. The cap is
+        therefore a target, not a hard ceiling — overshooting by the number of
+        concurrent turns is the correct failure.
         """
         cap = max(1, get_settings().claude_max_live_clients)
-        if len(self._clients) <= cap:
-            return
-        victims = sorted(
+        over = len(self._clients) - cap
+        if over <= 0:
+            return []
+        candidates = sorted(
             (k for k, h in self._clients.items() if k != keep and not h.lock.locked()),
             key=lambda k: self._clients[k].last_used,
         )
-        for victim in victims:
-            if len(self._clients) <= cap:
-                break
-            handle = self._clients.pop(victim)
-            logger.debug("evicting the claude client for %s (LRU)", victim)
-            await _disconnect(handle.client)
+        return candidates[:over]
 
     async def run(self, ctx: RunContext) -> AsyncIterator[Event]:
         settings = get_settings()
@@ -395,21 +536,35 @@ class ClaudeProvider:
 
                 merged: asyncio.Queue[Event | object] = asyncio.Queue()
                 client = handle.client
+                # "The turn reached its ResultMessage", i.e. the client is back
+                # at a clean message boundary and is safe to reuse. Anything
+                # else and the finally below drops it — see _discard.
+                completed = False
 
                 async def _pump_messages() -> None:
                     """Drain one turn off the persistent client → translate →
                     merged queue."""
+                    nonlocal completed
                     try:
                         await client.query(ctx.prompt)
                         async for message in client.receive_response():
                             async for ev in _translate(message):
                                 await merged.put(ev)
+                        # receive_response() returns on the ResultMessage, so
+                        # getting here means nothing of this turn is left
+                        # unread on the connection.
+                        completed = True
                     except asyncio.CancelledError:
                         # THE interrupt the roadmap asks for: the CLI outlives
                         # the turn now, so a cancelled turn has to tell it to
                         # stop working. Without this it keeps burning tokens on
                         # a turn nobody is reading, and the next turn queues
                         # behind it.
+                        #
+                        # The client is NOT kept afterwards (`completed` stays
+                        # False, so the finally discards it): the interrupted
+                        # turn's unread tail would otherwise be delivered to the
+                        # next turn on this connection.
                         try:
                             await client.interrupt()
                         except BaseException:
@@ -470,6 +625,13 @@ class ClaudeProvider:
                             await t
                         except (asyncio.CancelledError, Exception):
                             pass
+                    if not completed:
+                        # The turn did not reach its ResultMessage (Stop, a
+                        # closed socket, a consumer that walked away, a failed
+                        # stream), so this client's connection is mid-turn and
+                        # must not serve another one. _discard explains what
+                        # reuse would do to the next turn.
+                        await self._discard(key, handle)
         finally:
             # Headless and unit runs get no session id, so nothing would ever
             # come back to close their client.

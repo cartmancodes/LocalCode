@@ -13,7 +13,12 @@ wrong:
     every approval from turn 2 on would silently time out into a denial. This
     is the failure ``_TurnBinding`` exists to prevent;
   * a cancelled turn ``interrupt()``s the CLI instead of leaving it working on
-    a turn nobody reads;
+    a turn nobody reads, **and then drops the client**: a turn that never
+    reached its ``ResultMessage`` leaves an unread tail on the connection, and
+    reusing it hands turn 1's leftovers to turn 2;
+  * nothing slow (a CLI spawn, a disconnect) happens under the provider-wide
+    dict lock, so one stalled connect cannot wedge every other session plus
+    ``DELETE`` and shutdown;
   * the client is released — on ``close_session``, on ``aclose``, by LRU
     eviction past the cap, and at the end of an anonymous (headless) run.
 
@@ -141,6 +146,26 @@ class TestReuse:
         assert len(factory.clients) == 2
         assert factory.clients[0].disconnected
 
+    async def test_changed_setting_sources_rebuild(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """``setting_sources`` / ``skills`` are part of the signature too.
+
+        ``claude_disable_settings`` varies them without touching
+        ``allowed_tools``, and a reused client would keep serving the previous
+        turn's settings sources — a permissions difference the user cannot see.
+        """
+        factory = FakeClientFactory()
+        provider = provider_with(factory)
+
+        await drain(provider, a_turn(tmp_path))
+        await drain(provider, a_turn(tmp_path, extras={"claude_disable_settings": True}))
+
+        assert len(factory.clients) == 2
+        assert factory.clients[0].disconnected
+        assert factory.clients[0].options.setting_sources is None
+        assert factory.clients[1].options.setting_sources == []
+
     async def test_different_sessions_get_different_clients(
         self, tmp_path: Path, fresh_settings
     ) -> None:
@@ -251,9 +276,70 @@ class TestCancellation:
         # The CLI outlives the turn now, so it has to be told to stop; without
         # this it keeps working (and billing) on a turn nobody is reading.
         assert "interrupt" in client.calls
-        # Interrupted, not thrown away: the session's next turn reuses it.
-        assert not client.disconnected
-        assert provider._clients.get("s1") is not None
+        # And then it goes: the turn never reached its ResultMessage, so its
+        # unread tail would be delivered to the next turn on this connection.
+        # See test_turn_ones_leftovers_never_reach_turn_two.
+        assert client.disconnected
+        assert provider._clients == {}
+
+    async def test_turn_ones_leftovers_never_reach_turn_two(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """The desync a kept-after-interrupt client causes.
+
+        Every turn's messages arrive on ONE per-connection stream and
+        ``receive_response()`` stops at the ``ResultMessage``. So an interrupted
+        turn's unread tail — trailing deltas, plus the result the CLI still
+        emits for it — is what the next ``receive_response()`` reads first:
+        turn 2 would render turn 1's text and then finish on turn 1's result,
+        reporting the wrong outcome while its real answer slid into turn 3.
+        """
+        released = asyncio.Event()
+        turn = 0
+
+        async def script(client: FakeClaudeClient) -> AsyncIterator[Any]:
+            nonlocal turn
+            turn += 1
+            if turn == 1:
+                yield text_message("turn-1 partial")
+                # Held until the test has cancelled turn 1, so the tail is
+                # written to the connection *after* the turn ended — exactly
+                # what a CLI that has not noticed the interrupt does.
+                await released.wait()
+                yield text_message("turn-1 leftover")
+                yield result_message("turn-1-result")
+            else:
+                yield text_message("turn-2 answer")
+                yield result_message("turn-2-result")
+
+        factory = FakeClientFactory(script)
+        provider = provider_with(factory)
+
+        agen = provider.run(a_turn(tmp_path)).__aiter__()
+        first = await asyncio.wait_for(agen.__anext__(), WAIT_S)
+        assert first.data["text"] == "turn-1 partial"
+
+        pulling = asyncio.create_task(agen.__anext__())
+        await asyncio.sleep(0)
+        pulling.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pulling
+
+        released.set()
+        for _ in range(10):  # let the turn-1 producer write its tail
+            await asyncio.sleep(0)
+
+        events = await asyncio.wait_for(drain(provider, a_turn(tmp_path)), WAIT_S)
+
+        texts = [ev.data["text"] for ev in events if ev.type == "assistant.text"]
+        assert texts == ["turn-2 answer"]
+        done = [ev for ev in events if ev.type == "assistant.done"]
+        assert len(done) == 1
+        assert done[0].data["upstream_session_id"] == "turn-2-result"
+        # Turn 2 is a fresh connection — that is the only way its stream can be
+        # clean.
+        assert len(factory.clients) == 2
+        assert factory.clients[0].disconnected
 
 
 class TestTheTurnLock:
@@ -308,8 +394,15 @@ class TestRelease:
     ) -> None:
         # The delete route calls this for every provider-owned session,
         # including ones that never ran a turn.
-        provider = provider_with(FakeClientFactory())
+        factory = FakeClientFactory()
+        provider = provider_with(factory)
+
         await provider.close_session("never-ran")
+
+        # Nothing invented and nothing touched: no handle registered for the
+        # unknown id, and no client built to close.
+        assert provider._clients == {}
+        assert factory.clients == []
 
     async def test_aclose_disconnects_everything(
         self, tmp_path: Path, fresh_settings
@@ -355,6 +448,57 @@ class TestRelease:
         assert factory.clients[0].disconnected
         assert not factory.clients[1].disconnected
         assert not factory.clients[2].disconnected
+
+
+class TestTheProviderLockIsNotHeldAcrossIo:
+    async def test_a_stalled_connect_does_not_block_another_sessions_teardown(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """``connect()`` spawns a CLI; ``disconnect()`` reaps one.
+
+        Holding the provider-wide dict lock across either would queue every
+        other session's turn — and ``DELETE /api/sessions/{id}`` and shutdown —
+        behind one spawn, which is exactly what ``session_runner/registry.py``
+        promises cannot happen.
+        """
+        factory = FakeClientFactory()
+        provider = provider_with(factory)
+        await drain(provider, a_turn(tmp_path, session_id="s1"))
+
+        # The next client parks inside connect() until the gate opens.
+        factory.connect_gate = asyncio.Event()
+        stalled = asyncio.create_task(drain(provider, a_turn(tmp_path, session_id="s2")))
+        for _ in range(100):
+            if len(factory.clients) == 2:
+                break
+            await asyncio.sleep(0)
+        assert len(factory.clients) == 2, "the second client never started connecting"
+
+        # The delete path for a DIFFERENT session must not wait on that spawn.
+        await asyncio.wait_for(provider.close_session("s1"), WAIT_S)
+        assert factory.clients[0].disconnected
+
+        factory.connect_gate.set()
+        await asyncio.wait_for(stalled, WAIT_S)
+        assert provider._clients.get("s2") is not None
+
+    async def test_a_failed_connect_disconnects_the_half_built_client(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        # connect() may have spawned the CLI before failing; nothing else holds
+        # the client, so skipping this orphans the process.
+        factory = FakeClientFactory(fail_connect="no such binary")
+        provider = provider_with(factory)
+
+        events = await drain(provider, a_turn(tmp_path))
+
+        assert [ev.type for ev in events] == ["error"]
+        assert "no such binary" in events[0].data["message"]
+        assert factory.clients[0].disconnected
+        assert provider._clients == {}
+        # And the per-key builder is released, so a retry is not wedged.
+        assert provider._builders == {}
+        assert [ev.type for ev in await drain(provider, a_turn(tmp_path))] == ["error"]
 
 
 class _RecordingProvider:

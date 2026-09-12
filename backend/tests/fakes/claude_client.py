@@ -8,6 +8,17 @@ through it: no `claude` CLI on PATH, no network, and every lifecycle call
 (``connect`` / ``query`` / ``receive_response`` / ``interrupt`` /
 ``disconnect``) recorded in order on the instance.
 
+**One buffer per connection, not per turn.** This is the detail an earlier
+version of this fake got wrong, and getting it wrong hid a real desync bug: the
+SDK creates a single message stream when the client connects
+(``_internal/query.py``) and ``receive_response()`` stops as soon as it yields a
+``ResultMessage`` (``client.py``). So anything a turn leaves unread — trailing
+deltas, or the result the CLI still emits for an interrupted turn — is what the
+*next* ``receive_response()`` on that client reads first. The fake reproduces
+that: ``connect()`` makes the buffer, ``query()`` starts a producer writing into
+it, and ``receive_response()`` multiplexes over it. A fake that handed each turn
+its own generator can never fail the way production does.
+
 A *behaviour* — an async generator taking the client — stands in for what the
 CLI does during a turn: yield scripted messages, invoke the permission callback
 mid-stream, raise, or hang so the caller can cancel it.
@@ -55,10 +66,25 @@ async def one_result(client: FakeClaudeClient) -> AsyncIterator[Any]:
     yield result_message()
 
 
-class FakeClaudeClient:
-    """Records its lifecycle calls and replays a scripted turn."""
+class _Failure:
+    """A producer's exception, carried down the connection buffer so
+    ``receive_response()`` raises it where the real client would."""
 
-    def __init__(self, options: Any = None, behaviour: Behaviour | None = None) -> None:
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+
+class FakeClaudeClient:
+    """Records its lifecycle calls and replays scripted turns."""
+
+    def __init__(
+        self,
+        options: Any = None,
+        behaviour: Behaviour | None = None,
+        *,
+        connect_gate: asyncio.Event | None = None,
+        fail_connect: str | None = None,
+    ) -> None:
         self.options = options
         self.behaviour: Behaviour = behaviour or one_result
         # Every call in order. Reuse tests assert on this, so "connect" must
@@ -66,27 +92,69 @@ class FakeClaudeClient:
         self.calls: list[str] = []
         self.prompts: list[str] = []
         self.connected = False
+        # Lets a test park a connect() mid-spawn and prove nothing else is
+        # queued behind it.
+        self._connect_gate = connect_gate
+        self._fail_connect = fail_connect
+        # The per-connection buffer. None until connect().
+        self._stream: asyncio.Queue[Any] | None = None
+        self._producers: list[asyncio.Task[None]] = []
 
     # ── the surface ClaudeProvider uses ──────────────────────────────────
     async def connect(self, prompt: Any = None) -> None:
         self.calls.append("connect")
+        if self._connect_gate is not None:
+            await self._connect_gate.wait()
+        if self._fail_connect is not None:
+            raise RuntimeError(self._fail_connect)
         self.connected = True
+        self._stream = asyncio.Queue()
 
     async def query(self, prompt: Any, session_id: str = "default") -> None:
         self.calls.append("query")
         self.prompts.append(prompt if isinstance(prompt, str) else repr(prompt))
+        assert self._stream is not None, "query() before connect()"
+        self._producers.append(asyncio.create_task(self._produce(self._stream)))
+
+    async def _produce(self, stream: asyncio.Queue[Any]) -> None:
+        """Write this turn's messages onto the connection buffer.
+
+        Deliberately outlives ``receive_response()``: a CLI that has not yet
+        noticed an interrupt keeps emitting, and where those messages land is
+        the whole point of this fake.
+        """
+        try:
+            async for message in self.behaviour(self):
+                await stream.put(message)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # noqa: BLE001 - carried to the consumer
+            await stream.put(_Failure(exc))
 
     async def receive_response(self) -> AsyncIterator[Any]:
         self.calls.append("receive_response")
-        async for message in self.behaviour(self):
-            yield message
+        assert self._stream is not None, "receive_response() before connect()"
+        stream = self._stream
+        while True:
+            item = await stream.get()
+            if isinstance(item, _Failure):
+                raise item.exc
+            yield item
+            if isinstance(item, ResultMessage):
+                return
 
     async def interrupt(self) -> None:
         self.calls.append("interrupt")
+        # Does NOT stop the producer, and that is faithful: the CLI may still
+        # emit trailing deltas and a ResultMessage for the interrupted turn.
 
     async def disconnect(self) -> None:
         self.calls.append("disconnect")
         self.connected = False
+        for task in self._producers:
+            task.cancel()
+        self._producers.clear()
+        self._stream = None
 
     # ── conveniences for assertions ──────────────────────────────────────
     @property
@@ -103,15 +171,30 @@ class FakeClientFactory:
 
     Keeps every client it built, in build order, so a test can prove a second
     turn reused the first client (``len(factory.clients) == 1``) or that a
-    changed signature built a second one.
+    changed signature built a second one. ``connect_gate`` / ``fail_connect``
+    are read at build time, so a test can make only the *next* client slow or
+    broken.
     """
 
-    def __init__(self, behaviour: Behaviour | None = None) -> None:
+    def __init__(
+        self,
+        behaviour: Behaviour | None = None,
+        *,
+        connect_gate: asyncio.Event | None = None,
+        fail_connect: str | None = None,
+    ) -> None:
         self.clients: list[FakeClaudeClient] = []
         self.behaviour = behaviour
+        self.connect_gate = connect_gate
+        self.fail_connect = fail_connect
 
     def __call__(self, options: Any = None, **_kwargs: Any) -> FakeClaudeClient:
-        client = FakeClaudeClient(options=options, behaviour=self.behaviour)
+        client = FakeClaudeClient(
+            options=options,
+            behaviour=self.behaviour,
+            connect_gate=self.connect_gate,
+            fail_connect=self.fail_connect,
+        )
         self.clients.append(client)
         return client
 
