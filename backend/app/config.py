@@ -67,10 +67,22 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     # Comma-separated absolute directory roots that are valid `cwd` values for a
-    # session. Empty = no allowlist (permissive — fine for local dev). When set,
-    # any session-creation request with a `cwd` not under one of these roots is
-    # rejected with HTTP 400. Mitigates path traversal via spawned subprocesses.
-    allowed_cwd_roots: str = ""
+    # session. Default-deny. A session whose cwd is outside every root is
+    # rejected with HTTP 400. "~" means "anywhere under the user's home" —
+    # broad enough for real work, narrow enough that "/" and "/etc" are
+    # refused. Mitigates path traversal via spawned subprocesses.
+    allowed_cwd_roots: str = "~"
+    # Always refused even when under an allowed root. These hold the very
+    # credentials the invariant exists to protect.
+    denied_cwd_paths: str = (
+        "~/.ssh,~/.aws,~/.gnupg,~/.config/gh,~/.claude,~/.codex,"
+        "~/.local/share/opencode,~/Library/Keychains"
+    )
+    # bypassPermissions disables every tool gate in the spawned CLI. Off
+    # unless the operator explicitly opts in. Env: ALLOW_BYPASS_PERMISSIONS.
+    allow_bypass_permissions: bool = False
+    # How long a tool-approval card waits for the user before it is denied.
+    tool_approval_timeout_s: float = 300.0
 
     # Bound on per-session lock map and per-message pagination caps.
     messages_page_default: int = 50
@@ -133,6 +145,13 @@ class Settings(BaseSettings):
         return [
             Path(p).expanduser().resolve()
             for p in self.allowed_cwd_roots.split(",")
+            if p.strip()
+        ]
+
+    def denied_path_list(self) -> list[Path]:
+        return [
+            Path(p).expanduser().resolve()
+            for p in self.denied_cwd_paths.split(",")
             if p.strip()
         ]
 
