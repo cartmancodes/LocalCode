@@ -74,6 +74,18 @@ class _Failure:
         self.exc = exc
 
 
+class _EndOfStream:
+    """The connection's EOF — the CLI exited.
+
+    The SDK's reader queues its ``{"type": "end"}`` sentinel from a ``finally``,
+    so a clean CLI exit ends ``receive_response()`` with neither a
+    ``ResultMessage`` nor an error. A fake that can only end a stream *with* a
+    result cannot express that, and it is the case in which treating "the loop
+    ended" as "the turn completed" marks a dead client reusable. Once seen, the
+    stream stays ended for every later call, as a closed transport does.
+    """
+
+
 class FakeClaudeClient:
     """Records its lifecycle calls and replays scripted turns."""
 
@@ -99,6 +111,7 @@ class FakeClaudeClient:
         # The per-connection buffer. None until connect().
         self._stream: asyncio.Queue[Any] | None = None
         self._producers: list[asyncio.Task[None]] = []
+        self._ended = False
 
     # ── the surface ClaudeProvider uses ──────────────────────────────────
     async def connect(self, prompt: Any = None) -> None:
@@ -123,22 +136,33 @@ class FakeClaudeClient:
         noticed an interrupt keeps emitting, and where those messages land is
         the whole point of this fake.
         """
+        saw_result = False
         try:
             async for message in self.behaviour(self):
+                saw_result = saw_result or isinstance(message, ResultMessage)
                 await stream.put(message)
         except asyncio.CancelledError:
             raise
         except BaseException as exc:  # noqa: BLE001 - carried to the consumer
             await stream.put(_Failure(exc))
+        else:
+            if not saw_result:
+                # The behaviour ran out without a result: the CLI exited.
+                await stream.put(_EndOfStream())
 
     async def receive_response(self) -> AsyncIterator[Any]:
         self.calls.append("receive_response")
         assert self._stream is not None, "receive_response() before connect()"
         stream = self._stream
         while True:
+            if self._ended:
+                return
             item = await stream.get()
             if isinstance(item, _Failure):
                 raise item.exc
+            if isinstance(item, _EndOfStream):
+                self._ended = True
+                return
             yield item
             if isinstance(item, ResultMessage):
                 return
@@ -209,6 +233,19 @@ def raising(message: str) -> Behaviour:
     async def behaviour(client: FakeClaudeClient) -> AsyncIterator[Any]:
         raise RuntimeError(message)
         yield  # pragma: no cover - makes this an async generator
+
+    return behaviour
+
+
+def ending_without_result(text: str = "partial") -> Behaviour:
+    """A turn the CLI exits out of: some output, then EOF, no result.
+
+    `claude` dying (OOM-killed, crashed, its transport closed) looks exactly
+    like this from the SDK side, and the client it leaves behind is unusable.
+    """
+
+    async def behaviour(client: FakeClaudeClient) -> AsyncIterator[Any]:
+        yield text_message(text)
 
     return behaviour
 

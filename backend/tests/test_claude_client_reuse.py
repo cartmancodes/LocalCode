@@ -41,6 +41,7 @@ from backend.app.orchestrator.base import Event, RunContext
 from backend.tests.fakes.claude_client import (
     FakeClaudeClient,
     FakeClientFactory,
+    ending_without_result,
     hanging,
     result_message,
     text_message,
@@ -370,6 +371,34 @@ class TestTheTurnLock:
         events = await asyncio.wait_for(drain(provider, a_turn(tmp_path)), WAIT_S)
 
         assert events and events[-1].type == "assistant.done"
+
+
+class TestAStreamThatEndsWithoutAResult:
+    async def test_a_cli_that_exits_mid_turn_leaves_no_reusable_client(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """EOF is not completion.
+
+        ``receive_response()`` returns both on the ``ResultMessage`` *and* at
+        stream EOF — the SDK's reader queues its `end` sentinel from a
+        ``finally``, so a `claude` that simply exits (crash, OOM kill, closed
+        transport) ends the loop with no result and no error. Reading that as
+        "the turn completed" would keep a client whose CLI is gone and hand it
+        to the next turn, which would then write to a closed transport.
+        """
+        factory = FakeClientFactory(ending_without_result("partial"))
+        provider = provider_with(factory)
+
+        events = await drain(provider, a_turn(tmp_path))
+
+        # What the provider saw: output, then the stream simply stopped.
+        assert [ev.type for ev in events] == ["assistant.text"]
+        assert provider._clients == {}
+        assert factory.clients[0].disconnected
+
+        # So the next turn connects a fresh CLI instead of talking to a corpse.
+        await drain(provider, a_turn(tmp_path))
+        assert len(factory.clients) == 2
 
 
 class TestRelease:

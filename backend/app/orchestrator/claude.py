@@ -19,12 +19,14 @@ dirs, system prompt, permission mode or tool set change. Mutating a live
 client's prompt prefix or tool list is what *invalidates* the cache this whole
 design exists to keep, so there is no setter call anywhere in here.
 
-**Only a turn that reached its ``ResultMessage`` leaves a reusable client.**
-Every turn's messages arrive on one per-connection stream and
-``receive_response()`` stops at the result, so a turn that ended early (Stop, a
-closed socket, a failed stream) leaves an unread tail that would be delivered
-to the *next* turn — see :meth:`ClaudeProvider._discard`. Anything else and the
-client is dropped and the next turn connects a fresh one.
+**Only a turn whose ``ResultMessage`` went past leaves a reusable client.**
+Every turn's messages arrive on one per-connection stream, so a turn that ended
+early (Stop, a closed socket, a failed stream) leaves an unread tail that would
+be delivered to the *next* turn — see :meth:`ClaudeProvider._discard`. And since
+``receive_response()`` returns at stream EOF as well as on the result, "the loop
+ended" is not the test; the result message itself is. Anything else and the
+client is dropped and the next turn connects a fresh one. The exact boundary of
+that guarantee is spelled out where the flag is declared in ``run()``.
 
 ``run()`` is a two-producer merge rather than a straight ``async for`` over
 the message stream, and that is not structural taste: the permission callback
@@ -536,9 +538,26 @@ class ClaudeProvider:
 
                 merged: asyncio.Queue[Event | object] = asyncio.Queue()
                 client = handle.client
-                # "The turn reached its ResultMessage", i.e. the client is back
+                # "This turn's ResultMessage went past", i.e. the client is back
                 # at a clean message boundary and is safe to reuse. Anything
                 # else and the finally below drops it — see _discard.
+                #
+                # It is set from the message itself, never from falling out of
+                # the loop: ``receive_response()`` also returns at stream EOF
+                # (the SDK's reader queues its `end` sentinel in a `finally`,
+                # so a clean CLI exit ends the loop with no result and no
+                # error). Treating that as completion would mark a client whose
+                # CLI is *gone* as reusable — the dangerous direction.
+                #
+                # The boundary of the guarantee: "saw the result" is still not
+                # "the connection is drained". The SDK can forward a post-turn
+                # ``system/session_state_changed`` frame after the result
+                # (harmless — ``_translate`` drops ``SystemMessage``), and for
+                # backgrounded agent work (the SDK's deferring task types) a
+                # result can arrive with tasks still in flight, so follow-up
+                # frames and a second result stay buffered for the next turn.
+                # Both are pre-existing SDK behaviour, out of this task's
+                # scope, and recorded for the failure-injection suite.
                 completed = False
 
                 async def _pump_messages() -> None:
@@ -548,12 +567,10 @@ class ClaudeProvider:
                     try:
                         await client.query(ctx.prompt)
                         async for message in client.receive_response():
+                            if isinstance(message, ResultMessage):
+                                completed = True
                             async for ev in _translate(message):
                                 await merged.put(ev)
-                        # receive_response() returns on the ResultMessage, so
-                        # getting here means nothing of this turn is left
-                        # unread on the connection.
-                        completed = True
                     except asyncio.CancelledError:
                         # THE interrupt the roadmap asks for: the CLI outlives
                         # the turn now, so a cancelled turn has to tell it to
