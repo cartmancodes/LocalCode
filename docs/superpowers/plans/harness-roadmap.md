@@ -6,6 +6,15 @@ two conflict, the roadmap wins.
 
 Branch: `worktree-harness-roadmap`. Base: `5bb1268`.
 
+**16 tasks. Execution order is 1, 13, 14, 15, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+12, 16** — not numeric order. Tasks 13–16 were added after an audit of
+long-running sessions found seven real defects the roadmap does not mention;
+the three reliability ones run immediately after the test harness because
+Tasks 3, 4 and 7 build directly on the files they repair. Task 16 runs last
+because it verifies everything before it. Task 7 additionally absorbs two audit
+defects in the worker protocol. The audit's findings and the reasoning are in
+the ledger at `.superpowers/sdd/harness-roadmap/progress.md`.
+
 ---
 
 ## Spec summary (the authority)
@@ -925,6 +934,44 @@ pooled worker removes the per-dispatch cost — the actual goal — without
 re-opening that failure. If you find evidence the deadlock cannot recur,
 record it in your report; do not act on it.
 
+### Two audit defects this task must also fix
+
+Both live exactly where this task already works, so they belong here rather
+than in a task of their own.
+
+- **D7.1 — the 64 KiB stdout line limit corrupts large results, and that
+  failure is not counted against the retry cap.** `fleet/provider.py:78-89`
+  passes no `limit=` to `create_subprocess_exec`, so a stdout line is capped at
+  64 KiB, while the worker emits the entire result on one line
+  (`subproc.py:61-63`). A plan larger than 64 KiB makes `readline()` raise
+  `ValueError`, which `provider.py:120` swallows into `payload = None`, which
+  becomes `RuntimeError("sub-provider worker exited without a result")`. In
+  `dispatch.py` that lands on the generic `except Exception` at lines 193-195,
+  which — unlike the `StepTimeoutError` branch — **does not increment
+  `hard_fail`**. So `DISPATCH_HARD_FAIL_CAP` never trips, the orchestrator
+  re-dispatches the planner, and the planner deterministically reproduces the
+  same oversize output. The loop is bounded only by `max_turns = 30` at up to
+  600 s each, holding the session lock for hours while producing nothing.
+  Fix both halves:
+  1. Frame the result so line length cannot break it. Pass a generous `limit=`
+     (at least 8 MiB) **and** make the payload length-prefixed rather than
+     newline-delimited for the result line: `@@RESULT@@ <id> <byte-length>\n`
+     followed by exactly that many bytes. A protocol whose correctness depends
+     on a payload staying under an undocumented reader limit is the defect;
+     raising the limit alone leaves it one large plan away from returning.
+  2. **Every** sub-agent failure class must count against the cap, not only
+     `StepTimeoutError`. Increment `hard_fail` on the generic exception path
+     too, and make the refusal message name the failure. A cap that bounds one
+     of five failure modes is not a cap.
+- **D7.2 — `_step_counters` grows one key per role forever**
+  (`dispatch.py:383`). `reset_step_counters()` already exists; call it at the
+  start of each turn.
+
+Write the regression test for D7.1 as part of this task: a worker result of
+512 KiB on one logical line must round-trip intact, and a deterministically
+failing sub-agent must be refused after the cap for a non-timeout failure.
+Task 16 re-asserts both against the real pool.
+
 ### Files
 
 - `backend/app/orchestrator/fleet/subproc.py` — request **loop**, not one-shot
@@ -1679,6 +1726,515 @@ the assertion.
 ```
 
 All clean. Report the final test count.
+
+---
+
+## Task 13 — Persistence cost: get blocking I/O off the loop and stop the quadratic writes
+
+**Reliability work, from the audit.** Not in the original roadmap; added after an
+audit of long-running sessions. Execution order puts this, Task 14 and Task 15
+immediately after Task 1, because Tasks 3, 4 and 7 build directly on the files
+they repair.
+
+### The defects this task fixes
+
+Each is evidenced; do not re-derive them, but do verify each one still holds
+before you change the code, and say so in your report if one does not.
+
+- **D13.1 — blocking I/O on the event loop.** `backend/app/storage/sessions.py`
+  declares every function `async def` and then does plain `open()`,
+  `json.load()`, `os.fsync()` and `shutil.rmtree()` inline, with no
+  `asyncio.to_thread` anywhere in the module. `append_message` flushes and
+  fsyncs at `sessions.py:386-390`. One event loop serves every session, so this
+  stalls all sessions, not just the writing one. **Measured at 0.04 ms average,
+  0.14 ms worst on this machine's SSD**, so it is a latent risk rather than a
+  live stall — fix it because it is wrong in kind and becomes a freeze on a
+  network filesystem, not because it hurts today. Do not inflate the claim.
+- **D13.2 — checkpoint writes are quadratic in bytes.** `TurnAccumulator.checkpoint`
+  calls `_snapshot()` (`accumulator.py:67-99`), which returns *every block
+  accumulated so far*, and `append_message` writes that whole growing snapshot
+  as a new JSONL line. A 200-tool-call turn ending at 5 MB writes roughly
+  500 MB across 200 fsynced appends. This is the real performance defect.
+- **D13.3 — `messages.jsonl` never shrinks for an active session.**
+  `_compact_messages` (`sessions.py:556-587`) is reachable only from
+  `cleanup_expired` (`sessions.py:469-528`), which runs at lifespan startup
+  behind a 24-hour sentinel and a retention window. A long-lived backend never
+  compacts a session that is in use.
+- **D13.4 — one page of messages costs a full-file scan.** `list_messages`
+  (`sessions.py:395-465`) reads every line and materializes a `latest` dict of
+  every unique message id ever seen, then sorts and slices. Hundreds of MB of
+  RAM and a multi-second loop stall on a large session.
+- **D13.5 — `GET /api/sessions` reads every session's `meta.json`.**
+  `list_sessions` (`sessions.py:278-300`) does one synchronous open+parse per
+  session inline on the loop.
+- **D13.6 — `load_fleet_config` parses YAML on the loop** on a cache miss
+  (`fleet/loader.py:92-109`). Low severity; the mtime cache is effective.
+
+### Files
+
+- `backend/app/storage/sessions.py`
+- `backend/app/session_runner/accumulator.py`
+- `backend/app/orchestrator/fleet/loader.py`
+- `backend/app/config.py` (checkpoint throttle settings)
+- `backend/tests/test_storage_cost.py` (new)
+- `backend/tests/test_storage_offload.py` (new)
+- `docs/storage.md` (it documents the current on-disk format — update it)
+
+### The design
+
+**The in-progress message moves out of the append-only log.** This one change
+removes D13.2, D13.3 and D13.4 together, which is why it is worth more than
+three separate patches.
+
+Today a turn appends a full snapshot of the in-progress assistant message to
+`messages.jsonl` on every tool boundary, and readers dedupe by id, keeping the
+last line per id. Instead:
+
+- The in-progress assistant message is written to
+  `<session_dir>/current.json` by atomic replace (`tmp` + `os.replace`). Each
+  checkpoint overwrites it. The file never grows beyond one message.
+- When the turn finalizes, the message is appended to `messages.jsonl` **once**,
+  and `current.json` is removed.
+- Readers: `list_messages` reads `messages.jsonl` plus `current.json` when it
+  exists, treating the latter as the newest message. Crash recovery is
+  preserved — a `current.json` left behind by a killed backend is still a
+  coherent message and is promoted into the log on the next read or on the next
+  append.
+- Because each message now appears in the log exactly once, **the dedupe is
+  gone**: `list_messages` can read the tail it needs instead of the whole file.
+  Implement a bounded reverse read (read the last N KiB, split on newlines,
+  parse the last `limit` entries, widen the window if it did not yield enough).
+  Keep the existing `before` / `limit` / `has_more` / `next_before` contract
+  byte-for-byte — the frontend pages on it.
+
+**fsync discipline.** Mid-turn checkpoints do not fsync; the final write of a
+message does. A checkpoint exists so a crash does not lose everything, not so a
+crash loses nothing, and the accumulator's own comment already identifies this
+path as the hot one.
+
+**Checkpoint throttle.** Add to `config.py`:
+
+```python
+    # A checkpoint exists so a crash does not lose the whole turn. One per tool
+    # boundary is more often than that needs, and on a tool-heavy turn the
+    # writes dominate. Throttle by both time and growth; a final checkpoint
+    # always writes regardless.
+    checkpoint_min_interval_s: float = 2.0
+    checkpoint_min_growth_bytes: int = 64 * 1024
+```
+
+`TurnAccumulator.checkpoint(session_id, final=False)` skips the write when
+neither threshold is met and `final` is false. `final=True` always writes and
+always fsyncs. Track the last write's timestamp and serialized size on the
+accumulator.
+
+**Thread offload.** Every filesystem operation in `sessions.py` moves behind
+`await asyncio.to_thread(...)`. Do this by extracting the synchronous body of
+each function into a private `_sync_*` helper and awaiting it — do not sprinkle
+`to_thread` over individual `open()` calls, which would multiply the hop count.
+Keep the existing per-session lock semantics; the lock is held across the
+offload, which is correct and is what serializes writers.
+`load_fleet_config`'s parse moves behind `to_thread` on the cache-miss path
+only; the cache-hit `stat()` stays inline (one syscall, measured negligible).
+
+**`GET /api/sessions` stops reading every `meta.json`.** The index already
+mirrors `updated_at`. Widen the index entry to carry the fields
+`SessionOut` needs — `title`, `provider`, `model`, `cwd`, `created_at`,
+`updated_at` — written on create and on update, and fall back to reading
+`meta.json` only for an index entry that predates the widening (so existing
+installs keep working). `meta.json` remains the source of truth on disk.
+
+### Tests
+
+`test_storage_cost.py` — these are the regression net for the defects:
+
+- a simulated turn of 200 checkpoints with a message growing to ~2 MB writes
+  **less than 3×** the final message size in total bytes to
+  `messages.jsonl` + `current.json`. Assert on real measured bytes (sum of file
+  sizes plus a wrapper that counts bytes written), not on call counts. This test
+  fails loudly on today's code — record that as your RED evidence.
+- `messages.jsonl` contains exactly one line per finalized message after 20
+  turns, and `current.json` does not exist once a turn has finalized.
+- a `current.json` left on disk (write one by hand, no finalize) is returned by
+  `list_messages` as the newest message, and is promoted into the log exactly
+  once on the next append.
+- the checkpoint throttle: 50 rapid checkpoints within the interval produce one
+  write; a `final=True` checkpoint always writes.
+- `list_messages` paging contract is unchanged: page size, ordering,
+  `next_before`, `has_more`, and the `before` filter all behave as before
+  (write the assertions against the current behaviour first, then refactor).
+- `list_messages` on a session with 500 messages does not read the whole file:
+  assert via a counting wrapper around the reader that bytes read are bounded,
+  not via timing.
+- `list_sessions` with 50 sessions performs **zero** `meta.json` reads when the
+  index is current, and still returns complete `SessionOut` data; an index
+  entry missing the new fields still resolves by falling back to `meta.json`.
+
+`test_storage_offload.py`:
+
+- every public coroutine in `sessions.py` that touches the filesystem does its
+  work in a thread. Test it behaviourally with an **event-loop stall detector**:
+  run the operation while a watchdog coroutine samples `loop.time()` every 5 ms,
+  with a patched filesystem call that sleeps 200 ms synchronously; assert the
+  watchdog's worst observed gap stays under 50 ms. A stall detector that would
+  pass on today's code is not a test — verify it fails before the fix.
+- put the detector in `backend/tests/fakes/stall_detector.py` as a reusable
+  async context manager; Task 16 uses it too.
+
+### Verification
+
+```
+.venv/bin/pytest backend/tests -q
+.venv/bin/ruff check backend
+.venv/bin/python -c "from backend.app.main import create_app; create_app()"
+```
+
+Plus: report the measured total-bytes-written figure before and after your
+change for the 200-checkpoint case. That number is the point of the task.
+
+---
+
+## Task 14 — Turn lifecycle: shutdown, orphans, and the turn that never ends
+
+**Reliability work, from the audit.** Four independent defects that all live in
+the turn's lifecycle.
+
+### The defects this task fixes
+
+- **D14.1 — shutdown leaks `claude` processes.** `main.py:44-45` awaits only
+  `shutdown_all()`. `drop_all_runners()`
+  (`session_runner/registry.py:40-46`) is wired solely to
+  `DELETE /api/sessions`. On SIGINT the detached turn task is never cancelled,
+  so `_run_step_with_role`'s `finally` (`fleet/provider.py:345-352`) never runs
+  and `handle.kill()` never fires. The child is spawned without
+  `start_new_session`, so it is re-parented and survives: an orphan
+  `python` + `claude` pair per in-flight step after every restart, consuming
+  the user's subscription with no UI attached.
+- **D14.2 — every fleet turn emits `assistant.done` twice, and the second wipes
+  the cost.** `orchestrator.py:391-399` yields it with `cost_usd` on
+  `ResultMessage`; `fleet/provider.py:193-196` then yields an unconditional
+  second one carrying only `duration_ms`. `turn.py` calls `acc.set_done` for
+  each, so the final checkpoint persists `cost_usd: null`. Fleet turns
+  therefore always show no cost in history.
+- **D14.3 — a prompt on a deleted session spins the UI forever.** In
+  `turn.py`, `append_message` at line 47 sits *outside* the `try` that begins at
+  line 77, and raises `FileNotFoundError` once the session directory is gone. No
+  `error` and no `assistant.done` is broadcast, so the working indicator never
+  clears; the exception surfaces only as "Task exception was never retrieved" at
+  GC. Reachable from both `DELETE /api/sessions/{id}` and the wipe-all route
+  while a tab is open.
+- **D14.4 — a detached turn can run beside a new turn for the same session.**
+  `registry.py:34-37` pops the runner *before* `cancel_turn`, which gives up
+  after `_CANCEL_GRACE_S = 5` and returns. A later WS connect calls
+  `get_runner` and builds a brand-new `SessionRunner` with a fresh lock and
+  bus, so two turns run for one session id. The audit confirmed this cannot
+  corrupt the session directory (`append_message` raises and
+  `accumulator.py:102-106` swallows it), so the damage is orphan processes and
+  events delivered to a dead bus.
+- **D14.5 — minors.** `cancel_turn` swallows `asyncio.CancelledError`
+  (`runner.py:126`), so a cancelled `DELETE` handler still proceeds to rmtree.
+  `dispatch.py:383`'s `_step_counters` grows one key per role forever.
+
+### Files
+
+- `backend/app/main.py`
+- `backend/app/session_runner/registry.py`
+- `backend/app/session_runner/runner.py`
+- `backend/app/session_runner/turn.py`
+- `backend/app/orchestrator/fleet/provider.py`
+- `backend/app/orchestrator/dispatch.py`
+- `backend/tests/test_lifecycle.py` (new)
+
+### The changes
+
+**D14.1.** In the lifespan shutdown path, `await drop_all_runners()` *before*
+`shutdown_all()`, so turns are cancelled while the loop is still running and
+each step's `finally` gets to kill its child. Then make the kill actually
+reach the whole tree: spawn the worker with `start_new_session=True` and, in
+`kill()`, `os.killpg(os.getpgid(pid), SIGKILL)` with a `ProcessLookupError`
+guard, falling back to `proc.kill()`. A `claude` CLI spawned by the worker is a
+grandchild — killing only the worker leaves it running, which is the actual
+leak. Note in a comment that this is why the process group matters.
+
+**D14.2.** `FleetProvider.run` must not emit a second terminal event. Track
+whether the orchestrator already yielded `assistant.done`; if it did, do not
+yield another — instead merge `duration_ms` into the one the orchestrator
+yields, by having `_run_orchestrated` pass the turn's start time down or by
+buffering the orchestrator's done event and re-emitting it once with
+`duration_ms` added. Prefer whichever keeps `run()` readable. If no done was
+seen (an error path), yield one, as today. Exactly one `assistant.done` per
+turn is the invariant; assert it in a test.
+
+**D14.3.** Move the user-message append inside the `try`, and make the
+`except`/`finally` path that already exists cover it, so a failure still
+broadcasts `error` and `assistant.done`. Guard the specific case too: if the
+session no longer exists, broadcast a clear `error` saying the session was
+deleted, then `assistant.done`, and return without raising.
+
+**D14.4.** Give each runner an epoch and retire it explicitly. `drop_runner`
+marks the runner retired *before* popping it; `SessionRunner` refuses to start a
+turn when retired; and `get_runner` does not resurrect a session whose
+directory no longer exists (raise or return None so the WS can report "session
+not found" as it already does for an unknown id). Keep the bounded
+`_CANCEL_GRACE_S` detach — it exists so `DELETE` cannot hang — but record the
+detached task so shutdown can make one final attempt, and log at WARNING with
+the session id when a turn is detached, because that log line is the only
+evidence an orphan may exist.
+
+**D14.5.** Re-raise `CancelledError` in `cancel_turn` after attempting the
+cancel. Bound `_step_counters` (reset it per turn, or key it on the turn and
+drop it at the end — `reset_step_counters` already exists; call it).
+
+### Tests
+
+`test_lifecycle.py`, each asserting on observable behaviour:
+
+- **exactly one `assistant.done`** per fleet turn: drive `FleetProvider.run`
+  with a stubbed orchestrator that yields a done carrying `cost_usd`, and assert
+  the event stream contains one done and that it carries both `cost_usd` and
+  `duration_ms`.
+- a turn whose session directory has been removed broadcasts an `error`
+  mentioning the deleted session **and** an `assistant.done`, and does not
+  raise out of the task. Assert against a recording bus.
+- `drop_all_runners` is called on lifespan shutdown: drive the app's lifespan
+  (FastAPI's `TestClient` or the lifespan context directly) with a registered
+  runner and assert its turn was cancelled.
+- the process group kill: spawn a fake worker script that itself spawns a
+  sleeping grandchild and prints both pids, call the kill path, then assert both
+  pids are gone (`os.kill(pid, 0)` raises `ProcessLookupError`). This is the
+  test that proves the orphan is actually reaped; without the grandchild it
+  proves nothing.
+- a retired runner refuses `start_turn`; `get_runner` does not resurrect a
+  deleted session.
+- `cancel_turn` propagates `CancelledError` to its caller.
+
+### Verification
+
+`.venv/bin/pytest backend/tests -q`, `.venv/bin/ruff check backend`, app
+imports. Additionally: state in your report how you verified no orphan process
+survives, with the command and its output.
+
+---
+
+## Task 15 — Event delivery integrity: never lose an event silently
+
+**Reliability work, from the audit.** Three audits independently reached the
+same conclusion from different angles, which is why this is its own task.
+
+### The defects this task fixes
+
+- **D15.1 — a slow subscriber loses events with no signal.** `bus.py:79-87`
+  does `put_nowait` and, on `QueueFull`, logs a warning and drops. The browser
+  is never told. A dropped `assistant.tool_use` leaves a card that never
+  appears; a dropped `assistant.done` leaves the working indicator spinning
+  until the user refetches.
+- **D15.2 — the replay ring is smaller than the subscriber queue**, so a drop
+  is unrecoverable. `SUBSCRIBER_QUEUE_MAX = 512` against
+  `REPLAY_BUFFER_SIZE = 256` (`session_runner/config.py:11,17`). By the time a
+  viewer has dropped one event, `?since=` can no longer cover the gap.
+- **D15.3 — a reconnecting tab can never answer a pending approval.** The
+  `pipeline.awaiting_approval` card exists only in the bus ring, and replay
+  happens only when `?since=` is supplied (`routes/sessions.py:205-210`). A
+  user who closes the only tab and reopens it fresh waits out
+  `APPROVAL_TIMEOUT_S` (300 s) and the turn aborts. Bounded, but a
+  five-minute dead end for no reason.
+- **D15.4 — the ring trim is O(buffer) per event** past the cap, because the
+  slice re-triggers on every append (`bus.py:73-76`). Measured at 0.48 µs per
+  event, so this is a shape fix, not a performance fix: use
+  `collections.deque(maxlen=...)`.
+
+### Files
+
+- `backend/app/session_runner/bus.py`
+- `backend/app/session_runner/config.py`
+- `backend/app/session_runner/runner.py` (track the outstanding approval)
+- `backend/app/routes/sessions.py` (re-emit it on connect)
+- `backend/app/orchestrator/base.py`, `backend/app/schemas.py`,
+  `frontend/src/types.ts` (the new `stream.gap` event)
+- `frontend/src/components/ChatPane.tsx` (react to a gap)
+- `backend/tests/test_event_integrity.py` (new)
+
+### The changes
+
+**Sizes.** `REPLAY_BUFFER_SIZE` becomes larger than `SUBSCRIBER_QUEUE_MAX`
+(2048 against 512), with a comment stating the invariant: *the ring must be
+able to cover any gap a subscriber queue can open, or `?since=` is a lie.*
+Assert the relationship in a test so a future edit cannot quietly invert it.
+
+**Terminal events are never dropped.** `assistant.done` and `error` bypass the
+queue cap — if `put_nowait` would raise, drop the *oldest* queued event instead
+and enqueue the terminal one. A UI that never clears its spinner is the worst
+failure mode in this system; losing an intermediate delta is not.
+
+**Gap signalling.** A new event type `stream.gap` with data
+`{"dropped": <n>, "resume_from": <last delivered _id>}`. When a subscriber's
+queue overflows, count the drops against that subscriber and enqueue one
+`stream.gap` as soon as there is room (coalesce: one gap event per contiguous
+run of drops, carrying the total). The frontend treats it as "refetch
+`/messages` for this session", which it already knows how to do.
+
+**Pending approval survives a reconnect.** `SessionRunner` keeps the
+currently-outstanding `pipeline.awaiting_approval` payload (set when it passes
+through the bus, cleared on `pipeline.approval_received` or turn end). The WS
+handler re-emits it to a newly-subscribed viewer when one is outstanding, after
+any `?since=` replay and before live events. De-duplicate: if the replay already
+contained it, do not send it twice — compare the approval id.
+
+**Ring shape.** `collections.deque(maxlen=REPLAY_BUFFER_SIZE)`.
+
+### Tests
+
+- the size invariant: `REPLAY_BUFFER_SIZE > SUBSCRIBER_QUEUE_MAX`.
+- a subscriber that never drains: broadcast `SUBSCRIBER_QUEUE_MAX + 50` events,
+  then drain, and assert the subscriber sees exactly one `stream.gap` carrying
+  `dropped == 50`, positioned where the loss began, and that no event is
+  silently missing otherwise.
+- `assistant.done` is delivered even to a full queue, and the event it displaced
+  was the oldest.
+- two contiguous overflow runs separated by successful deliveries produce two
+  gap events, not one and not fifty.
+- replay covers a gap: disconnect a subscriber, broadcast 600 events, resubscribe
+  with `since=<id>`, and assert the replay contains the tail and no gap is
+  reported (this is what the size change buys).
+- pending approval: a turn emits an approval card, the subscriber unsubscribes,
+  a fresh subscriber with no `since` receives the card exactly once; after
+  `pipeline.approval_received` a fresh subscriber receives nothing.
+- ordering is still monotonic in `_id` after all of the above.
+
+### Verification
+
+`.venv/bin/pytest backend/tests -q`, `.venv/bin/ruff check backend`, frontend
+builds if installable. Report the gap-event behaviour you observed for the
+overflow test, with numbers.
+
+---
+
+## Task 16 — Soak, latency and leak verification
+
+**The verification layer the audit's findings demand.** Tasks 13–15 fix what the
+audit found; this task is what catches the next one. It runs last, after the
+eval layers of Task 12, because it reuses their fakes.
+
+This is not a second copy of Task 12. Task 12 asserts *behaviour* (the right
+events in the right order). Task 16 asserts *cost and containment* — how long,
+how much memory, how many bytes, how many processes, and what happens when
+things break.
+
+### Files
+
+- `backend/tests/fakes/stall_detector.py` (created by Task 13; reuse it)
+- `backend/tests/fakes/load.py` (new — scriptable load generators)
+- `backend/tests/test_soak_long_session.py` (new)
+- `backend/tests/test_latency_budgets.py` (new)
+- `backend/tests/test_leak_containment.py` (new)
+- `backend/tests/test_failure_injection.py` (new)
+- `pyproject.toml` (a `slow` marker), `Makefile` (a `soak` target)
+- `docs/harness.md` (document how to run it and how to read a failure)
+
+### Marker policy
+
+The stall detector and the failure injections are fast — they run in the default
+suite, because a reliability test nobody runs is decoration. The long soak is
+marked `@pytest.mark.slow` and excluded from the default run via `addopts`,
+with `make soak` running it. Say in `docs/harness.md` which is which and why.
+
+### `test_soak_long_session.py` (marked `slow`)
+
+One session, a fake provider, a temp `HOME`, **200 turns of 50 events each**
+(10 000 events, including tool_use/tool_result pairs and one 256 KiB tool
+result every 20th turn). Assert, with real measurements:
+
+- **disk**: total bytes under the session directory stay within a small
+  constant multiple (≤ 3×) of the total content bytes the fake produced. This is
+  the permanent guard against Task 13's quadratic regression.
+- **memory**: peak RSS growth over the soak stays under a stated budget. Use
+  `tracemalloc` for Python-object growth (portable, no new dependency) and
+  `resource.getrusage(RUSAGE_SELF).ru_maxrss` as a coarse cross-check. State the
+  budget as a constant with a comment explaining how it was chosen; a budget
+  nobody can justify will be raised the first time it fails.
+- **tasks**: `len(asyncio.all_tasks())` at the end equals the start, within a
+  small tolerance, proving no per-turn task leak.
+- **file descriptors**: the count of open fds (`len(os.listdir('/dev/fd'))` on
+  macOS/Linux) does not grow across turns.
+- **paging stays cheap**: after all 200 turns, `GET /messages` for the first
+  page completes within a stated wall-clock budget and reads a bounded number
+  of bytes.
+- the final session state is coherent: every `tool_use` has a matching
+  `tool_result`, message count equals the number of turns × 2, and ordering is
+  monotonic.
+
+Print the measured numbers on success (not only on failure) so a human reading
+CI output can see the trend. A soak test whose numbers are invisible until it
+breaks teaches nobody anything.
+
+### `test_latency_budgets.py`
+
+Fast, deterministic, no real CLI:
+
+- **no event-loop stall during a turn**: run a 2000-event turn with the stall
+  detector active and assert the worst loop gap stays under 50 ms.
+- **bus throughput**: `broadcast` 10 000 events to 3 subscribers within a
+  stated budget, asserting on throughput rather than absolute time where the
+  machine may vary (compute events/second and compare against a floor).
+- **checkpoint cost is bounded per event**: a turn with 500 tool boundaries
+  performs at most the number of writes the throttle allows, and the total
+  bytes written stay within the Task 13 bound.
+- **first-event latency**: time from `provider.run()` being driven to the first
+  event reaching a subscriber stays under a stated budget.
+- Every budget is a named module constant with a comment explaining what it
+  protects and how it was derived from the audit's measurements, e.g. the 50 ms
+  stall budget against a measured 0.04 ms fsync — so a future reader knows
+  whether a failure means a regression or a slow machine.
+
+### `test_leak_containment.py`
+
+- after a fleet turn using the Task 7 worker pool, no child process remains:
+  track the pids the pool spawned and assert each is gone after `aclose()`.
+- after a turn **cancelled mid-step**, the same holds — this is the path D14.1
+  leaked on.
+- a worker that spawns a grandchild has the whole group reaped (the Task 14
+  process-group behaviour, asserted here against the real pool rather than a
+  fake).
+- the pool honours `fleet_max_workers` under concurrent submits.
+- 50 sequential sessions created and deleted leave no runner, no bus and no task
+  behind.
+
+### `test_failure_injection.py`
+
+Every failure mode the audit named, as a test. Each asserts the user-visible
+outcome — a clear `error` event and a terminal `assistant.done`, never a hang
+and never a silent success:
+
+- a sub-agent result **larger than 64 KiB on one line** (the D-B2 defect Task 7
+  fixes) round-trips intact.
+- a worker that exits 0 without emitting a result produces a diagnostic naming
+  the exit code and the stderr tail.
+- a worker killed mid-request fails its pending future, and the step surfaces an
+  error rather than hanging.
+- a provider that yields **nothing at all** trips the startup-grace fast-fail
+  within the grace window, with the honest "no response yet" wording, and does
+  not wait the full step budget.
+- a provider that streams forever hits the step ceiling and aborts.
+- a repeatedly-failing sub-agent is bounded: assert the orchestrator cannot
+  dispatch it more than the hard-fail cap allows, **for every failure class**,
+  not only for timeouts. This is the regression test for the unbounded-retry
+  chain the audit found.
+- the WebSocket disconnects mid-turn: the turn keeps running, and a reconnect
+  with `?since=` receives the tail.
+- the session is deleted mid-turn: the turn terminates without corrupting state
+  and without an unretrieved task exception.
+- an approval that nobody answers times out and the turn ends cleanly.
+
+### Verification
+
+```
+.venv/bin/pytest -q                 # fast tests, including injections
+.venv/bin/pytest -q -m slow         # the soak
+.venv/bin/ruff check backend
+```
+
+Report every measured number the soak and latency suites print, and state
+explicitly which budgets you chose versus which came from the audit.
 
 ---
 
