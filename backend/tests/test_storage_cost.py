@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import tracemalloc
 from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -29,6 +30,7 @@ from typing import Any
 
 import pytest
 
+from backend.app.schemas import SessionOut
 from backend.app.session_runner.accumulator import TurnAccumulator
 from backend.app.storage import sessions as sessions_mod
 from backend.app.storage.sessions import store
@@ -169,6 +171,38 @@ async def _seed(sid: str, count: int, *, filler: int = 0) -> None:
 
 def _texts(msgs: list[dict[str, Any]]) -> list[str]:
     return [m["content"][0]["text"] for m in msgs]
+
+
+# A log in the pre-``current.json`` format: one snapshot line per mid-turn
+# checkpoint, ten per assistant message, each line ~100 KB — which is what a
+# tool-heavy turn actually left behind. 200 lines ≈ 20 MB.
+_LEGACY_IDS = 20
+_LEGACY_LINES_PER_ID = 10
+_LEGACY_LINE_FILLER = 100_000
+
+
+def _write_legacy_log(path: Path) -> int:
+    """Write a pre-change log directly (no store API can produce one now).
+    Returns its size."""
+    with path.open("w", encoding="utf-8") as f:
+        for i in range(_LEGACY_IDS):
+            for n in range(_LEGACY_LINES_PER_ID):
+                f.write(
+                    json.dumps(
+                        {
+                            "id": f"legacy{i:03d}",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": f"c{n}" + "x" * _LEGACY_LINE_FILLER}
+                            ],
+                            "created_at": (
+                                BASE_TS + timedelta(seconds=i * 100 + n)
+                            ).isoformat(),
+                        }
+                    )
+                    + "\n"
+                )
+    return path.stat().st_size
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -490,6 +524,43 @@ async def test_legacy_checkpoint_duplicates_collapse_to_one_message(
     assert (next_before, has_more) == (None, False)
 
 
+async def test_reading_a_legacy_log_does_not_scale_memory_with_the_file(
+    isolated_store: Path,
+) -> None:
+    """A tail window can't serve a log whose lines are ~100 KB each: no window
+    yields a page, so a reader that keeps widening and re-materializing the
+    accumulated blob ends up holding the whole file several times over. The
+    first read after upgrading is exactly that case, and compaction is not
+    guaranteed to have run first (the cleanup sentinel may be fresh).
+
+    Peak allocation must stay bounded by the window cap plus the messages
+    themselves, not by the size of the file.
+    """
+    meta = await _new_session(isolated_store)
+    log_size = _write_legacy_log(_session_dir(meta) / "messages.jsonl")
+    assert log_size > 18_000_000, "the synthetic legacy log should be around 20 MB"
+
+    tracemalloc.start()
+    try:
+        msgs, _, has_more = await store.list_messages(meta["id"], limit=50)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    print(
+        f"\n[cost] legacy log {log_size} bytes → peak {peak} bytes "
+        f"({peak / log_size:.2f}x the file) reading one page"
+    )
+    # Correctness first: ten checkpoint lines per id collapse to one message.
+    assert len(msgs) == _LEGACY_IDS
+    assert has_more is False
+    assert msgs[0]["content"][0]["text"].startswith("c9")
+    assert peak < 8 * 1024 * 1024, (
+        f"peak {peak} bytes reading a {log_size}-byte log — memory is scaling "
+        "with the file, not with the page"
+    )
+
+
 async def test_one_page_does_not_read_the_whole_log(
     isolated_store: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -514,6 +585,14 @@ async def test_one_page_does_not_read_the_whole_log(
 # ─────────────────────────────────────────────────────────────────────────────
 # D13.5 — GET /api/sessions
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_index_mirrors_every_field_session_out_exposes() -> None:
+    """The index is a *projection* of meta.json now, not a pass-through. A
+    field added to SessionOut (and written by create_session) but forgotten
+    here would silently serve None to the sidebar for every session — the
+    exact breakage the widened index was supposed to avoid."""
+    assert set(sessions_mod._INDEX_MIRRORED_FIELDS) == set(SessionOut.model_fields)
 
 
 async def test_list_sessions_reads_no_meta_files_when_the_index_is_current(

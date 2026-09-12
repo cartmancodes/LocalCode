@@ -84,9 +84,24 @@ class Settings(BaseSettings):
     # The growth arm is amortized against the last checkpoint's size (see
     # ``TurnAccumulator._should_write``): a fixed byte threshold alone still
     # rewrites a growing snapshot O(size/threshold) times, which is the
-    # quadratic write volume this throttle exists to remove. These two numbers
-    # are the floors — below them, rewriting the in-progress message is cheap
-    # enough that time alone decides.
+    # quadratic write volume this throttle exists to remove.
+    #
+    # What a crash (or a mid-turn reload) therefore loses — the bound to tune
+    # on, and it is NOT ``checkpoint_min_interval_s``:
+    #   * while the message is under ``checkpoint_min_growth_bytes``, at most
+    #     one interval's worth of work;
+    #   * above that floor the time arm no longer applies at all, and the next
+    #     checkpoint waits for the message to grow by as much as the last one
+    #     wrote. The unsaved tail is bounded by the last checkpoint's size —
+    #     roughly half the message so far — with NO time ceiling. A turn
+    #     sitting at 1 MB that grows slowly can go many minutes without a
+    #     checkpoint.
+    # Lowering ``checkpoint_min_growth_bytes`` tightens the bound only while
+    # the message is small; above the floor the tail is ~half the message
+    # whatever these are set to, because that is what amortizing a
+    # whole-message rewrite means. Tightening it there costs write volume
+    # proportional to how often you rewrite — the quadratic behaviour this
+    # replaced.
     checkpoint_min_interval_s: float = 2.0
     checkpoint_min_growth_bytes: int = 64 * 1024
 

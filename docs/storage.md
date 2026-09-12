@@ -289,10 +289,22 @@ unless either:
 The final checkpoint always writes. Both knobs are `Settings` fields
 (`backend/app/config.py`), overridable via `.env`.
 
-What the throttle costs: a page reload mid-turn shows the assistant message as
-of the last checkpoint, so up to 64 KiB (or 2 s, for a small message) behind
-the live WebSocket stream — which keeps extending the same turn, so the gap
-closes as soon as the next event arrives.
+What the throttle costs — this is the bound to tune on, and it is **not** the
+2 s interval:
+
+- While the message is under 64 KiB, a crash or a mid-turn page reload is at
+  most one interval (2 s) of work behind.
+- Above 64 KiB the time arm no longer applies at all. The next checkpoint waits
+  for the message to grow by as much as the last one wrote, so the unsaved tail
+  is bounded by the last checkpoint's size — roughly half the message so far —
+  with **no time ceiling**. A turn sitting at 1 MB that grows slowly can go many
+  minutes without writing, and a reload then shows ~1 MB-stale content.
+
+So the guarantee is "you never lose more than you have already saved", not "you
+never lose more than 2 s". Above the growth floor that is inherent to amortizing
+a whole-message rewrite: tightening it means rewriting more often, which is the
+quadratic write volume this replaced. The live WebSocket stream is unaffected —
+it keeps extending the same turn, so the gap closes on the next event.
 
 ### Crash recovery
 
@@ -327,6 +339,16 @@ this algorithm:
    message in the page, used as the cursor for the previous page).
 
 Serving one 50-message page out of a 1 MB log reads ~192 KiB, not the file.
+
+**Fallback for logs a window can't serve.** Parsing a window costs several
+times its size, so the read gives up on windowing once it would have to hold
+more than 1 MiB and streams the file line by line instead — holding one line
+plus the deduped messages, never the file. This is what a pre-`current.json`
+log hits on the first read after upgrading, where every line is a full
+snapshot: a 20 MB log of 100 KB lines peaks at ~4 MB of allocation that way
+versus ~82 MB if the windows were joined. It costs one full pass, which is
+what the old reader always did. A deep `before` cursor — paging back past the
+start of the window — ends up there too.
 
 The shape of the response matches the legacy `MessagesPage` so the
 frontend doesn't notice the migration. Default page size is 50, capped

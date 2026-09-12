@@ -43,8 +43,11 @@ they always have a stable home.
 
   * **Because every message now appears in the log exactly once, readers
     don't dedupe and don't scan.** ``list_messages`` reads a bounded tail
-    window and widens it only if the page wasn't satisfied. The dedupe in
-    ``_parse_log_lines`` survives only for logs written before this change.
+    window and widens it only if the page wasn't satisfied. A log the window
+    can't serve — one written before this change, where every line is a full
+    snapshot — degrades to the old line-at-a-time reader rather than holding
+    multiple copies of the file (see ``_TAIL_MAX_SPAN_BYTES``). The dedupe
+    likewise survives only for those older logs.
 
   * **Nothing here runs on the event loop.** Each public coroutine extracts
     its synchronous body into a ``_sync_*`` helper and awaits it through
@@ -75,6 +78,7 @@ import re
 import shutil
 import time
 import uuid
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -117,6 +121,16 @@ META_FILE = "meta.json"
 # *older* bytes, never the same bytes twice — until the page plus its cursor
 # entry are in hand.
 _TAIL_WINDOW_BYTES = 64 * 1024
+
+# Ceiling on how much of the log a windowed read may hold. Parsing a window
+# costs several times its size (the joined bytes, the decoded text, the split
+# lines), so a log the window can't satisfy — a pre-``current.json`` log whose
+# lines are megabytes each, or a page of unusually large messages — must not be
+# windowed at all: past this point we drop the chunks and stream the file line
+# by line instead, which costs one pass but holds only one line plus the
+# deduped messages. Without this, a 20 MB legacy log peaked at 4x its size in
+# memory on the first read after upgrading.
+_TAIL_MAX_SPAN_BYTES = 1024 * 1024
 
 # Fields the index mirrors out of meta.json. Exactly the ``SessionOut`` field
 # set: the sidebar renders additional_dirs / permission_mode /
@@ -316,33 +330,67 @@ async def _index_remove(session_id: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _parse_log_lines(blob: bytes, cutoff: str | None) -> list[dict[str, Any]]:
-    """Parse a chunk of ``messages.jsonl`` into messages, oldest first.
+def _ordered_messages(
+    messages: Iterable[dict[str, Any]], cutoff: str | None
+) -> list[dict[str, Any]]:
+    """Apply the ``before`` cutoff and sort oldest first."""
+    msgs = list(messages)
+    if cutoff is not None:
+        msgs = [m for m in msgs if str(m.get("created_at", "")) < cutoff]
+    msgs.sort(key=lambda m: str(m.get("created_at", "")))
+    return msgs
 
-    Still dedupes by id (last line wins) for two reasons, neither of which is
-    the hot path: a log written before the in-progress message moved to
-    ``current.json`` holds one line per mid-turn checkpoint, and a promotion
-    interrupted between the append and the unlink can repeat one line.
+
+def _dedupe_by_id(objs: Iterable[Any]) -> dict[str, dict[str, Any]]:
+    """Keep the last object per id, skipping anything unusable.
+
+    Dedupe survives for two reasons, neither of which is the hot path: a log
+    written before the in-progress message moved to ``current.json`` holds one
+    line per mid-turn checkpoint, and a promotion interrupted between the
+    append and the unlink can repeat one line.
     """
     latest: dict[str, dict[str, Any]] = {}
-    for raw in blob.decode("utf-8", errors="replace").splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for obj in objs:
         if not isinstance(obj, dict):
             continue
         mid = obj.get("id")
         if mid:
             latest[mid] = obj
-    msgs = list(latest.values())
-    if cutoff is not None:
-        msgs = [m for m in msgs if str(m.get("created_at", "")) < cutoff]
-    msgs.sort(key=lambda m: str(m.get("created_at", "")))
-    return msgs
+    return latest
+
+
+def _iter_json_lines(lines: Iterable[str]) -> Iterable[dict[str, Any]]:
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+
+def _parse_log_lines(blob: bytes, cutoff: str | None) -> list[dict[str, Any]]:
+    """Parse a window of ``messages.jsonl`` into messages, oldest first."""
+    decoded = blob.decode("utf-8", errors="replace")
+    latest = _dedupe_by_id(_iter_json_lines(decoded.splitlines()))
+    return _ordered_messages(latest.values(), cutoff)
+
+
+def _stream_entries(path: Path, cutoff: str | None) -> list[dict[str, Any]]:
+    """Read the whole log one line at a time, oldest first.
+
+    The fallback for a log a window can't serve. Holds one line plus the
+    deduped messages, never the file — which is what keeps the first read of a
+    pre-``current.json`` log (one multi-MB snapshot line per checkpoint) from
+    costing several times the file in memory.
+    """
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            latest = _dedupe_by_id(_iter_json_lines(f))
+    except OSError:
+        return []
+    return _ordered_messages(latest.values(), cutoff)
 
 
 def _tail_entries(path: Path, *, want: int | None, cutoff: str | None) -> list[dict[str, Any]]:
@@ -350,11 +398,16 @@ def _tail_entries(path: Path, *, want: int | None, cutoff: str | None) -> list[d
 
     ``want`` is the page size plus one — the extra entry is what tells the
     caller there is an older page, so stopping as soon as ``want`` are in hand
-    is enough to decide ``has_more``. ``want=None`` reads the whole file
-    (callers that asked for no limit). Returns messages oldest-first. Bytes
-    are read at most once: each widening seeks to an older offset and
-    prepends, rather than re-reading the tail it already has.
+    is enough to decide ``has_more``. ``want=None`` means no page limit, which
+    is the streaming reader's job. Returns messages oldest-first. Bytes are
+    read at most once: each widening seeks to an older offset and prepends,
+    rather than re-reading the tail it already has.
+
+    Falls back to ``_stream_entries`` when windowing would have to hold more
+    than ``_TAIL_MAX_SPAN_BYTES`` — see that constant for why.
     """
+    if want is None:
+        return _stream_entries(path, cutoff)
     try:
         size = path.stat().st_size
     except OSError:
@@ -364,8 +417,8 @@ def _tail_entries(path: Path, *, want: int | None, cutoff: str | None) -> list[d
     pos = size
     window = _TAIL_WINDOW_BYTES
     with path.open("rb") as f:
-        while True:
-            start = 0 if want is None else max(0, pos - window)
+        while size - max(0, pos - window) <= _TAIL_MAX_SPAN_BYTES:
+            start = max(0, pos - window)
             f.seek(start)
             chunks.insert(0, f.read(pos - start))
             pos = start
@@ -377,9 +430,12 @@ def _tail_entries(path: Path, *, want: int | None, cutoff: str | None) -> list[d
                 nl = blob.find(b"\n")
                 blob = blob[nl + 1 :] if nl >= 0 else b""
             msgs = _parse_log_lines(blob, cutoff)
-            if pos == 0 or want is None or len(msgs) >= want:
+            if pos == 0 or len(msgs) >= want:
                 return msgs
             window *= 2
+    # Drop the accumulated window before the streaming pass allocates.
+    chunks.clear()
+    return _stream_entries(path, cutoff)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
