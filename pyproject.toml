@@ -50,4 +50,10 @@ testpaths = ["backend/tests"]
 addopts = "-m 'not requires_cli'"
 markers = [
     "requires_cli: needs a real vendor CLI (claude / codex) on PATH; excluded by default",
+    # Registered here, ahead of its first use, so a suite that needs it can be
+    # written without also editing this file — and so `-m "not slow"` is a
+    # valid selector from the moment the first such test lands. Nothing in the
+    # tree is marked `slow` yet; an unregistered marker is a warning, and the
+    # suite runs under `-W error::UserWarning`.
+    "slow: a long-running soak / endurance case; excluded with -m 'not slow'",
 ]

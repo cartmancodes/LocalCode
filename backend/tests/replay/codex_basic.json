@@ -1,0 +1,54 @@
+[
+  {
+    "method": "item/started",
+    "params": {
+      "threadId": "thread-replay-1",
+      "item": {"id": "item-1", "type": "reasoning", "text": "Considering the request."}
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "threadId": "thread-replay-1",
+      "item": {"id": "item-2", "type": "command_execution", "command": ["echo", "hi"]}
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "thread-replay-1",
+      "item": {
+        "id": "item-2",
+        "type": "command_execution",
+        "command": ["echo", "hi"],
+        "exit_code": 0,
+        "aggregated_output": "hi\n"
+      }
+    }
+  },
+  {
+    "method": "item/updated",
+    "params": {
+      "threadId": "thread-replay-1",
+      "item": {"id": "item-3", "type": "agent_message", "text": "Hello, "}
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "thread-replay-1",
+      "item": {"id": "item-3", "type": "agent_message", "text": "Hello, world."}
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "thread-replay-1",
+      "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 64,
+        "cached_input_tokens": 900
+      }
+    }
+  }
+]

@@ -1,0 +1,66 @@
+[
+  {
+    "__type__": "StreamEvent",
+    "uuid": "ev-1",
+    "session_id": "upstream-replay-2",
+    "event": {
+      "type": "content_block_delta",
+      "delta": {"type": "text_delta", "text": "Reading the file."}
+    }
+  },
+  {
+    "__type__": "AssistantMessage",
+    "model": "claude-sonnet-4-6",
+    "content": [
+      {"type": "text", "text": "Reading the file."},
+      {
+        "type": "tool_use",
+        "id": "toolu_replay_01",
+        "name": "Read",
+        "input": {"file_path": "/repo/app.py"}
+      }
+    ]
+  },
+  {
+    "__type__": "UserMessage",
+    "content": [
+      {
+        "type": "tool_result",
+        "tool_use_id": "toolu_replay_01",
+        "content": "print('hi')\n",
+        "is_error": false
+      }
+    ]
+  },
+  {
+    "__type__": "StreamEvent",
+    "uuid": "ev-2",
+    "session_id": "upstream-replay-2",
+    "event": {
+      "type": "content_block_delta",
+      "delta": {"type": "text_delta", "text": " It prints hi."}
+    }
+  },
+  {
+    "__type__": "AssistantMessage",
+    "model": "claude-sonnet-4-6",
+    "content": [{"type": "text", "text": " It prints hi."}]
+  },
+  {
+    "__type__": "ResultMessage",
+    "subtype": "success",
+    "duration_ms": 812,
+    "duration_api_ms": 770,
+    "is_error": false,
+    "num_turns": 2,
+    "session_id": "upstream-replay-2",
+    "total_cost_usd": 0.0123,
+    "result": "Reading the file. It prints hi.",
+    "usage": {
+      "input_tokens": 1200,
+      "output_tokens": 64,
+      "cache_read_input_tokens": 900,
+      "cache_creation_input_tokens": 100
+    }
+  }
+]

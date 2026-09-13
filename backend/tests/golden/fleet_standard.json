@@ -1,0 +1,83 @@
+{
+  "approvals": [
+    {
+      "decision": "yes",
+      "id": "approval.plan.#1",
+      "kind": "plan",
+      "tool": null
+    }
+  ],
+  "files_created": [
+    ".localcode/plans/<ts>-retry-the-uploader.md",
+    "uploader.py"
+  ],
+  "prompt": "Implement retry-with-backoff in the uploader, then review the change against the plan.",
+  "registered_roles": [
+    "planner",
+    "coder",
+    "reviewer"
+  ],
+  "route": {
+    "agents": [
+      "planner",
+      "coder",
+      "reviewer"
+    ],
+    "rationale": "standard: multi-step, long, or ambiguous \u2192 the full crew (3 agents)",
+    "task_class": "standard"
+  },
+  "steps": [
+    {
+      "backend": "claude:m",
+      "failed": false,
+      "id": "orch.planner.1",
+      "role": "planner",
+      "tools": [
+        {
+          "args_sha": "1e33ed4b90ab",
+          "gate": "allow",
+          "name": "Read"
+        }
+      ]
+    },
+    {
+      "backend": "claude:m",
+      "failed": false,
+      "id": "orch.coder.1",
+      "role": "coder",
+      "tools": [
+        {
+          "args_sha": "0cc2f58a7d42",
+          "gate": "allow",
+          "name": "Write"
+        },
+        {
+          "args_sha": "7abbd9009aff",
+          "gate": "allow",
+          "name": "Bash"
+        }
+      ]
+    },
+    {
+      "backend": "claude:m",
+      "failed": false,
+      "id": "orch.reviewer.1",
+      "role": "reviewer",
+      "tools": [
+        {
+          "args_sha": "1e33ed4b90ab",
+          "gate": "allow",
+          "name": "Read"
+        },
+        {
+          "args_sha": "2f71aae0f5f8",
+          "gate": "deny",
+          "name": "Write"
+        }
+      ]
+    }
+  ],
+  "terminal_events": [
+    "assistant.done"
+  ]
+}

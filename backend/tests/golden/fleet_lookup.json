@@ -1,0 +1,40 @@
+{
+  "approvals": [],
+  "files_created": [],
+  "prompt": "How many retries does the uploader do before it gives up?",
+  "registered_roles": [
+    "planner",
+    "coder",
+    "reviewer"
+  ],
+  "route": {
+    "agents": [
+      "reviewer"
+    ],
+    "rationale": "lookup: question-shaped, no mutation verb \u2192 1 agent instead of 3",
+    "task_class": "lookup"
+  },
+  "steps": [
+    {
+      "backend": "claude:m",
+      "failed": false,
+      "id": "orch.reviewer.1",
+      "role": "reviewer",
+      "tools": [
+        {
+          "args_sha": "ecaefc2a5f48",
+          "gate": "allow",
+          "name": "Grep"
+        },
+        {
+          "args_sha": "1e33ed4b90ab",
+          "gate": "allow",
+          "name": "Read"
+        }
+      ]
+    }
+  ],
+  "terminal_events": [
+    "assistant.done"
+  ]
+}

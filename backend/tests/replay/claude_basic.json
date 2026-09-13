@@ -1,0 +1,48 @@
+[
+  {
+    "__type__": "StreamEvent",
+    "uuid": "ev-1",
+    "session_id": "upstream-replay-1",
+    "event": {
+      "type": "content_block_delta",
+      "delta": {"type": "text_delta", "text": "Hello, "}
+    }
+  },
+  {
+    "__type__": "StreamEvent",
+    "uuid": "ev-2",
+    "session_id": "upstream-replay-1",
+    "event": {
+      "type": "content_block_delta",
+      "delta": {"type": "text_delta", "text": "world."}
+    }
+  },
+  {
+    "__type__": "StreamEvent",
+    "uuid": "ev-3",
+    "session_id": "upstream-replay-1",
+    "event": {"type": "content_block_stop", "index": 0}
+  },
+  {
+    "__type__": "AssistantMessage",
+    "model": "claude-sonnet-4-6",
+    "content": [{"type": "text", "text": "Hello, world."}]
+  },
+  {
+    "__type__": "ResultMessage",
+    "subtype": "success",
+    "duration_ms": 412,
+    "duration_api_ms": 388,
+    "is_error": false,
+    "num_turns": 1,
+    "session_id": "upstream-replay-1",
+    "total_cost_usd": 0.0041,
+    "result": "Hello, world.",
+    "usage": {
+      "input_tokens": 640,
+      "output_tokens": 12,
+      "cache_read_input_tokens": 512,
+      "cache_creation_input_tokens": 0
+    }
+  }
+]

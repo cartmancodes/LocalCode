@@ -1,0 +1,49 @@
+[
+  {
+    "id": 7,
+    "method": "execCommandApproval",
+    "params": {
+      "threadId": "thread-replay-2",
+      "command": ["rm", "-rf", "build"],
+      "cwd": "/repo"
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "threadId": "thread-replay-2",
+      "item": {
+        "id": "item-9",
+        "type": "command_execution",
+        "command": ["rm", "-rf", "build"]
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "thread-replay-2",
+      "item": {
+        "id": "item-9",
+        "type": "command_execution",
+        "command": ["rm", "-rf", "build"],
+        "exit_code": 0,
+        "aggregated_output": ""
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "thread-replay-2",
+      "item": {"id": "item-10", "type": "agent_message", "text": "Removed the build directory."}
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "thread-replay-2",
+      "usage": {"input_tokens": 300, "output_tokens": 20}
+    }
+  }
+]

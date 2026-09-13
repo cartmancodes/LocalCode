@@ -180,9 +180,21 @@ def _to_jsonable(obj: Any) -> Any:
 
     Mirrors what we used to do at the SQLAlchemy → JSON boundary so the
     on-wire shape consumed by the frontend is unchanged.
+
+    The primitive pass-through below is load-bearing, not a fast path. ``bool``
+    and ``int`` both implement ``__float__``, so without it the ``Decimal``
+    branch caught every one of them and coerced it: a persisted
+    ``"is_error": true`` came back as ``1.0``, a tool input's ``"limit": 100``
+    as ``100.0``, and every ``duration_ms`` and token count in the stored
+    transcript as a float. Nothing raised — JSON has one number type and
+    ``1.0 == True`` in Python — which is exactly why it survived until the
+    replay/matrix suites asserted on the persisted blocks by *identity* rather
+    than equality. ``Decimal`` reaches the branch below unchanged.
     """
     if isinstance(obj, datetime):
         return obj.isoformat()
+    if obj is None or isinstance(obj, bool | int | float | str):
+        return obj
     if hasattr(obj, "__float__"):  # Decimal
         try:
             return float(obj)
