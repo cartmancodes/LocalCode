@@ -400,7 +400,11 @@ Stated here rather than hidden behind a weakened assertion:
   waking it and the cancellation `wait_for` then raises drops it. The check
   walks past benign frames under a whole-loop deadline (`_TAIL_CHECK_DEADLINE_S`)
   rather than a per-frame one, so a stream of post-turn `system` task-lifecycle
-  frames cannot stall the turn.
+  frames cannot stall the turn. Running out of that budget is *not* on this
+  list: it costs a reconnect, not a risk. An expiry means the check never
+  reached the end of the trickle, so the client is dropped and the next turn
+  starts a fresh CLI — the frames that decide reuse may have been behind the
+  ones it did see.
 
 ---
 

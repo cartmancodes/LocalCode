@@ -523,33 +523,44 @@ class TestADeferredTailOnTheConnection:
         assert len(factory.clients) == 1
         assert factory.clients[0].turns == 2
 
-    async def test_a_trickle_of_system_frames_cannot_stall_the_turn(
-        self, tmp_path: Path, fresh_settings
-    ) -> None:
-        """The check walks past benign frames, so it needs a deadline of its
-        own — not just a per-frame window.
-
-        The deferred-agent path this check exists for is precisely the one that
-        emits a STREAM of `system` task-lifecycle frames (`task_started` /
-        `task_updated` / `task_notification`). Arriving faster than the
-        per-frame window, they restart it forever: the drain pump never
-        returns, nothing ever seals the merged queue, and the turn never
-        completes — with no timeout anywhere above it in ``turn.py`` to save
-        it. A regression here HANGS, which is why the bound below is an
-        ``asyncio.wait_for`` and not only an assertion.
-        """
+    @staticmethod
+    def _trickle(frames: int) -> Any:
+        """A turn whose result is followed by ``frames`` lifecycle frames,
+        10 ms apart — the shape a backgrounded agent actually produces."""
         from claude_agent_sdk import SystemMessage
 
         async def behaviour(client: FakeClaudeClient) -> AsyncIterator[Any]:
             yield text_message("the answer")
             yield result_message()
-            # Faster than the per-frame window, for far longer than the whole
-            # check is allowed to take.
-            for n in range(200):
+            for n in range(frames):
                 await asyncio.sleep(0.01)
                 yield SystemMessage(subtype="task_updated", data={"n": n})
 
-        factory = FakeClientFactory(behaviour)
+        return behaviour
+
+    async def test_a_trickle_that_never_ends_reconnects_instead_of_guessing(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """Two failures at once, and the second is the subtle one.
+
+        **It must end.** The check walks past benign frames, so a per-frame
+        window is not a bound: frames arriving faster than it restart it
+        forever, the drain pump never returns, nothing seals the merged queue,
+        and the turn never completes — with no timeout anywhere above it in
+        ``turn.py``. A regression here HANGS, which is why the bound below is an
+        ``asyncio.wait_for`` and not only an assertion.
+
+        **And what it must conclude on expiry is "unknown", not "clean".** The
+        deadline is sized for exactly the case where a deferred task is still
+        forwarding lifecycle frames — which is the case where its real content
+        (a second ``ResultMessage``, the agent's own text) may still be behind
+        the trickle when the budget runs out. "Everything I looked at was
+        harmless" is not "there is nothing left", and reading it that way would
+        reintroduce a bounded version of the misattribution this check exists to
+        prevent. So the client is dropped: a reconnect in the pathological case
+        is the right price.
+        """
+        factory = FakeClientFactory(self._trickle(200))
         provider = provider_with(factory)
 
         started = time.monotonic()
@@ -558,6 +569,7 @@ class TestADeferredTailOnTheConnection:
                 drain(provider, a_turn(tmp_path)), WAIT_S
             )
             elapsed = time.monotonic() - started
+            # The turn itself is untouched — it had already reached its result.
             assert [ev.type for ev in events] == ["assistant.text", "assistant.done"]
             # The check's ceiling plus room for the turn itself on a loaded
             # machine. The failure this guards is unbounded, so the margin does
@@ -566,10 +578,49 @@ class TestADeferredTailOnTheConnection:
                 f"the turn took {elapsed:.2f}s — the tail check is walking "
                 "benign frames without a deadline"
             )
-            # Benign frames do not condemn the client, deadline or no deadline.
-            assert list(provider._clients), "a trickle of system frames cost a reconnect"
+            assert provider._clients == {}, (
+                "the check ran out of time and kept the client anyway — the "
+                "frames that decide reuse were never reached"
+            )
         finally:
             await provider.aclose()
+        assert factory.clients[0].disconnected
+
+    async def test_a_trickle_that_ends_in_time_still_keeps_the_client(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """The other side of the same boundary, and the reason the deadline is
+        a reconnect threshold rather than a hair trigger.
+
+        A short burst of post-turn lifecycle frames is ordinary, and the check
+        is supposed to sit through it: it reaches the end of the trickle, finds
+        the connection quiet, and keeps the client. Without this case, "discard
+        on expiry" could be satisfied by discarding always — which is the same
+        bill as never having held a client across turns at all.
+
+        Three frames, 10 ms apart, then silence: ~30 ms of trickle plus one
+        50 ms window to confirm the quiet, against a 250 ms budget. The margin
+        is deliberately ~3x, because a loaded machine stretches those sleeps
+        (one measured run showed 21 ms of scheduling latency where 10 was
+        asked for).
+        """
+        factory = FakeClientFactory(self._trickle(3))
+        provider = provider_with(factory)
+
+        try:
+            first = await asyncio.wait_for(drain(provider, a_turn(tmp_path)), WAIT_S)
+            assert [ev.type for ev in first] == ["assistant.text", "assistant.done"]
+            assert list(provider._clients), (
+                "a burst of lifecycle frames that ENDED cost a reconnect"
+            )
+            second = await asyncio.wait_for(drain(provider, a_turn(tmp_path)), WAIT_S)
+        finally:
+            await provider.aclose()
+
+        assert len(factory.clients) == 1, "the second turn built a new client"
+        assert [ev.data.get("text") for ev in second if ev.type == "assistant.text"] == [
+            "the answer"
+        ]
 
     async def test_a_trailing_rate_limit_event_is_kept_and_still_reported(
         self, tmp_path: Path, fresh_settings

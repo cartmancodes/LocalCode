@@ -356,9 +356,18 @@ _TAIL_DRAIN_PEEK_S = 0.05
 # turn never completes — and the deferred-agent path this check exists for is
 # exactly the one that emits a stream of `system` task-lifecycle frames
 # (`task_started` / `task_updated` / `task_notification`, see
-# `_internal/query.py`). Five per-frame windows: a healthy connection answers
-# inside the first one, so this only ever bounds the pathological case, and it
-# bounds it at a quarter of a second.
+# `_internal/query.py`).
+#
+# It is a RECONNECT threshold, not a safety threshold, and the difference is
+# what makes the number easy to choose. Expiry does not mean "probably fine" —
+# it means the check never reached the end of the trickle, so the frames that
+# decide reuse (a second ``ResultMessage``, the deferred agent's text) may be
+# behind it, unexamined. The client is therefore dropped on expiry, and all
+# this constant buys is HOW LONG a healthy connection is willing to wait before
+# paying for a reconnect it did not need. Five per-frame windows: a healthy
+# connection answers inside the first, a burst of post-turn lifecycle frames
+# clears well inside five, and anything still arriving after a quarter of a
+# second is a connection whose state is better re-established than guessed.
 _TAIL_CHECK_DEADLINE_S = 0.25
 
 
@@ -401,32 +410,67 @@ async def _unread_tail(client: Any) -> _TailCheck:
       headroom anyone gets, so it is carried back to the caller instead of
       being dropped on the floor.
 
-    A failure of the check ITSELF counts as not drained. The question it asks
-    is "is this connection in a state I understand?", and an exception is the
-    answer "no": keeping the client would hand the next turn a connection that
-    just failed, and a reconnect is cheap by comparison.
+    A failure of the check ITSELF counts as not drained, and so does running
+    out of time. The question it asks is "is this connection in a state I
+    understand?", and both an exception and an expiry are the answer "no":
+    keeping the client would hand the next turn a connection nobody has
+    finished reading. A reconnect is cheap by comparison — it costs a CLI spawn
+    and a cold prompt cache for one turn, against a turn that silently answers
+    with someone else's words.
     """
     deadline = time.monotonic() + _TAIL_CHECK_DEADLINE_S
     rate_limits: list[Any] = []
+
+    def expired() -> _TailCheck:
+        """Out of time with frames still arriving.
+
+        The verdict turns on what was NOT seen, not on what was: the frames
+        walked past were benign, but the check never reached the end of the
+        trickle, and the ones that decide reuse — a second ``ResultMessage``,
+        the deferred agent's own text — may be sitting behind it. "Everything I
+        looked at was harmless" is not "there is nothing left", and treating it
+        as such would reintroduce a bounded version of the misattribution this
+        whole check exists to prevent.
+        """
+        logger.info(
+            "claude: the tail check ran out of time after %.2fs with frames "
+            "still arriving; dropping the client rather than assuming the "
+            "connection is drained",
+            _TAIL_CHECK_DEADLINE_S,
+        )
+        return _TailCheck(
+            blocking="the tail check ran out of time with frames still arriving",
+            rate_limits=tuple(rate_limits),
+        )
+
     while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            # Benign frames all the way to the deadline. Everything seen was
-            # safe for reuse, so the verdict is the same as an empty
-            # connection's — this bounds the check, it does not condemn the
-            # client.
-            logger.debug(
-                "tail check gave up after %.2fs of benign frames",
-                _TAIL_CHECK_DEADLINE_S,
-            )
-            return _TailCheck(rate_limits=tuple(rate_limits))
+        # ONE place consults the deadline, and it yields both the next read's
+        # budget and the meaning of that read timing out. A FULL window that
+        # expires says the connection has gone quiet — nothing is coming, so
+        # it is drained. A window the DEADLINE truncated says only that time
+        # ran out, which is not the same claim at all: reading the second as
+        # the first is how "discard on expiry" quietly becomes "reuse on
+        # expiry", because a trickle that outlasts the budget always ends on a
+        # truncated window. That is what the budget running out looks like from
+        # inside this loop.
+        window = min(_TAIL_DRAIN_PEEK_S, deadline - time.monotonic())
+        if window <= 0:
+            # The deadline landed exactly between two reads. Same verdict as a
+            # truncated window below, so a reader never has to work out which
+            # of the two fired.
+            return expired()
         stream = client.receive_response()
         try:
-            message = await asyncio.wait_for(
-                stream.__anext__(), timeout=min(_TAIL_DRAIN_PEEK_S, remaining)
-            )
-        except (TimeoutError, StopAsyncIteration):
+            message = await asyncio.wait_for(stream.__anext__(), timeout=window)
+        except StopAsyncIteration:
+            # EOF. There is genuinely nothing left to misattribute.
             return _TailCheck(rate_limits=tuple(rate_limits))
+        except TimeoutError:
+            return (
+                expired()
+                if window < _TAIL_DRAIN_PEEK_S
+                else _TailCheck(rate_limits=tuple(rate_limits))
+            )
         except Exception as exc:
             logger.debug("checking for an unread tail failed", exc_info=True)
             return _TailCheck(
@@ -444,7 +488,7 @@ async def _unread_tail(client: Any) -> _TailCheck:
         if isinstance(message, SystemMessage):
             continue
         return _TailCheck(
-            blocking=f"an unread {type(message).__name__}",
+            blocking=f"an unread {type(message).__name__} after this turn's result",
             rate_limits=tuple(rate_limits),
         )
 
@@ -856,6 +900,12 @@ class ClaudeProvider:
                             # receiver before waking it, and the cancellation
                             # `wait_for` then raises drops it). The second is
                             # the same class as the first, one frame wide.
+                            #
+                            # Neither is what happens when the check runs out
+                            # of time: that is not a risk taken, it is a
+                            # reconnect paid. An expiry means the trickle never
+                            # ended inside the budget, so the client is dropped
+                            # and the next turn starts a fresh CLI.
                             check = await _unread_tail(client)
                             # Trailing quota measurements are emitted whatever
                             # the verdict: the CLI reports its rate-limit window
@@ -867,9 +917,9 @@ class ClaudeProvider:
                                 await merged.put(rate_limit_event(event))
                             if check.blocking is not None:
                                 logger.warning(
-                                    "claude session %s: %s after this turn's "
-                                    "result; dropping the client rather than "
-                                    "serving its tail to the next turn",
+                                    "claude session %s: %s — dropping the "
+                                    "client rather than serving its tail to "
+                                    "the next turn",
                                     ctx.session_id,
                                     check.blocking,
                                 )
