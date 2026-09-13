@@ -27,6 +27,7 @@ from .gate import GATE_ROLES, parse_verdict
 from .loader import _merge_config, load_fleet_config_async
 from .models import FleetConfig, RoleConfig, Step
 from .pool import WorkerPool, worker_key
+from .router import decide
 
 logger = logging.getLogger(__name__)
 
@@ -176,10 +177,24 @@ class FleetProvider:
         from ..orchestrator import OrchestratorAgent
 
         registry = registry_from_role_library(cfg.roles)
+        # Conditional routing (Task 8). Deterministic and logged: when a turn
+        # costs one agent instead of four, the reason has to be inspectable
+        # after the fact — otherwise the only way to explain a missing planner
+        # is to guess at the model's mood.
+        route = decide(
+            ctx.prompt,
+            cfg.role_names(),
+            always_full_crew=cfg.always_full_crew,
+        )
+        logger.info(
+            "fleet route: class=%s agents=%s — %s",
+            route.task_class, ",".join(route.agents) or "(none)", route.rationale,
+        )
         orchestrator = OrchestratorAgent(
             registry=registry,
             run_step_fn=self._run_step_with_role,
             require_plan_approval=cfg.require_plan_approval,
+            route=route,
         )
         async for ev in orchestrator.run(ctx):
             yield ev

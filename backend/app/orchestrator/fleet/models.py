@@ -44,6 +44,14 @@ class FleetConfig:
     # Reject ends the turn with the user's feedback recorded as the assistant
     # message. Has no effect on planner-less workflows.
     require_plan_approval: bool = False
+    # Routing escape hatch (Task 8). When true, every registered role is
+    # dispatched on every turn and the orchestrator prompt renders the old
+    # mandatory planner/coder/reviewer paragraph verbatim. Off by default:
+    # paying a plan + a review to answer "how many files are in this repo?"
+    # was a ~15x token multiplier on trivia. The flag exists because the
+    # previous wording recorded a real user preference, and that preference
+    # has to stay reachable without editing the prompt.
+    always_full_crew: bool = False
     # Where the active config came from — None means built-in defaults. Useful
     # for the UI to surface "Fleet config: ~/.localcode/fleet.yaml".
     config_source: str | None = None

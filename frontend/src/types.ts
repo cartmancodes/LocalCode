@@ -65,6 +65,9 @@ export interface FleetConfig {
   /** When true (and a planner is present), the workflow pauses after the
    *  planner emits its plan and waits for user approve/reject. */
   require_plan_approval: boolean;
+  /** When true, every registered agent runs on every turn (the pre-routing
+   *  behaviour). Off by default: trivia gets routed to one agent. */
+  always_full_crew: boolean;
   config_source: string | null;
 }
 
@@ -93,6 +96,7 @@ export interface FleetConfigOverride {
   max_steps?: number;
   max_review_retries?: number;
   require_plan_approval?: boolean;
+  always_full_crew?: boolean;
   entry_role?: FleetRole;
   roles?: Partial<Record<FleetRole, Partial<FleetRoleConfig>>>;
 }

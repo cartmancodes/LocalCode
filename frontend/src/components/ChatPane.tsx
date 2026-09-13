@@ -1044,6 +1044,7 @@ function mergeFleetOverride(
     max_review_retries: override.max_review_retries ?? base.max_review_retries,
     require_plan_approval:
       override.require_plan_approval ?? base.require_plan_approval,
+    always_full_crew: override.always_full_crew ?? base.always_full_crew,
     entry_role: (override.entry_role ?? base.entry_role) as FleetRole,
     config_source: base.config_source,
     roles: {},

@@ -56,6 +56,7 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
   const [maxSteps, setMaxSteps] = useState<number>(6);
   const [maxReviewRetries, setMaxReviewRetries] = useState<number>(1);
   const [requirePlanApproval, setRequirePlanApproval] = useState<boolean>(false);
+  const [alwaysFullCrew, setAlwaysFullCrew] = useState<boolean>(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -78,6 +79,7 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
         setMaxSteps(r.config.max_steps || 6);
         setMaxReviewRetries(r.config.max_review_retries ?? 1);
         setRequirePlanApproval(Boolean(r.config.require_plan_approval));
+        setAlwaysFullCrew(Boolean(r.config.always_full_crew));
       } catch (e: any) {
         if (!cancelled) setError(String(e?.message ?? e));
       }
@@ -236,6 +238,9 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
     if (requirePlanApproval !== Boolean(resp.config.require_plan_approval)) {
       override.require_plan_approval = requirePlanApproval;
     }
+    if (alwaysFullCrew !== Boolean(resp.config.always_full_crew)) {
+      override.always_full_crew = alwaysFullCrew;
+    }
     return Object.keys(override).length ? override : null;
   };
 
@@ -249,6 +254,7 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
     setMaxSteps(resp.config.max_steps || 6);
     setMaxReviewRetries(resp.config.max_review_retries ?? 1);
     setRequirePlanApproval(Boolean(resp.config.require_plan_approval));
+    setAlwaysFullCrew(Boolean(resp.config.always_full_crew));
   };
 
   return (
@@ -434,6 +440,17 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
             />
           </label>
         )}
+        <label
+          className="meta-row"
+          title="When enabled, every registered agent runs on every turn — including read-only questions. Off by default: a question is routed to a single agent and a one-line change to coder + reviewer."
+        >
+          <span>Always run the full crew</span>
+          <input
+            type="checkbox"
+            checked={alwaysFullCrew}
+            onChange={(e) => setAlwaysFullCrew(e.target.checked)}
+          />
+        </label>
       </div>
 
       {/* Advanced — system prompt overrides ───────────────────────────── */}

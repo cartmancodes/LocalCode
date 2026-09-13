@@ -220,6 +220,9 @@ def _merge_config(base: FleetConfig, override: dict[str, Any]) -> FleetConfig:
         require_plan_approval=bool(
             override.get("require_plan_approval", base.require_plan_approval)
         ),
+        always_full_crew=bool(
+            override.get("always_full_crew", base.always_full_crew)
+        ),
     )
 
 

@@ -38,6 +38,7 @@ The import surface is unchanged — everything that used to be importable from
   envelope.py   ``StepResult`` — the bounded thing one step hands back
   collect.py    sub-provider stream → ``StepResult`` (summary, verdict, usage)
   pool.py       ``WorkerPool`` — long-lived worker processes, keyed per step
+  router.py     deterministic task classifier — how many agents a prompt needs
   provider.py   ``FleetProvider``
 """
 from __future__ import annotations
@@ -92,6 +93,17 @@ from .prompts import (
     TESTER_SYSTEM,
 )
 from .provider import FleetProvider
+from .router import (
+    FULL_CREW_BLOCK,
+    FULL_CREW_RATIONALE,
+    LOOKUP_MARKERS,
+    MUTATION_VERBS,
+    RouteDecision,
+    TaskClass,
+    classify,
+    decide,
+    render_routing_block,
+)
 
 __all__ = [
     # vocabulary / budgets
@@ -140,6 +152,16 @@ __all__ = [
     "sweep_stale_workers",
     "write_worker_pidfile",
     "remove_worker_pidfile",
+    # conditional routing (which agents a prompt actually needs)
+    "RouteDecision",
+    "TaskClass",
+    "classify",
+    "decide",
+    "render_routing_block",
+    "MUTATION_VERBS",
+    "LOOKUP_MARKERS",
+    "FULL_CREW_BLOCK",
+    "FULL_CREW_RATIONALE",
     # provider
     "FleetProvider",
     # back-compat underscore aliases — the pre-split module exposed these;

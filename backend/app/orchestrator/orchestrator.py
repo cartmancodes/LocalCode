@@ -42,6 +42,7 @@ from claude_agent_sdk import (
 from .agent_def import AgentDef, render_registry_for_prompt
 from .base import Event, RunContext
 from .dispatch import EventSink, build_dispatch_mcp
+from .fleet.router import RouteDecision, render_routing_block
 
 logger = logging.getLogger(__name__)
 
@@ -101,10 +102,7 @@ focused, self-contained task description for that agent).
 
 # Workflow rules
 
-For every user task, use the mandatory core sequence below when those agents
-are registered. Do NOT skip planner, coder, or reviewer because a task looks
-trivial, read-only, or informational. The user's preference is to see all three
-core agents participate on every fleet turn.
+{routing_block}
 
   1. Dispatch `planner` first. The planner produces a Markdown plan
      committed to disk under `.localcode/plans/`. Pass the user's
@@ -201,12 +199,33 @@ class OrchestratorAgent:
         model: str = DEFAULT_ORCHESTRATOR_MODEL,
         max_turns: int = DEFAULT_ORCHESTRATOR_MAX_TURNS,
         require_plan_approval: bool = False,
+        route: RouteDecision | None = None,
     ) -> None:
         self.registry = registry
         self._run_step_fn = run_step_fn
         self.model = model
         self.max_turns = max_turns
         self.require_plan_approval = require_plan_approval
+        # ``None`` means "nobody routed this turn" — direct construction in a
+        # test or a unit caller. That renders the full-crew block, so the
+        # unrouted default is the old, safe behaviour rather than a guess.
+        self.route = route
+
+    def build_system_prompt(self) -> str:
+        """Render the orchestrator's system prompt.
+
+        A method, not an inline expression in ``run()``, so a test can assert
+        on the REAL call: every placeholder in ``ORCHESTRATOR_SYSTEM`` needs a
+        keyword argument here, and a missing one raises ``KeyError`` at the top
+        of every fleet turn — a failure that a test formatting the template
+        itself with its own kwargs would never see.
+        """
+        return ORCHESTRATOR_SYSTEM.format(
+            registry=render_registry_for_prompt(self.registry),
+            max_turns=self.max_turns,
+            hitl_block=HITL_BLOCK if self.require_plan_approval else "",
+            routing_block=render_routing_block(self.route),
+        )
 
     async def run(self, ctx: RunContext) -> AsyncIterator[Event]:
         """Drive one user-prompt → assistant-response turn through the
@@ -233,11 +252,7 @@ class OrchestratorAgent:
             "",
         )
 
-        system_prompt = ORCHESTRATOR_SYSTEM.format(
-            registry=render_registry_for_prompt(self.registry),
-            max_turns=self.max_turns,
-            hitl_block=HITL_BLOCK if self.require_plan_approval else "",
-        )
+        system_prompt = self.build_system_prompt()
 
         # Tool lockdown — three independent measures because we found in
         # practice that ``allowed_tools`` ALONE doesn't restrict the
