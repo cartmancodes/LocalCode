@@ -809,6 +809,44 @@ class ClaudeProvider:
                 await self.close_session(key)
 
 
+def rate_limit_event(message: Any) -> Event:
+    """One SDK ``RateLimitEvent`` as our ``quota.limit`` Event.
+
+    The only place Claude's remaining plan headroom is ever MEASURED. The CLI
+    emits this as its own message type when the rate-limit status TRANSITIONS —
+    not on every turn, and not on the result — so a dropped one is a
+    measurement nobody gets again until the next transition, which is why
+    ``quota.py`` persists what it learns here and treats absence as "no
+    change".
+
+    An EVENT, not a governor call: this same code runs inside a fleet worker
+    PROCESS, and ``quota.json`` is a read-modify-write file with exactly one
+    writer. The main process records it — see ``session_runner/turn.py``.
+
+    Shared with ``orchestrator.py``'s translator rather than copied into it:
+    the orchestrator's own model loop is a claude-agent-sdk session too, and a
+    user who works only in fleet sessions would otherwise have Claude's
+    headroom never measured at all. Two copies of the ``getattr`` chain is two
+    places to fix when the SDK's shape moves.
+
+    Every field is read through ``getattr`` with a default: the info object can
+    be absent or ``None``, and a future SDK can rename everything under it.
+    Taking a good turn down over a telemetry field would be a far worse failure
+    than a stale meter, so this function has no path that raises.
+    """
+    info = getattr(message, "rate_limit_info", None)
+    return Event(
+        type="quota.limit",
+        data={
+            "provider": ClaudeProvider.name,
+            "status": getattr(info, "status", None),
+            "resets_at": getattr(info, "resets_at", None),
+            "rate_limit_type": getattr(info, "rate_limit_type", None),
+            "utilization": getattr(info, "utilization", None),
+        },
+    )
+
+
 async def _translate(message: Any, *, usage: TurnUsage | None = None) -> AsyncIterator[Event]:
     """Map claude-agent-sdk message objects to our unified Event stream.
 
@@ -876,33 +914,7 @@ async def _translate(message: Any, *, usage: TurnUsage | None = None) -> AsyncIt
             data["usage"] = asdict(usage)
         yield Event(type="assistant.done", data=data)
     elif isinstance(message, RateLimitEvent):
-        # The only place Claude's remaining plan headroom is ever MEASURED.
-        # The CLI emits this as its own message type when the rate-limit status
-        # TRANSITIONS — not on every turn, and not on the result — so a dropped
-        # one is a measurement nobody gets again until the next transition,
-        # which is why ``quota.py`` persists what it learns here and treats
-        # absence as "no change".
-        #
-        # An EVENT, not a governor call: this same code runs inside a fleet
-        # worker PROCESS, and ``quota.json`` is a read-modify-write file with
-        # exactly one writer. The main process records it — see
-        # ``session_runner/turn.py``.
-        #
-        # Read through ``getattr`` with a default at every hop: the info object
-        # can be absent or ``None``, and a future SDK can rename every field
-        # under it. Taking a good turn down over a telemetry field would be a
-        # far worse failure than a stale meter.
-        info = getattr(message, "rate_limit_info", None)
-        yield Event(
-            type="quota.limit",
-            data={
-                "provider": ClaudeProvider.name,
-                "status": getattr(info, "status", None),
-                "resets_at": getattr(info, "resets_at", None),
-                "rate_limit_type": getattr(info, "rate_limit_type", None),
-                "utilization": getattr(info, "utilization", None),
-            },
-        )
+        yield rate_limit_event(message)
     elif isinstance(message, SystemMessage):
         # System init/notice messages — optional to surface; skip for now.
         return

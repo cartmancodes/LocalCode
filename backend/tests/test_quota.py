@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any, get_args
 
@@ -58,12 +59,21 @@ class Clock:
 
 
 @pytest.fixture(autouse=True)
-def _clear_governor_cache():
+def _clear_governor_cache(monkeypatch: pytest.MonkeyPatch):
     """``get_governor`` is ``lru_cache``d like ``get_settings``, so a cached
     instance built under one test's HOME (or one test's ``QUOTA_PATH``) would
     otherwise be handed to the next test — and would keep writing to a
-    tmp_path that no longer exists."""
+    tmp_path that no longer exists.
+
+    The writer lock is replaced per test for a subtler reason: an
+    ``asyncio.Lock`` binds to the loop of the first coroutine that has to WAIT
+    on it, and pytest-asyncio gives every test its own loop. The app has one
+    loop for its whole life so the module-level lock is right there (it is the
+    same idiom as ``storage/sessions.py``'s ``_index_lock``); only the suite
+    needs a fresh one, and only because two different tests contend on it.
+    """
     get_governor.cache_clear()
+    monkeypatch.setattr(quota_mod, "_record_lock", asyncio.Lock())
     yield
     get_governor.cache_clear()
 
@@ -231,6 +241,84 @@ class TestReportedPayloads:
         assert window.used == 10
         assert window.limit is None
         assert gov.headroom("claude") == 1.0
+
+    def test_a_provider_window_with_no_usable_reset_rolls_on_its_own_length(
+        self, tmp_path: Path
+    ) -> None:
+        """Ruling 32. A payload with a utilization and no reset is exactly what
+        the Codex path allows, and without a fallback it froze the window at
+        that utilization forever — at 0.95 or above, pinning headroom under the
+        threshold so every ``auto`` dispatch refused with no way back."""
+        clock = Clock()
+        for payload_reset in (
+            None,  # absent entirely
+            clock.now - 10,  # already in the past
+            clock.now * 1000,  # a millisecond-epoch stamp
+            clock.now + 400 * 24 * 3600,  # absurdly far out
+            "soon",  # not a number at all
+        ):
+            gov = Governor(tmp_path / f"quota-{payload_reset}.json", clock=clock)
+            reported: dict[str, Any] = {
+                "rate_limit_type": "five_hour",
+                "utilization": 0.99,
+            }
+            if payload_reset is not None:
+                reported["resets_at"] = payload_reset
+            gov.record("claude", reported=reported)
+
+            window = {w.key: w for w in gov.snapshot().windows["claude"]}["five_hour"]
+            assert window.source == "provider"
+            # Not stored: the snapshot never shows a reset the governor is not
+            # using — and a rejected stamp is never CONVERTED into a plausible
+            # one, which would be fabricating a measurement.
+            assert window.resets_at is None
+            assert gov.headroom("claude") == pytest.approx(0.01)
+
+            # …and it rolls at started_at + window_s, like any other window.
+            clock.advance(FIVE_HOURS_S)
+            assert gov.headroom("claude") == 1.0
+            clock.advance(-FIVE_HOURS_S)
+
+    def test_a_sane_reset_is_honoured_verbatim(self, tmp_path: Path) -> None:
+        clock = Clock()
+        gov = a_governor(tmp_path, clock)
+
+        gov.record(
+            "claude",
+            reported={
+                "rate_limit_type": "five_hour",
+                "utilization": 0.5,
+                "resets_at": clock.now + 1800,
+            },
+        )
+
+        window = {w.key: w for w in gov.snapshot().windows["claude"]}["five_hour"]
+        assert window.resets_at == pytest.approx(clock.now + 1800)
+        # Before the reset it stands; after it, the window rolls — well before
+        # started_at + window_s, because the vendor said so.
+        clock.advance(1799)
+        assert gov.headroom("claude") == pytest.approx(0.5)
+        clock.advance(2)
+        assert gov.headroom("claude") == 1.0
+
+    def test_an_unusable_reset_is_warned_about_once(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        clock = Clock()
+        gov = a_governor(tmp_path, clock)
+        payload = {
+            "rate_limit_type": "five_hour",
+            "utilization": 0.2,
+            "resets_at": clock.now * 1000,
+        }
+
+        with caplog.at_level(logging.WARNING, logger="backend.app.quota"):
+            gov.record("claude", reported=payload)
+            gov.record("claude", reported=payload)
+
+        warnings = [r for r in caplog.records if "resets_at" in r.getMessage()]
+        assert len(warnings) == 1, [r.getMessage() for r in warnings]
+        assert str(int(clock.now * 1000)) in warnings[0].getMessage()
 
     def test_a_malformed_payload_records_locally_instead_of_raising(
         self, tmp_path: Path
@@ -472,6 +560,78 @@ class TestPersistence:
         assert gov.headroom("claude") == 1.0
 
 
+class TestOneWriterAtATime:
+    """``quota.json`` is a read-modify-write file and the process has exactly
+    one cached Governor. Two turns finishing at once — two sessions, or two
+    ``dispatch_subagent`` calls in flight in one fleet turn — must not lose an
+    increment or publish a half-written ledger."""
+
+    async def test_records_are_serialized_across_the_thread_offload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class Overlapping:
+            """Reports the widest overlap it ever saw. Without the lock held
+            ACROSS ``asyncio.to_thread``, eight of these run at once."""
+
+            def __init__(self) -> None:
+                self.live = 0
+                self.widest = 0
+                self.total = 0
+
+            def record(self, _provider: str, *, tokens: int = 0, reported: Any = None) -> None:
+                self.live += 1
+                self.widest = max(self.widest, self.live)
+                # A real read-modify-write window, not an instant one.
+                time.sleep(0.01)
+                self.total += tokens
+                self.live -= 1
+
+        governor = Overlapping()
+        monkeypatch.setattr(quota_mod, "get_governor", lambda: governor)
+
+        await asyncio.gather(
+            *(quota_mod.record_turn("claude", tokens=1) for _ in range(8))
+        )
+
+        assert governor.widest == 1, "two writers were inside the ledger at once"
+        assert governor.total == 8
+
+    async def test_concurrent_records_keep_every_token_and_a_parseable_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        governor = a_governor(tmp_path)
+        monkeypatch.setattr(quota_mod, "get_governor", lambda: governor)
+
+        await asyncio.gather(
+            *(quota_mod.record_turn("claude", tokens=10) for _ in range(20))
+        )
+
+        assert governor.snapshot().windows["claude"][0].used == 200
+        on_disk = json.loads((tmp_path / "quota.json").read_text(encoding="utf-8"))
+        assert on_disk["windows"]["claude"][0]["used"] == 200
+
+    def test_the_temp_file_is_per_process(self, tmp_path: Path) -> None:
+        """A second LocalCode process shares only the file. On one fixed
+        ``quota.json.tmp`` its truncating open, landing between our write and
+        our rename, publishes a truncated ledger that the next start
+        "recovers" by discarding every window."""
+        import os
+
+        seen: list[Path] = []
+        real_replace = os.replace
+
+        def spy(src: Any, dst: Any) -> None:
+            seen.append(Path(src))
+            real_replace(src, dst)
+
+        gov = a_governor(tmp_path)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(quota_mod.os, "replace", spy)
+            gov.record("claude", tokens=1)
+
+        assert seen and seen[0].name == f"quota.json.{os.getpid()}.tmp"
+
+
 class TestSettingsDrivenPath:
     def test_the_default_path_resolves_under_a_redirected_home(
         self, tmp_localcode: Path
@@ -583,6 +743,65 @@ class TestClaudeReportsIn:
         events = await self._translate(drifted)
 
         assert [ev.type for ev in events] == ["quota.limit"]
+
+
+class TestFleetOrchestratorReportsIn:
+    """The orchestrator's own model loop is a claude-agent-sdk session too, and
+    for a user who works only in fleet sessions it is the ONLY place Claude's
+    headroom is ever measured. Its translator dropped ``RateLimitEvent``
+    entirely, so ``auto`` routed on an unmeasured local estimate forever."""
+
+    async def _translate(self, message: Any) -> list[Any]:
+        from backend.app.orchestrator.orchestrator import (
+            _translate_orchestrator_message,
+        )
+
+        return [
+            ev
+            async for ev in _translate_orchestrator_message(
+                message, suppressed_tool_names={"dispatch_subagent"}
+            )
+        ]
+
+    async def test_a_rate_limit_event_becomes_a_quota_limit_event(self) -> None:
+        from claude_agent_sdk import RateLimitEvent, RateLimitInfo
+
+        events = await self._translate(
+            RateLimitEvent(
+                rate_limit_info=RateLimitInfo(
+                    status="allowed_warning",
+                    resets_at=1_700_000_000,
+                    rate_limit_type="five_hour",
+                    utilization=0.6,
+                ),
+                uuid="u1",
+                session_id="s1",
+            )
+        )
+
+        assert [ev.type for ev in events] == ["quota.limit"]
+        assert events[0].data["provider"] == "claude"
+        assert events[0].data["utilization"] == 0.6
+
+    async def test_a_shape_change_does_not_raise(self) -> None:
+        from claude_agent_sdk import RateLimitEvent, RateLimitInfo
+
+        drifted = RateLimitEvent(
+            rate_limit_info=RateLimitInfo(status="allowed"), uuid="u", session_id="s"
+        )
+        drifted.rate_limit_info = object()  # type: ignore[assignment]
+
+        events = await self._translate(drifted)
+
+        assert [ev.type for ev in events] == ["quota.limit"]
+
+    def test_both_translators_share_one_reader(self) -> None:
+        """Two copies of the ``getattr`` chain is two places to fix when the
+        SDK's shape moves — and one of them will be missed."""
+        from backend.app.orchestrator import claude as claude_mod
+        from backend.app.orchestrator import orchestrator as orch_mod
+
+        assert orch_mod.rate_limit_event is claude_mod.rate_limit_event
 
 
 class TestCodexReportsIn:

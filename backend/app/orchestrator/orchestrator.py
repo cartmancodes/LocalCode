@@ -29,6 +29,7 @@ from typing import Any
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    RateLimitEvent,
     ResultMessage,
     StreamEvent,
     SystemMessage,
@@ -41,6 +42,7 @@ from claude_agent_sdk import (
 
 from .agent_def import AgentDef, render_registry_for_prompt
 from .base import Event, RunContext
+from .claude import rate_limit_event
 from .dispatch import EventSink, build_dispatch_mcp
 from .fleet.router import RouteDecision, render_routing_block
 
@@ -412,5 +414,14 @@ async def _translate_orchestrator_message(
                 "num_turns": getattr(message, "num_turns", None),
             },
         )
+    elif isinstance(message, RateLimitEvent):
+        # The orchestrator's own model loop is a claude-agent-sdk session, so
+        # it sees the same rate-limit transitions a direct turn does — and for
+        # a user who works only in fleet sessions it is the ONLY place Claude's
+        # headroom is ever measured. Dropping it here (as this branch chain did
+        # until Task 11's first fix round) left ``provider: "auto"`` routing on
+        # an unmeasured local estimate forever. Same helper as ``claude.py``'s
+        # translator, not a second copy of the getattr chain.
+        yield rate_limit_event(message)
     elif isinstance(message, SystemMessage):
         return

@@ -39,6 +39,17 @@ direct turn and ``orchestrator/dispatch.py`` beside ``budget.spend`` for a
 fleet sub-step. Exactly one record per turn; a double count shows inflated use,
 which is precisely the dishonesty this module exists to remove.
 
+**Known gap.** A ``quota.limit`` a sub-provider emits INSIDE a fleet worker is
+LOST, not merely unwritten: the worker's only channels to the parent are
+``@@FIRST@@`` and a framed ``StepResult`` (``fleet/constants.py``), and
+``fleet/collect.py`` consumes the Event stream in the child with no branch for
+it. The step's TOKENS still arrive (``StepResult.usage``); the vendor's
+measurement does not, and nothing replays it. Because rate-limit state is
+per-account, the next transition seen on the main process — a direct turn, or
+the orchestrator's own loop, which does read them (``orchestrator.py``) —
+supersedes it, so the cost is a delayed measurement rather than a permanently
+wrong one. Relaying it would mean a third marker on the worker wire protocol.
+
 Nothing here may raise into a turn. A governor that estimates badly is a bad
 number; a governor that takes the turn down is a bad harness.
 """
@@ -137,9 +148,18 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
     A crash mid-write leaves either the old file or the new one, never a torn
     read-modify-write of the quota ledger.
+
+    The temp name carries the PID. Writers inside one process are serialized by
+    :data:`_record_lock`, but a second LocalCode process (a dev server beside a
+    test run, two backends sharing a home) shares only the file: on one fixed
+    ``quota.json.tmp`` its truncating ``open("w")`` landing between the other's
+    write and its ``os.replace`` publishes a truncated ledger, which the next
+    start "recovers" from by discarding every window. A per-process name makes
+    the two writers race only on the rename, where the loser's whole file is
+    simply overwritten by the winner's whole file.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
     with tmp.open("w", encoding="utf-8") as f:
         f.write(text)
         f.flush()
@@ -284,6 +304,10 @@ class Governor:
         self.path = path if path is not None else default_quota_path()
         self._clock = clock
         self._windows: dict[str, dict[str, WindowState]] = {}
+        # (provider, window, value) triples already logged as unusable, so a
+        # vendor that reports the same bad stamp on every transition costs one
+        # WARNING rather than one per event.
+        self._warned_resets: set[tuple[str, str, str]] = set()
         self._load()
 
     # ── persistence ─────────────────────────────────────────────────────────
@@ -333,13 +357,16 @@ class Governor:
     def _defaults_for(self, provider: str) -> tuple[tuple[str, float], ...]:
         return DEFAULT_WINDOWS.get(provider, _FALLBACK_WINDOWS)
 
-    def _windows_for(self, provider: str) -> dict[str, WindowState]:
+    def _windows_for(self, provider: str) -> tuple[dict[str, WindowState], bool]:
         """This provider's windows, materialising its defaults on first sight
-        and rolling any that have expired."""
+        and rolling any that have expired. The flag says whether any of that
+        changed state worth persisting."""
         now = self._clock()
+        changed = False
         existing = self._windows.setdefault(provider, {})
         for key, window_s in self._defaults_for(provider):
             if key not in existing:
+                changed = True
                 existing[key] = WindowState(
                     provider=provider,
                     key=key,
@@ -352,29 +379,77 @@ class Governor:
                     unit=UNIT_TOKENS,
                 )
         for window in existing.values():
-            self._roll(window, now)
-        return existing
+            changed |= self._roll(window, now)
+        return existing, changed
 
-    def _roll(self, window: WindowState, now: float) -> None:
-        """Open a fresh window when this one is over.
+    def _roll(self, window: WindowState, now: float) -> bool:
+        """Open a fresh window when this one is over; ``True`` if it did.
 
         A provider-sourced window rolls on the vendor's own ``resets_at`` and
         reverts to local accumulation: the measurement it held describes a
         window that no longer exists, and the next transition event is what
-        replaces it. A local window rolls on its own length.
+        replaces it.
+
+        **Every window rolls on something.** A provider-sourced one whose
+        ``resets_at`` was missing or unusable (see :meth:`_usable_reset`) falls
+        back to its own length, exactly like a local window. Without that
+        fallback a payload carrying a utilization and no reset — which is
+        precisely what the Codex path allows, since it requires only a numeric
+        utilization — froze the window at that value forever, persisted across
+        restarts; at 0.95 or above that pins headroom under
+        :data:`QUEUE_THRESHOLD` and every ``auto`` dispatch refuses with no way
+        back until some other vendor event happens to arrive.
         """
         if window.source == SOURCE_PROVIDER:
-            if window.resets_at is not None and now >= window.resets_at:
-                window.started_at = now
-                window.used = 0.0
-                window.limit = None
-                window.source = SOURCE_LOCAL
-                window.resets_at = None
-                window.unit = UNIT_TOKENS
-            return
+            over = (
+                now >= window.resets_at
+                if window.resets_at is not None
+                else now - window.started_at >= window.window_s
+            )
+            if not over:
+                return False
+            window.started_at = now
+            window.used = 0.0
+            window.limit = None
+            window.source = SOURCE_LOCAL
+            window.resets_at = None
+            window.unit = UNIT_TOKENS
+            return True
         if now - window.started_at >= window.window_s:
             window.started_at = now
             window.used = 0.0
+            return True
+        return False
+
+    def _usable_reset(
+        self, provider: str, key: str, value: Any, window_s: float, now: float
+    ) -> float | None:
+        """A vendor ``resets_at`` we are willing to steer by, or ``None``.
+
+        Usable means ``now < resets_at <= now + 2 * window_s``: in the future
+        (a past reset describes a window that is already over) and not further
+        out than two of these windows (which is what a millisecond-epoch stamp,
+        a clock skew, or a different unit entirely looks like).
+
+        A rejected value is NOT converted — guessing that 1.7e12 "meant"
+        seconds is fabricating a measurement — and it is not stored either, so
+        the snapshot never shows a reset time the governor is not actually
+        using. The window falls back to ``started_at + window_s``.
+        """
+        stamp = _as_float(value)
+        if stamp is not None and now < stamp <= now + 2 * window_s:
+            return stamp
+        if value is None:
+            return None
+        token = (provider, key, repr(value))
+        if token not in self._warned_resets:
+            self._warned_resets.add(token)
+            logger.warning(
+                "quota: ignoring unusable resets_at %r for %s/%s (now=%.0f, "
+                "window=%.0fs); rolling on the window length instead",
+                value, provider, key, now, window_s,
+            )
+        return None
 
     def record(
         self,
@@ -392,15 +467,26 @@ class Governor:
 
         A provider-sourced window ignores local tokens until it rolls, because
         its units are fractions and the vendor's figure already counts them.
+
+        The sync primitive. Every caller on the event loop goes through
+        :func:`record_turn`, which holds :data:`_record_lock` across the thread
+        offload — this method does a read-modify-write and has no lock of its
+        own.
         """
         try:
-            windows = self._windows_for(provider)
+            windows, changed = self._windows_for(provider)
             applied = self._apply_reported(provider, windows, reported)
+            changed |= applied
             if not applied and tokens:
                 for window in windows.values():
                     if window.source == SOURCE_LOCAL:
                         window.used += tokens
-            self._save()
+                        changed = True
+            # Only when something actually moved: a terminal event reporting
+            # zero tokens is one fsync + rename per turn per session for a file
+            # that would come out byte-identical.
+            if changed:
+                self._save()
         except Exception:  # pragma: no cover — belt and braces; see the module docstring
             logger.exception("quota record failed for %s", provider)
 
@@ -431,7 +517,9 @@ class Governor:
         window_s = dict(self._defaults_for(provider)).get(
             key, REPORTED_WINDOW_LENGTHS.get(key, FIVE_HOURS_S)
         )
-        resets_at = _as_float(reported.get("resets_at"))
+        resets_at = self._usable_reset(
+            provider, key, reported.get("resets_at"), window_s, now
+        )
         existing = windows.get(key)
         windows[key] = WindowState(
             provider=provider,
@@ -580,20 +668,35 @@ def get_governor() -> Governor:
     return Governor(path)
 
 
+# One writer at a time on the ledger. Held ACROSS the thread offload below —
+# the same idiom, for the same reason, as ``storage/sessions.py``'s
+# ``_index_lock``: ``Governor.record`` reads state, mutates it and writes the
+# whole file back, and the process has exactly one cached Governor. Two
+# concurrent turns (two sessions, or two ``dispatch_subagent`` calls in flight
+# in one fleet turn) interleaving that sequence lose an increment on
+# ``window.used`` and race each other's ``os.replace``. Reads stay unlocked:
+# the file is written atomically, so a reader always sees a self-consistent
+# snapshot.
+_record_lock = asyncio.Lock()
+
+
 async def record_turn(
     provider: str, *, tokens: int = 0, reported: Any = None
 ) -> None:
     """Record from the event loop without blocking it on disk.
 
     The write is offloaded exactly as ``usage.UsageLog.append`` is
-    (``claude.py``'s ``asyncio.to_thread``), and every failure is swallowed
-    with a log line: this hangs off a turn's terminal event, and a quota number
-    is never worth a turn.
+    (``claude.py``'s ``asyncio.to_thread``) — but unlike that append-only log,
+    this is a read-modify-write file, so the offload happens under
+    :data:`_record_lock`. Every failure is swallowed with a log line: this
+    hangs off a turn's terminal event, and a quota number is never worth a
+    turn.
     """
     try:
-        await asyncio.to_thread(
-            get_governor().record, provider, tokens=tokens, reported=reported
-        )
+        async with _record_lock:
+            await asyncio.to_thread(
+                get_governor().record, provider, tokens=tokens, reported=reported
+            )
     except Exception:
         logger.warning("quota record for %s failed", provider, exc_info=True)
 

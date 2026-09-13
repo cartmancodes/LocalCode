@@ -166,9 +166,10 @@ def build_dispatch_mcp(
         # the step, because a silent downgrade to a provider below the bar is
         # what turns "your plans are nearly spent" into an unexplained
         # mid-plan failure.
-        resolved_provider = _resolve_provider(agent)
+        resolved_provider, judged = _resolve_provider(agent)
         if resolved_provider is None:
-            return _err(quota.get_governor().refusal(_auto_candidates(agent)))
+            # The refusal describes exactly the candidates the choice judged.
+            return _err(quota.get_governor().refusal(judged))
 
         prompt = _effective_prompt(name, prompt, ctx.prompt, role_outputs)
         step_id = step_ids.next_id(name)
@@ -574,9 +575,15 @@ def _auto_candidates(agent: AgentDef) -> list[str]:
     return [p for p in quota.governed_providers() if p in VALID_PROVIDERS]
 
 
-def _resolve_provider(agent: AgentDef) -> str | None:
-    """The provider that will serve this dispatch, or ``None`` when every
-    candidate is below the queue threshold.
+def _resolve_provider(agent: AgentDef) -> tuple[str | None, list[str]]:
+    """``(provider to serve this dispatch, the candidates it was chosen from)``
+    — the provider is ``None`` when every candidate is below the queue
+    threshold.
+
+    The candidate list comes back with the decision so the refusal message
+    describes the set that was actually judged. Deriving it a second time at
+    the call site is how a refusal ends up naming providers the choice never
+    considered, once these two ever disagree.
 
     A role that names a concrete provider is never rerouted — the user asked
     for that subscription, and quietly moving the work to the other one is a
@@ -585,7 +592,7 @@ def _resolve_provider(agent: AgentDef) -> str | None:
     from .fleet import AUTO_PROVIDER
 
     if agent.provider != AUTO_PROVIDER:
-        return agent.provider
+        return agent.provider, []
     candidates = _auto_candidates(agent)
     chosen = quota.get_governor().choose(candidates)
     if chosen is None:
@@ -593,7 +600,7 @@ def _resolve_provider(agent: AgentDef) -> str | None:
             "dispatch_subagent: %s is 'auto' and every candidate (%s) is spent",
             agent.name, ", ".join(candidates) or "none",
         )
-        return None
+        return None, candidates
     logger.info(
         "dispatch_subagent: %s 'auto' -> %s (headroom %.0f%% of %s)",
         agent.name,
@@ -601,7 +608,7 @@ def _resolve_provider(agent: AgentDef) -> str | None:
         100 * quota.get_governor().headroom(chosen),
         ", ".join(candidates),
     )
-    return chosen
+    return chosen, candidates
 
 
 def _err(message: str) -> dict[str, Any]:

@@ -138,6 +138,18 @@ async def collect_step(
                 )
             elif ev.type == "assistant.done":
                 usage = _token_usage(ev.data.get("usage"))
+            # NOT handled here, deliberately, and it costs something: a
+            # ``quota.limit`` event — a sub-provider's vendor telling us where
+            # its rate-limit window stands — is DROPPED by this chain. This
+            # coroutine runs in a worker PROCESS whose only channels to the
+            # parent are ``@@FIRST@@`` and the framed StepResult below, and
+            # ``quota.json`` is a read-modify-write file with exactly one
+            # writer (the server), so the measurement cannot be recorded from
+            # here and cannot be carried home without a third marker on the
+            # wire protocol. The step's tokens still reach the governor via
+            # ``StepResult.usage``; the vendor's own figure is lost until the
+            # main process sees a transition itself (rate-limit state is
+            # per-account, so that supersedes this one). See quota.py.
             elif ev.type == "error":
                 raise RuntimeError(ev.data.get("message") or "sub-provider error")
     finally:
