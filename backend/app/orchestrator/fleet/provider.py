@@ -310,11 +310,14 @@ class FleetProvider:
         step: Step,
         role_cfg: RoleConfig,
         ctx: RunContext,
-        outputs: dict[str, str],
+        outputs: dict[str, StepResult],
     ) -> AsyncIterator[Event]:
         """Invoke ``role_cfg`` with ``step.prompt`` exactly. The caller is
         responsible for stitching plan + prior-step context into ``prompt`` —
         we just delegate to the sub-provider and emit tool_use/tool_result.
+
+        The step's :class:`StepResult` envelope is recorded in ``outputs`` under
+        ``step.id``; the caller decides which view of it to use.
 
         Two safeguards keep this robust:
 
@@ -453,13 +456,18 @@ class FleetProvider:
 
         # Successful step — record output and emit the result card.
         assert output is not None  # if no error_text, we broke out with output set
-        # The BOUNDED envelope text, not the transcript: a 2 MB step output is
-        # a summary plus an artifact pointer by the time it lands here, so the
-        # orchestrator's context cost per step is capped no matter how chatty
-        # the sub-provider was. ``context_text()`` is the only place that rule
-        # lives (see ``envelope.py``).
+        # The ENVELOPE, not text. Callers need two views of one step: the
+        # bounded ``context_text()`` that goes into the orchestrator's context,
+        # and the full output (via the artifact the envelope points at) for
+        # anything written to disk as a document — see ``dispatch._full_output``
+        # and the plan file it repairs. Recording only the bounded view makes
+        # the second view unrecoverable.
+        outputs[step.id] = output
+        # What the UI card and the orchestrator see is still bounded: a 2 MB
+        # step output is a summary plus an artifact pointer by the time it
+        # lands here, and ``context_text()`` is the only place that rule lives
+        # (see ``envelope.py``).
         context = output.context_text()
-        outputs[step.id] = context
         # Mark gate failures as errored tool results so the UI shows them red.
         # Prefer the verdict the step already parsed from its FULL output; fall
         # back to parsing the envelope text (JSON block first, then the

@@ -15,7 +15,10 @@ from pathlib import Path
 import pytest
 
 from backend.app.artifacts import ArtifactStore
+from backend.app.orchestrator import dispatch as dispatch_mod
 from backend.app.orchestrator import registry as registry_mod
+from backend.app.orchestrator.agent_def import AgentDef
+from backend.app.orchestrator.approvals import EventSink
 from backend.app.orchestrator.base import Event, RunContext
 from backend.app.orchestrator.fleet import provider as provider_mod
 from backend.app.orchestrator.fleet.collect import collect_step, collect_text
@@ -560,13 +563,13 @@ async def _run_step(
     role: str,
     envelope: StepResult,
     session_id: str | None = "sess-3",
-) -> tuple[list[Event], dict[str, str], _StubHandle]:
+) -> tuple[list[Event], dict[str, StepResult], _StubHandle]:
     stub = _StubHandle(envelope)
     monkeypatch.setattr(provider_mod, "_SubprocHandle", lambda: stub)
     fleet = provider_mod.FleetProvider()
     step = Step(id=f"orch.{role}.1", role=role, prompt="do the thing")
     ctx = RunContext(model="m", prompt="p", session_id=session_id)
-    outputs: dict[str, str] = {}
+    outputs: dict[str, StepResult] = {}
 
     events = [ev async for ev in fleet._run_step_with_role(step, ROLE, ctx, outputs)]
     return events, outputs, stub
@@ -587,11 +590,14 @@ class TestProviderConsumesTheEnvelope:
 
         events, outputs, stub = await _run_step(monkeypatch, "coder", envelope)
 
-        assert outputs["orch.coder.1"] == envelope.context_text()
-        assert len(outputs["orch.coder.1"]) < 10_000
-        assert "e" * 12 in outputs["orch.coder.1"]
+        # The envelope is what gets recorded — the caller picks the view it
+        # needs (bounded text for context, the artifact for anything written
+        # to disk as a document).
+        assert outputs["orch.coder.1"] is envelope
         results = [ev for ev in events if ev.type == "tool.result"]
         assert results[-1].data["content"] == envelope.context_text()
+        assert len(results[-1].data["content"]) < 10_000
+        assert "e" * 12 in results[-1].data["content"]
         assert results[-1].data["is_error"] is False
         # Task 14's cancellation still runs on every exit path.
         assert stub.killed
@@ -659,3 +665,163 @@ class TestProviderConsumesTheEnvelope:
 
         result = [ev for ev in events if ev.type == "tool.result"][-1]
         assert result.data["is_error"] is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The plan on disk. ``.localcode/plans/<ts>-<slug>.md`` is a user-facing
+# artifact people open, and the Coder is told to read it — so it must be the
+# WHOLE plan even when the orchestrator only ever sees a bounded summary.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Comfortably over the 8000-byte inline threshold, so eviction really happens.
+# No surrounding whitespace, because the collector strips it (unchanged from
+# before this task) and these tests assert byte-for-byte equality on disk.
+BIG_PLAN = (
+    "# Big Plan\n\n" + "- [ ] Step: do the thing exactly as written.\n" * 400
+).strip()
+
+
+def _dispatch_handler(monkeypatch: pytest.MonkeyPatch, cwd: str, run_step_fn):
+    """The real ``dispatch_subagent`` tool, reached by capturing the tool
+    objects ``build_dispatch_mcp`` hands to the SDK."""
+    captured: dict[str, object] = {}
+
+    def _fake_create(*, name: str, version: str, tools: list):
+        captured.update({t.name: t for t in tools})
+        return {"type": "sdk", "name": name}
+
+    monkeypatch.setattr(dispatch_mod, "create_sdk_mcp_server", _fake_create)
+    registry = {
+        "planner": AgentDef(
+            name="planner",
+            description="plans",
+            provider="claude",
+            model="m",
+            system_prompt="s",
+        )
+    }
+    dispatch_mod.build_dispatch_mcp(
+        registry=registry,
+        ctx=RunContext(model="m", prompt="build it", cwd=cwd),
+        sink=EventSink(),
+        run_step_fn=run_step_fn,
+    )
+    return captured["dispatch_subagent"].handler  # type: ignore[attr-defined]
+
+
+def _step_fn(envelope: StepResult):
+    """A ``run_step_fn`` that records one prepared envelope, as the provider
+    does."""
+
+    async def _run(step, role_cfg, ctx, outputs):  # noqa: ANN001, ANN202
+        outputs[step.id] = envelope
+        yield Event(type="assistant.text", data={"text": "planning"})
+
+    return _run
+
+
+def _make_dir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _plan_files(work: Path) -> list[Path]:
+    return sorted((work / ".localcode" / "plans").glob("*.md"))
+
+
+def _read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+class TestPlannerPlanOnDisk:
+    async def test_a_plan_over_the_threshold_is_written_to_disk_whole(
+        self, stub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The regression this fix closes: the context view is bounded, the
+        FILE is complete. Before the fix the file held the head/tail excerpt
+        plus a pointer — in a file that is supposed to BE the document."""
+        stub([_text(BIG_PLAN)])
+        envelope = await collect_step(ROLE, "plan it", None, role_name="planner")
+        assert envelope.artifact_id is not None, "fixture must exceed the threshold"
+        work = _make_dir(tmp_path / "proj")
+
+        handler = _dispatch_handler(monkeypatch, str(work), _step_fn(envelope))
+        result = await handler({"name": "planner", "prompt": "plan it"})
+
+        returned = result["content"][0]["text"]
+        # Bounded on the way to the orchestrator...
+        assert len(returned) < 10_000
+        assert len(BIG_PLAN) > 10_000
+        assert "_Plan saved to_" in returned
+        # ...complete on disk, byte for byte.
+        files = _plan_files(work)
+        assert len(files) == 1
+        assert _read(files[0]) == BIG_PLAN
+
+    async def test_a_plan_under_the_threshold_is_unchanged(
+        self, stub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plan = "# Small Plan\n\n- [ ] Step 1: write it."
+        stub([_text(plan)])
+        envelope = await collect_step(ROLE, "plan it", None, role_name="planner")
+        assert envelope.artifact_id is None
+        work = _make_dir(tmp_path / "proj2")
+
+        handler = _dispatch_handler(monkeypatch, str(work), _step_fn(envelope))
+        result = await handler({"name": "planner", "prompt": "plan it"})
+
+        assert _read(_plan_files(work)[0]) == plan
+        assert plan in result["content"][0]["text"]
+
+    async def test_a_missing_artifact_degrades_to_the_summary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pruned store must not fail the dispatch: a truncated plan file is
+        bad, a lost plan step is worse."""
+        envelope = StepResult(
+            summary="head…\n… [truncated]\n…tail",
+            structured=None,
+            artifact_id="0" * 64,
+            artifact_path="/gone/00/0.txt",
+            tool_digest="",
+            full_bytes=50_000,
+        )
+        work = _make_dir(tmp_path / "proj3")
+
+        handler = _dispatch_handler(monkeypatch, str(work), _step_fn(envelope))
+        result = await handler({"name": "planner", "prompt": "plan it"})
+
+        assert _read(_plan_files(work)[0]) == envelope.summary
+        assert "_Plan saved to_" in result["content"][0]["text"]
+
+
+class TestEffectivePromptKeepsThePointer:
+    """``_effective_prompt`` stitches the planner's output into the Coder's and
+    Reviewer's prompts verbatim. The pointer line has to survive that, or the
+    Coder is told to read a file whose path it was never given."""
+
+    PLANNER_OUTPUT = (
+        "# Big Plan\n\nhead of the plan…\n"
+        "… [truncated 18012 bytes — full output at /a/b.txt (artifact abc123def456)]\n"
+        "…tail of the plan\n\n---\n_Plan saved to_ `/w/.localcode/plans/x-plan.md`"
+    )
+
+    def test_the_coder_prompt_carries_the_pointer_verbatim(self) -> None:
+        stitched = dispatch_mod._effective_prompt(
+            "coder", "implement it", "build a scraper", {"planner": self.PLANNER_OUTPUT}
+        )
+
+        assert self.PLANNER_OUTPUT in stitched
+        assert "_Plan saved to_ `/w/.localcode/plans/x-plan.md`" in stitched
+        assert "full output at /a/b.txt" in stitched
+
+    def test_the_reviewer_prompt_carries_it_too(self) -> None:
+        stitched = dispatch_mod._effective_prompt(
+            "reviewer",
+            "review it",
+            "build a scraper",
+            {"planner": self.PLANNER_OUTPUT, "coder": "Changes: wrote it."},
+        )
+
+        assert self.PLANNER_OUTPUT in stitched
+        assert "Changes: wrote it." in stitched

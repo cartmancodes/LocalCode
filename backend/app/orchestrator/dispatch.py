@@ -30,11 +30,17 @@ import re
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
+from ..artifacts import ArtifactStore
 from .agent_def import AgentDef
+
+if TYPE_CHECKING:
+    # Type-only: importing the fleet package at module load time is the
+    # circular import the lazy imports below exist to avoid.
+    from .fleet.envelope import StepResult
 
 # The approval machinery lives in approvals.py now — the tool gate uses the
 # same queue, and answers are routed to the gate that asked. Re-exported from
@@ -142,7 +148,13 @@ def build_dispatch_mcp(
             system_prompt=agent.system_prompt,
         )
         step = Step(id=step_id, role=agent.name, prompt=prompt)
-        outputs: dict[str, str] = {}
+        # Envelopes, not text: this tool needs two different views of one step
+        # — the BOUNDED ``context_text()`` it returns to the orchestrator, and
+        # (for the planner) the step's COMPLETE output to write to disk. Only
+        # the ``StepResult`` can give both, and deriving the bounded view from
+        # the envelope is safe where reconstructing the full text from the
+        # bounded view is impossible.
+        outputs: dict[str, StepResult] = {}
 
         # Stream every per-step event onto the sink so the WS shows the
         # agent's tool_use / tool_result / heartbeat cards while the
@@ -175,12 +187,13 @@ def build_dispatch_mcp(
             logger.exception("dispatch_subagent: %s raised", name)
             return _err(f"subagent {name!r} raised: {exc}")
 
-        # ``run_step_fn`` records the step's ``StepResult.context_text()`` here
-        # — a bounded envelope (summary + capped tool digest + an artifact
-        # pointer when the output was evicted), not the raw transcript. What
-        # this tool returns IS the orchestrator's context, so an unbounded
-        # value here is the context-runaway defect itself.
-        result = outputs.get(step_id, "")
+        # ``run_step_fn`` records the step's envelope here. What this tool
+        # RETURNS is the orchestrator's context, so it returns the bounded
+        # ``context_text()`` (summary + capped tool digest + an artifact
+        # pointer when the output was evicted) and never the raw transcript —
+        # an unbounded value here is the context-runaway defect itself.
+        envelope = outputs.get(step_id)
+        result = envelope.context_text() if envelope is not None else ""
         if not result:
             return _err(
                 f"subagent {name!r} produced no output. Inspect the chat "
@@ -191,9 +204,17 @@ def build_dispatch_mcp(
         # so it's an inspectable artifact and downstream agents can `cat`
         # it from the path. The orchestrator's narrative also gets the
         # path appended so it can include it in its summary.
-        if agent.name == "planner":
+        if agent.name == "planner" and envelope is not None:
             try:
-                plan_path = save_plan(result, ctx.cwd)
+                # The WHOLE plan, not the bounded view. This file is a
+                # user-facing artifact — the README and the planner's own
+                # description promise the full plan is committed here, and
+                # people open it. Writing the summary instead left a
+                # head/tail excerpt plus a pointer in a file that is supposed
+                # to BE the document, which also broke the reasoning that
+                # makes the bounded context safe: the coder is told to read
+                # this file, so the file has to be complete.
+                plan_path = save_plan(_full_output(envelope), ctx.cwd)
                 result = f"{result}\n\n---\n_Plan saved to_ `{plan_path}`"
             except OSError as exc:
                 logger.warning("failed to save plan to disk: %s", exc)
@@ -310,6 +331,30 @@ def build_dispatch_mcp(
 # ─────────────────────────────────────────────────────────────────────────────
 # Plan-on-disk helpers (used by the planner branch of dispatch_subagent)
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _full_output(envelope: StepResult) -> str:
+    """A step's COMPLETE output, fetching it back from the artifact store when
+    the envelope only carries a bounded summary.
+
+    When nothing was evicted, ``summary`` IS the full output and is returned
+    unchanged — the common case costs no I/O. When something was evicted, the
+    bounded summary is not a substitute for anything written to disk as a
+    document, so we read the artifact. A missing artifact (someone pruned the
+    store between the step and this call) degrades to the summary with a
+    warning rather than failing the dispatch: a truncated plan file is bad, a
+    lost plan step is worse.
+    """
+    if envelope.artifact_id:
+        text = ArtifactStore().get_text(envelope.artifact_id)
+        if text is not None:
+            return text
+        logger.warning(
+            "artifact %s is missing from the store; writing the bounded "
+            "summary instead of the full output",
+            envelope.artifact_id,
+        )
+    return envelope.summary
 
 
 def slugify_plan_title(plan_text: str) -> str:
