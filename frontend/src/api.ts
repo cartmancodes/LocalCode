@@ -3,6 +3,7 @@ import type {
   FleetConfigOverride,
   FleetConfigResponse,
   MessagesPage,
+  QuotaSnapshot,
   SessionRow,
 } from "./types";
 
@@ -35,6 +36,11 @@ export const api = {
       allowed_roots: string[];
       permissive: boolean;
     }>("/api/system/cwd"),
+  // Remaining subscription headroom — the number the top bar meters. Fetched
+  // on session change and on turn completion; there is deliberately no
+  // interval behind it, because the only thing that moves the number is a
+  // turn finishing.
+  getQuota: () => json<QuotaSnapshot>("/api/system/quota"),
   // Returns a page; for now ChatPane just unwraps `.messages` and ignores
   // pagination (the default page size of 50 covers a fresh chat). Older
   // history can be lazy-loaded via `before` later.

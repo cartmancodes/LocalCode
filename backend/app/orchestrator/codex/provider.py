@@ -85,6 +85,12 @@ from .protocol import (
     PATH_FIELDS,
     QUERY_FIELDS,
     R_EXEC_APPROVAL,
+    RATE_LIMIT_FIELDS,
+    RATE_LIMIT_NESTED_FIELDS,
+    RATE_LIMIT_RESET_FIELDS,
+    RATE_LIMIT_STATUS_FIELDS,
+    RATE_LIMIT_TYPE_FIELDS,
+    RATE_LIMIT_UTILIZATION_FIELDS,
     STATUS_FIELDS,
     TEXT_FIELDS,
     TURN_FIELDS,
@@ -222,6 +228,64 @@ def _usage_from(payload: Mapping[str, Any] | None, *, model: str, session_id: st
         session_id=session_id,
         ts=0.0,
     )
+
+
+def _rate_limit_events(
+    params: Mapping[str, Any],
+    turn: Any,
+    usage_payload: Any,
+) -> Iterator[Event]:
+    """``quota.limit`` Events for whatever ``turn/completed`` says about the
+    plan's remaining headroom — and nothing at all when it says nothing.
+
+    The app-server documents no rate-limit field (A11 in ``protocol.py``), so
+    this recognises a shape rather than parsing a known one: the payload is
+    looked for beside ``usage`` and under it, and read as a single limit, a
+    mapping of window-name → limit, or a list of limits. A numeric utilization
+    is REQUIRED before anything is emitted — reporting a fabricated ceiling
+    would be worse than the local estimate this falls back to.
+
+    Like every other translator here, it never raises: a drifted shape costs
+    the meter, not the turn.
+    """
+    payload = pick(params, *RATE_LIMIT_FIELDS, default=None)
+    if payload is None:
+        payload = pick(turn, *RATE_LIMIT_FIELDS, default=None)
+    if payload is None:
+        payload = pick(usage_payload, *RATE_LIMIT_NESTED_FIELDS, default=None)
+    for name, limit in _rate_limit_entries(payload):
+        utilization = pick(limit, *RATE_LIMIT_UTILIZATION_FIELDS, default=None)
+        try:
+            utilization = float(utilization)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        yield Event(
+            type="quota.limit",
+            data={
+                "provider": CodexProvider.name,
+                "status": pick(limit, *RATE_LIMIT_STATUS_FIELDS, default=None),
+                "resets_at": pick(limit, *RATE_LIMIT_RESET_FIELDS, default=None),
+                "rate_limit_type": pick(limit, *RATE_LIMIT_TYPE_FIELDS, default=name),
+                "utilization": utilization,
+            },
+        )
+
+
+def _rate_limit_entries(payload: Any) -> Iterator[tuple[str | None, Mapping[str, Any]]]:
+    """``(window name, limit mapping)`` pairs out of any of the three shapes
+    A11 allows. A scalar, a string, or ``None`` yields nothing."""
+    if isinstance(payload, Mapping):
+        if pick(payload, *RATE_LIMIT_UTILIZATION_FIELDS, default=None) is not None:
+            yield None, payload
+            return
+        for key, value in payload.items():
+            if isinstance(value, Mapping):
+                yield str(key), value
+        return
+    if isinstance(payload, Sequence) and not isinstance(payload, str | bytes):
+        for value in payload:
+            if isinstance(value, Mapping):
+                yield None, value
 
 
 class _Translator:
@@ -424,6 +488,10 @@ class _Translator:
         usage_payload = pick(params, *USAGE_FIELDS, default=None) or pick(
             turn, *USAGE_FIELDS, default=None
         )
+        # Before the terminal event, because a meter that updates with the turn
+        # it describes is the point. Emits nothing at all when the server said
+        # nothing about limits — see A11 in protocol.py.
+        yield from _rate_limit_events(params, turn, usage_payload)
         usage = _usage_from(usage_payload, model=self._model, session_id=self._session_id)
         yield Event(
             type="assistant.done",

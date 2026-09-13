@@ -901,3 +901,34 @@ button.primary:disabled { opacity: .4; cursor: not-allowed; }
 .lc-stream::-webkit-scrollbar-track, .lc-side__section--scroll::-webkit-scrollbar-track,
 .modal::-webkit-scrollbar-track { background: transparent; }
 * { scrollbar-width: thin; scrollbar-color: #424242 transparent; }
+
+/* Quota meter — remaining subscription headroom, one compact bar per
+   provider. The prominent always-visible number in the harness is now what is
+   LEFT of each plan; the per-message cost figure stays in the transcript.
+   `--unknown` is hatched rather than full: nothing has measured that plan, and
+   a solid bar would assert a fact nobody has. */
+.lc-quota { display: inline-flex; align-items: center; gap: 8px; }
+.lc-quota__item {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 7px;
+  border-radius: var(--r-xl);
+  font-size: 10px; letter-spacing: .01em;
+  background: var(--vs-input); color: var(--muted);
+  border: 1px solid var(--vs-input-border);
+}
+.lc-quota__name { text-transform: uppercase; font-size: 9px; letter-spacing: .04em; }
+.lc-quota__bar {
+  position: relative; width: 40px; height: 4px; border-radius: 2px;
+  background: var(--bg-2); overflow: hidden;
+}
+.lc-quota__fill { position: absolute; inset: 0 auto 0 0; border-radius: 2px; background: var(--status-done); }
+.lc-quota__pct { font-family: var(--font-mono); font-size: 10px; color: var(--ink-2); min-width: 26px; text-align: right; }
+.lc-quota__item--warn .lc-quota__fill { background: var(--status-warn); }
+.lc-quota__item--err  .lc-quota__fill { background: var(--status-err); }
+.lc-quota__item--err  { border-color: var(--status-err); }
+.lc-quota__item--unknown .lc-quota__fill {
+  background: repeating-linear-gradient(
+    -45deg, var(--muted-2) 0 3px, transparent 3px 6px
+  );
+  opacity: .55;
+}

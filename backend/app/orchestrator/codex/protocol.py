@@ -91,6 +91,17 @@ is not):
     ``kind`` distinguishes a creation (``add`` / ``create`` / ``created`` →
     ``Write``) from a modification (→ ``Edit``). *Wrong ⇒* a created file is
     labelled ``Edit`` in the transcript.
+  * **A11 (UNVERIFIED, and the weakest one here).** ``turn/completed`` *may*
+    carry vendor rate-limit state — as ``rate_limits`` / ``rateLimits`` beside
+    ``usage``, or as ``limits`` under it — each entry naming a window
+    (``type``/``window``) with a ``utilization`` fraction and an absolute
+    ``resets_at``. No such field is documented, so unlike A1-A10 this is not a
+    reading of the docs but a shape to RECOGNISE IF IT APPEARS: nothing is
+    emitted when none of these keys is present. *Wrong ⇒* Codex headroom stays
+    locally estimated with ``confidence="unknown"``, which is what it is today
+    anyway. The dangerous direction would be reading a field that means
+    something else and reporting a fabricated limit, which is why a payload
+    must carry a numeric utilization before anything is emitted at all.
 """
 from __future__ import annotations
 
@@ -254,6 +265,25 @@ CACHE_CREATION_TOKEN_FIELDS = (
     "cacheCreationInputTokens",
     "cache_creation_tokens",
 )
+# Vendor-reported rate limits on ``turn/completed`` — Task 11's quota governor.
+# The app-server has no DOCUMENTED rate-limit field at all (see A11), so these
+# are read wherever they might plausibly sit and nothing is emitted when none
+# of them is present. A guess that reads nothing costs a local estimate; a
+# guess that reads the wrong thing would report a fabricated limit, so every
+# spelling below is a candidate, never an assertion.
+RATE_LIMIT_FIELDS = ("rate_limits", "rateLimits")
+# The same, nested under ``usage``.
+RATE_LIMIT_NESTED_FIELDS = ("limits", "rate_limits", "rateLimits")
+RATE_LIMIT_TYPE_FIELDS = ("type", "window", "rate_limit_type", "rateLimitType")
+RATE_LIMIT_UTILIZATION_FIELDS = (
+    "utilization",
+    "used_percent",
+    "usedPercent",
+    "percent_used",
+    "percentUsed",
+)
+RATE_LIMIT_RESET_FIELDS = ("resets_at", "resetsAt", "reset_at", "resetAt")
+RATE_LIMIT_STATUS_FIELDS = ("status",)
 
 # ── field VALUES with meaning ───────────────────────────────────────────────
 # A file_change whose kind is one of these created the file, so the transcript

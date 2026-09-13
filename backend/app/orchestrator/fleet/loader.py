@@ -19,7 +19,7 @@ from typing import Any
 import yaml
 
 from ...config import get_settings
-from .constants import VALID_PROVIDERS, VALID_ROLES
+from .constants import AUTO_PROVIDER, VALID_PROVIDERS, VALID_ROLES
 from .defaults import DEFAULT_FLEET_CONFIG, ROLE_LIBRARY
 from .models import FleetConfig, RoleConfig
 
@@ -189,7 +189,11 @@ def _merge_config(base: FleetConfig, override: dict[str, Any]) -> FleetConfig:
             per_role = {}
 
         provider = per_role.get("provider", role_base.provider)
-        if provider not in VALID_PROVIDERS:
+        # ``auto`` names no backend, so it is not in VALID_PROVIDERS — it is
+        # resolved to one of them by the quota governor at dispatch time (see
+        # ``constants.AUTO_PROVIDER``). Validating it here would reject the
+        # one value whose whole point is to be decided later.
+        if provider != AUTO_PROVIDER and provider not in VALID_PROVIDERS:
             logger.warning(
                 "fleet config: 'roles.%s.provider'=%r invalid (allowed: %s); using default %r",
                 name, provider, VALID_PROVIDERS, role_base.provider,

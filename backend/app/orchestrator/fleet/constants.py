@@ -9,6 +9,14 @@ from typing import Literal
 
 VALID_PROVIDERS = ("claude", "codex", "opencode")
 
+# "Whichever subscription has the most headroom left." NOT a member of
+# VALID_PROVIDERS and never added to it: it names no backend, and everything
+# downstream of ``dispatch_subagent`` (the worker key, the sub-provider
+# lookup) must only ever see a real one. It is resolved — by the quota
+# governor, at the single site where a role becomes a RoleConfig — BEFORE
+# that validation, which is why the loader lets it through.
+AUTO_PROVIDER = "auto"
+
 # Canonical execution order:
 #   planner  → produces the markdown plan (committed to disk)
 #   developer→ optional design step (legacy "design + code" presets)

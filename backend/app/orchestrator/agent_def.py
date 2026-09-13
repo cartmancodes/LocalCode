@@ -27,7 +27,15 @@ class AgentDef:
         dispatch this agent. Keep it imperative and outcome-focused
         ("produces a Markdown plan"), not behavioural ("you are a helpful…").
       - ``provider`` + ``model`` route the dispatch to a concrete sub-provider
-        (``claude`` → claude-agent-sdk, ``opencode`` → opencode HTTP).
+        (``claude`` → claude-agent-sdk, ``codex`` → the app-server,
+        ``opencode`` → opencode HTTP). It may also be ``"auto"``
+        (``fleet.constants.AUTO_PROVIDER``), which names no backend: the quota
+        governor resolves it to whichever candidate subscription has the most
+        headroom left, at the single site where a role becomes a ``RoleConfig``
+        (``dispatch.py``). Candidates come from ``metadata["providers"]`` when
+        the agent declares a list, else every provider the governor keeps
+        windows for. A role that names a concrete provider is never rerouted —
+        the user asked for that subscription.
       - ``system_prompt`` is the agent's own instructions, rendered when the
         sub-provider is invoked.
       - ``permission_mode`` and ``max_turns`` shape the inner ReAct loop the
@@ -43,7 +51,9 @@ class AgentDef:
     permission_mode: str | None = None
     max_turns: int | None = None
     # Free-form metadata for forward compat (e.g. tags, color hints, future
-    # tool allowlists). Never participates in dispatch routing.
+    # tool allowlists). One key is read by dispatch: ``providers``, the
+    # candidate list an ``auto`` role may be served by (unknown names are
+    # dropped). Nothing else here participates in routing.
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

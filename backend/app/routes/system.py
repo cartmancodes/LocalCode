@@ -6,13 +6,14 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from .. import quota
 from ..config import get_settings
 from ..usage import TurnUsage, cache_hit_rate, uncached_share, usage_log_from_settings
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
-# Fixed window for the headline numbers. Task 11's /quota adds a governor on
-# top of this same log; this endpoint stays a read-only snapshot.
+# Fixed window for the headline numbers. /quota below is the governor's view;
+# this endpoint stays a read-only snapshot of the raw turn log.
 _USAGE_WINDOW_S = 3600
 
 
@@ -67,3 +68,21 @@ async def get_system_usage() -> dict[str, Any]:
         **_stats(entries),
         "by_provider": {provider: _stats(es) for provider, es in by_provider.items()},
     }
+
+
+@router.get("/quota")
+async def get_system_quota() -> dict[str, Any]:
+    """Remaining headroom per subscription — the number the top bar shows and
+    the number ``provider: "auto"`` routes on.
+
+    Read from the SAME ``get_governor()`` the recording sites write through, so
+    the meter cannot drift onto a different ledger than the turns (the split
+    ``usage_log_from_settings`` exists to prevent, one file over).
+
+    ``queue_suggested`` is advice, not a queue: "every governed subscription is
+    at or below the threshold, so hold this work rather than starting it".
+    """
+    governor = quota.get_governor()
+    body = governor.to_dict()
+    body["queue_suggested"] = governor.should_queue(list(quota.governed_providers()))
+    return body

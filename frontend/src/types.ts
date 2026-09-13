@@ -108,6 +108,20 @@ export type StreamEvent =
   | { type: "tool.result"; data: { tool_use_id: string; content: any; is_error: boolean } }
   | { type: "assistant.done"; data: { cost_usd?: number; duration_ms?: number } }
   | { type: "error"; data: { message: string } }
+  // A vendor reported where its rate-limit window stands. The chat renders
+  // nothing for it — the top bar's quota meter is what it feeds, via a refetch
+  // of /api/system/quota on turn completion — but the union names it so an
+  // exhaustive switch stays exhaustive.
+  | {
+      type: "quota.limit";
+      data: {
+        provider: Provider;
+        status?: string | null;
+        resets_at?: number | null;
+        rate_limit_type?: string | null;
+        utilization?: number | null;
+      };
+    }
   // Two gates share this event, and `kind` says which: "plan" is the fleet's
   // HITL pause after the planner (`plan` + `message`), "tool" is a permission
   // callback asking before one tool call (`tool` + `input` + `reason`). Both
@@ -169,3 +183,38 @@ export interface ChatTurn {
 
 /** Stage status for a single fleet role within the current/last turn. */
 export type RoleStatus = "idle" | "running" | "done" | "error";
+
+/** One rolling window of one provider's plan, as GET /api/system/quota
+ * reports it. `used`/`limit` are in `unit`: a vendor-reported window is a
+ * fraction (utilization against a limit of 1.0), a locally-estimated one
+ * counts tokens against no limit at all. */
+export interface QuotaWindow {
+  provider: string;
+  key: string;
+  window_s: number;
+  started_at: number;
+  used: number;
+  limit: number | null;
+  source: "provider" | "local";
+  resets_at: number | null;
+  unit: "tokens" | "fraction";
+  headroom: number;
+  confidence: "unknown" | "reported";
+}
+
+export interface QuotaProvider {
+  /** 0-1, the MINIMUM across this provider's windows. */
+  headroom: number;
+  /** "unknown" means nothing measured it — do not draw a full bar as fact. */
+  confidence: "unknown" | "reported";
+  resets_at: number | null;
+  windows: QuotaWindow[];
+}
+
+export interface QuotaSnapshot {
+  generated_at: number;
+  queue_threshold: number;
+  providers: Record<string, QuotaProvider>;
+  /** Every governed subscription is at or below the threshold. */
+  queue_suggested: boolean;
+}

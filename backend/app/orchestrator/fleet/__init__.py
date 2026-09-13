@@ -45,6 +45,7 @@ from __future__ import annotations
 
 from .collect import _collect_text, collect_step, collect_text
 from .constants import (
+    AUTO_PROVIDER,
     DISPATCH_HARD_FAIL_CAP,
     HEARTBEAT_INTERVAL_S,
     STARTUP_GRACE_S,
@@ -107,6 +108,7 @@ from .router import (
 
 __all__ = [
     # vocabulary / budgets
+    "AUTO_PROVIDER",
     "VALID_PROVIDERS",
     "VALID_ROLES",
     "WORKER_ROLES",

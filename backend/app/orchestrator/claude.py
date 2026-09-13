@@ -54,6 +54,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    RateLimitEvent,
     ResultMessage,
     StreamEvent,
     SystemMessage,
@@ -874,6 +875,34 @@ async def _translate(message: Any, *, usage: TurnUsage | None = None) -> AsyncIt
             # UI emphasises, not what is recorded here.
             data["usage"] = asdict(usage)
         yield Event(type="assistant.done", data=data)
+    elif isinstance(message, RateLimitEvent):
+        # The only place Claude's remaining plan headroom is ever MEASURED.
+        # The CLI emits this as its own message type when the rate-limit status
+        # TRANSITIONS — not on every turn, and not on the result — so a dropped
+        # one is a measurement nobody gets again until the next transition,
+        # which is why ``quota.py`` persists what it learns here and treats
+        # absence as "no change".
+        #
+        # An EVENT, not a governor call: this same code runs inside a fleet
+        # worker PROCESS, and ``quota.json`` is a read-modify-write file with
+        # exactly one writer. The main process records it — see
+        # ``session_runner/turn.py``.
+        #
+        # Read through ``getattr`` with a default at every hop: the info object
+        # can be absent or ``None``, and a future SDK can rename every field
+        # under it. Taking a good turn down over a telemetry field would be a
+        # far worse failure than a stale meter.
+        info = getattr(message, "rate_limit_info", None)
+        yield Event(
+            type="quota.limit",
+            data={
+                "provider": ClaudeProvider.name,
+                "status": getattr(info, "status", None),
+                "resets_at": getattr(info, "resets_at", None),
+                "rate_limit_type": getattr(info, "rate_limit_type", None),
+                "utilization": getattr(info, "utilization", None),
+            },
+        )
     elif isinstance(message, SystemMessage):
         # System init/notice messages — optional to surface; skip for now.
         return

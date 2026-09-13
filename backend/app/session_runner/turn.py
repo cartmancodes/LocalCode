@@ -11,6 +11,7 @@ import asyncio
 import logging
 from typing import Any
 
+from .. import quota
 from ..orchestrator.base import Provider, RunContext
 from ..storage.sessions import store as session_store
 from .accumulator import TurnAccumulator
@@ -138,6 +139,24 @@ async def execute_turn(
                 acc.set_done(
                     cost_usd=ev.data.get("cost_usd"),
                     duration_ms=ev.data.get("duration_ms"),
+                )
+                # ONE of the governor's two call sites (the other is
+                # dispatch.py, for a fleet sub-step). Here rather than in the
+                # provider because ``quota.json`` is a read-modify-write file
+                # and fleet sub-providers run in worker processes — see
+                # quota.py. Recorded only when the provider reported a usage
+                # dict at all: a provider that reports nothing must not be
+                # charged a guess.
+                usage = ev.data.get("usage")
+                if usage is not None:
+                    await quota.record_turn(
+                        provider_name, tokens=quota.tokens_from_usage(usage)
+                    )
+            elif ev.type == "quota.limit":
+                # A vendor measured its own window. Authoritative, and the only
+                # measurement anyone gets until the next transition.
+                await quota.record_turn(
+                    str(ev.data.get("provider") or provider_name), reported=ev.data
                 )
             await bus.broadcast(ev.to_json())
             if ev.type == "assistant.done":

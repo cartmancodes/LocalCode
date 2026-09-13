@@ -17,6 +17,9 @@ import { IconChevD, IconChevR, IconCheck, IconCopy } from "./icons";
 interface Props {
   session: SessionRow | null;
   onConfigureFleet?: () => void;
+  /** Fired once per completed turn. The top bar's quota meter refetches on it
+   * — a turn ending is the only moment remaining headroom can have changed. */
+  onTurnDone?: () => void;
 }
 
 type WsState = "connecting" | "open" | "closed" | "gave-up";
@@ -83,7 +86,7 @@ function deriveRoleStatuses(
   return out;
 }
 
-export default function ChatPane({ session, onConfigureFleet }: Props) {
+export default function ChatPane({ session, onConfigureFleet, onTurnDone }: Props) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [wsState, setWsState] = useState<WsState>("closed");
@@ -389,6 +392,10 @@ export default function ChatPane({ session, onConfigureFleet }: Props) {
           a.costUsd = ev.data.cost_usd;
           a.durationMs = ev.data.duration_ms;
           setStreaming(false);
+          // The quota meter's cue. Every turn ends with exactly one of these
+          // (the runner's terminal-event contract), so the meter refetches
+          // once per turn — no interval, no double fetch.
+          onTurnDone?.();
           break;
         }
         case "error": {

@@ -231,6 +231,11 @@ class FleetProvider:
             type="assistant.tool_use",
             data={
                 "id": step.id,
+                # ``role_cfg.provider`` is the RESOLVED provider — for a role
+                # configured ``auto`` it is whichever subscription the quota
+                # governor picked — so this card is where the user sees which
+                # plan served the step. ``step.role`` stays the bare role name
+                # (the tool policy and the gate classifier look it up).
                 "name": f"{step.role} [{role_cfg.provider}:{role_cfg.model}]",
                 "input": {"prompt": display},
             },

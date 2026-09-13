@@ -31,6 +31,12 @@ export default function App() {
     return saved && ["clay", "violet", "blue"].includes(saved) ? saved : "clay";
   });
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Bumped once per completed turn. The quota meter in the top bar is the only
+  // consumer: a turn ending is the one moment the numbers can have moved, so
+  // this counter stands in for a polling interval (there is none anywhere in
+  // the app, and adding one to watch a number that changes on an event would
+  // be the wrong shape).
+  const [turnEpoch, setTurnEpoch] = useState(0);
 
   const [models, setModels] = useState<CatalogModel[]>([]);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -175,6 +181,7 @@ export default function App() {
     <div className="lc-root">
       <Topbar
         session={active}
+        turnEpoch={turnEpoch}
         theme={theme}
         cwd={cwd}
         defaultCwd={defaultCwd}
@@ -204,6 +211,7 @@ export default function App() {
         <ErrorBoundary label="ChatPane">
           <ChatPane
             session={active}
+            onTurnDone={() => setTurnEpoch((n) => n + 1)}
             onConfigureFleet={
               active?.provider === "fleet"
                 ? () => setFleetEditorOpen(true)

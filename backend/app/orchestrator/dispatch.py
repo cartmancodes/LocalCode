@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
+from .. import quota
 from ..artifacts import ArtifactStore
 from ..config import get_settings
 from .agent_def import AgentDef
@@ -158,10 +159,21 @@ def build_dispatch_mcp(
             return _err(over_budget)
 
         agent = registry[name]
+        # ``provider: "auto"`` is resolved HERE — the single site where a
+        # role's provider becomes a RoleConfig — by remaining headroom, and
+        # never by a branch on a provider's name. A refusal means every
+        # candidate subscription is spent; it is returned instead of running
+        # the step, because a silent downgrade to a provider below the bar is
+        # what turns "your plans are nearly spent" into an unexplained
+        # mid-plan failure.
+        resolved_provider = _resolve_provider(agent)
+        if resolved_provider is None:
+            return _err(quota.get_governor().refusal(_auto_candidates(agent)))
+
         prompt = _effective_prompt(name, prompt, ctx.prompt, role_outputs)
         step_id = step_ids.next_id(name)
         role_cfg = RoleConfig(
-            provider=agent.provider,
+            provider=resolved_provider,
             model=agent.model,
             system_prompt=agent.system_prompt,
         )
@@ -258,6 +270,15 @@ def build_dispatch_mcp(
         # loop, not its sub-agents'.
         if envelope is not None:
             budget.spend(envelope.usage)
+            # The governor's second (and last) call site. Attributed to the
+            # provider that actually served the step — which for an ``auto``
+            # role is the one just resolved, not the one written in the
+            # config. The sub-provider itself cannot record: it ran in a
+            # worker PROCESS, and ``quota.json`` has exactly one writer.
+            if envelope.usage is not None:
+                await quota.record_turn(
+                    role_cfg.provider, tokens=quota.tokens_from_usage(envelope.usage)
+                )
         result = envelope.context_text() if envelope is not None else ""
         if not result:
             return _err(
@@ -533,6 +554,54 @@ class StepIdSequence:
         n = self._counts.get(agent_name, 0) + 1
         self._counts[agent_name] = n
         return f"orch.{agent_name}.{n}"
+
+
+def _auto_candidates(agent: AgentDef) -> list[str]:
+    """The providers an ``auto`` role may be served by.
+
+    ``metadata["providers"]`` when the agent names its own list (filtered to
+    real providers, so a typo in a config cannot become a dispatch to a backend
+    that does not exist), else every provider the governor keeps windows for —
+    which is the set of subscriptions whose headroom is actually known.
+    """
+    from .fleet import VALID_PROVIDERS
+
+    declared = agent.metadata.get("providers") if isinstance(agent.metadata, dict) else None
+    if isinstance(declared, list | tuple):
+        picked = quota.candidates_from(declared, VALID_PROVIDERS)
+        if picked:
+            return picked
+    return [p for p in quota.governed_providers() if p in VALID_PROVIDERS]
+
+
+def _resolve_provider(agent: AgentDef) -> str | None:
+    """The provider that will serve this dispatch, or ``None`` when every
+    candidate is below the queue threshold.
+
+    A role that names a concrete provider is never rerouted — the user asked
+    for that subscription, and quietly moving the work to the other one is a
+    decision they did not make. Only ``auto`` consults the governor.
+    """
+    from .fleet import AUTO_PROVIDER
+
+    if agent.provider != AUTO_PROVIDER:
+        return agent.provider
+    candidates = _auto_candidates(agent)
+    chosen = quota.get_governor().choose(candidates)
+    if chosen is None:
+        logger.warning(
+            "dispatch_subagent: %s is 'auto' and every candidate (%s) is spent",
+            agent.name, ", ".join(candidates) or "none",
+        )
+        return None
+    logger.info(
+        "dispatch_subagent: %s 'auto' -> %s (headroom %.0f%% of %s)",
+        agent.name,
+        chosen,
+        100 * quota.get_governor().headroom(chosen),
+        ", ".join(candidates),
+    )
+    return chosen
 
 
 def _err(message: str) -> dict[str, Any]:

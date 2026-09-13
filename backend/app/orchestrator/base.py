@@ -17,6 +17,10 @@ EventType = Literal[
     # so the chat history reflects what happened.
     "pipeline.awaiting_approval",
     "pipeline.approval_received",
+    # A vendor reported where its rate-limit window stands. Emitted by a
+    # provider, recorded by the main process (never by a worker — see
+    # ``quota.py``), and carried to the UI so the meter can update mid-turn.
+    "quota.limit",
     # Synthesized per subscriber by the EventBus, never by a provider: "you
     # missed `dropped` events after `resume_from` because your queue filled".
     # The UI refetches `/messages` rather than rendering a hole.

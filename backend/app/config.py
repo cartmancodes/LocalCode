@@ -185,6 +185,14 @@ class Settings(BaseSettings):
     # Env: USAGE_LOG_PATH.
     usage_log_path: str | None = None
 
+    # Override where the quota governor keeps its ledger. ``None`` means
+    # ``~/.localcode/quota.json``, resolved lazily by ``Governor`` itself for
+    # exactly the reason above: a governor built inside a test must land under
+    # the fixture's throwaway HOME, and the route that READS the ledger has to
+    # resolve the same path as the turn that WRITES it — which is why both go
+    # through ``quota.get_governor``. Env: QUOTA_PATH.
+    quota_path: str | None = None
+
     @field_validator("default_provider")
     @classmethod
     def _validate_default_provider(cls, v: str) -> str:

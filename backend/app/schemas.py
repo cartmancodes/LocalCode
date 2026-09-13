@@ -95,6 +95,9 @@ class StreamEvent(BaseModel):
         "error",
         "pipeline.awaiting_approval",
         "pipeline.approval_received",
+        # Vendor-reported rate-limit state: `{provider, status, resets_at,
+        # rate_limit_type, utilization}`. Feeds the quota meter.
+        "quota.limit",
         # Bus-synthesized gap notice: `{dropped, resume_from}`. See EventBus.
         "stream.gap",
     ]
