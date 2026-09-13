@@ -22,6 +22,7 @@ from backend.app.usage import (
     default_usage_log_path,
     parse_claude_usage,
     uncached_share,
+    usage_log_from_settings,
 )
 
 
@@ -112,6 +113,54 @@ class TestParseClaudeUsage:
 
     def test_unparseable_value_becomes_zero(self) -> None:
         result = SimpleNamespace(usage={"input_tokens": "not-a-number"}, total_cost_usd=None)
+
+        usage = parse_claude_usage(
+            result, provider="claude", model="m1", session_id="s1"
+        )
+
+        assert usage.input_tokens == 0
+
+    def test_usage_as_a_list_does_not_raise(self) -> None:
+        """A malformed SDK response could hand back anything truthy in
+        ``.usage``. The module's own docstring says a usage-parsing
+        exception must never take down the assistant.done event it rides
+        on — a non-dict shape must degrade to zeros, not raise."""
+        result = SimpleNamespace(usage=[1, 2, 3], total_cost_usd=None)
+
+        usage = parse_claude_usage(
+            result, provider="claude", model="m1", session_id="s1"
+        )
+
+        assert usage.input_tokens == 0
+        assert usage.cache_read_tokens == 0
+
+    def test_usage_as_a_string_does_not_raise(self) -> None:
+        result = SimpleNamespace(usage="not-a-usage-dict", total_cost_usd=None)
+
+        usage = parse_claude_usage(
+            result, provider="claude", model="m1", session_id="s1"
+        )
+
+        assert usage.input_tokens == 0
+
+    def test_usage_as_an_int_does_not_raise(self) -> None:
+        result = SimpleNamespace(usage=42, total_cost_usd=None)
+
+        usage = parse_claude_usage(
+            result, provider="claude", model="m1", session_id="s1"
+        )
+
+        assert usage.input_tokens == 0
+
+    def test_usage_whose_get_raises_does_not_raise(self) -> None:
+        """A dict-*like* usage (passes any duck-typed dict check) whose own
+        ``.get`` blows up must still not take the turn down with it."""
+
+        class RaisingUsage(dict):
+            def get(self, *args: object, **kwargs: object) -> object:
+                raise RuntimeError("boom")
+
+        result = SimpleNamespace(usage=RaisingUsage(input_tokens=5), total_cost_usd=None)
 
         usage = parse_claude_usage(
             result, provider="claude", model="m1", session_id="s1"
@@ -221,6 +270,53 @@ class TestCacheHitRate:
 
         assert cache_hit_rate(entries) == 1.0
         assert uncached_share(entries) == 0.0
+
+
+class TestUsageLogFromSettings:
+    """The one thing that keeps the provider (writer) and the /usage
+    endpoint (reader) pointed at the same file: both must resolve through
+    this function, never independently."""
+
+    def test_resolves_the_default_path_when_unset(
+        self, tmp_localcode: Path, fresh_settings
+    ) -> None:
+        log = usage_log_from_settings()
+        assert log.path == tmp_localcode / ".localcode" / "usage.jsonl"
+
+    def test_resolves_the_override_from_settings(
+        self, tmp_path: Path, fresh_settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        custom = tmp_path / "custom-usage.jsonl"
+        monkeypatch.setenv("USAGE_LOG_PATH", str(custom))
+
+        log = usage_log_from_settings()
+
+        assert log.path == custom.resolve()
+
+    async def test_the_provider_and_the_route_resolve_to_the_same_overridden_file(
+        self, tmp_path: Path, fresh_settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The regression this whole class exists to catch: if the provider
+        and the endpoint ever again resolve the usage-log path separately,
+        setting USAGE_LOG_PATH would split them onto two different files —
+        the provider logs turns nobody reads, the endpoint reports zero
+        usage forever. Driving both the provider's own resolution *and* the
+        route through one override is what makes that impossible."""
+        from backend.app.orchestrator import claude as claude_mod
+        from backend.app.routes import system as system_routes
+
+        custom = tmp_path / "shared-usage.jsonl"
+        monkeypatch.setenv("USAGE_LOG_PATH", str(custom))
+
+        provider = claude_mod.ClaudeProvider()
+        assert provider._get_usage_log().path == custom.resolve()
+
+        provider._get_usage_log().append(_entry(provider="claude", input_tokens=7))
+
+        body = await system_routes.get_system_usage()
+
+        assert body["turns"] == 1
+        assert body["input_tokens"] == 7
 
 
 class TestSystemUsageRoute:

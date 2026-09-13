@@ -31,6 +31,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .config import get_settings
+
 # Rotate before the log becomes an unpleasant thing to read or ship.
 _MAX_LOG_BYTES = 8 * 1024 * 1024
 
@@ -56,12 +58,25 @@ class TurnUsage:
     ts: float
 
 
-def _pick_int(usage: dict[str, Any], *keys: str) -> int:
+def _pick_int(usage: Any, *keys: str) -> int:
     """First present key among ``keys``, coerced to ``int``; 0 if none present
     or the value can't be coerced. Covers both the SDK's snake_case and the
-    Anthropic API's camelCase spellings without caring which one showed up."""
+    Anthropic API's camelCase spellings without caring which one showed up.
+
+    ``usage`` is typed ``Any``, not ``dict``, on purpose: a malformed SDK
+    response can hand back a list, a string, or any other truthy value in
+    ``ResultMessage.usage``, and even something that looks dict-shaped can
+    have a ``.get`` that itself raises. Every path here is guarded so a
+    usage-parsing exception can never take down the ``assistant.done``
+    event it is attached to (see ``parse_claude_usage``'s docstring).
+    """
+    if not isinstance(usage, dict):
+        return 0
     for key in keys:
-        value = usage.get(key)
+        try:
+            value = usage.get(key)
+        except Exception:
+            return 0
         if value is not None:
             try:
                 return int(value)
@@ -80,30 +95,51 @@ def parse_claude_usage(
     """Build a :class:`TurnUsage` from a claude-agent-sdk ``ResultMessage``.
 
     Entirely defensive: ``result_message.usage`` may be ``None`` (an errored
-    or very short turn), a snake_case dict, or a camelCase one. Missing keys
-    become 0 rather than raising, because a usage-parsing exception must never
-    take down the ``assistant.done`` event it is attached to.
+    or very short turn), a snake_case dict, a camelCase one, or — a malformed
+    SDK response — a list, a string, a number, or a dict-like object whose
+    own ``.get`` raises. None of those may raise here: this sits inside the
+    per-turn loop in ``ClaudeProvider.run`` with no local guard, so an
+    exception escaping this function is caught by that loop's outer
+    ``except Exception`` and turns a *successful* turn into an ``error``
+    event, discarding the persistent client and dropping that turn's
+    ``assistant.done`` entirely. Missing or malformed keys become 0 instead.
     """
-    usage = getattr(result_message, "usage", None) or {}
-    return TurnUsage(
-        provider=provider,
-        model=model,
-        input_tokens=_pick_int(usage, "input_tokens", "inputTokens"),
-        output_tokens=_pick_int(usage, "output_tokens", "outputTokens"),
-        cache_read_tokens=_pick_int(
+    raw_usage = getattr(result_message, "usage", None)
+    # ``_pick_int`` already treats a non-dict (or a dict whose ``.get``
+    # raises) as "no keys present", but the shape check is repeated here so
+    # this function's own contract — "never raises, whatever ``usage`` is"
+    # — does not silently depend on every future caller of ``_pick_int``
+    # keeping that behavior.
+    usage: Any = raw_usage if isinstance(raw_usage, dict) else {}
+    try:
+        input_tokens = _pick_int(usage, "input_tokens", "inputTokens")
+        output_tokens = _pick_int(usage, "output_tokens", "outputTokens")
+        cache_read_tokens = _pick_int(
             usage,
             "cache_read_input_tokens",
             "cacheReadInputTokens",
             "cache_read_tokens",
             "cacheReadTokens",
-        ),
-        cache_creation_tokens=_pick_int(
+        )
+        cache_creation_tokens = _pick_int(
             usage,
             "cache_creation_input_tokens",
             "cacheCreationInputTokens",
             "cache_creation_tokens",
             "cacheCreationTokens",
-        ),
+        )
+    except Exception:
+        # Belt-and-suspenders: even if a future edit to _pick_int reopens a
+        # crash path, an unexpected usage shape degrades to zeros here
+        # rather than taking the turn's assistant.done event down with it.
+        input_tokens = output_tokens = cache_read_tokens = cache_creation_tokens = 0
+    return TurnUsage(
+        provider=provider,
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
         cost_usd=getattr(result_message, "total_cost_usd", None),
         session_id=session_id,
         ts=time.time(),
@@ -158,6 +194,27 @@ class UsageLog:
             if data.get("ts", 0.0) >= cutoff:
                 out.append(TurnUsage(**data))
         return out
+
+
+def usage_log_from_settings() -> UsageLog:
+    """The one ``UsageLog`` every writer and reader in this process should
+    build, resolved from ``Settings.usage_log_path`` rather than each call
+    site reaching for ``Path.home()`` (or ``UsageLog``'s bare default)
+    independently.
+
+    Both ``ClaudeProvider`` (the writer) and ``GET /api/system/usage`` (the
+    reader) call this. If they resolved the path separately — the provider
+    honouring ``usage_log_path`` and the endpoint not, say — setting
+    ``USAGE_LOG_PATH`` would silently split them onto two different files:
+    the provider keeps logging turns nobody ever reads back, and the
+    endpoint this module exists to support reports zero usage forever.
+    Routing both through one function makes that divergence structurally
+    impossible rather than a matter of remembering to keep two call sites
+    in sync.
+    """
+    override = get_settings().usage_log_path
+    path = Path(override).expanduser().resolve() if override else None
+    return UsageLog(path)
 
 
 def cache_hit_rate(entries: list[TurnUsage]) -> float:

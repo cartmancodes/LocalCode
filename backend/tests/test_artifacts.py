@@ -86,13 +86,55 @@ class TestSummarizeForContext:
         # ASCII body, sized so a naive byte-offset slice lands mid-character.
         text = "漢" * 5000 + "x" * 100_000 + "🎉" * 5000
         ref = store.put_text(text, kind="tool-result")
+        max_bytes = 1001
 
-        summary = store.summarize_for_context(text, ref, max_bytes=1001)
+        summary = store.summarize_for_context(text, ref, max_bytes=max_bytes)
 
         # Must round-trip cleanly — a split multi-byte sequence would raise
         # here or (if it happened to decode) not equal the original slice.
         summary.encode("utf-8").decode("utf-8")
         assert "�" not in summary  # no replacement-character mojibake
+
+        # The whole point of this module: a caller asking for max_bytes must
+        # never get several times that back. A *character*-count budget
+        # (2*max_bytes//3 chars, max_bytes//3 chars) silently assumes 1
+        # byte/char, so 3-byte CJK and 4-byte emoji content can overshoot the
+        # stated bound by 2-3x — exactly the failure this asserts against.
+        marker = (
+            f"\n… [truncated {len(text.encode())} bytes — full output at "
+            f"{ref.path} (artifact {ref.id[:12]})]\n"
+        )
+        assert len(summary.encode("utf-8")) <= max_bytes + len(marker.encode("utf-8"))
+
+    def test_byte_budget_holds_for_pure_cjk_content(self, tmp_path: Path) -> None:
+        store = ArtifactStore(root=tmp_path)
+        text = "漢" * 50_000
+        ref = store.put_text(text, kind="tool-result")
+        max_bytes = 1001
+
+        summary = store.summarize_for_context(text, ref, max_bytes=max_bytes)
+
+        summary.encode("utf-8").decode("utf-8")  # never a split code point
+        marker = (
+            f"\n… [truncated {len(text.encode())} bytes — full output at "
+            f"{ref.path} (artifact {ref.id[:12]})]\n"
+        )
+        assert len(summary.encode("utf-8")) <= max_bytes + len(marker.encode("utf-8"))
+
+    def test_byte_budget_holds_for_pure_emoji_content(self, tmp_path: Path) -> None:
+        store = ArtifactStore(root=tmp_path)
+        text = "🎉" * 50_000
+        ref = store.put_text(text, kind="tool-result")
+        max_bytes = 1001
+
+        summary = store.summarize_for_context(text, ref, max_bytes=max_bytes)
+
+        summary.encode("utf-8").decode("utf-8")  # never a split code point
+        marker = (
+            f"\n… [truncated {len(text.encode())} bytes — full output at "
+            f"{ref.path} (artifact {ref.id[:12]})]\n"
+        )
+        assert len(summary.encode("utf-8")) <= max_bytes + len(marker.encode("utf-8"))
 
 
 class TestStoreIfLarge:

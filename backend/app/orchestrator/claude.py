@@ -48,7 +48,6 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
@@ -65,7 +64,7 @@ from claude_agent_sdk import (
 )
 
 from ..config import get_settings
-from ..usage import TurnUsage, UsageLog, parse_claude_usage
+from ..usage import TurnUsage, UsageLog, parse_claude_usage, usage_log_from_settings
 from .approvals import CanUseToolFn, EventSink, build_can_use_tool
 from .base import Event, RunContext
 from .permissions import (
@@ -252,14 +251,11 @@ class ClaudeProvider:
 
     def _get_usage_log(self) -> UsageLog:
         if self._usage_log is None:
-            # Read the override through Settings, not straight from
-            # Path.home(): a test that builds this provider without
-            # redirecting HOME (or before the redirect took effect) must
-            # not be able to reach the developer's real usage log. See
-            # Settings.usage_log_path.
-            override = get_settings().usage_log_path
-            path = Path(override).expanduser().resolve() if override else None
-            self._usage_log = UsageLog(path)
+            # Shared with GET /api/system/usage (routes/system.py) so the
+            # writer and the reader can never resolve to two different
+            # files if Settings.usage_log_path is ever overridden. See
+            # usage.usage_log_from_settings.
+            self._usage_log = usage_log_from_settings()
         return self._usage_log
 
     async def open_session(self, ctx: RunContext) -> str:

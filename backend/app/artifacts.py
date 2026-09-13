@@ -46,6 +46,42 @@ def default_artifact_root() -> Path:
     return Path.home() / ".localcode" / "artifacts"
 
 
+def _is_utf8_continuation_byte(b: int) -> bool:
+    """True for a UTF-8 continuation byte (``10xxxxxx``) — a byte offset
+    that lands on one is *inside* a multi-byte sequence, never a valid
+    place to cut a string."""
+    return (b & 0xC0) == 0x80
+
+
+def _byte_safe_head(data: bytes, budget: int) -> str:
+    """The longest prefix of ``data`` that both fits in ``budget`` bytes and
+    ends on a UTF-8 character boundary.
+
+    Only ever shrinks toward 0 from ``budget``, so the result is always
+    ``<= budget`` bytes — the property the byte-count budget promises and a
+    plain character-count slice does not (1 CJK character is 3 bytes, 1
+    emoji is 4). Backing off to the nearest earlier boundary rather than
+    just cutting at ``budget`` is what keeps a 3-byte or 4-byte sequence
+    from being split in half, which would otherwise raise on ``.decode()``.
+    """
+    end = min(max(budget, 0), len(data))
+    while end > 0 and end < len(data) and _is_utf8_continuation_byte(data[end]):
+        end -= 1
+    return data[:end].decode("utf-8")
+
+
+def _byte_safe_tail(data: bytes, budget: int) -> str:
+    """The shortest suffix of ``data`` that both fits in ``budget`` bytes and
+    starts on a UTF-8 character boundary. Mirror of ``_byte_safe_head``:
+    here the cut can only move *forward* (shrinking the suffix further),
+    which keeps the result ``<= budget`` bytes while never starting
+    mid-character."""
+    start = max(len(data) - max(budget, 0), 0)
+    while start < len(data) and _is_utf8_continuation_byte(data[start]):
+        start += 1
+    return data[start:].decode("utf-8")
+
+
 @dataclass(frozen=True)
 class ArtifactRef:
     """A pointer to one stored artifact — what a caller keeps instead of the
@@ -92,18 +128,24 @@ class ArtifactStore:
         and a tail are kept (2:1, so the more informative start gets more
         room) with a marker line in between pointing at the full artifact.
 
-        Sliced on *characters*, not raw bytes: a byte-offset slice can land
-        inside a multi-byte UTF-8 sequence (a CJK character, an emoji) and
-        either raise on decode or silently produce mojibake. Python string
-        indexing is code-point based, so slicing here can never split one.
+        Both are trimmed to a *byte* budget, not a character count: a
+        budget expressed as "this many characters" silently assumes 1
+        byte/char, so CJK (3 bytes/char) or emoji (4 bytes/char) content
+        blows the stated ``max_bytes`` by 2-3x — exactly the failure this
+        module exists to prevent (a 2 MB tool output must never land back
+        in context near-whole). ``_byte_safe_head``/``_byte_safe_tail``
+        additionally never split a multi-byte UTF-8 sequence: they trim to
+        the nearest character boundary rather than a raw byte offset, which
+        can land mid-sequence and either raise on decode or produce
+        mojibake.
         """
         encoded = text.encode("utf-8")
         if len(encoded) <= max_bytes:
             return text
-        head_chars = 2 * max_bytes // 3
-        tail_chars = max_bytes // 3
-        head = text[:head_chars]
-        tail = text[-tail_chars:] if tail_chars > 0 else ""
+        head_budget = 2 * max_bytes // 3
+        tail_budget = max_bytes // 3
+        head = _byte_safe_head(encoded, head_budget)
+        tail = _byte_safe_tail(encoded, tail_budget)
         marker = (
             f"\n… [truncated {len(encoded)} bytes — full output at "
             f"{ref.path} (artifact {ref.id[:12]})]\n"
