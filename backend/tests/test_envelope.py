@@ -24,8 +24,12 @@ from backend.app.orchestrator.fleet import provider as provider_mod
 from backend.app.orchestrator.fleet.collect import collect_step, collect_text
 from backend.app.orchestrator.fleet.envelope import MAX_TOOL_DIGEST_CHARS, StepResult
 from backend.app.orchestrator.fleet.models import RoleConfig, Step
+from backend.app.orchestrator.fleet.pool import WorkerPool, _Pending, worker_key
 
 ROLE = RoleConfig(provider="claude", model="sonnet", system_prompt="be terse")
+# Resolved at import time: a worker is spawned with this as its cwd, and
+# resolving a path inside an async test is a (correctly flagged) blocking call.
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
 
 
 class _StubProvider:
@@ -486,19 +490,43 @@ class TestCollectTextWrapper:
 
 
 class TestWorkerWireFormat:
-    """Across a real process boundary: the parent only ever sees the worker's
-    stdout, so an in-process ``StepResult`` proves nothing about the framing."""
+    """Across a real process boundary: the pool only ever sees the worker's
+    stdout, so an in-process ``StepResult`` proves nothing about the framing.
 
-    async def test_the_parent_rebuilds_the_envelope_the_worker_wrote(
-        self, monkeypatch: pytest.MonkeyPatch
+    Task 7 re-framed the envelope around the payload — ``@@RESULT@@ <id>
+    <byte-length>`` then exactly that many bytes — so these drive a real
+    ``WorkerPool`` against the fake worker rather than a per-dispatch handle.
+    """
+
+    async def test_the_pool_rebuilds_the_envelope_the_worker_wrote(
+        self, tmp_path: Path
     ) -> None:
-        monkeypatch.setattr(
-            provider_mod, "_WORKER_MODULE", "backend.tests.fakes.envelope_worker"
+        pool = WorkerPool(
+            max_workers=1,
+            idle_timeout_s=60.0,
+            worker_module="backend.tests.fakes.envelope_worker",
+            repo_root=_REPO_ROOT,
+            pid_dir=tmp_path / "workers",
         )
-        handle = provider_mod._SubprocHandle()
-        await handle.start(ROLE, "go", None, [], None, "reviewer", "sess-9")
-
-        result = await asyncio.wait_for(handle.result, timeout=30)
+        key = worker_key("sess-9", "claude", "sonnet", None)
+        try:
+            first, collect = await pool.submit(
+                key,
+                {
+                    "provider": "claude",
+                    "model": "sonnet",
+                    "system_prompt": "",
+                    "prompt": "go",
+                    "cwd": None,
+                    "additional_dirs": [],
+                    "permission_mode": None,
+                    "role_name": "reviewer",
+                    "session_id": "sess-9",
+                },
+            )
+            result = await asyncio.wait_for(collect, timeout=30)
+        finally:
+            await pool.aclose()
 
         assert isinstance(result, StepResult)
         # The request reached the worker with the role and the session on it.
@@ -512,66 +540,72 @@ class TestWorkerWireFormat:
         assert result.usage == {"input_tokens": 5, "output_tokens": 2}
         assert result.artifact_id == "c" * 64
         assert result.full_bytes == 2_000_000
-        assert handle.first.is_set()
+        assert first.is_set()
 
-    async def test_ok_without_an_envelope_is_an_explicit_error(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_ok_without_an_envelope_is_an_explicit_error(self) -> None:
         """A worker whose protocol drifts must say so, not resolve to an empty
         step the pipeline then tries to recover from by re-prompting."""
-        handle = provider_mod._SubprocHandle.__new__(provider_mod._SubprocHandle)
-        handle.first = asyncio.Event()
-        handle.result = asyncio.get_running_loop().create_future()
-        handle._proc = _FakeProc('@@RESULT@@ {"ok": true, "text": "legacy"}\n')
-        handle._stderr = ""
-        handle._pgid = None
+        pending = _pending()
 
-        await handle._pump()
+        WorkerPool._resolve(pending, _StubWorker(), b'{"ok": true, "text": "legacy"}')
 
         with pytest.raises(RuntimeError, match="without a result envelope"):
-            handle.result.result()
+            pending.result.result()
+
+    async def test_an_unparseable_payload_names_itself(self) -> None:
+        """``from_wire`` is tolerant, but a payload that is not even JSON has
+        no fields to be tolerant about — and "exited without a result" would be
+        a lie about what actually happened."""
+        pending = _pending()
+
+        WorkerPool._resolve(pending, _StubWorker(), b"{not json at all")
+
+        with pytest.raises(RuntimeError, match="unparseable result payload"):
+            pending.result.result()
 
 
-class _FakeProc:
-    """Minimal stand-in for ``asyncio.subprocess.Process`` for ``_pump``."""
-
-    def __init__(self, stdout: str) -> None:
-        self.stdout = _FakeStream(stdout)
-        self.stderr = None
-        self.returncode = 0
-
-    async def wait(self) -> int:
-        return 0
+def _pending() -> _Pending:
+    return _Pending(
+        first=asyncio.Event(),
+        result=asyncio.get_running_loop().create_future(),
+    )
 
 
-class _FakeStream:
-    def __init__(self, text: str) -> None:
-        self._lines = text.encode().splitlines(keepends=True)
+class _StubWorker:
+    """The two attributes ``WorkerPool._resolve`` reads off a worker."""
 
-    async def readline(self) -> bytes:
-        return self._lines.pop(0) if self._lines else b""
+    pid = 0
+
+    @staticmethod
+    def stderr_detail() -> str:
+        return ""
 
 
-class _StubHandle:
-    """Replaces ``_SubprocHandle`` so a step can be driven without spawning a
-    process. Resolves immediately with a prepared envelope."""
+class _StubPool:
+    """Replaces the provider's ``WorkerPool`` so a step can be driven without
+    spawning a process. Resolves immediately with a prepared envelope."""
 
     def __init__(self, result: StepResult) -> None:
-        self.first = asyncio.Event()
-        self.result: asyncio.Future[StepResult] = (
+        self._payload = result
+        self.submitted: list[tuple[str, dict]] = []
+        self.killed: list[str] = []
+
+    async def submit(self, key: str, request: dict):
+        self.submitted.append((key, request))
+        first = asyncio.Event()
+        first.set()
+        result: asyncio.Future[StepResult] = (
             asyncio.get_running_loop().create_future()
         )
-        self._payload = result
-        self.start_args: tuple = ()
-        self.killed = False
+        result.set_result(self._payload)
+        return first, result
 
-    async def start(self, *args) -> None:  # noqa: ANN002 - mirrors the real signature
-        self.start_args = args
-        self.first.set()
-        self.result.set_result(self._payload)
+    def kill(self, key: str) -> None:
+        self.killed.append(key)
 
-    def kill(self) -> None:
-        self.killed = True
+    @property
+    def request(self) -> dict:
+        return self.submitted[0][1]
 
 
 def _envelope(summary: str, structured: dict | None = None) -> StepResult:
@@ -590,10 +624,10 @@ async def _run_step(
     role: str,
     envelope: StepResult,
     session_id: str | None = "sess-3",
-) -> tuple[list[Event], dict[str, StepResult], _StubHandle]:
-    stub = _StubHandle(envelope)
-    monkeypatch.setattr(provider_mod, "_SubprocHandle", lambda: stub)
+) -> tuple[list[Event], dict[str, StepResult], _StubPool]:
+    stub = _StubPool(envelope)
     fleet = provider_mod.FleetProvider()
+    monkeypatch.setattr(fleet, "_get_pool", lambda: stub)
     step = Step(id=f"orch.{role}.1", role=role, prompt="do the thing")
     ctx = RunContext(model="m", prompt="p", session_id=session_id)
     outputs: dict[str, StepResult] = {}
@@ -626,15 +660,19 @@ class TestProviderConsumesTheEnvelope:
         assert len(results[-1].data["content"]) < 10_000
         assert "e" * 12 in results[-1].data["content"]
         assert results[-1].data["is_error"] is False
-        # Task 14's cancellation still runs on every exit path.
-        assert stub.killed
+        # A step that COMPLETED must leave its worker alive — that reuse is the
+        # whole of Task 7. Task 14's kill still fires, but only on the paths
+        # where the future never resolved (see test_worker_pool.py).
+        assert stub.killed == []
 
     async def test_the_session_id_is_forwarded_to_the_worker(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _, _, stub = await _run_step(monkeypatch, "coder", _envelope("fine"))
 
-        assert stub.start_args[-1] == "sess-3"
+        assert stub.request["session_id"] == "sess-3"
+        # And it is part of the pool key, so no two sessions share a worker.
+        assert stub.submitted[0][0].startswith("sess-3|")
 
     async def test_a_json_nack_verdict_marks_the_card_errored(
         self, monkeypatch: pytest.MonkeyPatch

@@ -22,6 +22,10 @@ sees a half-written line.
 
 It never produces a result and never exits on its own — the test always
 kills it, and the kill is what is under test.
+
+Speaks the v2 protocol (``@@FIRST@@ <request id>``) and writes the pool-owned
+pidfile, so it is a faithful stand-in for a worker the pool spawned — including
+for the startup sweep, which identifies our workers by that file.
 """
 from __future__ import annotations
 
@@ -32,14 +36,19 @@ import sys
 import time
 from pathlib import Path
 
+from backend.app.orchestrator.fleet.constants import FIRST_MARKER
+from backend.app.orchestrator.fleet.pool import write_worker_pidfile
+
 # Long enough that neither process can exit on its own inside a test run, so
 # a pid found dead is proof of the kill rather than of a race with a timeout.
 _HANG_S = 600
 
 
 def main() -> None:
+    write_worker_pidfile(__spec__.name if __spec__ is not None else __name__)
     req = json.loads(sys.stdin.readline() or "{}")
     pid_path = Path(req["prompt"])
+    request_id = str(req.get("id") or "unknown")
 
     grandchild = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
         [sys.executable, "-c", f"import time; time.sleep({_HANG_S})"]
@@ -49,11 +58,11 @@ def main() -> None:
     tmp_path.write_text(f"{os.getpid()} {grandchild.pid}\n", encoding="utf-8")
     os.replace(tmp_path, pid_path)
 
-    # Also on the wire protocol's own channel: the handle ignores lines it
+    # Also on the wire protocol's own channel: the reader ignores lines it
     # does not recognise, and it makes a hung test debuggable from captured
-    # output. @@FIRST@@ is what the real worker emits on its first event.
+    # output. @@FIRST@@ <id> is what the real worker emits on its first event.
     print(f"pids {os.getpid()} {grandchild.pid}", flush=True)
-    print("@@FIRST@@", flush=True)
+    print(f"{FIRST_MARKER} {request_id}", flush=True)
 
     time.sleep(_HANG_S)
 

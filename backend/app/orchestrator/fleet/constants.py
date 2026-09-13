@@ -61,6 +61,36 @@ STARTUP_GRACE_S = 75.0
 DISPATCH_HARD_FAIL_CAP = 2
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Worker wire protocol (v2) — shared vocabulary between the pool (parent) and
+# ``subproc.py`` (child). They live here, with no dependencies, so neither side
+# can drift from the other by editing its own private copy of a marker string.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ``@@FIRST@@ <request id>`` — the child's first sign of life for one request.
+FIRST_MARKER = "@@FIRST@@"
+# ``@@RESULT@@ <request id> <byte length>`` followed by EXACTLY that many bytes
+# of JSON. The length prefix, not a newline, is what terminates the payload:
+# the previous newline-delimited framing made correctness depend on the result
+# staying under the stdout reader's (undocumented, 64 KiB) line limit, and a
+# plan larger than that deadlocked the parent — it gave up on the line while
+# the child was still blocked writing it into a pipe nobody was draining.
+RESULT_MARKER = "@@RESULT@@"
+
+# Generous ceiling for ONE line on a worker's stdout. The framed result no
+# longer depends on it, so this only has to survive a long diagnostic line the
+# vendor CLI prints; 8 MiB means an oversize log line is a logged warning
+# rather than a dead worker. Raising this alone was never the fix — see
+# ``RESULT_MARKER``.
+WORKER_STDOUT_LIMIT = 8 * 1024 * 1024
+
+# Environment variable naming the pool-owned directory a worker writes its
+# pidfile into. Passed rather than derived so parent and child always agree on
+# the path even when ``HOME`` differs between them (which is exactly what the
+# test suite does).
+WORKER_PID_DIR_ENV = "LOCALCODE_WORKER_PID_DIR"
+
+
 class StepTimeoutError(RuntimeError):
     """Raised by ``_run_step_with_role`` when a sub-provider exceeds the
     per-step budget. Distinct from generic exceptions so the outer pipeline

@@ -8,12 +8,7 @@ unified event stream so the chat UI renders them as expandable cards.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 import logging
-import os
-import signal
-import sys
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -28,8 +23,9 @@ from .constants import (
 )
 from .envelope import StepResult
 from .gate import GATE_ROLES, parse_verdict
-from .loader import _merge_config, load_fleet_config
+from .loader import _merge_config, load_fleet_config_async
 from .models import FleetConfig, RoleConfig, Step
+from .pool import WorkerPool, worker_key
 
 logger = logging.getLogger(__name__)
 
@@ -42,180 +38,28 @@ _WORKER_MODULE = __name__.rsplit(".", 1)[0] + ".subproc"
 _REPO_ROOT = str(Path(__file__).resolve().parents[__name__.count(".")])
 
 
-class _SubprocHandle:
-    """One out-of-process sub-provider run.
-
-    Owns the child process and exposes:
-      - ``first`` : an ``asyncio.Event`` set the instant the child reports its
-        first sub-provider event (drives honest heartbeats / fast-fail);
-      - ``result``: a future resolving to the child's ``StepResult`` envelope,
-        or raising;
-      - ``kill()``: true OS-level cancellation of a wedged ``claude`` CLI.
-    """
-
-    def __init__(self) -> None:
-        self.first: asyncio.Event = asyncio.Event()
-        self.result: asyncio.Future[StepResult] = (
-            asyncio.get_running_loop().create_future()
-        )
-        self._proc: asyncio.subprocess.Process | None = None
-        self._stderr: str = ""
-        # Process-group id of the worker, captured at spawn time because the
-        # group outlives the worker: once the worker is gone its pid can no
-        # longer be translated to a pgid, and the vendor CLI still in that
-        # group would be unreachable. See `kill`.
-        self._pgid: int | None = None
-
-    async def start(
-        self,
-        role_cfg: RoleConfig,
-        prompt: str,
-        cwd: str | None,
-        additional_dirs: list[str] | None,
-        permission_mode: str | None,
-        role_name: str,
-        session_id: str | None = None,
-    ) -> None:
-        req = json.dumps(
-            {
-                "provider": role_cfg.provider,
-                "model": role_cfg.model,
-                "system_prompt": role_cfg.system_prompt,
-                "prompt": prompt,
-                "cwd": cwd,
-                "additional_dirs": additional_dirs or [],
-                "permission_mode": permission_mode,
-                "role_name": role_name,
-                # Forwarded so the sub-provider can key per-session state on
-                # the LocalCode session this step belongs to rather than
-                # treating each step as an unrelated session.
-                "session_id": session_id,
-            }
-        )
-        self._proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            _WORKER_MODULE,
-            cwd=_REPO_ROOT,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            # Capture (don't discard) stderr — when the worker dies without a
-            # result this is the ONLY window into why. Discarding it (the
-            # earlier mistake) made the failure undiagnosable.
-            stderr=asyncio.subprocess.PIPE,
-            # Put the worker in its own session/process group so one killpg
-            # reaps the vendor CLI it spawns too (see `kill`). The trade-off
-            # is deliberate: the worker no longer receives the terminal's
-            # SIGINT, so the backend MUST cancel turns on shutdown — which is
-            # what `drop_all_runners()` in the lifespan now guarantees.
-            start_new_session=True,
-        )
-        try:
-            self._pgid = os.getpgid(self._proc.pid)
-        except OSError:
-            # Worker already gone. `start_new_session` made it the group
-            # leader, so its pid is the group id either way.
-            self._pgid = self._proc.pid
-        assert self._proc.stdin and self._proc.stdout
-        self._proc.stdin.write((req + "\n").encode())
-        await self._proc.stdin.drain()
-        self._proc.stdin.close()
-        asyncio.create_task(self._drain_stderr())
-        asyncio.create_task(self._pump())
-
-    async def _drain_stderr(self) -> None:
-        if not self._proc or not self._proc.stderr:
-            return
-        try:
-            data = await self._proc.stderr.read()
-            self._stderr = data.decode(errors="replace")
-        except Exception:  # noqa: BLE001
-            pass
-
-    async def _pump(self) -> None:
-        assert self._proc and self._proc.stdout
-        payload: dict | None = None
-        try:
-            while True:
-                raw = await self._proc.stdout.readline()
-                if not raw:
-                    break
-                line = raw.decode(errors="replace").rstrip("\n")
-                if line == "@@FIRST@@":
-                    self.first.set()
-                elif line.startswith("@@RESULT@@ "):
-                    payload = json.loads(line[len("@@RESULT@@ ") :])
-                    break
-        except Exception:  # noqa: BLE001
-            payload = None
-        finally:
-            try:
-                await self._proc.wait()
-            except Exception:
-                pass
-        if self.result.done():
-            return
-        wire = (payload or {}).get("result")
-        if payload and payload.get("ok") and isinstance(wire, dict):
-            # ``from_wire`` is tolerant by design: a partially-written envelope
-            # must arrive as a degraded result the caller can still report, not
-            # as an exception in this pump (which the parent would then
-            # describe as "exited without a result" — the least useful message
-            # available).
-            self.result.set_result(StepResult.from_wire(wire))
-        else:
-            err = (payload or {}).get("error") if payload else None
-            if not err and payload and payload.get("ok"):
-                err = (
-                    "sub-provider worker reported success without a result "
-                    "envelope — its stdout protocol is out of sync with this "
-                    "process"
-                )
-            if not err:
-                rc = self._proc.returncode if self._proc else None
-                tail = (self._stderr or "").strip().splitlines()[-6:]
-                detail = (" | stderr: " + " ⏎ ".join(tail)) if tail else ""
-                err = (
-                    f"sub-provider worker exited without a result "
-                    f"(exit={rc}){detail}"
-                )
-            self.result.set_exception(RuntimeError(err))
-
-    def kill(self) -> None:
-        """SIGKILL the worker *and everything it spawned*.
-
-        The worker starts the vendor CLI as its own child, so the CLI is the
-        backend's grandchild. Killing only the worker re-parents the CLI to
-        ``launchd``/``init`` and it keeps running — burning the user's paid
-        subscription with no interface attached. That orphan, not the worker,
-        was the leak: signalling the whole process group is the fix, and
-        ``start()`` creates that group for exactly this call.
-        """
-        if self._pgid is not None:
-            try:
-                os.killpg(self._pgid, signal.SIGKILL)
-                return
-            except ProcessLookupError:
-                return  # whole group already gone
-            except OSError:
-                logger.warning(
-                    "killpg(%d) failed; falling back to killing the worker only",
-                    self._pgid,
-                )
-        p = self._proc
-        if p is not None and p.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                p.kill()
-
-
 class FleetProvider:
     """Composes Claude + OpenCode into a planner/coder/reviewer workflow.
 
     Stateless across turns — every per-turn datum is a local in `run()` so
     concurrent turns don't clobber each other's state.
+
+    The one exception, and it is deliberate: the :class:`WorkerPool`. Worker
+    processes are the thing that must NOT be per-turn — paying interpreter
+    start + SDK import + CLI spawn on every step was 0.7 to 1.0 s of dead time
+    per step. The pool holds no turn state of its own (its keys carry the
+    session, and each request builds a fresh sub-provider inside the worker),
+    so sharing it across turns cannot leak one turn's context into another's.
     """
 
     name = "fleet"
+
+    def __init__(self) -> None:
+        self._pool: WorkerPool | None = None
+        # The loop the pool's futures and tasks belong to. A pool built on a
+        # dead loop is unusable, and this singleton outlives any one loop in
+        # the test suite.
+        self._pool_loop: asyncio.AbstractEventLoop | None = None
 
     async def open_session(self, ctx: RunContext) -> str:
         return ctx.upstream_session_id or ""
@@ -223,16 +67,50 @@ class FleetProvider:
     async def close_session(self, session_id: str) -> None:
         # Stateless across turns by design (see the class docstring): every
         # per-turn datum is a local in ``run()``, so there is nothing to free.
+        # The pool is NOT per-session — it is keyed by session and reaps its
+        # own idle workers — so closing one session must not close it.
         return None
 
     async def aclose(self) -> None:
-        return None
+        pool, self._pool = self._pool, None
+        self._pool_loop = None
+        if pool is not None:
+            await pool.aclose()
+
+    def _get_pool(self) -> WorkerPool:
+        """The pool for the running loop, created on first use.
+
+        Lazily, because a pool built at import time would bind its lock and
+        tasks to whatever loop happened to be current then — and there is no
+        loop at import time at all. Rebuilt when the loop changes, killing the
+        old pool's workers first: a worker whose reader task lives on a dead
+        loop can never be reaped through it, so abandoning it silently is how
+        a billable orphan is created.
+        """
+        loop = asyncio.get_running_loop()
+        if self._pool is not None and self._pool_loop is loop:
+            return self._pool
+        if self._pool is not None:
+            for key in self._pool.keys:
+                self._pool.kill(key)
+        settings = get_settings()
+        self._pool = WorkerPool(
+            max_workers=int(getattr(settings, "fleet_max_workers", 4)),
+            idle_timeout_s=float(getattr(settings, "fleet_worker_idle_s", 300.0)),
+            worker_module=_WORKER_MODULE,
+            repo_root=_REPO_ROOT,
+        )
+        self._pool_loop = loop
+        return self._pool
 
     async def run(self, ctx: RunContext) -> AsyncIterator[Event]:
         # ALL per-turn state must live as locals here, not as instance attrs —
         # FleetProvider is a singleton and concurrent turns share `self`.
         t0 = time.time()
-        cfg = load_fleet_config(ctx.cwd)
+        # Async: a cache miss reads and parses YAML, and this runs on the
+        # turn's event loop — where a synchronous parse stalls every other
+        # session's streaming for its duration.
+        cfg = await load_fleet_config_async(ctx.cwd)
         # Per-session UI override layered on top of the file config.
         ui_override = ctx.extras.get("fleet_config_override") if ctx.extras else None
         if isinstance(ui_override, dict) and ui_override:
@@ -342,27 +220,37 @@ class FleetProvider:
             },
         )
 
-        # Run the sub-provider in a SEPARATE OS PROCESS (see _SubprocHandle /
+        # Run the sub-provider in a SEPARATE OS PROCESS (see pool.py /
         # subproc.py). A thread+loop is not enough — claude-agent-sdk has
         # process-global async-generator state, so a nested query() under the
         # orchestrator's query() raises "aclose(): asynchronous generator is
         # already running". A child process is fully isolated, and lets us
-        # KILL a wedged `claude` CLI for real. `handle.first` flips the
-        # instant the child reports its first event.
+        # KILL a wedged `claude` CLI for real. The process is POOLED: the first
+        # step on a key pays the interpreter + SDK import, later steps on the
+        # same key pay nothing. `first` flips the instant the worker reports
+        # this request's first event.
         _s = get_settings()
         grace_s = float(getattr(_s, "fleet_startup_grace_s", STARTUP_GRACE_S))
         step_budget_s = float(getattr(_s, "fleet_step_timeout_s", STEP_TIMEOUT_S))
-        handle = _SubprocHandle()
-        await handle.start(
-            role_cfg,
-            step.prompt,
-            ctx.cwd,
-            ctx.additional_dirs,
-            ctx.permission_mode,
-            step.role,
-            ctx.session_id,
+        pool = self._get_pool()
+        key = worker_key(ctx.session_id, role_cfg.provider, role_cfg.model, ctx.cwd)
+        first, collect = await pool.submit(
+            key,
+            {
+                "provider": role_cfg.provider,
+                "model": role_cfg.model,
+                "system_prompt": role_cfg.system_prompt,
+                "prompt": step.prompt,
+                "cwd": ctx.cwd,
+                "additional_dirs": ctx.additional_dirs or [],
+                "permission_mode": ctx.permission_mode,
+                "role_name": step.role,
+                # Forwarded so the sub-provider can key per-session state on
+                # the LocalCode session this step belongs to rather than
+                # treating each step as an unrelated session.
+                "session_id": ctx.session_id,
+            },
         )
-        collect = handle.result
         elapsed_s = 0
         output: StepResult | None = None
         error_text: str | None = None
@@ -376,7 +264,7 @@ class FleetProvider:
                     break
                 except TimeoutError:
                     elapsed_s += int(HEARTBEAT_INTERVAL_S)
-                    started = handle.first.is_set()
+                    started = first.is_set()
                     # Fast-fail: zero output within the startup grace window
                     # means the backend is wedged (auth prompt, dead socket,
                     # nested-SDK deadlock). Don't pretend to wait the full
@@ -426,7 +314,7 @@ class FleetProvider:
         except Exception as exc:
             # Sub-provider raised in the child (propagated through result).
             # Includes the worker's stderr tail + exit code (see
-            # _SubprocHandle._pump) so this is diagnosable from backend.log,
+            # WorkerPool._reap) so this is diagnosable from backend.log,
             # never an opaque "exited without a result".
             error_text = str(exc) or repr(exc)
             logger.warning(
@@ -434,13 +322,22 @@ class FleetProvider:
                 step.role, role_cfg.provider, role_cfg.model, error_text,
             )
         finally:
-            # True cancellation: kill the child process. Reclaims a wedged
-            # `claude` CLI immediately (no daemon-thread leak, no hung
-            # session-delete). Safe on every exit path — normal completion,
-            # timeout, fast-fail, or generator aclose() on WS disconnect.
-            handle.kill()
+            # True cancellation, but ONLY when this step did not finish. A
+            # resolved future — success OR a structured error the worker itself
+            # reported — means the worker answered and is healthy, so it stays
+            # in the pool for the next step; killing it unconditionally (as the
+            # per-dispatch handle did, because its process served one step) is
+            # what would give the pool back the interpreter-start cost it exists
+            # to remove.
+            #
+            # An UNRESOLVED future is the dangerous case: a timeout, a
+            # fast-fail, or a generator aclose() on WS disconnect. That worker
+            # is wedged and is holding a vendor CLI, so it is killed by process
+            # group. Cancel first, so the pool's failure does not resolve a
+            # future nobody is left to read.
             if not collect.done():
                 collect.cancel()
+                pool.kill(key)
 
         if error_text is not None:
             yield Event(

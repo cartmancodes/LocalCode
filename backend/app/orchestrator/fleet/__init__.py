@@ -37,6 +37,7 @@ The import surface is unchanged — everything that used to be importable from
   gate.py       reviewer/tester classifier + JSON verdict parsing
   envelope.py   ``StepResult`` — the bounded thing one step hands back
   collect.py    sub-provider stream → ``StepResult`` (summary, verdict, usage)
+  pool.py       ``WorkerPool`` — long-lived worker processes, keyed per step
   provider.py   ``FleetProvider``
 """
 from __future__ import annotations
@@ -74,6 +75,13 @@ from .loader import (
     role_library_dict,
 )
 from .models import FleetConfig, RoleConfig, Step
+from .pool import (
+    WorkerPool,
+    remove_worker_pidfile,
+    sweep_stale_workers,
+    worker_key,
+    write_worker_pidfile,
+)
 from .presets import WORKFLOW_PRESETS
 from .prompts import (
     CODER_SYSTEM,
@@ -124,6 +132,12 @@ __all__ = [
     # step envelope (the bounded thing a step hands back)
     "StepResult",
     "MAX_TOOL_DIGEST_CHARS",
+    # worker pool (the long-lived sub-provider processes a step runs in)
+    "WorkerPool",
+    "worker_key",
+    "sweep_stale_workers",
+    "write_worker_pidfile",
+    "remove_worker_pidfile",
     # provider
     "FleetProvider",
     # back-compat underscore aliases — the pre-split module exposed these;

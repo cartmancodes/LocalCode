@@ -9,11 +9,18 @@ accident.
 
 Echoes the request's ``role_name`` and ``session_id`` into the summary so the
 test can assert the parent really forwarded them.
+
+Frames its result the v2 way — ``@@RESULT@@ <id> <byte-length>`` then exactly
+that many bytes — because the framing is half of what this fake exists to pin
+down. One-shot still: it answers one request and exits, which also exercises
+the pool's EOF path.
 """
 from __future__ import annotations
 
 import json
 import sys
+
+from backend.app.orchestrator.fleet.constants import FIRST_MARKER, RESULT_MARKER
 
 # An artifact id shaped like the real thing (sha256 hex) so the parent's
 # ``context_text`` pointer line is representative.
@@ -22,7 +29,8 @@ _FAKE_ARTIFACT_ID = "c" * 64
 
 def main() -> None:
     req = json.loads(sys.stdin.readline())
-    sys.stdout.write("@@FIRST@@\n")
+    request_id = str(req.get("id") or "unknown")
+    sys.stdout.write(f"{FIRST_MARKER} {request_id}\n")
     sys.stdout.flush()
     result = {
         "summary": (
@@ -36,8 +44,11 @@ def main() -> None:
         "full_bytes": 2_000_000,
         "usage": {"input_tokens": 5, "output_tokens": 2},
     }
-    sys.stdout.write("@@RESULT@@ " + json.dumps({"ok": True, "result": result}) + "\n")
+    body = json.dumps({"ok": True, "result": result}).encode("utf-8")
     sys.stdout.flush()
+    sys.stdout.buffer.write(f"{RESULT_MARKER} {request_id} {len(body)}\n".encode())
+    sys.stdout.buffer.write(body + b"\n")
+    sys.stdout.buffer.flush()
 
 
 if __name__ == "__main__":

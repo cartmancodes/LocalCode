@@ -29,12 +29,14 @@ import logging
 import re
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from ..artifacts import ArtifactStore
+from ..config import get_settings
 from .agent_def import AgentDef
 
 if TYPE_CHECKING:
@@ -100,6 +102,12 @@ def build_dispatch_mcp(
     role_outputs: dict[str, str] = {}
     # Per-TURN step ids, for the same reason: see StepIdSequence.
     step_ids = StepIdSequence()
+    # Per-TURN spend ledger, for the same reason again. See TurnBudget for what
+    # each arm bounds and why an unbounded turn was reachable without it.
+    budget = TurnBudget(
+        max_dispatches=max(8, 2 * len(registry)),
+        token_budget=int(getattr(get_settings(), "fleet_turn_token_budget", 0)),
+    )
 
     @tool(
         "dispatch_subagent",
@@ -139,6 +147,10 @@ def build_dispatch_mcp(
                 f"and stop. Re-dispatching will only hang again."
             )
 
+        over_budget = budget.refusal()
+        if over_budget is not None:
+            return _err(over_budget)
+
         agent = registry[name]
         prompt = _effective_prompt(name, prompt, ctx.prompt, role_outputs)
         step_id = step_ids.next_id(name)
@@ -155,6 +167,11 @@ def build_dispatch_mcp(
         # the envelope is safe where reconstructing the full text from the
         # bounded view is impossible.
         outputs: dict[str, StepResult] = {}
+
+        # Counted before the step runs, not after it succeeds: a turn whose
+        # dispatches all FAIL still consumed wall clock and a session lock, and
+        # the retry loop this bounds is made of failures.
+        budget.dispatches += 1
 
         # Stream every per-step event onto the sink so the WS shows the
         # agent's tool_use / tool_result / heartbeat cards while the
@@ -183,9 +200,32 @@ def build_dispatch_mcp(
                 f"same agent — if you have nothing else productive to do, "
                 f"abort and report the backend problem to the user."
             )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.exception("dispatch_subagent: %s raised", name)
-            return _err(f"subagent {name!r} raised: {exc}")
+        except Exception as exc:
+            # This path counts against the cap too. It used to not, and that
+            # was the whole of D7.1's second half: an oversize worker result
+            # raised here, never incremented ``hard_fail``, so the cap never
+            # tripped — and the orchestrator re-dispatched the planner, which
+            # deterministically reproduced the same oversize output, for up to
+            # 30 turns of 600 s each while holding the session lock. A cap that
+            # bounds one of five failure classes is not a cap.
+            n = hard_fail.get(name, 0) + 1
+            hard_fail[name] = n
+            logger.exception("dispatch_subagent: %s raised (%dx)", name, n)
+            failure = f"{type(exc).__name__}: {exc}"
+            if n >= DISPATCH_HARD_FAIL_CAP:
+                return _err(
+                    f"subagent {name!r} failed {n}x with the SAME kind of "
+                    f"error — this is deterministic, not bad luck. STOP. Do "
+                    f"NOT dispatch {name} again. Abort the workflow and tell "
+                    f"the user that {name} ({role_cfg.provider}) is failing. "
+                    f"Detail: {failure}"
+                )
+            return _err(
+                f"subagent {name!r} failed: {failure}. Do NOT re-dispatch it "
+                f"with the same prompt — if the failure is deterministic the "
+                f"retry reproduces it. Change the approach or abort and report "
+                f"this to the user."
+            )
 
         # ``run_step_fn`` records the step's envelope here. What this tool
         # RETURNS is the orchestrator's context, so it returns the bounded
@@ -193,6 +233,12 @@ def build_dispatch_mcp(
         # pointer when the output was evicted) and never the raw transcript —
         # an unbounded value here is the context-runaway defect itself.
         envelope = outputs.get(step_id)
+        # Spend the step's tokens against the turn's ceiling. Done here, from
+        # the envelope, because this is the only place the turn can see what a
+        # step actually cost — the orchestrator's own usage covers its model
+        # loop, not its sub-agents'.
+        if envelope is not None:
+            budget.spend(envelope.usage)
         result = envelope.context_text() if envelope is not None else ""
         if not result:
             return _err(
@@ -381,6 +427,67 @@ def save_plan(plan_text: str, cwd: str | None) -> Path:
 # ─────────────────────────────────────────────────────────────────────────────
 # Internals
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class TurnBudget:
+    """What ONE turn is allowed to spend on sub-agent dispatches.
+
+    Per-turn, like ``hard_fail`` and ``StepIdSequence``, and for the same
+    reason: a ledger that outlives its turn either leaks keys forever or
+    refuses a fresh turn for a previous one's spending.
+
+    Two arms, bounding two different runaways that the hard-fail cap does not
+    reach — because neither of them involves a *failure*:
+
+    * **dispatches** — an orchestrator that keeps delegating instead of
+      answering. Every dispatch succeeds, so nothing counts against
+      ``DISPATCH_HARD_FAIL_CAP``; only ``max_turns`` stops it, at up to the
+      step budget each. ``max(8, 2 * len(registry))`` is deliberately loose:
+      every role twice (one review retry) plus headroom, so a legitimate
+      workflow never meets it.
+    * **tokens** — the same loop measured in money rather than calls, summed
+      from each step's reported ``usage``. Off by default (``0``), because the
+      right ceiling depends on the user's plan, not on us.
+
+    ``usage`` of ``None`` contributes nothing: a provider that reports no token
+    counts must not be charged a guess, and must not be refused either.
+    """
+
+    max_dispatches: int
+    token_budget: int
+    dispatches: int = 0
+    tokens: int = 0
+
+    def spend(self, usage: dict[str, int] | None) -> None:
+        if usage:
+            self.tokens += sum(usage.values())
+
+    def refusal(self) -> str | None:
+        """The message to refuse the next dispatch with, or ``None``.
+
+        Shaped like the ``DISPATCH_HARD_FAIL_CAP`` refusal on purpose: the
+        orchestrator already knows how to read "stop and tell the user", and a
+        second vocabulary for the same instruction is a second thing it can
+        misread.
+        """
+        if self.dispatches >= self.max_dispatches:
+            return (
+                f"REFUSING to dispatch: this turn has already run "
+                f"{self.dispatches} sub-agent dispatches, the per-turn cap. "
+                f"Do NOT dispatch anything else. STOP now, summarize what the "
+                f"agents produced so far, and tell the user the turn hit its "
+                f"dispatch cap so they can continue with a new prompt."
+            )
+        if self.token_budget > 0 and self.tokens >= self.token_budget:
+            return (
+                f"REFUSING to dispatch: this turn's sub-agents have used "
+                f"{self.tokens} tokens, over the per-turn budget of "
+                f"{self.token_budget}. Do NOT dispatch anything else. STOP "
+                f"now, summarize what the agents produced so far, and tell "
+                f"the user the turn hit its token budget."
+            )
+        return None
 
 
 class StepIdSequence:

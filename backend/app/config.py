@@ -63,6 +63,26 @@ class Settings(BaseSettings):
     # "slow but streaming". Env: FLEET_STARTUP_GRACE_S.
     fleet_startup_grace_s: float = 90.0
 
+    # How many long-lived sub-provider worker PROCESSES the fleet may hold at
+    # once. Each one is an interpreter with the SDK imported and (while a step
+    # runs) a vendor CLI under it, so this is the bound on "a burst of
+    # concurrent turns swapped the machine". Past the cap the least recently
+    # used IDLE worker is closed; a worker with a step in flight is never
+    # evicted. Env: FLEET_MAX_WORKERS.
+    fleet_max_workers: int = 4
+    # A worker idle for this long is reaped. Long enough that the steps of one
+    # turn — and a user's next prompt a minute later — reuse the process that
+    # already paid the interpreter + SDK import; short enough that a session
+    # left open overnight is not holding four interpreters.
+    # Env: FLEET_WORKER_IDLE_S.
+    fleet_worker_idle_s: float = 300.0
+    # Per-TURN token ceiling across every sub-agent dispatch, summed from each
+    # step's reported usage. 0 disables it. Above the ceiling
+    # ``dispatch_subagent`` refuses and tells the orchestrator to stop and
+    # summarize — the bound on a turn that keeps delegating instead of
+    # finishing. Env: FLEET_TURN_TOKEN_BUDGET.
+    fleet_turn_token_budget: int = 0
+
     # Comma-separated CORS origins. Override per env (e.g. add a staging URL).
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

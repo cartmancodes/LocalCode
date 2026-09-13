@@ -16,16 +16,16 @@ session directory:
     same session id, i.e. two turns for one session.
   * D14.5 — ``cancel_turn`` swallowed the caller's own cancellation.
 
-The process-group test is the one that proves D14.1: it asserts on the
-*grandchild's* pid, because that is the process that used to survive.
+D14.1's process-group kill now lives in ``test_worker_pool.py``: the worker
+process is pooled, so the kill under test is ``WorkerPool.kill``. The assertion
+there is unchanged and still the one that matters — the *grandchild's* pid,
+because that is the process that used to survive.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
-import os
-import signal
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -41,11 +41,6 @@ from backend.app.session_runner import registry as runner_registry
 from backend.app.session_runner.runner import SessionRunner
 from backend.app.session_runner.turn import execute_turn
 from backend.app.storage.sessions import store as session_store
-
-# Worker module path for the process-group test, in the same dotted form the
-# provider uses for the real worker.
-_FAKE_WORKER = "backend.tests.fakes.tree_worker"
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Doubles
@@ -201,6 +196,20 @@ def _one_role_config() -> FleetConfig:
     )
 
 
+def _async_config(cfg: FleetConfig) -> Any:
+    """Stub for ``load_fleet_config_async``.
+
+    The provider resolves its config off the event loop now (Task 13): a
+    synchronous YAML parse there stalled every other session's streaming for
+    its duration, so the stub has to be awaitable too.
+    """
+
+    async def _load(cwd: str | None = None) -> FleetConfig:
+        return cfg
+
+    return _load
+
+
 def _stub_orchestrator(events: list[Event]) -> Any:
     async def _run(ctx: RunContext, cfg: FleetConfig) -> AsyncIterator[Event]:
         for ev in events:
@@ -214,7 +223,7 @@ async def test_fleet_turn_emits_one_done_carrying_cost_and_duration(
 ) -> None:
     """The orchestrator's done carries the cost; only ``run()`` knows the wall
     time. Merging them is the only way to keep both and stay at one done."""
-    monkeypatch.setattr(fleet_mod, "load_fleet_config", lambda cwd: _one_role_config())
+    monkeypatch.setattr(fleet_mod, "load_fleet_config_async", _async_config(_one_role_config()))
     fleet = fleet_mod.FleetProvider()
     monkeypatch.setattr(
         fleet,
@@ -246,7 +255,7 @@ async def test_fleet_turn_still_emits_a_done_when_the_orchestrator_omits_one(
 ) -> None:
     """Error paths never reach a ResultMessage, so nobody upstream yields a
     done — the provider must still terminate the turn exactly once."""
-    monkeypatch.setattr(fleet_mod, "load_fleet_config", lambda cwd: _one_role_config())
+    monkeypatch.setattr(fleet_mod, "load_fleet_config_async", _async_config(_one_role_config()))
     fleet = fleet_mod.FleetProvider()
     monkeypatch.setattr(
         fleet,
@@ -266,7 +275,7 @@ async def test_fleet_turn_with_no_roles_configured_emits_one_done(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     empty = FleetConfig(name="empty", roles={}, entry_role="coder")
-    monkeypatch.setattr(fleet_mod, "load_fleet_config", lambda cwd: empty)
+    monkeypatch.setattr(fleet_mod, "load_fleet_config_async", _async_config(empty))
     fleet = fleet_mod.FleetProvider()
 
     events = [ev async for ev in fleet.run(RunContext(model="m", prompt="p"))]
@@ -281,7 +290,7 @@ async def test_fleet_turn_persists_the_cost_it_reported(
     keeps the last done it sees, so the spurious second one (no ``cost_usd``)
     was what got persisted and every fleet turn showed up free in history."""
     session_id = await _new_session(isolated_store)
-    monkeypatch.setattr(fleet_mod, "load_fleet_config", lambda cwd: _one_role_config())
+    monkeypatch.setattr(fleet_mod, "load_fleet_config_async", _async_config(_one_role_config()))
     provider = fleet_mod.FleetProvider()
     monkeypatch.setattr(
         provider,
@@ -484,79 +493,12 @@ async def test_lifespan_shutdown_cancels_turns_before_closing_providers(
     assert runner_registry._runners == {}
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-def _read_pids_once(path: Path) -> tuple[int, int] | None:
-    """The worker's (pid, grandchild pid), or None until it has reported."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    if not text.endswith("\n"):
-        return None
-    worker, grandchild = text.split()
-    return int(worker), int(grandchild)
-
-
-async def _read_pids(path: Path, timeout_s: float = 10.0) -> tuple[int, int]:
-    deadline = asyncio.get_running_loop().time() + timeout_s
-    while asyncio.get_running_loop().time() < deadline:
-        pids = _read_pids_once(path)
-        if pids is not None:
-            return pids
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"fake worker never reported its pids to {path}")
-
-
-async def _wait_until_dead(pid: int, label: str, timeout_s: float = 10.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout_s
-    while asyncio.get_running_loop().time() < deadline:
-        if not _alive(pid):
-            return
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"{label} (pid {pid}) survived the kill")
-
-
-async def test_kill_reaps_the_whole_process_group(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The vendor CLI is a grandchild of the backend. Killing only the worker
-    re-parents it and it keeps running on the user's subscription, so the
-    assertion that matters is the grandchild's."""
-    monkeypatch.setattr(fleet_mod, "_WORKER_MODULE", _FAKE_WORKER)
-    pid_file = tmp_path / "pids.txt"
-    handle = fleet_mod._SubprocHandle()
-    await handle.start(
-        RoleConfig(provider="claude", model="m", system_prompt="s"),
-        str(pid_file),
-        None,
-        [],
-        None,
-        "coder",
-    )
-
-    worker_pid, grandchild_pid = await _read_pids(pid_file)
-    try:
-        assert _alive(worker_pid), "fake worker died before we could kill it"
-        assert _alive(grandchild_pid), "fake grandchild died before we could kill it"
-
-        handle.kill()
-
-        await _wait_until_dead(worker_pid, "worker")
-        await _wait_until_dead(grandchild_pid, "grandchild (the vendor CLI)")
-    finally:
-        # Never leave real processes behind, however this test ends.
-        for pid in (worker_pid, grandchild_pid):
-            with contextlib.suppress(OSError):
-                os.kill(pid, signal.SIGKILL)
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(handle.result, timeout=5)
+# The D14.1 process-group kill moved to ``test_worker_pool.py`` with the
+# process itself: workers are pooled now, so the kill is ``WorkerPool.kill``
+# and the test that proves it must drive the pool. The assertion is unchanged
+# and still the one that matters — the GRANDCHILD's pid, because the vendor
+# CLI is what used to survive. See
+# ``TestReclamation.test_kill_reaps_the_whole_process_group``.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
