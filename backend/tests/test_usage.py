@@ -111,6 +111,29 @@ class TestParseClaudeUsage:
 
         assert usage.input_tokens == 0
 
+    def test_a_usage_property_that_raises_does_not_raise_here(self) -> None:
+        """``getattr(x, "usage", None)`` swallows a MISSING attribute, not a
+        raising one. This function sits inside the per-turn loop with no local
+        guard, so an exception escaping it turns a successful turn into an
+        ``error`` with no ``assistant.done`` — the turn is lost to protect a
+        telemetry field."""
+
+        class RaisingUsage:
+            total_cost_usd = 0.5
+
+            @property
+            def usage(self) -> dict[str, int]:
+                raise RuntimeError("usage is unavailable on this result")
+
+        usage = parse_claude_usage(
+            RaisingUsage(), provider="claude", model="m1", session_id="s1"
+        )
+
+        assert usage.input_tokens == 0
+        assert usage.output_tokens == 0
+        # The fields that did not raise are still reported.
+        assert usage.cost_usd == 0.5
+
     def test_unparseable_value_becomes_zero(self) -> None:
         result = SimpleNamespace(usage={"input_tokens": "not-a-number"}, total_cost_usd=None)
 

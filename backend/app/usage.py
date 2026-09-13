@@ -104,7 +104,19 @@ def parse_claude_usage(
     event, discarding the persistent client and dropping that turn's
     ``assistant.done`` entirely. Missing or malformed keys become 0 instead.
     """
-    raw_usage = getattr(result_message, "usage", None)
+    try:
+        raw_usage = getattr(result_message, "usage", None)
+    except Exception:
+        # A property that RAISES is not a missing attribute, and ``getattr``'s
+        # default only covers the second: it swallows ``AttributeError`` and
+        # lets everything else through. A ``ResultMessage`` whose ``usage`` is
+        # computed lazily (or proxied over a transport that has since closed)
+        # therefore took the whole turn down from here — the successful turn
+        # became an ``error`` event, its ``assistant.done`` was never emitted
+        # and the persistent client was discarded. Usage is telemetry; a turn
+        # is the product. Degrade to zeros, exactly as every other malformed
+        # shape below does.
+        raw_usage = None
     # ``_pick_int`` already treats a non-dict (or a dict whose ``.get``
     # raises) as "no keys present", but the shape check is repeated here so
     # this function's own contract — "never raises, whatever ``usage`` is"
