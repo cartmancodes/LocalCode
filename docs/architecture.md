@@ -1402,9 +1402,11 @@ with a monotonic `_id` by `SessionRunner._broadcast`.
 - `./setup.sh logs` — tail `.run/backend.log`, `.run/frontend.log`,
   `.run/opencode.log`.
 - `Makefile` targets: `install`, `backend`, `frontend`, `dev`, `test`
-  (`pytest -q`), `lint` (`ruff check .`), `format` (`ruff format .`).
-  Stale targets: `up`, `down`, `logs`, `db-init` (no Docker Compose
-  file and no `db_init.py` exist today).
+  (`pytest -q`), `soak` (the same suite plus the `slow` soak, under
+  `-W error::UserWarning` and a per-test wall clock), `lint`
+  (`ruff check .`), `typecheck` (`mypy backend/app`), `format`
+  (`ruff format .`). Stale targets: `up`, `down`, `logs`, `db-init` (no Docker
+  Compose file and no `db_init.py` exist today).
 - VS Code commands: `localcode.open`, `localcode.openSidebar`,
   `localcode.reload`.
 
@@ -1616,6 +1618,7 @@ activated virtualenv:
 
 ```bash
 make test        # .venv/bin/pytest -q
+make soak        # the whole suite + the soak, warnings-as-errors, 300 s per test
 make lint        # .venv/bin/ruff check .
 make typecheck   # .venv/bin/mypy backend/app
 make format      # .venv/bin/ruff format .
@@ -1626,8 +1629,12 @@ cd frontend && npm run build    # tsc -b && vite build
 The backend suite is the evaluation net described in
 [harness.md](harness.md#9-the-three-evaluation-layers): replay fixtures,
 long-horizon cases, golden fleet traces and the provider x mode matrix, plus
-the per-module suites. Tests needing a real vendor CLI carry the
-`requires_cli` marker and are deselected by default. Refresh the goldens with
+the per-module suites, plus the cost and containment layer in
+[harness.md §11](harness.md#11-soak-latency-and-leak-verification) — latency
+budgets, leak containment and failure injections run in the default suite; the
+200-turn soak carries the `slow` marker and only `make soak` runs it. Tests
+needing a real vendor CLI carry the `requires_cli` marker and are deselected by
+default. Refresh the goldens with
 `UPDATE_GOLDEN=1 .venv/bin/pytest backend/tests/test_golden_traces.py`, then
 read the diff.
 

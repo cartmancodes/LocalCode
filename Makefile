@@ -1,4 +1,4 @@
-.PHONY: help install dev backend frontend up down logs db-init test lint typecheck format codex-schema
+.PHONY: help install dev backend frontend up down logs db-init test lint typecheck format soak codex-schema
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"}{printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -44,6 +44,22 @@ lint: ## Lint the tree (ruff)
 
 typecheck: ## Type-check the backend (mypy)
 	.venv/bin/mypy backend/app
+
+# The soak, plus everything else, under the two conditions the default run
+# does not impose: warnings are errors (a `slow` marker that stops being
+# registered, a deprecation the vendor SDK starts emitting), and every test has
+# a hard wall clock. The timeout exists because of a hang observed exactly once
+# during Task 5 — the third test in collection order, under `-W error`, with a
+# second pytest running beside it — which 8 bounded reruns never reproduced. A
+# hang that rare is only ever caught by a run that cannot hang: on expiry the
+# watchdog dumps every thread's stack (faulthandler) and fails the test, so the
+# next occurrence arrives with evidence instead of a stopped CI job.
+# `-s` is load-bearing twice over: without it pytest captures stdout/stderr per
+# test, so the soak's measurements never reach the log on a PASSING run (the
+# whole point of printing them), and a wedged test's stack dump dies with the
+# captured buffer at the moment the run is aborted.
+soak: ## Run the whole suite including the soak, warnings-as-errors, per-test timeout
+	LOCALCODE_TEST_TIMEOUT_S=300 .venv/bin/pytest -q -s -W error::UserWarning -m 'not requires_cli'
 
 format: ## Auto-format the tree (ruff)
 	.venv/bin/ruff format .

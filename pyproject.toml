@@ -47,13 +47,14 @@ select = ["E", "F", "I", "B", "UP", "N", "ASYNC"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["backend/tests"]
-addopts = "-m 'not requires_cli'"
+addopts = "-m 'not requires_cli and not slow'"
 markers = [
     "requires_cli: needs a real vendor CLI (claude / codex) on PATH; excluded by default",
-    # Registered here, ahead of its first use, so a suite that needs it can be
-    # written without also editing this file — and so `-m "not slow"` is a
-    # valid selector from the moment the first such test lands. Nothing in the
-    # tree is marked `slow` yet; an unregistered marker is a warning, and the
-    # suite runs under `-W error::UserWarning`.
+    # Registered ahead of its first use by Task 12; claimed by Task 16's
+    # `backend/tests/test_soak_long_session.py`, the only test that carries it.
+    # Excluded from the default run above — a soak nobody runs is decoration,
+    # but a minute of soak on every `pytest -q` is a minute nobody keeps
+    # paying, so `make soak` is what runs it (and the rest of the suite with
+    # it, under `-W error::UserWarning` and a per-test wall clock).
     "slow: a long-running soak / endurance case; excluded with -m 'not slow'",
 ]

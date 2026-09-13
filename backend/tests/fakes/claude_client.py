@@ -96,8 +96,19 @@ class FakeClaudeClient:
         *,
         connect_gate: asyncio.Event | None = None,
         fail_connect: str | None = None,
+        end_sentinel_after_error: bool = False,
     ) -> None:
         self.options = options
+        # The real SDK's reader queues its ``{"type": "end"}`` sentinel from a
+        # ``finally``, so a stream that died on an exception ALSO ends: the
+        # consumer sees the error, and anything reading that stream again
+        # afterwards sees EOF rather than blocking. This fake queued only the
+        # failure, which is a difference a test could be written against by
+        # accident — "the second read blocked" would look like provider
+        # behaviour when it is really the fake's. Off by default so existing
+        # cases keep their exact shape; ``test_failure_injection.py`` runs the
+        # error-path reuse case BOTH ways to show the provider does not care.
+        self._end_sentinel_after_error = end_sentinel_after_error
         self.behaviour: Behaviour = behaviour or one_result
         # Every call in order. Reuse tests assert on this, so "connect" must
         # appear exactly once per client however many turns it serves.
@@ -145,6 +156,9 @@ class FakeClaudeClient:
             raise
         except BaseException as exc:  # noqa: BLE001 - carried to the consumer
             await stream.put(_Failure(exc))
+            if self._end_sentinel_after_error:
+                # What the real reader's ``finally`` does. See the flag.
+                await stream.put(_EndOfStream())
         else:
             if not saw_result:
                 # The behaviour ran out without a result: the CLI exited.
@@ -206,11 +220,13 @@ class FakeClientFactory:
         *,
         connect_gate: asyncio.Event | None = None,
         fail_connect: str | None = None,
+        end_sentinel_after_error: bool = False,
     ) -> None:
         self.clients: list[FakeClaudeClient] = []
         self.behaviour = behaviour
         self.connect_gate = connect_gate
         self.fail_connect = fail_connect
+        self.end_sentinel_after_error = end_sentinel_after_error
 
     def __call__(self, options: Any = None, **_kwargs: Any) -> FakeClaudeClient:
         client = FakeClaudeClient(
@@ -218,6 +234,7 @@ class FakeClientFactory:
             behaviour=self.behaviour,
             connect_gate=self.connect_gate,
             fail_connect=self.fail_connect,
+            end_sentinel_after_error=self.end_sentinel_after_error,
         )
         self.clients.append(client)
         return client

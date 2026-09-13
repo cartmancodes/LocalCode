@@ -21,9 +21,18 @@ Failure modes these fixtures exist to prevent:
     ``~/.localcode`` because ``storage.sessions`` resolved its paths from
     ``Path.home()`` at *import* time. ``isolated_store`` repoints those
     module constants, which is the only thing that actually contains it.
+  * A test that HANGS, taking the whole run with it and leaving nothing behind
+    to diagnose. Opt-in (``LOCALCODE_TEST_TIMEOUT_S``) — see
+    ``_per_test_timeout`` — because a wall clock on every local run is a flake
+    generator, while a run that can hang forever is how a rare deadlock gets
+    filed as "CI was slow".
 """
 from __future__ import annotations
 
+import faulthandler
+import os
+import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -92,3 +101,104 @@ def isolated_store(tmp_localcode: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setattr(sessions_mod, "GLOBAL_SESSIONS_DIR", root / "sessions" / "_global")
     monkeypatch.setattr(sessions_mod, "CLEANUP_SENTINEL", root / "sessions" / ".last-cleanup")
     return tmp_localcode
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A hard wall clock per test, opt-in
+# ─────────────────────────────────────────────────────────────────────────────
+
+_TIMEOUT_ENV = "LOCALCODE_TEST_TIMEOUT_S"
+
+# How long after the dump a wedged test is given to come back before the run is
+# aborted. A test that unwedges here still fails — cleanly, with a summary —
+# which is the better outcome, so the grace is generous relative to the dump
+# itself and tiny relative to any sane timeout.
+_UNWEDGE_GRACE_S = 5.0
+
+# Exit code for "a test wedged and the run was aborted". Distinct from
+# pytest's own (1 = tests failed, 2 = interrupted) so a CI log can tell this
+# apart from an ordinary failure without parsing anything.
+WEDGED_EXIT_CODE = 99
+
+
+@pytest.fixture(autouse=True)
+def _per_test_timeout(request: pytest.FixtureRequest) -> object:
+    """Bound every test by ``LOCALCODE_TEST_TIMEOUT_S``, with the stacks.
+
+    Why this exists: during Task 5 a full-suite run under
+    ``-W error::UserWarning`` hung forever at the third test in collection
+    order, once, while a second pytest process ran beside it. Eight bounded
+    reruns never reproduced it. A hang that rare is only ever caught by a run
+    that cannot hang — and only diagnosable if the run leaves the stacks
+    behind. ``make soak`` sets the variable; nothing else does, because a wall
+    clock on every local run is a flake generator.
+
+    Two outcomes, because there are two kinds of overrun and they need
+    different endings:
+
+      * the test is slow but alive — the watchdog dumps, the test finishes,
+        and the fixture fails it with a message. The run continues and every
+        other test still reports;
+      * the test is WEDGED — nothing on the main thread will ever run again,
+        so no fixture of ours can fail it and no assertion can be reached. The
+        watchdog dumps, waits ``_UNWEDGE_GRACE_S``, and aborts the process with
+        :data:`WEDGED_EXIT_CODE`. A run that ends in 300 s naming the test and
+        carrying every thread's stack is worth incomparably more than one that
+        has to be killed by hand the next morning with nothing to show.
+
+    Why a thread and not ``pytest-timeout``: no new dependency is allowed, and
+    a thread is what that plugin's "dump and fail" mode uses anyway. Why not
+    ``signal.alarm``: signals reach the main thread only while it is running
+    Python, which is precisely what a wedge in a blocking syscall is not doing.
+    """
+    raw = os.environ.get(_TIMEOUT_ENV)
+    if not raw:
+        yield
+        return
+    try:
+        limit_s = float(raw)
+    except ValueError:
+        pytest.fail(f"{_TIMEOUT_ENV}={raw!r} is not a number of seconds")
+    if limit_s <= 0:
+        yield
+        return
+
+    expired = threading.Event()
+    finished = threading.Event()
+    node_id = request.node.nodeid
+
+    def watch() -> None:
+        if finished.wait(limit_s):
+            return
+        expired.set()
+        print(
+            f"\n[timeout] {node_id} exceeded {limit_s:g}s — dumping every "
+            "thread's stack",
+            file=sys.stderr,
+            flush=True,
+        )
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        if finished.wait(_UNWEDGE_GRACE_S):
+            return  # it came back; the fixture below fails it properly
+        print(
+            f"[timeout] {node_id} is still wedged {_UNWEDGE_GRACE_S:g}s later — "
+            f"aborting the run with exit {WEDGED_EXIT_CODE}",
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.stderr.flush()
+        os._exit(WEDGED_EXIT_CODE)
+
+    watchdog = threading.Thread(target=watch, name=f"timeout:{request.node.name}")
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        yield
+    finally:
+        finished.set()
+        watchdog.join(timeout=1.0)
+    if expired.is_set():
+        pytest.fail(
+            f"test exceeded the {limit_s:g}s wall clock set by {_TIMEOUT_ENV} "
+            "(stacks dumped to stderr above)"
+        )

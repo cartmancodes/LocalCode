@@ -373,6 +373,28 @@ Stated here rather than hidden behind a weakened assertion:
   a reconciliation can.
 - **No test needs a vendor CLI.** The one that does is marked `requires_cli`
   and is deselected by default (`pyproject.toml`).
+- **One verification step is still manual: Ctrl-C on a live fleet turn.**
+  Task 14's process-group reaping was signed off partly by hand — start a fleet
+  turn against a real `claude`, Ctrl-C the backend, and check with
+  `pgrep -fl "fleet.subproc|claude"` that neither the worker nor the vendor CLI
+  survived. Nothing here can automate that: it needs an installed CLI and a
+  paid subscription. The automated stand-in is
+  `test_leak_containment.py::TestAbandonedSteps::test_a_step_cancelled_mid_flight_leaves_no_process_behind`,
+  which cancels a real step through the same `finally` and asserts on a real
+  grandchild's pid — the fake worker spawns one precisely so the assertion is
+  about the process that used to survive. What the stand-in cannot prove is
+  that the *vendor's own* CLI reacts to `SIGKILL` on its group the way the
+  stand-in's `sleep` does.
+- **A deferred tail that arrives after a turn ends is undetectable.** The SDK
+  defers on backgrounded agent work (`DEFERRING_TASK_TYPES`), so a result can
+  arrive with that work still in flight and the follow-up frames land on the
+  same connection afterwards. `ClaudeProvider` now checks for that tail once,
+  after the turn's result, and drops the client rather than serving it to the
+  next turn (`test_claude_client_reuse.py::TestADeferredTailOnTheConnection`).
+  A tail the CLI emits *after* that check and before the next turn is still
+  invisible — the SDK's own comment says closing the gap "needs a run-boundary
+  signal from the CLI rather than an inference from task bookkeeping", and no
+  test here can manufacture one.
 
 ---
 
@@ -402,6 +424,110 @@ ACP session would be violating.
 
 None of that is blocked by anything in the current design. It is a transport
 plus an adapter, not a refactor.
+
+---
+
+## 11. Soak, latency and leak verification
+
+§9's layers ask whether the harness behaves. These ask what it costs to keep
+behaving, and what it leaves behind when it does not — the class of regression
+that is invisible at turn 3 and fatal at turn 300.
+
+| Suite | Subject | In `pytest -q`? |
+| --- | --- | --- |
+| `backend/tests/test_soak_long_session.py` | 200 turns on one session: disk, memory, tasks, descriptors, paging | no — `slow` |
+| `backend/tests/test_latency_budgets.py` | event-loop stalls, bus throughput, checkpoint cost, first-event latency | yes |
+| `backend/tests/test_leak_containment.py` | real worker processes and their grandchildren; session churn | yes |
+| `backend/tests/test_failure_injection.py` | every failure mode the audit named, end to end | yes |
+
+**Why exactly one of them is excluded.** A reliability test nobody runs is
+decoration, so the injections and the budgets are in the default suite — they
+cost about four seconds between them. The soak is marked `slow` and excluded
+via `addopts` (`-m 'not requires_cli and not slow'`) because it is a minute of
+machine time whose value is a *trend*, not a gate. `make soak` runs it, and
+runs everything else with it:
+
+```bash
+make soak       # the whole suite + the soak, -W error::UserWarning, 300 s per test
+.venv/bin/pytest -q -m slow     # the soak alone
+```
+
+`make soak` adds two things the default run does not. Warnings are errors, so
+an unregistered marker or a new vendor-SDK deprecation fails rather than
+scrolls past. And every test gets a hard wall clock
+(`LOCALCODE_TEST_TIMEOUT_S`, honoured by an autouse fixture in
+`backend/tests/conftest.py`): on expiry a watchdog thread dumps every thread's
+stack, and if the test is still wedged five seconds later the run aborts with
+exit code 99 rather than hanging. That exists because a full-suite run under
+`-W error::UserWarning` hung exactly once during Task 5, at the third test in
+collection order, with a second pytest running beside it — and eight bounded
+reruns never reproduced it. A hang that rare is only ever caught by a run that
+cannot hang.
+
+### How to read a failure
+
+Every budget in these suites is a named module constant whose comment says what
+it protects and where the number came from, marked `audit-derived` (a figure
+the audit or an earlier task measured) or `chosen-here` (picked from a
+measurement these tests print). Read that comment first: it is the difference
+between "this is a regression" and "this machine is busy".
+
+* **A ratio failed** (disk bytes vs content bytes, checkpoint bytes vs final
+  message) — that is a regression. Ratios do not move with machine load; they
+  moved because the code writes more than it used to. `[soak] disk … (1.17x)`
+  and `[latency] … (1.76x)` are the measured values against 3x budgets.
+* **A count failed** (tasks, descriptors, write count, registered workers) —
+  also a regression, for the same reason.
+* **The stall case failed** — read the printed baseline. The verdict is
+  load-relative by construction (see below); if the *baseline* is the number
+  that is large, the machine could not schedule the watchdog and the test
+  skips rather than failing.
+* **A throughput floor or a latency budget failed** — check the printed value
+  against the constant's comment. These carry an order of magnitude of
+  headroom (bus: 50 000 events/s floor against ~500 000 measured; first event:
+  250 ms budget against ~1 ms), so a failure is a change in kind, not a busy
+  laptop.
+
+**On the stall budget specifically.** An absolute "worst loop gap < 50 ms"
+assertion was tried first and failed roughly one run in ten with no defect
+present — under concurrent load the watchdog coroutine itself went unscheduled
+for 158 ms. `test_storage_offload.py` had already met this; both suites now
+reach the verdict the same way: the watchdog must *tick* during the operation
+(work that blocks the loop produces no ticks at all), and the worst gap is
+compared against a baseline measured through the same watchdog on an idle loop,
+best-of-3. The 50 ms figure survives as a sanity ceiling on the *baseline*: if
+an idle loop cannot tick inside it, the test skips with the number it measured.
+
+### What the numbers were when this was written
+
+On the development machine, from a clean `make soak`:
+
+```
+[soak] 200 turns x 50 events = 10000 events in 0.90 s (4.5 ms/turn)
+[soak] disk 4418978 bytes for 3761332 content bytes (1.17x, budget 3x)
+[soak] tracemalloc peak growth 3.02 MiB (budget 8 MiB), ru_maxrss growth 0.9 MiB
+[soak] tasks 1 -> 1, fds 9 -> 9
+[soak] first page: 50 messages in 2.6 ms, read 983040 of 4418978 bytes on disk
+[latency] 2000-event turn in 40.3 ms: worst loop gap 6.89 ms, idle baseline 6.41 ms
+[latency] bus: 10000 events to 3 subscribers = 506,960 events/s
+[latency] 500 tool boundaries: 4 writes, 1.76x the final message
+[latency] first event reached a subscriber after 0.71 ms
+```
+
+They are printed on success, not only on failure, and `make soak` passes `-s`
+so they reach the log of a passing run. A soak whose numbers are invisible
+until it breaks teaches nobody the trend.
+
+### The fakes these suites add
+
+`backend/tests/fakes/load.py` — synthetic turns that are their own ledger. A
+`TurnScript` yields the exact events `execute_turn` consumes *and* accumulates
+the UTF-8 size of everything that will land in a persisted block, so the soak's
+disk budget is a ratio against a measured denominator rather than a guess.
+Nothing else is added: the stall detector is Task 13's, the scripted providers,
+worker pool and vendor fakes are Task 12's and Task 7's, and the leak suite
+uses the *real* `WorkerPool` — the one fake it deliberately refuses, because
+`FakeWorkerPool` stays in-process and a process leak is the subject.
 
 ---
 
