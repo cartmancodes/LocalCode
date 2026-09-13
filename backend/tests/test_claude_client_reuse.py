@@ -401,6 +401,126 @@ class TestAStreamThatEndsWithoutAResult:
         assert len(factory.clients) == 2
 
 
+class TestADeferredTailOnTheConnection:
+    """A result is not always the run's last word.
+
+    ``claude-agent-sdk``'s ``DEFERRING_TASK_TYPES`` (``_internal/query.py``):
+    when the CLI backgrounds delegated agent work, a ``ResultMessage`` can
+    arrive with that work still in flight, and the follow-up frames plus a
+    SECOND result land afterwards. ``receive_response()`` stops at the first
+    result, so those frames stay buffered on the one per-connection stream —
+    and the provider used to treat "reached the result" as "the connection is
+    drained".
+
+    What that cost, before this: turn 2 opened by reading turn 1's background
+    output, presented it as its own answer, and terminated on turn 1's second
+    result — so turn 2's real answer slid into turn 3. Silent misattribution,
+    with no error anywhere. The SDK cannot close the gap itself (its own
+    comment: it "needs a run-boundary signal from the CLI"), but the provider
+    can refuse to reuse a connection it can SEE is not drained, which is the
+    same ``_discard`` the interrupt path already uses.
+    """
+
+    @staticmethod
+    def _deferred_tail() -> Any:
+        """Turn 1 backgrounds an agent; its output and a second result arrive
+        after turn 1's own result. Every later turn is ordinary."""
+        turns = {"n": 0}
+
+        async def behaviour(client: FakeClaudeClient) -> AsyncIterator[Any]:
+            turns["n"] += 1
+            n = turns["n"]
+            yield text_message(f"answer to turn {n}")
+            yield result_message()
+            if n == 1:
+                yield text_message("STALE deferred agent output")
+                yield result_message()
+
+        return behaviour
+
+    async def test_the_next_turn_gets_its_own_answer_not_the_deferred_tail(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        factory = FakeClientFactory(self._deferred_tail())
+        provider = provider_with(factory)
+
+        first = await drain(provider, a_turn(tmp_path))
+        assert [ev.data.get("text") for ev in first if ev.type == "assistant.text"] == [
+            "answer to turn 1"
+        ]
+
+        second = await drain(provider, a_turn(tmp_path))
+        texts = [ev.data.get("text") for ev in second if ev.type == "assistant.text"]
+
+        assert "STALE deferred agent output" not in texts, (
+            "turn 2 surfaced turn 1's backgrounded output as its own answer"
+        )
+        assert texts == ["answer to turn 2"]
+        # …and it is one terminal event, on the turn it belongs to.
+        assert [ev.type for ev in second].count("assistant.done") == 1
+
+    async def test_a_connection_with_an_unread_tail_is_not_reused(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """The mechanism, stated directly: the client that left a tail is
+        dropped, so turn 2 connects a fresh CLI (``resume`` carries the
+        conversation) rather than reading leftovers."""
+        factory = FakeClientFactory(self._deferred_tail())
+        provider = provider_with(factory)
+
+        await drain(provider, a_turn(tmp_path))
+        assert provider._clients == {}, "the desynced client was kept for reuse"
+        assert factory.clients[0].disconnected
+
+        await drain(provider, a_turn(tmp_path))
+        assert len(factory.clients) == 2
+
+    async def test_an_ordinary_turn_still_keeps_its_client(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """The other direction, and the one that pays for the whole design: a
+        turn that drained cleanly must NOT be charged a reconnect. A check that
+        discarded on every turn would be indistinguishable from one that
+        works, except in the prompt-cache bill."""
+        factory = FakeClientFactory()
+        provider = provider_with(factory)
+
+        await drain(provider, a_turn(tmp_path))
+        await drain(provider, a_turn(tmp_path))
+
+        assert len(factory.clients) == 1
+        assert factory.clients[0].turns == 2
+
+    async def test_a_post_turn_system_frame_does_not_cost_a_reconnect(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """The SDK may forward a ``session_state_changed`` frame after the
+        result on a perfectly healthy connection, and ``_translate`` drops it.
+        Treating that as a desync would rebuild the client — and go to the
+        model with a cold prompt cache — on every such turn."""
+        from claude_agent_sdk import SystemMessage
+
+        turns = {"n": 0}
+
+        async def behaviour(client: FakeClaudeClient) -> AsyncIterator[Any]:
+            turns["n"] += 1
+            yield text_message(f"answer {turns['n']}")
+            yield result_message()
+            if turns["n"] == 1:
+                yield SystemMessage(subtype="session_state_changed", data={})
+
+        factory = FakeClientFactory(behaviour)
+        provider = provider_with(factory)
+
+        await drain(provider, a_turn(tmp_path))
+        second = await drain(provider, a_turn(tmp_path))
+
+        assert len(factory.clients) == 1, "a harmless system frame forced a rebuild"
+        assert [ev.data.get("text") for ev in second if ev.type == "assistant.text"] == [
+            "answer 2"
+        ]
+
+
 class TestRelease:
     async def test_close_session_disconnects_and_the_next_turn_builds_fresh(
         self, tmp_path: Path, fresh_settings

@@ -340,6 +340,57 @@ async def _disconnect(client: Any) -> None:
         logger.debug("disconnecting a claude client failed", exc_info=True)
 
 
+# How long the end-of-turn drain check waits for a frame that is already on
+# the connection to surface. It is a SCHEDULING window, not an I/O one: the
+# turn has reached its result, so anything the CLI has already emitted is
+# sitting in the SDK's reader queue and needs only a pass or two of the loop to
+# appear. Paid once per turn, after the answer has been delivered to the
+# viewer, so it costs the user nothing they can see. It cannot be zero:
+# `wait_for(..., 0)` never lets the read run at all and would report "drained"
+# for every connection.
+_TAIL_DRAIN_PEEK_S = 0.05
+
+
+async def _unread_tail(client: Any) -> Any | None:
+    """The first frame still buffered on ``client`` after its turn's result.
+
+    ``receive_response()`` returns at the ``ResultMessage``, but a result is
+    not always the run's last word: when the CLI backgrounds delegated agent
+    work (``claude_agent_sdk._internal.query.DEFERRING_TASK_TYPES``) the
+    follow-up frames and a SECOND result arrive after it, on the same
+    per-connection stream. Whatever is found here therefore belongs to the turn
+    that just ended, and handing it to the next turn is the misattribution
+    :meth:`ClaudeProvider._discard` exists to prevent.
+
+    ``SystemMessage`` does not count: the SDK can forward a post-turn
+    ``session_state_changed`` frame on a perfectly healthy connection, and
+    ``_translate`` drops those anyway. Charging a reconnect — and a cold prompt
+    cache — for one would cost more than it protects.
+
+    Returns None when the connection is drained, and never raises: a failure
+    to answer the question is not a reason to fail a turn that has already
+    succeeded (the caller reads None as "drained", which is the status quo).
+    """
+    while True:
+        stream = client.receive_response()
+        try:
+            message = await asyncio.wait_for(
+                stream.__anext__(), timeout=_TAIL_DRAIN_PEEK_S
+            )
+        except (TimeoutError, StopAsyncIteration):
+            return None
+        except Exception:
+            logger.debug("checking for an unread tail failed", exc_info=True)
+            return None
+        finally:
+            try:
+                await stream.aclose()
+            except Exception:
+                logger.debug("closing the tail-check stream failed", exc_info=True)
+        if not isinstance(message, SystemMessage):
+            return message
+
+
 class ClaudeProvider:
     name = "claude"
 
@@ -724,6 +775,32 @@ class ClaudeProvider:
                                 await asyncio.to_thread(self._get_usage_log().append, usage)
                             async for ev in _translate(message, usage=usage):
                                 await merged.put(ev)
+                        if completed:
+                            # "Saw the result" is not "the connection is
+                            # drained" — see _unread_tail. A tail left here
+                            # would be read by the NEXT turn as its own output,
+                            # and that turn would terminate on this turn's
+                            # second result: silent misattribution, which is
+                            # worse than the reconnect that dropping the client
+                            # costs. The SDK cannot fix this from below (it
+                            # needs a run-boundary signal the CLI does not
+                            # send), so the provider refuses to reuse a
+                            # connection it can see is not at a clean message
+                            # boundary. A tail the CLI emits LATER — after this
+                            # check and before the next turn — is still
+                            # undetectable; that residual is recorded in
+                            # docs/harness.md.
+                            tail = await _unread_tail(client)
+                            if tail is not None:
+                                logger.warning(
+                                    "claude session %s: the connection still held "
+                                    "%s after this turn's result; dropping the "
+                                    "client rather than serving its tail to the "
+                                    "next turn",
+                                    ctx.session_id,
+                                    type(tail).__name__,
+                                )
+                                completed = False
                     except asyncio.CancelledError:
                         # THE interrupt the roadmap asks for: the CLI outlives
                         # the turn now, so a cancelled turn has to tell it to
