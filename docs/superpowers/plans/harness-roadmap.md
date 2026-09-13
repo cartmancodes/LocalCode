@@ -1563,11 +1563,23 @@ class QuotaSnapshot:
 
 ### Providers report in
 
-- Claude: the SDK exposes rate-limit information on result/system messages.
-  Read it defensively (`getattr` chain over `RateLimitInfo` / `RateLimitStatus`
-  shapes, both snake_case and camelCase) and pass it as `reported`. When
-  absent, record tokens locally. Never crash on a shape change — a governor
-  that takes the turn down is worse than one that estimates.
+- Claude: the SDK delivers rate-limit data as its OWN message type, not on the
+  result — `RateLimitEvent(rate_limit_info, uuid, session_id)` carrying
+  `RateLimitInfo(status: allowed|allowed_warning|rejected, resets_at: unix int,
+  rate_limit_type: five_hour|seven_day|seven_day_opus|seven_day_sonnet|overage,
+  utilization: float 0-1, overage_*, raw)` — see
+  `claude_agent_sdk/types.py:1370-1411` in the installed SDK. `claude.py`'s
+  `_translate` has NO branch for it today and drops it silently; add one, read it
+  defensively (`getattr`, tolerate missing fields and a `None` info), and pass it
+  to the governor as `reported`. Two consequences for the design: (a) the CLI
+  emits this event only when the status TRANSITIONS, not every turn, so the
+  governor must persist the last-known per-window state and treat absence as
+  "no change", never as "reset", with local token accumulation as the fallback
+  between events; (b) `rate_limit_type` includes model-specific seven-day
+  windows, so Claude has up to four concurrent windows, not one — keep one
+  `WindowState` per `rate_limit_type` seen, and `headroom()` is the minimum
+  across them. Never crash on a shape change — a governor that takes the turn
+  down is worse than one that estimates.
 - Codex: same treatment for whatever `turn/completed` carries.
 
 ### Routing
@@ -1588,13 +1600,16 @@ Returns `to_dict()` plus a `queue_suggested: bool`.
 
 ### Frontend
 
-`Topbar.tsx` currently surfaces the per-turn dollar figure. Replace that slot
-with one compact meter per provider: a labelled bar with percent remaining and
-a reset-time tooltip, plus an "unknown" state when no limit has been reported.
-Keep `cost_usd` in the message detail where it already lives — the change is
-which number gets the prominent slot, exactly as the spec asks. Poll
-`/api/system/quota` on the existing interval if there is one; otherwise on
-session change and turn completion.
+`Topbar.tsx` has no cost element today — the per-turn dollar figure is rendered
+per message in `ChatPane.tsx` (around lines 737-743, the `lc-msg__cost` span),
+typed at `types.ts:109` and `:165`. So the quota meter is a NEW element in the
+top bar, not a replacement: one compact meter per provider, a labelled bar with
+percent remaining and a reset-time tooltip, plus an "unknown" state when no
+limit has been reported. Leave the per-message `cost_usd` in `ChatPane.tsx`
+exactly where it is — the spec's intent is that the prominent, always-visible
+number becomes remaining headroom, and putting the meter in the top bar is what
+achieves that. Poll `/api/system/quota` on session change and turn completion
+(there is no existing polling interval to reuse). Run `npm run build`.
 
 ### Tests
 
@@ -1709,11 +1724,25 @@ the assertion.
   routing with the class table; the quota governor; the three eval layers and
   how to refresh goldens.
 - `docs/architecture.md` — update the provider/event diagram and the fleet
-  section to match what now exists. The file already describes the old shape;
-  rewrite those parts rather than appending.
-- `README.md` — the invariant paragraph now points at the test; the
-  `cost_usd`-is-meaningless note becomes the quota meter; add `codex` to the
-  provider list with its install/login prerequisite.
+  section to match what now exists; rewrite rather than append. Specifically:
+  the heading at line ~259 still names `backend/app/session_runner.py` as a
+  single FILE — it has been a package (`bus.py`, `runner.py`, `turn.py`,
+  `accumulator.py`, `registry.py`, `config.py`) since before this plan; and
+  there are NO headings for `approvals.py`, `permissions.py`, `artifacts.py`,
+  `usage.py`, `quota.py`, `fleet/pool.py`, `fleet/router.py`,
+  `fleet/envelope.py`, or `codex/` — add one per module in the existing `####`
+  style, each a few sentences on responsibility and interface.
+- `README.md` — the invariant paragraph (lines ~23-35, the OAuth / "no keys to
+  manage" text) now points at `backend/tests/test_auth_invariant.py`; there is
+  NO existing sentence about `cost_usd` being meaningless (the roadmap's phrase
+  describes text that is not in the file), so ADD a short paragraph explaining
+  that the prominent number is remaining subscription headroom per provider and
+  the per-message dollar figure is informational; the "Three providers" table
+  (lines ~39-45) and "Three provider prefixes are valid" (line ~88) become four
+  with `codex` and its `codex login` prerequisite; the file table (lines ~56-61)
+  gains rows for `approvals.py`, `permissions.py`, `artifacts.py`, `usage.py`,
+  `quota.py`, `fleet/pool.py`, `fleet/router.py`, `fleet/envelope.py`, and
+  `codex/`.
 - `Makefile` — `test`, `lint`, `typecheck` and `codex-schema` targets that use
   `.venv/bin/...` so they work without an activated venv.
 
