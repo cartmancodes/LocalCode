@@ -210,6 +210,53 @@ class TestHappyTurn:
         # The streamed update and the completed item must not repeat the text.
         assert "".join(ev.data["text"] for ev in events[3:5]) == "Hello, world."
 
+    async def test_a_completed_turn_is_one_row_in_the_usage_log(
+        self, provider_factory, tmp_path: Path
+    ) -> None:
+        """``GET /api/system/usage`` IS ``usage.jsonl``, and only the Claude
+        provider ever appended to it — so a Codex-heavy day read as an idle
+        one, while docs/architecture.md promised "one JSON line per turn".
+
+        HOME is redirected for every test in this suite (conftest), so this
+        asserts against the real default path, not an injected one.
+        """
+        provider = provider_factory("happy")
+        events = await drain(provider, mk_ctx(tmp_path))
+        assert types(events)[-1] == "assistant.done"
+
+        log = tmp_path / ".localcode" / "usage.jsonl"
+        rows = [
+            json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line
+        ]
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["provider"] == "codex"
+        assert row["model"] == "gpt-5.3-codex"
+        assert row["session_id"] == "sess-1"
+        assert (row["input_tokens"], row["output_tokens"]) == (11, 7)
+        assert row["cache_read_tokens"] == 4
+        # UsageLog.recent() selects on ts, so a zero here is a row that is
+        # written and never reported.
+        assert row["ts"] > 0
+        # The same numbers the viewer was shown: one measurement, two readers.
+        assert events[-1].data["usage"] == row
+
+    async def test_an_errored_turn_is_not_metered(
+        self, provider_factory, tmp_path: Path
+    ) -> None:
+        """A turn that produced no response body produced no counts either.
+
+        Logging zeros for it would understate nothing and overstate a turn
+        that happened; the honest record is no row at all, which is what
+        docs/harness.md §3 now says.
+        """
+        provider = provider_factory("silent")
+        events = await drain(provider, mk_ctx(tmp_path))
+
+        assert types(events) == ["error"]
+        assert not (tmp_path / ".localcode" / "usage.jsonl").exists()
+
     async def test_done_carries_the_thread_id_and_the_token_counts(
         self, provider_factory, tmp_path: Path
     ) -> None:

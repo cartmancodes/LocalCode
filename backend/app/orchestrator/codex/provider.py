@@ -29,13 +29,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from ...config import get_settings
-from ...usage import TurnUsage
+from ...usage import TurnUsage, UsageLog, usage_log_from_settings
 from ..approvals import EventSink, evaluate_tool_request
 from ..base import Event, RunContext
 from ..permissions import (
@@ -205,12 +206,20 @@ def approval_tool_request(
     return "Edit", {"file_path": _patch_primary_path(paths, policy), "paths": paths}
 
 
-def _usage_from(payload: Mapping[str, Any] | None, *, model: str, session_id: str | None) -> Any:
+def _usage_from(
+    payload: Mapping[str, Any] | None, *, model: str, session_id: str | None
+) -> TurnUsage:
     """Token counts in the same shape ``claude.py`` puts on ``assistant.done``.
 
     Zeros when the payload carries nothing, never absent: Task 11 reads these
     keys, and a missing key there is a crash in the reader rather than a turn
     with no data.
+
+    ``ts`` is real wall-clock time, as ``parse_claude_usage`` sets it. The same
+    object is both the event payload and the row appended to ``usage.jsonl``,
+    and ``UsageLog.recent`` selects on that field: a zero would file every
+    Codex turn outside every window the usage endpoint asks for, i.e. logged
+    and invisible, which is the bug this is half of.
     """
     usage = payload if isinstance(payload, Mapping) else {}
 
@@ -230,7 +239,7 @@ def _usage_from(payload: Mapping[str, Any] | None, *, model: str, session_id: st
         cache_creation_tokens=count(*CACHE_CREATION_TOKEN_FIELDS),
         cost_usd=None,
         session_id=session_id,
-        ts=0.0,
+        ts=time.time(),
     )
 
 
@@ -319,6 +328,11 @@ class _Translator:
         # "An error already reached the user." A turn that errored must not
         # also report success, and must not report the same failure twice.
         self.saw_error = False
+        # The completed turn's token counts, kept for the caller to append to
+        # the usage log. Only a turn that produced an ``assistant.done`` sets
+        # it: an errored turn (a silent turn, an error item) has no counts the
+        # server gave us and is honestly unmetered — see docs/harness.md §3.
+        self.usage: TurnUsage | None = None
 
     def handle(self, frame: Mapping[str, Any]) -> list[Event]:
         method = str(frame.get("method") or "")
@@ -497,6 +511,7 @@ class _Translator:
         # nothing about limits — see A11 in protocol.py.
         yield from _rate_limit_events(params, turn, usage_payload)
         usage = _usage_from(usage_payload, model=self._model, session_id=self._session_id)
+        self.usage = usage
         yield Event(
             type="assistant.done",
             data={
@@ -522,6 +537,42 @@ class CodexProvider:
         self._bindings: dict[str, _TurnBinding] = {}
         # Guards the binding dict only; never held across a spawn.
         self._bindings_lock: asyncio.Lock = asyncio.Lock()
+        # Built lazily on first use, not here, for the reason claude.py gives
+        # where it does the same: constructing it in __init__ would resolve
+        # UsageLog's default ``~/.localcode/usage.jsonl`` at provider-
+        # construction time, which for a test can be before HOME is
+        # redirected. See usage.default_usage_log_path.
+        self._usage_log: UsageLog | None = None
+
+    def _get_usage_log(self) -> UsageLog:
+        if self._usage_log is None:
+            # The same resolution claude.py and GET /api/system/usage use, so
+            # the two writers and the one reader cannot land on different
+            # files. See usage.usage_log_from_settings.
+            self._usage_log = usage_log_from_settings()
+        return self._usage_log
+
+    async def _log_usage(self, usage: TurnUsage | None) -> None:
+        """Append one completed Codex turn to ``usage.jsonl``.
+
+        The log is the whole of ``GET /api/system/usage``, and until this
+        existed it held Claude turns only — so a Codex-heavy day read as an
+        idle one, and docs/architecture.md's "one JSON line per turn" was true
+        of one vendor. The file is opened O_APPEND per row, so a second writer
+        in the same process is exactly as safe as the first (Ruling 31 is about
+        quota.json's read-modify-write, which is a different animal).
+
+        ``to_thread`` for the same reason claude.py uses it: this is file I/O
+        on the event loop's thread otherwise. Failures are swallowed with a
+        warning, because a meter that cannot write must not take down the turn
+        it was measuring.
+        """
+        if usage is None:
+            return
+        try:
+            await asyncio.to_thread(self._get_usage_log().append, usage)
+        except Exception:
+            logger.warning("appending a codex turn to the usage log failed", exc_info=True)
 
     # ── policy ─────────────────────────────────────────────────────────────
 
@@ -674,6 +725,12 @@ class CodexProvider:
                     async for frame in frames:
                         for ev in translator.handle(frame):
                             await merged.put(ev)
+                            if ev.type == "assistant.done":
+                                # At the point the turn completes, in the main
+                                # process, in the same to_thread idiom
+                                # claude.py uses — so one turn is one line in
+                                # usage.jsonl whichever vendor served it.
+                                await self._log_usage(translator.usage)
                 except asyncio.CancelledError:
                     # The app-server outlives the turn, so a cancelled turn has
                     # to tell it to stop: otherwise it keeps burning the user's
