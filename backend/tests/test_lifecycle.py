@@ -32,6 +32,7 @@ from typing import Any
 
 import pytest
 
+from backend.app import main as app_main
 from backend.app.main import lifespan
 from backend.app.orchestrator import registry as provider_registry
 from backend.app.orchestrator.base import Event, RunContext
@@ -491,6 +492,110 @@ async def test_lifespan_shutdown_cancels_turns_before_closing_providers(
     assert order == ["turn cancelled", "providers closed"]
     assert runner.is_running is False
     assert runner_registry._runners == {}
+
+
+async def test_one_runners_failure_at_shutdown_does_not_skip_the_reap(
+    isolated_store: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_reap_detached_turns`` is the last chance anything has to kill a
+    wedged turn's child process, and it ran after an unguarded ``gather``.
+
+    One runner raising anything unexpected therefore took the gather down and
+    skipped the reap entirely — so every OTHER session's detached turn, and the
+    vendor CLI still billing under it, outlived the backend. On the shutdown
+    path a failure is a thing to log, not a thing to stop for.
+    """
+    monkeypatch.setattr(SessionRunner, "_CANCEL_GRACE_S", 0.05)
+
+    wedged_id = await _new_session(isolated_store)
+    wedged = await runner_registry.get_runner(wedged_id)
+    assert wedged is not None
+    stubborn = StubbornTurn(swallow=1)
+    task = asyncio.create_task(stubborn.run())
+    wedged._turn_task = task
+    await stubborn.started.wait()
+    await runner_registry.drop_runner(wedged_id)
+    assert task in runner_registry._detached_turns
+
+    class ExplodingRunner(SessionRunner):
+        async def cancel_turn(self) -> Any:
+            raise RuntimeError("cancelling this runner's turn blew up")
+
+    # Placed in the real registry, so the real drop_all_runners drives it.
+    runner_registry._runners["exploding"] = ExplodingRunner("exploding")
+
+    await runner_registry.drop_all_runners()
+
+    assert stubborn.cancels == 2, "the reap was skipped by another runner's failure"
+    assert task.done()
+    assert runner_registry._runners == {}
+
+
+async def test_a_cancel_inside_shutdown_still_closes_the_providers(
+    isolated_store: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second Ctrl-C cancels the lifespan task.
+
+    The handler caught ``Exception``, which a ``CancelledError`` is not, so a
+    cancel landing anywhere inside ``drop_all_runners`` skipped
+    ``shutdown_all()`` — every provider left unclosed, which for Codex and the
+    fleet means a process group nobody kills. It belongs in a ``finally``.
+    """
+    closed: list[str] = []
+
+    class CloseRecorder:
+        name = "recorder"
+
+        async def aclose(self) -> None:
+            closed.append("closed")
+
+    async def cancelled_drop() -> None:
+        raise asyncio.CancelledError
+
+    manager = lifespan(object())  # type: ignore[arg-type]
+    await manager.__aenter__()
+    provider_registry._singletons["recorder"] = CloseRecorder()  # type: ignore[assignment]
+    monkeypatch.setattr(app_main, "drop_all_runners", cancelled_drop)
+
+    with pytest.raises(asyncio.CancelledError):
+        await manager.__aexit__(None, None, None)
+
+    assert closed == ["closed"], "a cancel at shutdown left the providers open"
+
+
+async def test_a_detached_turns_exception_is_retrieved_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Nobody awaits a detached turn — that is what detached means — so one
+    that ends on anything but the cancellation we asked for had its exception
+    read by nobody, and asyncio reported it at GC as "Task exception was never
+    retrieved": a traceback with no context, minutes late. That is the noise
+    D14.3 set out to end."""
+
+    async def raiser() -> None:
+        raise RuntimeError("the detached turn blew up")
+
+    task = asyncio.create_task(raiser())
+    for _ in range(3):  # let it run and fail before anything tracks it
+        await asyncio.sleep(0)
+    assert task.done()
+
+    class DetachingRunner(SessionRunner):
+        async def cancel_turn(self) -> Any:
+            return task
+
+    runner_registry._runners["detaching"] = DetachingRunner("detaching")
+
+    with caplog.at_level(logging.WARNING):
+        await runner_registry.drop_all_runners()
+        for _ in range(3):  # done-callbacks are scheduled, not immediate
+            await asyncio.sleep(0)
+
+    assert any(
+        "detached turn ended in an exception" in r.getMessage() for r in caplog.records
+    ), caplog.messages
+    # And it is pruned, so the set stays bounded by what is currently wedged.
+    assert task not in runner_registry._detached_turns
 
 
 # The D14.1 process-group kill moved to ``test_worker_pool.py`` with the

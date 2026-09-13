@@ -61,7 +61,14 @@ async def lifespan(app: FastAPI):
         await drop_all_runners()
     except Exception:  # noqa: BLE001
         logger.exception("cancelling in-flight turns at shutdown failed")
-    await shutdown_all()
+    finally:
+        # In a `finally`, not after the `except`, because the except above
+        # catches Exception and a shutdown is the one place CancelledError is
+        # routine: uvicorn cancels the lifespan task on a second Ctrl-C, and a
+        # cancel landing inside drop_all_runners would otherwise skip this
+        # entirely — leaving every provider unclosed, which for the fleet and
+        # for Codex means an app-server process group nobody kills.
+        await shutdown_all()
 
 
 def create_app() -> FastAPI:

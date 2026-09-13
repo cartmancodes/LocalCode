@@ -98,7 +98,19 @@ async def drop_all_runners() -> None:
     # Concurrently, not in sequence: a wedged turn costs the full grace window,
     # so cancelling ten of them one after another would add ten grace windows
     # to a Ctrl-C.
-    await asyncio.gather(*(_cancel_and_track(r) for r in runners))
+    #
+    # ``return_exceptions=True`` because this is the shutdown path and the reap
+    # below is the LAST chance anything has to kill a wedged turn's child
+    # process. Without it, one runner raising takes the whole gather down and
+    # every other runner's detached turn — and every child process still
+    # billing under it — outlives the backend, which is precisely the orphan
+    # this function exists to prevent.
+    results = await asyncio.gather(
+        *(_cancel_and_track(r) for r in runners), return_exceptions=True
+    )
+    for result in results:
+        if isinstance(result, BaseException):
+            logger.warning("cancelling a runner's turn at shutdown failed: %r", result)
     await _reap_detached_turns()
 
 
@@ -109,7 +121,25 @@ async def _cancel_and_track(runner: SessionRunner) -> None:
         # Self-pruning, so a long-lived backend's set of detached turns is
         # bounded by the number currently wedged, not by the number ever
         # detached.
-        detached.add_done_callback(_detached_turns.discard)
+        detached.add_done_callback(_forget_detached)
+
+
+def _forget_detached(task: asyncio.Task[None]) -> None:
+    """Drop a finished detached turn, and READ its exception.
+
+    Nobody awaits these tasks — that is what "detached" means — so a turn that
+    ends on something other than the cancellation we asked for has its
+    exception retrieved by nobody, and asyncio reports it at GC as "Task
+    exception was never retrieved": a traceback with no context, minutes after
+    the fact, which is the noise D14.3 set out to end. Retrieving it here turns
+    it into one line that says which stage it came from.
+    """
+    _detached_turns.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("a detached turn ended in an exception: %r", exc)
 
 
 async def _reap_detached_turns() -> None:
