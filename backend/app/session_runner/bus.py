@@ -143,9 +143,12 @@ class EventBus:
 
         If the ring has already evicted past ``since_id`` the replay cannot
         start where the client stopped, so it is prefixed with a gap report.
-        Without it the client appends a tail onto a transcript with a hole and
-        nothing ever triggers a refetch — ``ChatPane`` falls back to
-        ``loadMessages`` only when the replay is *empty*.
+        The report is what triggers the refetch: ``ChatPane`` calls
+        ``loadMessages`` when it receives a ``stream.gap``, and otherwise only
+        on a reconnect where it never saw an event id at all
+        (``wasReconnect && lastEventId.current === 0``). A client that has been
+        receiving events has no other way back — without the marker it appends
+        a tail onto a transcript with a hole and nothing ever tells it.
         """
         # One slot beyond the advertised cap, reserved for the out-of-band
         # `stream.gap` marker — it has to fit into a queue that is, by

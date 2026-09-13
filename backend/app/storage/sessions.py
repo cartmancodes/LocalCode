@@ -41,13 +41,14 @@ they always have a stable home.
     checkpoints do not: a checkpoint exists so a crash does not lose the
     whole turn, not so a crash loses nothing, and that path is the hot one.
 
-  * **Because every message now appears in the log exactly once, readers
-    don't dedupe and don't scan.** ``list_messages`` reads a bounded tail
-    window and widens it only if the page wasn't satisfied. A log the window
-    can't serve — one written before this change, where every line is a full
-    snapshot — degrades to the old line-at-a-time reader rather than holding
-    multiple copies of the file (see ``_TAIL_MAX_SPAN_BYTES``). The dedupe
-    likewise survives only for those older logs.
+  * **Because every message now appears in the log exactly once, the normal
+    read path neither dedupes nor scans.** ``list_messages`` reads a bounded
+    tail window and widens it only if the page wasn't satisfied. A log the
+    window can't serve — one written before this change, where every line is a
+    full snapshot — falls back to the old line-at-a-time reader, which scans
+    the whole file and dedupes, rather than holding multiple copies of it in
+    the window (see ``_TAIL_MAX_SPAN_BYTES``). Both the scan and the dedupe
+    survive for exactly those older logs.
 
   * **Nothing here runs on the event loop.** Each public coroutine extracts
     its synchronous body into a ``_sync_*`` helper and awaits it through
@@ -411,12 +412,16 @@ def _tail_entries(path: Path, *, want: int | None, cutoff: str | None) -> list[d
     ``want`` is the page size plus one — the extra entry is what tells the
     caller there is an older page, so stopping as soon as ``want`` are in hand
     is enough to decide ``has_more``. ``want=None`` means no page limit, which
-    is the streaming reader's job. Returns messages oldest-first. Bytes are
-    read at most once: each widening seeks to an older offset and prepends,
-    rather than re-reading the tail it already has.
+    is the streaming reader's job. Returns messages oldest-first. While
+    windowing, bytes are read at most once: each widening seeks to an older
+    offset and prepends, rather than re-reading the tail it already has.
 
     Falls back to ``_stream_entries`` when windowing would have to hold more
-    than ``_TAIL_MAX_SPAN_BYTES`` — see that constant for why.
+    than ``_TAIL_MAX_SPAN_BYTES`` — see that constant for why. That fallback
+    is the one place the "at most once" does not hold: the streaming pass
+    starts at byte zero, so the ~1 MiB the windows already read is read a
+    second time. The windows are dropped first, so the cost is time on a log
+    that needs the old reader, never two copies of it in memory.
     """
     if want is None:
         return _stream_entries(path, cutoff)

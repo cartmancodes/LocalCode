@@ -15,7 +15,7 @@ What this buys over routing ChatGPT-side work through `opencode`:
 | Tool approvals | none — the server decides alone | the **same** approval card as Claude, from the same `evaluate_tool_request` |
 | Extra directories | not supported (one project dir per session) | `additional_dirs` is forwarded to `thread/start` |
 | Transport | third-party HTTP + SSE, filtered client-side | first-party JSON-RPC over the child's stdio |
-| Role policies | advisory | enforced by the shared `ToolPolicy` table |
+| Role policies | advisory | the shared `ToolPolicy` table decides every approval the app-server sends — but see [What the role policy does not cover](#what-the-role-policy-does-not-cover) |
 
 ## Prerequisites
 
@@ -57,6 +57,24 @@ of its own; signalling only the leader leaves them running).
 Pick `codex` as the provider when creating a session, exactly like `claude` or
 `opencode`. Approvals, extra directories, permission modes and role policies
 all behave identically — that is the point of the provider.
+
+### What the role policy does not cover
+
+**LocalCode does not set the app-server's approval policy.** `thread/start`
+sends `{cwd, model, additionalDirectories}` and nothing else, so *whether*
+`execCommandApproval` / `applyPatchApproval` are sent at all is decided by the
+user's own `~/.codex` configuration (its approval and sandbox settings). Every
+request that does arrive is answered by `evaluate_tool_request` under the
+session's `ToolPolicy` — the same table, the same card, the same deny a Claude
+tool gets — but a server configured to ask about nothing gives LocalCode
+nothing to refuse. A `codex` role is therefore bounded by the shared table
+*and* by that configuration, not by the table alone.
+
+Sending an explicit policy on `thread/start` is the fix, and it is a follow-up
+gated on reconciling the real schema (`make codex-schema`): guessing a field
+name here would produce a policy the server silently ignores, which reads
+exactly like one it enforces. Recorded as A12 in
+`backend/app/orchestrator/codex/protocol.py`.
 
 ### The one-line switch for the fleet's coder
 

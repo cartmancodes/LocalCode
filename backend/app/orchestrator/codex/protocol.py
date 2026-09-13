@@ -102,6 +102,21 @@ is not):
     anyway. The dangerous direction would be reading a field that means
     something else and reporting a fabricated limit, which is why a payload
     must carry a numeric utilization before anything is emitted at all.
+
+Policy, which is not a payload shape at all:
+
+  * **A12 (UNVERIFIED).** The approval policy is the APP-SERVER'S, and
+    LocalCode does not set it. ``thread/start`` carries ``cwd``, ``model`` and
+    ``additionalDirectories`` only — no approval or sandbox policy — so
+    whether ``execCommandApproval`` / ``applyPatchApproval`` are sent at all is
+    decided by the user's own ``~/.codex`` configuration. Every request that
+    does arrive is bound by the shared ``ToolPolicy`` table; a server
+    configured to ask about nothing is a server this provider never gets to
+    refuse. *Wrong ⇒* nothing here breaks, but the role policy covers less
+    than a reader of ``policy_for_role`` would assume, which is why it is
+    written down. Sending an explicit policy is a follow-up gated on
+    reconciling the real schema: a guessed field name would be a policy the
+    server silently ignores, indistinguishable from one it enforces.
 """
 from __future__ import annotations
 

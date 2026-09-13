@@ -97,7 +97,7 @@ request alike (`backend/tests/test_matrix.py`).
 | Streaming text | yes (token deltas) | yes (item updates, suffix-only) | yes (part deltas) |
 | Tool cards | yes | yes (commands, patches, MCP, web search) | yes |
 | Approvals through the one bus | yes (`can_use_tool`) | yes (`execCommandApproval`, `applyPatchApproval`) | **no** — OpenCode resolves permissions itself via `opencode.json` |
-| Role policy enforced | yes | yes (same `policy_for_role`) | partial — tool policy is not forwarded |
+| Role policy enforced | yes | **only when the app-server asks** — see below | partial — tool policy is not forwarded |
 | `additional_dirs` | yes (`add_dirs`) | yes (`additionalDirectories`) | **no** — a session is bound to one project |
 | Persistent session across turns | yes (one `ClaudeSDKClient` per session) | yes (one app-server per workspace, thread resumed) | yes (upstream session id) |
 | Vendor-reported rate limits | yes (`RateLimitEvent`) | unverified — read if present, see `codex/protocol.py` A11 | no |
@@ -108,6 +108,29 @@ observed against a live binary — every assumption is listed in
 `backend/app/orchestrator/codex/protocol.py` with the cost of each one being
 wrong, and `make codex-schema` regenerates the vendor schema for
 reconciliation. See [codex.md](codex.md).
+
+Three limits of the codex column, true today and stated rather than fixed:
+
+- **The role policy binds only the requests the app-server chooses to send.**
+  `thread/start` forwards `{cwd, model, additionalDirectories}` and no approval
+  or sandbox policy, so whether `execCommandApproval` / `applyPatchApproval`
+  fire at all is decided by the user's own `~/.codex` configuration. When one
+  arrives it goes through the same `policy_for_role` table Claude's tools do,
+  with the same card and the same deny — but a server configured to ask about
+  nothing is a server LocalCode never gets to refuse. Sending an explicit
+  policy on `thread/start` is a follow-up gated on reconciling the real schema
+  (`make codex-schema`); guessing a field name here would be a policy silently
+  ignored, which reads exactly like one enforced.
+- **An errored turn is unmetered.** A silent turn or an `error` item ends the
+  turn with an `error` event and no `assistant.done`, so there are no token
+  counts to record and no row is written to `usage.jsonl`. A successful turn
+  is always exactly one row, as a Claude turn is — that file is the whole of
+  `GET /api/system/usage`.
+- **The app-server outlives its sessions.** One process serves a *workspace*,
+  so `close_session` is deliberately a no-op: closing it when one LocalCode
+  session rooted there goes away would kill the agent of every other session
+  in that directory. The process (and its group) is reclaimed by
+  `provider.aclose()` at shutdown, not before.
 
 ---
 
@@ -186,7 +209,7 @@ Budgets, and what each bounds:
 | `DISPATCH_HARD_FAIL_CAP` | 2 | re-dispatches of a role that hard-failed |
 | `TurnBudget.max_dispatches` | `max(8, 2×roles)` | total dispatches in one turn |
 | `fleet_turn_token_budget` | 0 (off) | tokens spent across a turn's sub-steps |
-| `fleet_max_workers` | 4 | live worker processes |
+| `fleet_max_workers` | 4 | live worker processes in **idle steady state**, not a concurrency limit: a burst is served in full (evicting a busy worker would fail a live step) and the next spawn evicts least-recently-used *idle* workers back to the cap |
 | `fleet_worker_idle_s` | 300 s | how long an idle worker survives |
 
 Three reclamation rules: a worker is spawned with `start_new_session=True` and
@@ -195,6 +218,16 @@ child, and killing the leader alone re-parents a paid CLI to `launchd`); a
 step that was still *queued* is not charged against the retry cap, because it
 demonstrated nothing about its backend; and each worker writes a pidfile so a
 `SIGKILL`ed backend's orphans are swept on the next pool start.
+
+That sweep is paid by the **first fleet step of a backend**, not by startup:
+`_ensure_started` runs `sweep_stale_workers` under the pool lock before
+anything is spawned, so a first step can wait on it. It is off the event loop
+(`asyncio.to_thread`), but it stats each leftover pidfile and shells out to
+`ps` to verify the pid still names our worker module — up to ~10 s per stale
+record on the `ps` timeout. In practice there are no stale records unless a
+backend was `SIGKILL`ed, which is exactly when paying for the check is worth
+it; it is under the lock because reclaiming a previous backend's workers has
+to finish before this pool spawns its own.
 
 The heartbeat wording is load-bearing. "Still working" is only said once the
 worker has produced output; before that it is "no response yet", and a step

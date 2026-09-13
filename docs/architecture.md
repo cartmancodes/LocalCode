@@ -342,7 +342,9 @@ Split by concern, one-way: `config` → `bus` → `turn`/`accumulator` →
   itself" and "the live queue will carry it". When the ring has already
   evicted past `since_id`, the replay *starts* with a `stream.gap` — a replay
   that silently begins mid-stream leaves the client appending a tail onto a
-  transcript with a hole, and `ChatPane` refetches only on an *empty* replay.
+  transcript with a hole. The marker is what makes it refetch: `ChatPane`
+  calls `loadMessages` on a `stream.gap`, and otherwise only on a reconnect
+  where it never saw an event id (`wasReconnect && lastEventId.current === 0`).
 - `execute_turn` (`turn.py`):
   - Persists the user message first — *inside* the `try`, because that is the
     one step that fails when the session directory was deleted under it, and
@@ -666,7 +668,11 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
   - `VALID_ROLES = ("planner", "developer", "coder", "reviewer", "tester")`
   - `WORKER_ROLES = ("developer", "coder", "reviewer", "tester")`
   - `HEARTBEAT_INTERVAL_S = 30.0`, `STEP_TIMEOUT_S = 600.0`,
-    `STARTUP_GRACE_S = 75.0`, `DISPATCH_HARD_FAIL_CAP = 2`
+    `STARTUP_GRACE_S = 75.0`, `DISPATCH_HARD_FAIL_CAP = 2`. The two timeouts
+    are **fallbacks, not the effective values**: `fleet/provider.py` reads
+    `fleet_step_timeout_s` (1200 s) and `fleet_startup_grace_s` (90 s) from
+    settings, and a running step is bounded by those. The constants apply only
+    where no settings object is in hand.
   - The worker wire protocol's markers (`FIRST_MARKER`, `RESULT_MARKER`,
     `WORKER_STDOUT_LIMIT`, `WORKER_PID_DIR_ENV`), shared by the pool and
     `subproc.py` so neither side can drift by editing its own copy.
@@ -1031,8 +1037,9 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
   continue extending the same turn.
 - Manages WS lifecycle with exponential backoff (`min(1000 * 2^attempt,
   8000)` ms) and replay via `lastEventId.current`. On reconnect prefers
-  replay; falls back to `loadMessages` only when there's nothing to
-  replay.
+  replay; falls back to `loadMessages` only when it never saw an event id
+  (`wasReconnect && lastEventId.current === 0`) — not when the replay comes
+  back empty, which it cannot detect.
 - Handles inbound events: `assistant.text` accumulates into a text
   block; `assistant.tool_use` and `tool.result` produce paired blocks;
   `pipeline.awaiting_approval` materialises a tool_use + tool_result
@@ -1308,7 +1315,9 @@ coder runs.
 **`dispatch_subagent(name, prompt)`** — looks up the `AgentDef` in the
 registry, builds a `RoleConfig`, invokes
 `FleetProvider._run_step_with_role` (heartbeats every 30s, hard timeout
-at 600s, gate classification on completion), pushes every event onto
+at `fleet_step_timeout_s` — 1200s by default, with the module's
+`STEP_TIMEOUT_S = 600.0` as the fallback when settings are unavailable —
+gate classification on completion), pushes every event onto
 the sink, returns the subagent's final text. When `name == "planner"`,
 also writes `<cwd>/.localcode/plans/<timestamp>-<slug>.md`. The tool keeps
 a per-turn role-output ledger and applies deterministic prompt normalization:
