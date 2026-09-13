@@ -407,7 +407,10 @@ class StdioJsonRpc:
         handler = self._request_handlers.get(method)
         if handler is None:
             await self._respond_error(
-                request_id, ERR_METHOD_NOT_FOUND, f"LocalCode does not implement {method}"
+                request_id,
+                ERR_METHOD_NOT_FOUND,
+                f"LocalCode does not implement {method}",
+                method,
             )
             return
         try:
@@ -420,16 +423,18 @@ class StdioJsonRpc:
             # An error response, not a dropped request: codex blocks on the
             # approval callbacks, so a silent drop wedges the turn forever.
             self._log.exception("the codex request handler for %s raised", method)
-            await self._respond_error(request_id, ERR_INTERNAL, f"{method} failed: {exc}")
+            await self._respond_error(request_id, ERR_INTERNAL, f"{method} failed: {exc}", method)
             return
-        await self._respond_result(request_id, result)
+        await self._respond_result(request_id, result, method)
 
-    async def _respond_result(self, request_id: Any, result: Any) -> None:
+    async def _respond_result(self, request_id: Any, result: Any, method: str = "") -> None:
         await self._respond(
-            {"jsonrpc": "2.0", "id": request_id, "result": result}, request_id, "result"
+            {"jsonrpc": "2.0", "id": request_id, "result": result}, request_id, method, "result"
         )
 
-    async def _respond_error(self, request_id: Any, code: int, message: str) -> None:
+    async def _respond_error(
+        self, request_id: Any, code: int, message: str, method: str = ""
+    ) -> None:
         await self._respond(
             {
                 "jsonrpc": "2.0",
@@ -437,10 +442,13 @@ class StdioJsonRpc:
                 "error": {"code": code, "message": message},
             },
             request_id,
+            method,
             f"error {code}",
         )
 
-    async def _respond(self, payload: dict[str, Any], request_id: Any, what: str) -> None:
+    async def _respond(
+        self, payload: dict[str, Any], request_id: Any, method: str, what: str
+    ) -> None:
         """Write one response, and SAY SO if the write fails.
 
         The exception is still swallowed — a dead pipe during teardown is
@@ -450,14 +458,22 @@ class StdioJsonRpc:
         agent forever" failure this whole module is built to prevent, and
         without this line it would present as a turn that simply stopped, with
         nothing anywhere saying why.
+
+        ``method`` is carried down from :meth:`_serve_request` purely for this
+        log line, and it is the half that makes it actionable: an id alone says
+        *that* something is hung, while the method says an exec approval is
+        hung rather than a patch approval — which is the difference between
+        knowing a shell command is waiting on a card nobody can see and knowing
+        only that a number is stuck.
         """
         try:
             await self._write(payload)
         except Exception as exc:  # noqa: BLE001 - logged, never propagated
             self._log.warning(
-                "could not answer the codex app-server's request id=%r with %s: %s. "
+                "could not answer the codex app-server's request id=%r method=%r with %s: %s. "
                 "If the server is still running it is now blocked on this callback.",
                 request_id,
+                method or "<unknown>",
                 what,
                 exc,
             )

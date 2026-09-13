@@ -351,16 +351,61 @@ class TestResilience:
         A response that never leaves means the app-server is blocked on a
         callback forever. The write still must not raise (that would kill the
         reader and every pending future with it), so the only thing standing
-        between this and a turn that silently stops is the log line.
+        between this and a turn that silently stops is the log line — and the
+        line has to carry BOTH halves. An id alone tells an operator that
+        something is hung; the method tells them an exec approval is hung
+        rather than a patch approval, which is the difference between knowing a
+        shell command is waiting on a card nobody can see and knowing only that
+        a number is stuck.
         """
         peer = await peer_factory()
         await peer.rpc.close()
 
         with caplog.at_level("WARNING", logger="backend.app.orchestrator.codex.jsonrpc"):
-            await peer.rpc._respond_result(4242, {"decision": "approved"})
+            await peer.rpc._respond_result(4242, {"decision": "approved"}, R_EXEC_APPROVAL)
 
-        assert any("4242" in record.getMessage() for record in caplog.records), (
+        warnings = [record.getMessage() for record in caplog.records]
+        assert any("4242" in message for message in warnings), (
             "a response that could not be written must name the request id it abandoned"
+        )
+        assert any(R_EXEC_APPROVAL in message for message in warnings), (
+            "it must also name the method, or the operator cannot tell WHICH callback is hung"
+        )
+
+    async def test_the_warning_names_the_method_the_server_actually_asked_for(
+        self, peer_factory, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """End to end, because the method has to come from `_serve_request`.
+
+        The test above hands ``_respond_result`` a method itself, so it would
+        still pass if nothing upstream ever threaded one — which is exactly how
+        the missing method slipped through the first time. Here the pipe dies
+        *between* a real ``execCommandApproval`` arriving and its answer being
+        written, so the only place the name in the log can have come from is
+        the request the server actually sent.
+        """
+        peer = await peer_factory()
+
+        async def handler(params: dict[str, Any]) -> dict[str, Any]:
+            async def boom(payload: dict[str, Any]) -> None:
+                raise ConnectionError("the pipe went away mid-answer")
+
+            peer.rpc._write = boom  # type: ignore[method-assign]
+            return {"decision": "approved"}
+
+        peer.rpc.on_request(R_EXEC_APPROVAL, handler)
+
+        with caplog.at_level("WARNING", logger="backend.app.orchestrator.codex.jsonrpc"):
+            with pytest.raises(TimeoutError):
+                # The fake is now blocked on an approval it will never be
+                # answered — which is the real-world shape of this failure.
+                await peer.rpc.request(
+                    "test/ask", {"method": R_EXEC_APPROVAL, "payload": {}}, timeout_s=2.0
+                )
+
+        warnings = [record.getMessage() for record in caplog.records]
+        assert any(R_EXEC_APPROVAL in message for message in warnings), (
+            "the abandoned response must be logged with the method the server asked for"
         )
 
     async def test_close_is_idempotent(self, peer_factory) -> None:
