@@ -370,6 +370,25 @@ _TAIL_DRAIN_PEEK_S = 0.05
 # second is a connection whose state is better re-established than guessed.
 _TAIL_CHECK_DEADLINE_S = 0.25
 
+# Ceiling on the ``interrupt()`` a cancelled turn sends. The SDK delivers it as
+# a control request and waits for the CLI's ack up to its own default timeout —
+# 60 s (``claude_agent_sdk._internal.query.Query._send_control_request``) — and
+# that await happens while this turn still holds the per-session handle lock.
+# ``SessionRunner._CANCEL_GRACE_S`` is 5 s, so an unacked interrupt means every
+# cancelled turn on that session is *detached* rather than reaped, and the next
+# turn queues behind the handle lock meanwhile: a Stop that costs a minute of
+# apparent wedge. Three seconds is inside that grace window with room for the
+# discard that follows. A timeout is treated exactly as a failed interrupt —
+# ``completed`` is already False by then, so the client is dropped rather than
+# handed to the next turn — which is why bounding it is safe: the worst case is
+# a CLI we stopped waiting for, on a connection nobody will reuse.
+_INTERRUPT_TIMEOUT_S = 3.0
+
+# How many times a turn will take a handle and find it retired under it before
+# giving up. See ``_locked_handle_for``: each pass costs only a dict lookup and
+# a lock acquire, and the loop can only spin while OTHER turns are departing.
+_HANDLE_ACQUIRE_TRIES = 3
+
 
 @dataclass(frozen=True)
 class _TailCheck:
@@ -667,6 +686,37 @@ class ClaudeProvider:
         finally:
             await self._release_builder(key, builder)
 
+    async def _locked_handle_for(self, key: str, **kwargs: Any) -> _ClientHandle:
+        """A handle for ``key`` whose turn lock we hold and whose client is
+        still connected.
+
+        The two steps cannot be one, and the gap between them is a real race
+        rather than a theoretical one. The handle comes out of a dict guarded
+        by the provider lock, but its own lock is held by the turn in front of
+        us for as long as that turn runs — and a turn that ends without
+        reaching a clean message boundary discards its handle, disconnecting
+        the CLI, from inside that lock (see ``_discard``). So the handle we
+        were given a moment ago can be dead by the time we get in, and using it
+        writes to a closed transport: the queued turn fails for no reason of
+        its own, because the turn before it was Stopped.
+
+        Re-checking after the acquire, and taking a fresh handle when the one
+        we hold has been retired, is the whole of it. The retry is bounded
+        because the only thing that can retire a handle is a turn holding this
+        same lock, so each pass either finds a live client or waits behind one
+        fewer departing turn.
+        """
+        for _ in range(_HANDLE_ACQUIRE_TRIES):
+            handle = await self._handle_for(key, **kwargs)
+            await handle.lock.acquire()
+            if not handle.closed:
+                return handle
+            handle.lock.release()
+        raise RuntimeError(
+            "every claude client built for this session was retired before its "
+            "turn could start"
+        )
+
     async def _build(
         self,
         *,
@@ -793,7 +843,7 @@ class ClaudeProvider:
         anonymous = ctx.session_id is None
 
         try:
-            handle = await self._handle_for(
+            handle = await self._locked_handle_for(
                 key,
                 ctx=ctx,
                 signature=_signature(
@@ -820,8 +870,11 @@ class ClaudeProvider:
             return
 
         try:
-            # One turn at a time per client: the CLI cannot interleave two.
-            async with handle.lock:
+            # One turn at a time per client: the CLI cannot interleave two. The
+            # lock is already held — ``_locked_handle_for`` takes it, because
+            # the handle has to be re-checked after the acquire — so it is
+            # released here rather than by a `with`.
+            try:
                 # Rebind the per-turn halves of the permission callback before
                 # anything can call it. See _TurnBinding — this is what keeps
                 # turn N's approval card on turn N's sink.
@@ -856,6 +909,10 @@ class ClaudeProvider:
                 # post-turn ``SystemMessage``, a ``RateLimitEvent``) do not
                 # clear it — see that function, and see the note further down
                 # for the residual it cannot close.
+                #
+                # And because that check runs AFTER the result, the flag is
+                # reset by the cancellation handler too: a Stop landing inside
+                # the check is a turn that never confirmed its boundary.
                 completed = False
 
                 async def _pump_messages() -> None:
@@ -931,12 +988,29 @@ class ClaudeProvider:
                         # a turn nobody is reading, and the next turn queues
                         # behind it.
                         #
-                        # The client is NOT kept afterwards (`completed` stays
-                        # False, so the finally discards it): the interrupted
+                        # The client is NOT kept afterwards: the interrupted
                         # turn's unread tail would otherwise be delivered to the
                         # next turn on this connection.
+                        #
+                        # RESET, not "stays False". A cancel can land anywhere
+                        # in this pump, and one of those places is the
+                        # end-of-turn tail check — which runs 50-250 ms AFTER
+                        # `completed` was set at the ResultMessage, on every
+                        # single turn. A Stop inside that window used to leave
+                        # the flag True, so the finally below skipped the
+                        # discard and kept a connection whose tail nobody had
+                        # finished reading; the next turn on that session then
+                        # read the previous turn's leftovers as its own answer.
+                        # The flag means "this turn ended at a clean message
+                        # boundary", and a cancellation is the proof that it
+                        # did not.
+                        completed = False
                         try:
-                            await client.interrupt()
+                            # Bounded: see _INTERRUPT_TIMEOUT_S. A timeout is a
+                            # failed interrupt, and a failed interrupt is a
+                            # discard — which the line above has already
+                            # guaranteed.
+                            await asyncio.wait_for(client.interrupt(), _INTERRUPT_TIMEOUT_S)
                         except BaseException:
                             logger.debug("interrupt after cancellation failed", exc_info=True)
                         raise
@@ -1002,6 +1076,8 @@ class ClaudeProvider:
                         # must not serve another one. _discard explains what
                         # reuse would do to the next turn.
                         await self._discard(key, handle)
+            finally:
+                handle.lock.release()
         finally:
             # Headless and unit runs get no session id, so nothing would ever
             # come back to close their client.

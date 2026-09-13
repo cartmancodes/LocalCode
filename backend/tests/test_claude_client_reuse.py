@@ -258,6 +258,26 @@ class TestTheCallbackIsReboundEachTurn:
         assert len(factory.clients) == 1
 
 
+class _NeverAcksInterrupt(FakeClaudeClient):
+    """A CLI that takes the interrupt and never answers it.
+
+    Faithful to the SDK's shape: ``interrupt()`` is a control request, and the
+    SDK waits for the CLI's ack up to its own 60 s timeout. The turn holds the
+    per-session handle lock for every second of that.
+    """
+
+    async def interrupt(self) -> None:
+        self.calls.append("interrupt")
+        await asyncio.Event().wait()
+
+
+class _NeverAcksFactory(FakeClientFactory):
+    def __call__(self, options: Any = None, **_kwargs: Any) -> FakeClaudeClient:
+        client = _NeverAcksInterrupt(options=options, behaviour=self.behaviour)
+        self.clients.append(client)
+        return client
+
+
 class TestCancellation:
     async def test_a_cancelled_turn_interrupts_the_client_and_propagates(
         self, tmp_path: Path, fresh_settings
@@ -342,6 +362,152 @@ class TestCancellation:
         # clean.
         assert len(factory.clients) == 2
         assert factory.clients[0].disconnected
+
+    async def test_a_stop_inside_the_tail_check_still_drops_the_client(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """The 50-250 ms window every single turn spends in ``_unread_tail``.
+
+        ``completed`` is set at the ``ResultMessage``; the tail check runs
+        after it. A cancel landing in between left the flag True, so the
+        ``finally`` skipped the discard and kept a connection whose tail nobody
+        had finished reading — the one thing the flag exists to prevent, and
+        reachable from the most ordinary gesture in the product: the viewer
+        renders ``assistant.done``, the user presses Stop, and the consumer
+        walks away while the check is still waiting on the deferred agent.
+        """
+        turns = {"n": 0}
+
+        async def script(client: FakeClaudeClient) -> AsyncIterator[Any]:
+            turns["n"] += 1
+            if turns["n"] == 1:
+                yield result_message("turn-1-result")
+                # The backgrounded agent's output, landing DURING the check.
+                await asyncio.sleep(0.02)
+                yield text_message("LEAK")
+                yield result_message("turn-1-second-result")
+            else:
+                yield text_message("turn-2 answer")
+                yield result_message("turn-2-result")
+
+        factory = FakeClientFactory(script)
+        provider = provider_with(factory)
+
+        agen = provider.run(a_turn(tmp_path)).__aiter__()
+        while True:
+            ev = await asyncio.wait_for(agen.__anext__(), WAIT_S)
+            if ev.type == "assistant.done":
+                break
+        # Stop, delivered where Stop actually lands.
+        await asyncio.wait_for(agen.aclose(), WAIT_S)
+
+        assert provider._clients == {}, (
+            "a turn cancelled inside the tail check kept its client"
+        )
+        assert factory.clients[0].disconnected
+
+        second = await asyncio.wait_for(drain(provider, a_turn(tmp_path)), WAIT_S)
+        texts = [ev.data.get("text") for ev in second if ev.type == "assistant.text"]
+        assert texts == ["turn-2 answer"], "turn 2 read turn 1's deferred tail"
+        done = [ev for ev in second if ev.type == "assistant.done"]
+        assert len(done) == 1
+        assert done[0].data["upstream_session_id"] == "turn-2-result"
+        # Turn 2 is a fresh connection: the only way its stream can be clean.
+        assert len(factory.clients) == 2
+
+    async def test_an_interrupt_that_never_acks_is_bounded_and_still_discards(
+        self, tmp_path: Path, fresh_settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ledger 1183 (Task 4 minor): the interrupt is not allowed to hold the
+        handle lock for the SDK's 60 s control timeout.
+
+        That is four times ``SessionRunner._CANCEL_GRACE_S``, so a CLI slow to
+        ack turned every cancelled turn into a *detached* one with the next
+        turn queued behind the lock. A timeout is treated as a failed
+        interrupt: the client goes, exactly as it does when the interrupt
+        raises.
+        """
+        monkeypatch.setattr(claude_mod, "_INTERRUPT_TIMEOUT_S", 0.1)
+        started = asyncio.Event()
+        factory = _NeverAcksFactory(hanging(started))
+        provider = provider_with(factory)
+
+        agen = provider.run(a_turn(tmp_path)).__aiter__()
+        pulling = asyncio.create_task(agen.__anext__())
+        await asyncio.wait_for(started.wait(), WAIT_S)
+
+        pulling.cancel()
+        began = time.monotonic()
+        _done, pending = await asyncio.wait({pulling}, timeout=WAIT_S)
+        elapsed = time.monotonic() - began
+        assert not pending, "the unacked interrupt held the turn open"
+        with pytest.raises(asyncio.CancelledError):
+            await pulling
+
+        client = factory.clients[0]
+        assert "interrupt" in client.calls
+        # Bounded, and well inside the runner's 5 s cancellation grace window.
+        assert elapsed < 1.0, f"the interrupt took {elapsed:.2f}s"
+        # And a CLI we stopped waiting for is never handed to the next turn.
+        assert client.disconnected
+        assert provider._clients == {}
+
+    async def test_a_turn_queued_behind_a_stopped_one_gets_a_live_client(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """The other half of "a Stop drops the client".
+
+        The handle is fetched from the provider's dict and only THEN waited on,
+        so a turn queued behind a Stopped one is holding a reference to the
+        very handle that Stop is about to discard — the discard happens from
+        inside the lock it is waiting for. Handing it over unchecked means turn
+        2 writes to a transport turn 1 disconnected, and fails for a reason
+        that is entirely turn 1's.
+        """
+        started = asyncio.Event()
+        turns = {"n": 0}
+
+        async def script(client: FakeClaudeClient) -> AsyncIterator[Any]:
+            turns["n"] += 1
+            if turns["n"] == 1:
+                started.set()
+                await asyncio.Event().wait()
+                yield  # pragma: no cover - cancelled before it yields
+            else:
+                yield text_message("turn-2 answer")
+                yield result_message("turn-2-result")
+
+        factory = FakeClientFactory(script)
+        provider = provider_with(factory)
+
+        agen = provider.run(a_turn(tmp_path)).__aiter__()
+        pulling = asyncio.create_task(agen.__anext__())
+        await asyncio.wait_for(started.wait(), WAIT_S)
+        handle = provider._clients["s1"]
+
+        # Turn 2 arrives while turn 1 still holds the handle's lock. The
+        # private `_waiters` read is the only way to prove it is actually
+        # QUEUED — a test that merely slept could pass by starting turn 2 after
+        # the discard, which is the case that was never broken.
+        queued = asyncio.create_task(drain(provider, a_turn(tmp_path)))
+        for _ in range(int(WAIT_S / 0.005)):
+            await asyncio.sleep(0.005)
+            if handle.lock.locked() and getattr(handle.lock, "_waiters", None):
+                break
+        assert getattr(handle.lock, "_waiters", None), "turn 2 never reached the lock"
+
+        pulling.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pulling
+
+        events = await asyncio.wait_for(queued, WAIT_S)
+
+        assert [ev.type for ev in events] == ["assistant.text", "assistant.done"], (
+            f"the queued turn inherited turn 1's discarded client: {events}"
+        )
+        assert events[-1].data["upstream_session_id"] == "turn-2-result"
+        assert factory.clients[0].disconnected
+        assert len(factory.clients) == 2
 
 
 class TestTheTurnLock:
