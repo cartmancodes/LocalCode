@@ -1733,11 +1733,13 @@ the assertion.
   `fleet/envelope.py`, or `codex/` — add one per module in the existing `####`
   style, each a few sentences on responsibility and interface.
 - `README.md` — the invariant paragraph (lines ~23-35, the OAuth / "no keys to
-  manage" text) now points at `backend/tests/test_auth_invariant.py`; there is
-  NO existing sentence about `cost_usd` being meaningless (the roadmap's phrase
-  describes text that is not in the file), so ADD a short paragraph explaining
-  that the prominent number is remaining subscription headroom per provider and
-  the per-message dollar figure is informational; the "Three providers" table
+  manage" text) now points at `backend/tests/test_auth_invariant.py`; the cost
+  paragraph at line ~104 ("Per-turn cost (USD) is reported ... There is no daily
+  aggregate — under OAuth-only mode that figure would always be a subscription,
+  not a metered spend") is the sentence the roadmap paraphrases as "admits is
+  meaningless" — REWRITE it: the prominent number is now remaining subscription
+  headroom per provider (the top-bar meter, `/api/system/quota`) and the
+  per-message dollar figure stays inline as informational; the "Three providers" table
   (lines ~39-45) and "Three provider prefixes are valid" (line ~88) become four
   with `codex` and its `codex login` prerequisite; the file table (lines ~56-61)
   gains rows for `approvals.py`, `permissions.py`, `artifacts.py`, `usage.py`,
