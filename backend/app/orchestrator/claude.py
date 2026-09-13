@@ -47,7 +47,8 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
@@ -64,6 +65,7 @@ from claude_agent_sdk import (
 )
 
 from ..config import get_settings
+from ..usage import TurnUsage, UsageLog, parse_claude_usage
 from .approvals import CanUseToolFn, EventSink, build_can_use_tool
 from .base import Event, RunContext
 from .permissions import (
@@ -242,6 +244,23 @@ class ClaudeProvider:
         self._clients_lock: asyncio.Lock = asyncio.Lock()
         self._builders: dict[str, _Builder] = {}
         self._factory: Any = _client_factory
+        # Built lazily on first use, not here: constructing it in __init__
+        # would resolve UsageLog's default ``~/.localcode/usage.jsonl`` at
+        # provider-construction time, which for a test can be before HOME is
+        # redirected. See usage.default_usage_log_path.
+        self._usage_log: UsageLog | None = None
+
+    def _get_usage_log(self) -> UsageLog:
+        if self._usage_log is None:
+            # Read the override through Settings, not straight from
+            # Path.home(): a test that builds this provider without
+            # redirecting HOME (or before the redirect took effect) must
+            # not be able to reach the developer's real usage log. See
+            # Settings.usage_log_path.
+            override = get_settings().usage_log_path
+            path = Path(override).expanduser().resolve() if override else None
+            self._usage_log = UsageLog(path)
+        return self._usage_log
 
     async def open_session(self, ctx: RunContext) -> str:
         # Claude Code creates the session lazily when the first turn runs. If
@@ -567,9 +586,20 @@ class ClaudeProvider:
                     try:
                         await client.query(ctx.prompt)
                         async for message in client.receive_response():
+                            usage: TurnUsage | None = None
                             if isinstance(message, ResultMessage):
                                 completed = True
-                            async for ev in _translate(message):
+                                usage = parse_claude_usage(
+                                    message,
+                                    provider=self.name,
+                                    model=ctx.model,
+                                    session_id=ctx.session_id,
+                                )
+                                # File I/O off the event loop — same house
+                                # style as storage/sessions.py's asyncio.to_thread
+                                # wrapping of its own sync writes.
+                                await asyncio.to_thread(self._get_usage_log().append, usage)
+                            async for ev in _translate(message, usage=usage):
                                 await merged.put(ev)
                     except asyncio.CancelledError:
                         # THE interrupt the roadmap asks for: the CLI outlives
@@ -656,7 +686,7 @@ class ClaudeProvider:
                 await self.close_session(key)
 
 
-async def _translate(message: Any) -> AsyncIterator[Event]:
+async def _translate(message: Any, *, usage: TurnUsage | None = None) -> AsyncIterator[Event]:
     """Map claude-agent-sdk message objects to our unified Event stream.
 
     With ``include_partial_messages=True`` the SDK emits raw Anthropic streaming
@@ -710,15 +740,18 @@ async def _translate(message: Any) -> AsyncIterator[Event]:
                     },
                 )
     elif isinstance(message, ResultMessage):
-        yield Event(
-            type="assistant.done",
-            data={
-                "cost_usd": getattr(message, "total_cost_usd", None),
-                "duration_ms": getattr(message, "duration_ms", None),
-                "num_turns": getattr(message, "num_turns", None),
-                "upstream_session_id": getattr(message, "session_id", None),
-            },
-        )
+        data: dict[str, Any] = {
+            "cost_usd": getattr(message, "total_cost_usd", None),
+            "duration_ms": getattr(message, "duration_ms", None),
+            "num_turns": getattr(message, "num_turns", None),
+            "upstream_session_id": getattr(message, "session_id", None),
+        }
+        if usage is not None:
+            # Cache hit rate is only computable once this reaches the log;
+            # cost_usd stays a top-level field too — Task 11 changes what the
+            # UI emphasises, not what is recorded here.
+            data["usage"] = asdict(usage)
+        yield Event(type="assistant.done", data=data)
     elif isinstance(message, SystemMessage):
         # System init/notice messages — optional to surface; skip for now.
         return

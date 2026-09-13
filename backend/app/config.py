@@ -125,6 +125,27 @@ class Settings(BaseSettings):
     checkpoint_min_interval_s: float = 2.0
     checkpoint_min_growth_bytes: int = 64 * 1024
 
+    # Above this many UTF-8 bytes, a step/tool output goes to the artifact
+    # store instead of straight into context — a 2 MB test log inlined into
+    # the transcript would blow the context window and, worse, change the
+    # prompt prefix for every turn after it (cold cache for the rest of the
+    # session). Env: ARTIFACT_INLINE_MAX_BYTES.
+    artifact_inline_max_bytes: int = 8_000
+    # Override where large outputs are content-addressed. Empty string means
+    # "under the user's home", resolved lazily by ArtifactStore itself so a
+    # test that redirects HOME still lands under the fixture's throwaway
+    # directory instead of the developer's real one.
+    artifact_root: str = ""
+
+    # Override where turn usage is appended. ``None`` means
+    # ``~/.localcode/usage.jsonl``, resolved lazily by ``UsageLog`` itself —
+    # a production object (``ClaudeProvider``) built inside a test must read
+    # this setting rather than reaching straight for ``Path.home()``, or a
+    # test that forgets to redirect HOME (or constructs the provider before
+    # HOME is redirected) silently appends to the developer's real log.
+    # Env: USAGE_LOG_PATH.
+    usage_log_path: str | None = None
+
     @field_validator("default_provider")
     @classmethod
     def _validate_default_provider(cls, v: str) -> str:
