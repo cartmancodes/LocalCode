@@ -61,14 +61,22 @@ TaskClass = Literal["lookup", "simple", "standard"]
 # read-only agent. That is the one failure this module must never cause.
 #
 # The listed verbs are therefore deliberately broad and include weak, general
-# ones ("make", "set", "run", "handle", "ensure"). Every entry can only push a
-# prompt UPWARD to a larger crew, the recoverable direction: a false positive
-# costs tokens, a false negative ships unplanned work. To extend the list, add
-# the bare infinitive here — matching is whole-word, so "add" never fires
-# inside "address", "fix" never inside "fixture", "build" never inside
-# "builder", and "update" never inside "update_at" (an underscore is a word
-# character) — then add a row to ``CLASSIFY_TABLE`` in ``test_router.py`` and
-# check that no existing ``lookup`` row flips.
+# ones ("make", "set", "run", "handle", "ensure") that are also ordinary nouns.
+# An entry can only push a prompt UPWARD to a larger crew, the recoverable
+# direction — but only because ``simple`` is gated on ``not _is_question``.
+# Without that gate a generic verb matched as a noun inside an unmarked
+# question ("how is the handle passed to the worker?") turned that question
+# into "exactly one mutation verb, not asking" and DEMOTED it from the
+# full-crew default to ``simple``: no planner, and a rationale telling the
+# model it had a change to make. With the gate, a coincidental match inside a
+# question can only cost tokens. Do not remove that gate while this list is
+# broad.
+#
+# To extend the list, add the bare infinitive here — matching is whole-word, so
+# "add" never fires inside "address", "fix" never inside "fixture", "build"
+# never inside "builder", and "update" never inside "update_at" (an underscore
+# is a word character) — then add a row to ``CLASSIFY_TABLE`` in
+# ``test_router.py`` and check that no existing ``lookup`` row flips.
 MUTATION_VERBS: tuple[str, ...] = (
     "add", "implement", "fix", "refactor", "write", "create", "delete",
     "remove", "rename", "migrate", "build", "update", "change", "bump",
@@ -101,6 +109,19 @@ LOOKUP_MARKERS: tuple[str, ...] = (
 # Words that betray a second unit of work hiding behind the first. "and then"
 # is subsumed by "then".
 MULTI_STEP_MARKERS: tuple[str, ...] = ("then", "also")
+
+# Openers that make a prompt a question or a request for information, whether
+# or not it carries a ``LOOKUP_MARKERS`` phrase. This is a SHAPE test, not a
+# vocabulary test, and it exists to keep ``simple`` honest: "how is the handle
+# passed to the worker?" is a question whose only mutation verb ("handle") is a
+# noun, and without this guard it classified as a one-verb change — dropping
+# the planner and telling the model it had an edit to make.
+QUESTION_OPENERS: tuple[str, ...] = (
+    "how", "what", "when", "where", "why", "which", "who", "whose",
+    "is", "are", "does", "do", "did", "can", "could", "should", "would",
+    "will", "tell me", "show me", "give me", "explain", "describe",
+    "summarize", "list",
+)
 
 # Above this, a prompt is a specification, not a one-liner — whatever verbs it
 # happens to contain. Measured on the code-stripped text so a short question
@@ -139,6 +160,13 @@ _MUTATION_RE = _phrase_re(MUTATION_VERBS)
 _HEAVY_RE = _phrase_re(HEAVY_MUTATION_VERBS)
 _LOOKUP_RE = _phrase_re(LOOKUP_MARKERS)
 _MULTI_STEP_RE = _phrase_re(MULTI_STEP_MARKERS)
+# Anchored: an opener only counts where it opens. "explain" mid-sentence is a
+# lookup marker's job; here we are asking what shape the whole prompt has.
+_QUESTION_OPENER_RE = re.compile(
+    r"^\W*(?:"
+    + "|".join(r"\s+".join(re.escape(w) for w in p.split()) for p in QUESTION_OPENERS)
+    + r")\b"
+)
 
 # Unterminated fences count too — a half-pasted diff is still a paste.
 _FENCE_RE = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
@@ -171,6 +199,18 @@ def strip_code(prompt: str) -> str:
     return _INLINE_CODE_RE.sub(" ", text)
 
 
+def _is_question(text: str) -> bool:
+    """Is this prompt shaped like a question or a request for information?
+
+    Deliberately independent of ``LOOKUP_MARKERS``: the marker list is a closed
+    vocabulary, and an unmarked question ("what happens if we stop the
+    process?") must still be recognised as *not a change request*. Used only to
+    veto ``simple``, never to grant ``lookup`` — a question this recognises but
+    the markers don't lands on ``standard``, which is the recoverable side.
+    """
+    return text.endswith("?") or bool(_QUESTION_OPENER_RE.match(text))
+
+
 def _is_multi_step(text: str) -> bool:
     if _MULTI_STEP_RE.search(text) or _NUMBERED_ITEM_RE.search(text):
         return True
@@ -182,7 +222,8 @@ def classify(prompt: str) -> TaskClass:
 
     ``lookup``   a question, no mutation verb, short, single-step.
     ``simple``   exactly one mutation verb — and not a feature-scale one —
-                 short, single-step, and nothing asked alongside it.
+                 short, single-step, nothing asked alongside it, and not
+                 shaped like a question.
     ``standard`` everything else — including the empty prompt, which tells us
                  nothing and must therefore not be used to justify spending
                  less than the full crew.
@@ -201,10 +242,14 @@ def classify(prompt: str) -> TaskClass:
         # "explain the loader then make it faster" is a question with a second
         # unit of work bolted on, and one read-only agent cannot do the second.
         return "lookup"
-    # Both an ask and a change is two units of work — resolve upward.
+    # Both an ask and a change is two units of work — resolve upward. And a
+    # question is never a change request, whatever verb it happens to contain:
+    # without the shape test, every generic verb added to MUTATION_VERBS
+    # silently DEMOTED unmarked questions from ``standard`` to ``simple``.
     if (
         len(mutations) == 1
         and not asks
+        and not _is_question(text)
         and not _HEAVY_RE.search(text)
         and not _is_multi_step(text)
     ):

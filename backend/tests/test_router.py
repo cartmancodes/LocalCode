@@ -167,6 +167,20 @@ CLASSIFY_TABLE: list[tuple[str, str, str]] = [
      "'builder' must not match the verb 'build'"),
     ("what is update_at used for?", "lookup",
      "'update_at' must not match the verb 'update' — an underscore is a word character"),
+    # ── an unmarked question whose only verb is a coincidental noun. These
+    #    carry no LOOKUP_MARKERS phrase, so they cannot reach `lookup`; the
+    #    question shape must still keep them out of `simple`, which would
+    #    drop the planner and tell the model it has a change to make.
+    ("how is the handle passed to the worker?", "standard",
+     "unmarked question: 'handle' is a noun here — a question is never a simple change"),
+    ("what happens when the connection is set to null?", "standard",
+     "unmarked question: 'set' is a coincidental verb match inside a question"),
+    ("what happens if we stop the process?", "standard",
+     "unmarked question: 'stop' names a hypothetical, not a task"),
+    ("tell me about the handle here", "standard",
+     "unmarked request opener: 'tell me' asks; 'handle' is the thing asked about"),
+    ("give me a summary of how support tickets flow through the system", "standard",
+     "unmarked request opener: 'support' is a noun, and no '?' ends the sentence"),
 ]
 
 
