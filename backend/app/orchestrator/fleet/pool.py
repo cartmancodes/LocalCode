@@ -409,14 +409,40 @@ class WorkerPool:
             while True:
                 queue = self._queues.get(key)
                 if not queue:
-                    return  # drained; the next submit restarts this loop
+                    # Drained. Drop the empty deque rather than leaving one per
+                    # key forever — unbounded-per-key growth is D7.2's exact
+                    # class, and this task exists to remove it, not add another.
+                    # Safe here: no await since the check, so no submit can have
+                    # appended to the deque we are discarding.
+                    self._queues.pop(key, None)
+                    return  # the next submit restarts this loop
                 queued = queue[0]
                 if queued.pending.result.done():
                     queue.popleft()  # abandoned or already failed
                     continue
                 worker = await self._claim_worker(key, queued)
                 if worker is None:
-                    return
+                    if self._closed:
+                        return
+                    # A spawn failure belongs to the step that hit it, not to
+                    # the steps behind it. Returning here deregistered the
+                    # dispatcher and left the rest of the queue with no runner:
+                    # they never resolved, so each burned its whole
+                    # ``fleet_step_timeout_s`` and then raised a timeout that
+                    # IS charged against the role's cap — the mis-accounting
+                    # this round exists to remove, reached from the other side.
+                    continue
+                # ``_claim_worker`` awaits (the lock, and the spawn), so the
+                # caller may have abandoned this step in the meantime. Writing
+                # it now would run a cancelled step at the vendor's expense AND
+                # put a second request on a worker that is about to be handed
+                # one — the exact invariant this dispatcher enforces.
+                if queued.pending.result.done():
+                    worker.pending.pop(queued.request_id, None)
+                    queue = self._queues.get(key)
+                    if queue and queue[0] is queued:
+                        queue.popleft()
+                    continue
                 if not await self._write(key, worker, queued):
                     continue  # the write failed; that request is resolved
                 # Wait for THIS request to resolve before writing the next.
@@ -934,7 +960,7 @@ def sweep_stale_workers(pid_dir: Path, worker_module: str) -> int:
     and that file, left behind with its pid recycled, would point SIGKILL at
     the user's foreground job.
 
-    Six checks, and every one exists to stop this function from signalling
+    Seven checks, and every one exists to stop this function from signalling
     something that is not ours. On a kill path, a missing field is not a
     permissive default: *absent means refuse*.
 
@@ -952,12 +978,15 @@ def sweep_stale_workers(pid_dir: Path, worker_module: str) -> int:
        would be far worse than leaving an orphan;
     5. the kill target is ``os.getpgid(pid)`` — the group the *verified* process
        is actually in, right now;
-    6. the record's own ``pgid`` is used only to **reject**: if it disagrees
+    6. that group must BE the pid. Every worker this pool spawns is its own
+       session leader, so a verified pid in somebody else's group is not one of
+       ours whatever its record claims;
+    7. the record's own ``pgid`` is used only to **reject**: if it disagrees
        with the kernel (or is missing), the record describes a process tree
        that no longer exists as recorded, so the file is deleted and nothing is
        signalled.
 
-    Only a record that survives all six is killed, by process *group*, because
+    Only a record that survives all seven is killed, by process *group*, because
     the vendor CLI in that group is the process actually costing the user money.
     """
     try:
@@ -1002,6 +1031,23 @@ def sweep_stale_workers(pid_dir: Path, worker_module: str) -> int:
             # The process went away, or we cannot ask. Either way we have no
             # verified group to signal; leave the file for the next sweep,
             # which will find the pid dead and clean it up.
+            continue
+        if target != pid:
+            # Every worker this pool spawns is created with
+            # ``start_new_session=True``, so it IS its own group leader and its
+            # group id IS its pid. A verified pid sitting in somebody else's
+            # group is therefore not one of ours however convincing its record
+            # looks — it is the hand-run worker whose group is the shell's job
+            # control, and signalling that group is exactly the harm the
+            # docstring above names.
+            logger.info(
+                "worker pidfile %s names pid %d, which is not its own group "
+                "leader (group %d); removing the file, not signalling it",
+                path.name,
+                pid,
+                target,
+            )
+            _unlink(path)
             continue
         if recorded_pgid != target:
             logger.info(

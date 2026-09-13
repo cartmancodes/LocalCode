@@ -299,8 +299,29 @@ class FleetProvider:
                         )
                         break
                     # Absolute ceiling for a backend that streams but never
-                    # finishes.
+                    # finishes. Unconditional — it is what bounds a step that
+                    # is queued forever — but the ATTRIBUTION depends on
+                    # whether the step ever reached a worker. Still queued
+                    # means no sub-provider saw it, so it says nothing about
+                    # the backend's health and must not be charged to the
+                    # role's retry cap: two of those refuse the role outright.
                     if elapsed_s >= step_budget_s:
+                        if queued:
+                            not_attempted = StepNotAttemptedError(
+                                f"{step.role} step exceeded "
+                                f"{int(step_budget_s)}s while still QUEUED "
+                                f"behind another step on the same worker — it "
+                                f"never reached a sub-provider, so this is not "
+                                f"a {role_cfg.provider} backend failure."
+                            )
+                            error_text = str(not_attempted)
+                            logger.warning(
+                                "fleet step %s (%s:%s) hit %ds ceiling while "
+                                "still queued",
+                                step.role, role_cfg.provider, role_cfg.model,
+                                int(step_budget_s),
+                            )
+                            break
                         timed_out = True
                         error_text = (
                             f"{step.role} step exceeded {int(step_budget_s)}s "
