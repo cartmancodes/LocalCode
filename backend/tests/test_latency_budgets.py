@@ -104,11 +104,12 @@ BUS_SUBSCRIBERS = 3
 BUS_DRAIN_EVERY = 128
 
 # chosen-here: a throughput FLOOR, not a time budget, because the machine
-# varies and the defect does not. Measured 680 000-690 000 events/s over three
-# trials; 50 000/s is ~14x below that, which a heavily loaded laptop still
-# clears, while the regression it guards (D15.4 — the replay ring re-sliced a
-# 2048-entry list on every event past the cap) is an order-of-magnitude loss,
-# not a 20% one.
+# varies and the defect does not. Measured 447 000-507 000 events/s across six
+# runs of the full suite (a standalone process reaches ~690 000, which is
+# exactly why this is a floor and not a target); 50 000/s is ~10x below the
+# slowest of those, which a heavily loaded laptop still clears, while the
+# regression it guards (D15.4 — the replay ring re-sliced a 2048-entry list on
+# every event past the cap) is an order-of-magnitude loss, not a 20% one.
 BUS_THROUGHPUT_FLOOR_EVENTS_PER_S = 50_000.0
 
 # audit-derived: the brief's 500 tool boundaries.
@@ -116,13 +117,16 @@ CHECKPOINT_BOUNDARIES = 500
 
 # chosen-here: the throttle's growth arm doubles the bar it sets for the next
 # write, so the number of writes over a turn is logarithmic in the final
-# message — measured 5 for 1000 boundaries. 12 leaves room for the time arm to
-# fire a few times on a machine slow enough to spend seconds inside the turn,
-# and still fails by 40x if the throttle is removed and every boundary writes.
+# message — measured 4 for these 500 boundaries (5 for 1000). 12 leaves room
+# for the time arm to fire a few times on a machine slow enough to spend
+# seconds inside the turn, and still fails by 40x if the throttle is removed
+# and every boundary writes.
 CHECKPOINT_MAX_WRITES = 12
 
 # audit-derived (D13.2): the same 3x bound `test_storage_cost.py` holds the
-# checkpoint path to. Measured 1.9x here.
+# checkpoint path to. Measured 1.76x by this case (1.9x at 1000 boundaries —
+# the ratio falls as the turn grows, because the throttle's growth arm
+# amortizes each write against the last).
 CHECKPOINT_BYTES_RATIO_MAX = 3.0
 
 # chosen-here: time from ``execute_turn`` starting to the first event landing

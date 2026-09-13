@@ -145,6 +145,15 @@ def parse_claude_usage(
         # crash path, an unexpected usage shape degrades to zeros here
         # rather than taking the turn's assistant.done event down with it.
         input_tokens = output_tokens = cache_read_tokens = cache_creation_tokens = 0
+    try:
+        cost_usd = getattr(result_message, "total_cost_usd", None)
+    except Exception:
+        # Same hazard as ``usage`` above, and the same answer. This read sat
+        # outside every guard in a function whose contract is "never raises,
+        # whatever the message is", so a lazily-computed cost would have taken
+        # the turn down from the last line of the function that exists to stop
+        # exactly that.
+        cost_usd = None
     return TurnUsage(
         provider=provider,
         model=model,
@@ -152,7 +161,7 @@ def parse_claude_usage(
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
         cache_creation_tokens=cache_creation_tokens,
-        cost_usd=getattr(result_message, "total_cost_usd", None),
+        cost_usd=cost_usd,
         session_id=session_id,
         ts=time.time(),
     )

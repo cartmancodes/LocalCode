@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -401,6 +402,37 @@ class TestAStreamThatEndsWithoutAResult:
         assert len(factory.clients) == 2
 
 
+class BreakAfterTheTurnFactory:
+    """Builds clients whose stream fails only AFTER the turn has drained.
+
+    The turn itself must succeed — otherwise the test proves nothing about the
+    check, only about the error path that already has its own cases — so the
+    failure is armed by the turn's own ``receive_response`` finishing, which is
+    exactly when the drain check runs.
+    """
+
+    class Client(FakeClaudeClient):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.turn_drained = False
+
+        async def receive_response(self) -> AsyncIterator[Any]:
+            if self.turn_drained:
+                raise RuntimeError("the transport went away")
+            async for message in super().receive_response():
+                yield message
+            self.turn_drained = True
+
+    def __init__(self, behaviour: Any) -> None:
+        self.behaviour = behaviour
+        self.clients: list[FakeClaudeClient] = []
+
+    def __call__(self, options: Any = None, **_kwargs: Any) -> FakeClaudeClient:
+        client = self.Client(options=options, behaviour=self.behaviour)
+        self.clients.append(client)
+        return client
+
+
 class TestADeferredTailOnTheConnection:
     """A result is not always the run's last word.
 
@@ -490,6 +522,132 @@ class TestADeferredTailOnTheConnection:
 
         assert len(factory.clients) == 1
         assert factory.clients[0].turns == 2
+
+    async def test_a_trickle_of_system_frames_cannot_stall_the_turn(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """The check walks past benign frames, so it needs a deadline of its
+        own — not just a per-frame window.
+
+        The deferred-agent path this check exists for is precisely the one that
+        emits a STREAM of `system` task-lifecycle frames (`task_started` /
+        `task_updated` / `task_notification`). Arriving faster than the
+        per-frame window, they restart it forever: the drain pump never
+        returns, nothing ever seals the merged queue, and the turn never
+        completes — with no timeout anywhere above it in ``turn.py`` to save
+        it. A regression here HANGS, which is why the bound below is an
+        ``asyncio.wait_for`` and not only an assertion.
+        """
+        from claude_agent_sdk import SystemMessage
+
+        async def behaviour(client: FakeClaudeClient) -> AsyncIterator[Any]:
+            yield text_message("the answer")
+            yield result_message()
+            # Faster than the per-frame window, for far longer than the whole
+            # check is allowed to take.
+            for n in range(200):
+                await asyncio.sleep(0.01)
+                yield SystemMessage(subtype="task_updated", data={"n": n})
+
+        factory = FakeClientFactory(behaviour)
+        provider = provider_with(factory)
+
+        started = time.monotonic()
+        try:
+            events = await asyncio.wait_for(
+                drain(provider, a_turn(tmp_path)), WAIT_S
+            )
+            elapsed = time.monotonic() - started
+            assert [ev.type for ev in events] == ["assistant.text", "assistant.done"]
+            # The check's ceiling plus room for the turn itself on a loaded
+            # machine. The failure this guards is unbounded, so the margin does
+            # not have to be tight to be meaningful.
+            assert elapsed < 2.0, (
+                f"the turn took {elapsed:.2f}s — the tail check is walking "
+                "benign frames without a deadline"
+            )
+            # Benign frames do not condemn the client, deadline or no deadline.
+            assert list(provider._clients), "a trickle of system frames cost a reconnect"
+        finally:
+            await provider.aclose()
+
+    async def test_a_trailing_rate_limit_event_is_kept_and_still_reported(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """A ``RateLimitEvent`` after the result is benign for REUSE and
+        precious as DATA, and those two facts pull in opposite directions.
+
+        The CLI emits one only when the rate-limit status TRANSITIONS, so it is
+        the single measurement of the user's remaining plan headroom anyone
+        gets until the next transition — dropping it on the floor (which
+        "anything non-system means discard" would do, along with the client)
+        leaves the meter stale with nothing to say why. It is therefore walked
+        past for the reuse decision AND translated through the normal path.
+        """
+        from claude_agent_sdk import RateLimitEvent, RateLimitInfo
+
+        turns = {"n": 0}
+
+        async def behaviour(client: FakeClaudeClient) -> AsyncIterator[Any]:
+            turns["n"] += 1
+            yield text_message(f"answer {turns['n']}")
+            yield result_message()
+            if turns["n"] == 1:
+                yield RateLimitEvent(
+                    rate_limit_info=RateLimitInfo(
+                        status="allowed_warning",
+                        resets_at=1_700_000_000,
+                        rate_limit_type="seven_day_opus",
+                        utilization=0.85,
+                    ),
+                    uuid="u1",
+                    session_id="upstream-1",
+                )
+
+        factory = FakeClientFactory(behaviour)
+        provider = provider_with(factory)
+
+        first = await drain(provider, a_turn(tmp_path))
+        second = await drain(provider, a_turn(tmp_path))
+        await provider.aclose()
+
+        quota_events = [ev for ev in first if ev.type == "quota.limit"]
+        assert len(quota_events) == 1, [ev.type for ev in first]
+        assert quota_events[0].data["utilization"] == 0.85
+        assert quota_events[0].data["status"] == "allowed_warning"
+        # Reported, and not paid for with a reconnect.
+        assert len(factory.clients) == 1, "a quota measurement cost a reconnect"
+        assert [ev.data.get("text") for ev in second if ev.type == "assistant.text"] == [
+            "answer 2"
+        ]
+
+    async def test_a_check_that_cannot_answer_drops_the_client(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        """The check asks "is this connection in a state I understand?", and an
+        exception is the answer "no".
+
+        Reading it as "drained" — which swallowing the failure did — keeps a
+        connection that has just failed, and the next turn is the one that
+        discovers it. A reconnect is cheap; a turn lost to a corpse is not.
+        """
+
+        async def behaviour(client: FakeClaudeClient) -> AsyncIterator[Any]:
+            yield text_message("the answer")
+            yield result_message()
+
+        factory = BreakAfterTheTurnFactory(behaviour)
+        provider = provider_with(factory)  # type: ignore[arg-type]
+
+        events = await drain(provider, a_turn(tmp_path))
+        assert [ev.type for ev in events] == ["assistant.text", "assistant.done"], (
+            "the failed check cost the turn its own result"
+        )
+        assert provider._clients == {}, "a client whose state is unknown was kept"
+
+        await drain(provider, a_turn(tmp_path))
+        await provider.aclose()
+        assert len(factory.clients) == 2
 
     async def test_a_post_turn_system_frame_does_not_cost_a_reconnect(
         self, tmp_path: Path, fresh_settings

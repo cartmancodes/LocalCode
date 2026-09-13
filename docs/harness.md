@@ -394,7 +394,13 @@ Stated here rather than hidden behind a weakened assertion:
   A tail the CLI emits *after* that check and before the next turn is still
   invisible — the SDK's own comment says closing the gap "needs a run-boundary
   signal from the CLI rather than an inference from task bookkeeping", and no
-  test here can manufacture one.
+  test here can manufacture one. One frame narrower and the same in kind: a
+  frame delivered at the exact moment the check's per-frame window expires can
+  be consumed and lost, because anyio assigns the item to the receiver before
+  waking it and the cancellation `wait_for` then raises drops it. The check
+  walks past benign frames under a whole-loop deadline (`_TAIL_CHECK_DEADLINE_S`)
+  rather than a per-frame one, so a stream of post-turn `system` task-lifecycle
+  frames cannot stall the turn.
 
 ---
 
@@ -442,10 +448,12 @@ that is invisible at turn 3 and fatal at turn 300.
 
 **Why exactly one of them is excluded.** A reliability test nobody runs is
 decoration, so the injections and the budgets are in the default suite — they
-cost about four seconds between them. The soak is marked `slow` and excluded
-via `addopts` (`-m 'not requires_cli and not slow'`) because it is a minute of
-machine time whose value is a *trend*, not a gate. `make soak` runs it, and
-runs everything else with it:
+cost about four seconds between them. The soak is not excluded for its cost: it
+runs in 1.5 s. It is excluded because what it produces is a *trend* to be read,
+not a gate to be passed — ten thousand events of measurements belong in a run
+someone is looking at, and its budgets are deliberately loose enough that
+failing one means a redesign rather than a bad afternoon. `make soak` runs it,
+and runs everything else with it:
 
 ```bash
 make soak       # the whole suite + the soak, -W error::UserWarning, 300 s per test

@@ -134,6 +134,26 @@ class TestParseClaudeUsage:
         # The fields that did not raise are still reported.
         assert usage.cost_usd == 0.5
 
+    def test_a_cost_property_that_raises_does_not_raise_here_either(self) -> None:
+        """``total_cost_usd`` sat outside every guard, on the last line of the
+        function — the same defect as ``usage``, one field along, in a function
+        whose whole contract is that it cannot take a turn down."""
+
+        class RaisingCost:
+            usage = {"input_tokens": 7}
+
+            @property
+            def total_cost_usd(self) -> float:
+                raise RuntimeError("cost is computed lazily and the call failed")
+
+        usage = parse_claude_usage(
+            RaisingCost(), provider="claude", model="m1", session_id="s1"
+        )
+
+        assert usage.cost_usd is None
+        # The fields that did not raise are still reported.
+        assert usage.input_tokens == 7
+
     def test_unparseable_value_becomes_zero(self) -> None:
         result = SimpleNamespace(usage={"input_tokens": "not-a-number"}, total_cost_usd=None)
 

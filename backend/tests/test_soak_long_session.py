@@ -9,10 +9,12 @@ a replay ring that retains instead of evicting, a page read that grows with the
 log.
 
 Marked ``slow`` and excluded from the default run (``pyproject.toml``'s
-``addopts``), because a minute of soak on every ``pytest -q`` is a minute
-nobody will keep paying. ``make soak`` runs it — together with the rest of the
-suite under ``-W error::UserWarning`` and a per-test wall clock. See
-``docs/harness.md`` §11.
+``addopts``) — not for its cost, which is 1.5 s, but because what it produces
+is a *trend* to be read rather than a gate to be passed: the budgets below are
+deliberately loose, so tripping one means a redesign, and the numbers are the
+point on every other run. ``make soak`` is the run that reads them, together
+with the rest of the suite under ``-W error::UserWarning`` and a per-test wall
+clock. See ``docs/harness.md`` §11.
 
 **Every number is printed on success.** A soak whose measurements only appear
 when it fails teaches nobody the trend, and the trend is the whole product: the

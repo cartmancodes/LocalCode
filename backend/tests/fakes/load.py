@@ -143,6 +143,12 @@ class SoakProvider:
         self.content_bytes = 0
         self.events_emitted = 0
         self.tool_ids: list[str] = []
+        # The turn currently being served. ``run()`` reads it, and only
+        # ``next_script()`` sets it — the caller needs the prompt before the
+        # turn starts, so the two are separate calls. None here rather than an
+        # implicit attribute so a caller that forgets ``next_script()`` gets a
+        # sentence instead of an AttributeError from inside an async generator.
+        self._script: TurnScript | None = None
 
     def next_script(self) -> TurnScript:
         """The script for the turn about to run. The caller needs it before
@@ -165,6 +171,11 @@ class SoakProvider:
 
     async def run(self, ctx: RunContext) -> AsyncIterator[Event]:
         script = self._script
+        if script is None:
+            raise RuntimeError(
+                "SoakProvider.run() before next_script(): every turn needs its "
+                "own script, and the caller takes the prompt from it"
+            )
         for ev in script.events():
             self.events_emitted += 1
             yield ev
@@ -186,11 +197,3 @@ def burst_events(count: int, *, text: str = "delta ") -> list[dict[str, Any]]:
     the throughput number.
     """
     return [{"type": "assistant.text", "data": {"text": f"{text}{i}"}} for i in range(count)]
-
-
-async def streaming_turn(count: int) -> AsyncIterator[Event]:
-    """A turn of ``count`` text deltas and one terminal event, generated
-    lazily — the stall detector's subject."""
-    for i in range(count):
-        yield Event(type="assistant.text", data={"text": f"tok{i} "})
-    yield Event(type="assistant.done", data={})

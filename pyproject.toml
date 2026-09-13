@@ -52,9 +52,10 @@ markers = [
     "requires_cli: needs a real vendor CLI (claude / codex) on PATH; excluded by default",
     # Registered ahead of its first use by Task 12; claimed by Task 16's
     # `backend/tests/test_soak_long_session.py`, the only test that carries it.
-    # Excluded from the default run above — a soak nobody runs is decoration,
-    # but a minute of soak on every `pytest -q` is a minute nobody keeps
-    # paying, so `make soak` is what runs it (and the rest of the suite with
-    # it, under `-W error::UserWarning` and a per-test wall clock).
+    # Excluded from the default run above NOT for its cost (it runs in 1.5 s)
+    # but because it produces a trend to read rather than a gate to pass: its
+    # budgets are loose by design, so it belongs in a run someone is looking
+    # at. `make soak` is that run — the whole suite plus this, under
+    # `-W error::UserWarning` and a per-test wall clock.
     "slow: a long-running soak / endurance case; excluded with -m 'not slow'",
 ]

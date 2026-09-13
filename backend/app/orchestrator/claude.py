@@ -340,7 +340,7 @@ async def _disconnect(client: Any) -> None:
         logger.debug("disconnecting a claude client failed", exc_info=True)
 
 
-# How long the end-of-turn drain check waits for a frame that is already on
+# How long the end-of-turn drain check waits for ONE frame that is already on
 # the connection to surface. It is a SCHEDULING window, not an I/O one: the
 # turn has reached its result, so anything the CLI has already emitted is
 # sitting in the SDK's reader queue and needs only a pass or two of the loop to
@@ -350,9 +350,37 @@ async def _disconnect(client: Any) -> None:
 # for every connection.
 _TAIL_DRAIN_PEEK_S = 0.05
 
+# Ceiling on the WHOLE check, however many benign frames it walks past. The
+# per-frame window above bounds one read; without this, a connection that
+# trickles benign frames faster than that window restarts it forever and the
+# turn never completes — and the deferred-agent path this check exists for is
+# exactly the one that emits a stream of `system` task-lifecycle frames
+# (`task_started` / `task_updated` / `task_notification`, see
+# `_internal/query.py`). Five per-frame windows: a healthy connection answers
+# inside the first one, so this only ever bounds the pathological case, and it
+# bounds it at a quarter of a second.
+_TAIL_CHECK_DEADLINE_S = 0.25
 
-async def _unread_tail(client: Any) -> Any | None:
-    """The first frame still buffered on ``client`` after its turn's result.
+
+@dataclass(frozen=True)
+class _TailCheck:
+    """What the end-of-turn drain check found on the connection.
+
+    ``blocking`` is prose describing why this client cannot serve another turn,
+    or None when it is at a clean message boundary. ``rate_limits`` carries any
+    trailing :class:`RateLimitEvent` the check consumed: those are benign for
+    the reuse decision (see :func:`_unread_tail`) but are NOT discardable — the
+    CLI emits one only when the rate-limit status TRANSITIONS, so a dropped one
+    is a measurement nobody gets again until the next transition. The caller
+    translates them through the normal path.
+    """
+
+    blocking: str | None = None
+    rate_limits: tuple[Any, ...] = ()
+
+
+async def _unread_tail(client: Any) -> _TailCheck:
+    """Is ``client`` at a clean message boundary after its turn's result?
 
     ``receive_response()`` returns at the ``ResultMessage``, but a result is
     not always the run's last word: when the CLI backgrounds delegated agent
@@ -362,33 +390,63 @@ async def _unread_tail(client: Any) -> Any | None:
     that just ended, and handing it to the next turn is the misattribution
     :meth:`ClaudeProvider._discard` exists to prevent.
 
-    ``SystemMessage`` does not count: the SDK can forward a post-turn
-    ``session_state_changed`` frame on a perfectly healthy connection, and
-    ``_translate`` drops those anyway. Charging a reconnect — and a cold prompt
-    cache — for one would cost more than it protects.
+    Two frame types are walked past rather than counted against reuse:
 
-    Returns None when the connection is drained, and never raises: a failure
-    to answer the question is not a reason to fail a turn that has already
-    succeeded (the caller reads None as "drained", which is the status quo).
+    * ``SystemMessage`` — the SDK forwards post-turn ``session_state_changed``
+      and task-lifecycle frames on perfectly healthy connections, and
+      ``_translate`` drops them anyway. Charging a reconnect (and a cold prompt
+      cache) for one would cost more than it protects.
+    * ``RateLimitEvent`` — likewise irrelevant to whether the next turn can be
+      served, but it is the only measurement of the user's remaining plan
+      headroom anyone gets, so it is carried back to the caller instead of
+      being dropped on the floor.
+
+    A failure of the check ITSELF counts as not drained. The question it asks
+    is "is this connection in a state I understand?", and an exception is the
+    answer "no": keeping the client would hand the next turn a connection that
+    just failed, and a reconnect is cheap by comparison.
     """
+    deadline = time.monotonic() + _TAIL_CHECK_DEADLINE_S
+    rate_limits: list[Any] = []
     while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # Benign frames all the way to the deadline. Everything seen was
+            # safe for reuse, so the verdict is the same as an empty
+            # connection's — this bounds the check, it does not condemn the
+            # client.
+            logger.debug(
+                "tail check gave up after %.2fs of benign frames",
+                _TAIL_CHECK_DEADLINE_S,
+            )
+            return _TailCheck(rate_limits=tuple(rate_limits))
         stream = client.receive_response()
         try:
             message = await asyncio.wait_for(
-                stream.__anext__(), timeout=_TAIL_DRAIN_PEEK_S
+                stream.__anext__(), timeout=min(_TAIL_DRAIN_PEEK_S, remaining)
             )
         except (TimeoutError, StopAsyncIteration):
-            return None
-        except Exception:
+            return _TailCheck(rate_limits=tuple(rate_limits))
+        except Exception as exc:
             logger.debug("checking for an unread tail failed", exc_info=True)
-            return None
+            return _TailCheck(
+                blocking=f"the drain check failed ({type(exc).__name__})",
+                rate_limits=tuple(rate_limits),
+            )
         finally:
             try:
                 await stream.aclose()
             except Exception:
                 logger.debug("closing the tail-check stream failed", exc_info=True)
-        if not isinstance(message, SystemMessage):
-            return message
+        if isinstance(message, RateLimitEvent):
+            rate_limits.append(message)
+            continue
+        if isinstance(message, SystemMessage):
+            continue
+        return _TailCheck(
+            blocking=f"an unread {type(message).__name__}",
+            rate_limits=tuple(rate_limits),
+        )
 
 
 class ClaudeProvider:
@@ -742,15 +800,18 @@ class ClaudeProvider:
                 # error). Treating that as completion would mark a client whose
                 # CLI is *gone* as reusable — the dangerous direction.
                 #
-                # The boundary of the guarantee: "saw the result" is still not
-                # "the connection is drained". The SDK can forward a post-turn
-                # ``system/session_state_changed`` frame after the result
-                # (harmless — ``_translate`` drops ``SystemMessage``), and for
+                # "Saw the result" is still not "the connection is
+                # drained", so the flag is confirmed once more below: for
                 # backgrounded agent work (the SDK's deferring task types) a
-                # result can arrive with tasks still in flight, so follow-up
-                # frames and a second result stay buffered for the next turn.
-                # Both are pre-existing SDK behaviour, out of this task's
-                # scope, and recorded for the failure-injection suite.
+                # result can arrive with tasks still in flight, and the
+                # follow-up frames plus a SECOND result then land on this same
+                # connection. ``_unread_tail`` looks for exactly that after the
+                # drain loop ends and clears this flag when it finds it, which
+                # is what stops the tail from being served to the next turn as
+                # its own output. Frames that are harmless for reuse (a
+                # post-turn ``SystemMessage``, a ``RateLimitEvent``) do not
+                # clear it — see that function, and see the note further down
+                # for the residual it cannot close.
                 completed = False
 
                 async def _pump_messages() -> None:
@@ -776,29 +837,41 @@ class ClaudeProvider:
                             async for ev in _translate(message, usage=usage):
                                 await merged.put(ev)
                         if completed:
-                            # "Saw the result" is not "the connection is
-                            # drained" — see _unread_tail. A tail left here
-                            # would be read by the NEXT turn as its own output,
-                            # and that turn would terminate on this turn's
-                            # second result: silent misattribution, which is
-                            # worse than the reconnect that dropping the client
-                            # costs. The SDK cannot fix this from below (it
-                            # needs a run-boundary signal the CLI does not
-                            # send), so the provider refuses to reuse a
-                            # connection it can see is not at a clean message
-                            # boundary. A tail the CLI emits LATER — after this
-                            # check and before the next turn — is still
-                            # undetectable; that residual is recorded in
-                            # docs/harness.md.
-                            tail = await _unread_tail(client)
-                            if tail is not None:
+                            # A tail left on this connection would be read by
+                            # the NEXT turn as its own output, and that turn
+                            # would terminate on this turn's second result:
+                            # silent misattribution, which is worse than the
+                            # reconnect that dropping the client costs. The SDK
+                            # cannot fix this from below (it needs a
+                            # run-boundary signal the CLI does not send), so the
+                            # provider refuses to reuse a connection it can see
+                            # is not at a clean message boundary.
+                            #
+                            # THE RESIDUAL, in two parts, both recorded in
+                            # docs/harness.md: a tail the CLI emits LATER —
+                            # after this check and before the next turn — is
+                            # undetectable; and a frame delivered at the exact
+                            # moment the per-frame window expires can be
+                            # consumed and lost (anyio assigns the item to the
+                            # receiver before waking it, and the cancellation
+                            # `wait_for` then raises drops it). The second is
+                            # the same class as the first, one frame wide.
+                            check = await _unread_tail(client)
+                            # Trailing quota measurements are emitted whatever
+                            # the verdict: the CLI reports its rate-limit window
+                            # only when the status TRANSITIONS, so a dropped one
+                            # is a number nobody gets again. They arrive after
+                            # this turn's `assistant.done`, which costs the
+                            # meter nothing and the transcript nothing.
+                            for event in check.rate_limits:
+                                await merged.put(rate_limit_event(event))
+                            if check.blocking is not None:
                                 logger.warning(
-                                    "claude session %s: the connection still held "
-                                    "%s after this turn's result; dropping the "
-                                    "client rather than serving its tail to the "
-                                    "next turn",
+                                    "claude session %s: %s after this turn's "
+                                    "result; dropping the client rather than "
+                                    "serving its tail to the next turn",
                                     ctx.session_id,
-                                    type(tail).__name__,
+                                    check.blocking,
                                 )
                                 completed = False
                     except asyncio.CancelledError:
