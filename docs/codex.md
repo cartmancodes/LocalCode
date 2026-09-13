@@ -73,11 +73,16 @@ out, commented, in `backend/app/orchestrator/fleet/defaults.py`:
     ),
 ```
 
-Swap that in for the `opencode` entry beside it (or override the role in your
-own fleet config — see [fleet-config.md](fleet-config.md), which needs no code
-change at all) and the coder runs on Codex with real approvals and real
-`additional_dirs`. OpenCode keeps working and remains the right choice for
-local and non-frontier models.
+Swap that in for the `opencode` entry beside it and the coder runs on Codex
+with real approvals and real `additional_dirs`. OpenCode keeps working and
+remains the right choice for local and non-frontier models.
+
+**No code change is needed to try it.** The fleet editor's provider dropdown is
+rendered from the backend's `valid_providers`, so `codex` is selectable per
+role in the UI, and a role's model list comes from the catalog entry for
+whichever provider the role is on. The same switch can also be made in a fleet
+config file — see [fleet-config.md](fleet-config.md). Editing `defaults.py` is
+only for changing what every *new* workflow starts with.
 
 ## When the protocol changes
 
@@ -85,12 +90,31 @@ The app-server is **explicitly experimental**: method names, item kinds and
 field spellings move between CLI releases. The code is arranged so that costs
 one file.
 
-* `backend/app/orchestrator/codex/protocol.py` holds **every wire name** —
-  every method, notification, item type, decision string and error code. It is
-  the only module a schema change should need to touch. Nothing else in the
-  package contains a protocol string literal, and `pick()` in that module reads
-  both `snake_case` and `camelCase` spellings of the same field so a casing
-  flip costs nothing at all.
+* `backend/app/orchestrator/codex/protocol.py` holds **every wire name** — each
+  method, notification, item type, decision string, error code, the
+  `app-server` subcommand, **and every field name**: the ones we write as `F_*`
+  constants, the ones we read as `*_FIELDS` tuples splatted into `pick()`, and
+  the field *values* that carry meaning (`CREATE_KINDS`, `FAILED_STATUSES`).
+  It is the only module a schema change should need to touch; no other module
+  in the package spells a wire name, and each read field can carry several
+  historical spellings at once, so a `snake_case` ↔ `camelCase` flip costs
+  nothing at all.
+
+  The two exceptions, both deliberate and neither a wire name: the turn
+  stream's internal `{"method", "params"}` envelope, which is a contract
+  between `client.py` and `provider.py` (documented where it is defined), and
+  the JSON-RPC 2.0 envelope itself (`jsonrpc`, `id`, `result`, `error`), which
+  belongs to the transport and not to Codex.
+
+* That module's docstring also lists **ten numbered assumptions, every one
+  marked UNVERIFIED** against the real binary, with the cost of each being
+  wrong. Read them before trusting anything here. `A3` is the one to check
+  first: the code assumes `turn/start` is answered as a *prompt
+  acknowledgement*, not at turn end. If the real server answers only on
+  completion, the awaited request blocks the loop that drains the item queue
+  and every turn longer than `codex_request_timeout_s` fails with a timeout —
+  the one assumption whose failure costs a turn rather than an unrendered
+  block.
 * `backend/tests/fakes/fake_codex_app_server.py` **duplicates** those names
   deliberately (it runs as a child process and imports nothing from the app).
   Update it alongside `protocol.py` — if you do not, the tests fail, which is

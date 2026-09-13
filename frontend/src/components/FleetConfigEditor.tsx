@@ -25,6 +25,15 @@ const ROLE_DESCRIPTIONS: Record<FleetRole, string> = {
   tester: "Final gate. Writes + runs tests; LGTM / NACK_CODE → coder retry / NACK_TESTS → tester retry.",
 };
 
+// The provider union a fleet role may carry, taken from FleetRoleConfig so it
+// cannot drift from types.ts: adding a provider there widens this with no edit
+// here. Used for the casts the <select> handlers need.
+type RoleProvider = FleetRoleConfig["provider"];
+
+// Only until /api/fleet/config answers — the backend's `valid_providers` is
+// the authority, and it is what the dropdown actually renders.
+const FALLBACK_ROLE_PROVIDERS: RoleProvider[] = ["claude", "codex", "opencode"];
+
 // Fallback role library — used if the backend's /api/fleet/config response
 // somehow omits role_library (e.g. a stale or older backend). Each role MUST
 // produce a valid RoleConfig so the modal can never crash on a missing key.
@@ -89,16 +98,30 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
     };
   }, []);
 
+  // Which providers a role may use. The backend is the authority
+  // (`valid_providers` from /api/fleet/config, i.e. fleet's VALID_PROVIDERS);
+  // the literal list is only a pre-load fallback. Hardcoding it here was how
+  // `codex` ended up accepted by the API, typed in types.ts, and unreachable
+  // from the only UI that edits a role.
+  const roleProviders = useMemo<RoleProvider[]>(
+    () => (resp?.valid_providers?.length ? resp.valid_providers : FALLBACK_ROLE_PROVIDERS),
+    [resp]
+  );
+
   // Group catalog models by underlying provider (drop fleet pseudo-entries).
+  // Seeded from `roleProviders` rather than a fixed pair, so a role on a
+  // provider this editor did not know about still gets its catalog models
+  // instead of an empty <select> that matches nothing it is showing.
   const modelsByProvider = useMemo(() => {
-    const out: Record<string, string[]> = { claude: [], opencode: [] };
+    const out: Record<string, string[]> = {};
+    for (const p of roleProviders) out[p] = [];
     for (const m of models) {
-      if (m.provider === "claude" || m.provider === "opencode") {
+      if (m.provider in out) {
         out[m.provider].push(m.model);
       }
     }
     return out;
-  }, [models]);
+  }, [models, roleProviders]);
 
   const presentRoles: FleetRole[] = useMemo(
     () => ROLE_ORDER.filter((r) => r in draftRoles),
@@ -331,7 +354,7 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
                   <select
                     value={cur?.provider ?? libRole(resp, role).provider}
                     onChange={(e) => {
-                      const p = e.target.value as "claude" | "opencode";
+                      const p = e.target.value as RoleProvider;
                       const next = (modelsByProvider[p] ?? [])[0] ?? cur?.model ?? "";
                       if (present) updateRole(role, { provider: p, model: next });
                       else
@@ -342,8 +365,11 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
                     }}
                     disabled={!present}
                   >
-                    <option value="claude">claude</option>
-                    <option value="opencode">opencode</option>
+                    {roleProviders.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <label>
@@ -354,7 +380,7 @@ export default function FleetConfigEditor({ models, onCancel, onConfirm }: Props
                     disabled={!present}
                   >
                     {(() => {
-                      const provider = (cur?.provider ?? libRole(resp, role).provider) as "claude" | "opencode";
+                      const provider = (cur?.provider ?? libRole(resp, role).provider) as RoleProvider;
                       const list = modelsByProvider[provider] ?? [];
                       const current = cur?.model ?? libRole(resp, role).model;
                       const opts = list.includes(current) ? list : [current, ...list];

@@ -32,6 +32,12 @@ Scenarios:
   ``silent``          a turn that completes with no ``agent_message``.
   ``crash``           exits non-zero mid-turn.
   ``patch_approval``  an ``applyPatchApproval`` request.
+  ``file_create``     a ``file_change`` item whose kind is ``add``. Its own
+                      scenario because it is the only thing that exercises the
+                      translator's Write branch: every other scenario that
+                      touches a file reports ``update``, so without this one
+                      "a created file is a Write, not an Edit" was an
+                      unasserted claim.
   ``child``           like ``happy``, but spawns a sleeping grandchild first
                       and records both pids. Not one of the protocol
                       scenarios — it exists so a test can prove the process
@@ -256,6 +262,20 @@ def run_turn(scenario: str, request_id, turn_index: int) -> None:
         emit_turn_completed()
         return
 
+    if scenario == "file_create":
+        created = os.path.join(os.getcwd(), "new_module.py")
+        item(
+            N_ITEM_COMPLETED,
+            {
+                "id": "f1",
+                "type": "file_change",
+                "changes": {created: {"kind": "add"}},
+            },
+        )
+        emit_agent_message("Created the module.")
+        emit_turn_completed()
+        return
+
     if scenario == "patch_approval":
         target = os.path.join(os.getcwd(), "notes.md")
         decision = ask(
@@ -342,6 +362,11 @@ def handle_rpc_method(method: str, request_id, params: dict) -> bool:
             respond_error(request_id, ERR_BUSY, "the app-server is busy")
         else:
             respond(request_id, {"attempts": _attempts[method]})
+        return True
+    if method == "test/attempts":
+        # Reads the counter WITHOUT touching it, so a test can pin the exact
+        # number of tries rather than "at least this many".
+        respond(request_id, {"attempts": _attempts.get(str(params.get("of") or ""), 0)})
         return True
     if method == "test/ask":
         response = ask_raw(

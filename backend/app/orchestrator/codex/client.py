@@ -41,10 +41,28 @@ from typing import Any
 from ...config import get_settings
 from .jsonrpc import StdioJsonRpc
 from .protocol import (
+    APP_SERVER_SUBCOMMAND,
     DECISION_DENIED,
+    F_ADDITIONAL_DIRECTORIES,
+    F_CLIENT_INFO,
+    F_CWD,
+    F_DECISION,
+    F_ERROR,
+    F_INPUT,
+    F_INPUT_TYPE_TEXT,
+    F_ITEM,
+    F_MESSAGE,
+    F_MODEL,
+    F_NAME,
+    F_TEXT,
+    F_THREAD_ID,
+    F_TYPE,
+    F_VERSION,
+    ITEM_FIELDS,
     ITEM_NOTIFICATIONS,
     ITEM_TYPE_AGENT_MESSAGE,
     ITEM_TYPE_ERROR,
+    ITEM_TYPE_FIELDS,
     M_INITIALIZE,
     M_THREAD_RESUME,
     M_THREAD_START,
@@ -56,6 +74,7 @@ from .protocol import (
     N_TURN_FAILED,
     R_EXEC_APPROVAL,
     R_PATCH_APPROVAL,
+    THREAD_ID_FIELDS,
     TURN_NOTIFICATIONS,
     pick,
 )
@@ -75,6 +94,13 @@ STDOUT_LIMIT = 8 * 1024 * 1024
 # a protocol name — it never crosses the wire — so it deliberately does not
 # live in protocol.py.
 _EOF_MARKER = "__eof__"
+
+# The turn stream's frames are ``{"method": ..., "params": ...}`` dicts. Those
+# two keys are OURS: the envelope is an internal contract between this module
+# and provider.py, deliberately shaped like a JSON-RPC frame because most of
+# the frames on it are one, and that is why they are not in protocol.py. The
+# synthetic frames (the silent turn, the exit) use the same envelope so the
+# translator needs no special case for them.
 
 # Bound on waiting for the exit status of a server that just closed its
 # stdout. Only used to put a code in an error message, so a couple of seconds
@@ -108,7 +134,7 @@ def default_argv() -> list[str]:
     repoints ``codex_binary`` (and the missing-binary case in particular) must
     be observed by the very next spawn.
     """
-    return [get_settings().codex_binary, "app-server"]
+    return [get_settings().codex_binary, APP_SERVER_SUBCOMMAND]
 
 
 def _missing_binary_message(binary: str, detail: str = "") -> str:
@@ -226,7 +252,7 @@ class CodexAppServer:
         try:
             await rpc.request(
                 M_INITIALIZE,
-                {"clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION}},
+                {F_CLIENT_INFO: {F_NAME: CLIENT_NAME, F_VERSION: CLIENT_VERSION}},
                 timeout_s=self._startup_timeout_s,
             )
             await rpc.notify(N_INITIALIZED)
@@ -273,11 +299,11 @@ class CodexAppServer:
                     "codex asked for %s with no approval handler registered — denying",
                     method,
                 )
-                return {"decision": _UNWIRED_DECISION}
+                return {F_DECISION: _UNWIRED_DECISION}
             result = handler(method, params)
             if asyncio.iscoroutine(result):
                 result = await result
-            return {"decision": str(result)}
+            return {F_DECISION: str(result)}
 
         return handle
 
@@ -324,14 +350,14 @@ class CodexAppServer:
         so a ChatGPT-side role could never be given a sibling repo. Here it is
         just a field.
         """
-        params: dict[str, Any] = {"cwd": cwd or ""}
+        params: dict[str, Any] = {F_CWD: cwd or ""}
         if model:
-            params["model"] = model
-        params["additionalDirectories"] = [str(d) for d in (additional_dirs or [])]
+            params[F_MODEL] = model
+        params[F_ADDITIONAL_DIRECTORIES] = [str(d) for d in (additional_dirs or [])]
         result = await self._rpc_or_raise().request(
             M_THREAD_START, params, timeout_s=self._request_timeout_s
         )
-        thread_id = str(pick(result, "threadId", "thread_id", "id", default="") or "")
+        thread_id = str(pick(result, *THREAD_ID_FIELDS, default="") or "")
         if not thread_id:
             raise CodexUnavailable("the codex app-server returned no thread id for thread/start")
         self._threads.add(thread_id)
@@ -343,9 +369,9 @@ class CodexAppServer:
             # replay a transcript it is already holding.
             return thread_id
         result = await self._rpc_or_raise().request(
-            M_THREAD_RESUME, {"threadId": thread_id}, timeout_s=self._request_timeout_s
+            M_THREAD_RESUME, {F_THREAD_ID: thread_id}, timeout_s=self._request_timeout_s
         )
-        resumed = str(pick(result, "threadId", "thread_id", "id", default="") or thread_id)
+        resumed = str(pick(result, *THREAD_ID_FIELDS, default="") or thread_id)
         self._threads.add(resumed)
         return resumed
 
@@ -370,7 +396,7 @@ class CodexAppServer:
         try:
             await rpc.request(
                 M_TURN_START,
-                {"threadId": thread_id, "input": [{"type": "text", "text": text}]},
+                {F_THREAD_ID: thread_id, F_INPUT: [{F_TYPE: F_INPUT_TYPE_TEXT, F_TEXT: text}]},
                 timeout_s=self._request_timeout_s,
             )
             saw_agent_message = False
@@ -382,8 +408,8 @@ class CodexAppServer:
                     yield self._exit_frame(rpc, await self._exit_code())
                     return
                 if method in ITEM_NOTIFICATIONS:
-                    item = pick(frame.get("params"), "item", default={}) or {}
-                    item_type = str(pick(item, "type", "item_type", default="") or "")
+                    item = pick(frame.get("params"), *ITEM_FIELDS, default={}) or {}
+                    item_type = str(pick(item, *ITEM_TYPE_FIELDS, default="") or "")
                     if item_type == ITEM_TYPE_AGENT_MESSAGE:
                         saw_agent_message = True
                     if method == N_ITEM_COMPLETED:
@@ -409,9 +435,9 @@ class CodexAppServer:
         return {
             "method": N_ITEM_COMPLETED,
             "params": {
-                "item": {
-                    "type": ITEM_TYPE_ERROR,
-                    "message": (
+                F_ITEM: {
+                    F_TYPE: ITEM_TYPE_ERROR,
+                    F_MESSAGE: (
                         "the codex turn completed without producing a response "
                         f"message (items seen: {seen})"
                     ),
@@ -425,8 +451,8 @@ class CodexAppServer:
         return {
             "method": N_TURN_FAILED,
             "params": {
-                "error": {
-                    "message": (
+                F_ERROR: {
+                    F_MESSAGE: (
                         f"the codex app-server exited with {where} during the turn"
                         f"{rpc.stderr_detail()}"
                     )
@@ -450,7 +476,7 @@ class CodexAppServer:
             return
         with contextlib.suppress(Exception):
             await self._rpc.request(
-                M_TURN_INTERRUPT, {"threadId": thread_id}, timeout_s=_EXIT_WAIT_S
+                M_TURN_INTERRUPT, {F_THREAD_ID: thread_id}, timeout_s=_EXIT_WAIT_S
             )
 
 

@@ -41,6 +41,7 @@ import pytest
 
 from backend.app.orchestrator.codex.jsonrpc import JsonRpcError, StdioJsonRpc
 from backend.app.orchestrator.codex.protocol import (
+    BUSY_BACKOFF_S,
     ERR_BUSY,
     ERR_INTERNAL,
     ERR_METHOD_NOT_FOUND,
@@ -214,10 +215,16 @@ class TestBackpressure:
             await peer.rpc.request("test/busy", {"times": 99}, timeout_s=WAIT_S)
 
         assert excinfo.value.code == ERR_BUSY
-        # Bounded: three tries and it surfaces. An unbounded retry is a turn
-        # that never ends and never says why.
+        # Bounded ABOVE as well as below. Asserting "three arrived" alone would
+        # pass for an implementation that went on retrying after it raised, so
+        # this outwaits the longest delay the schedule could still be holding
+        # and then reads the fake's own counter, which counts tries without
+        # adding one.
+        await asyncio.sleep(max(BUSY_BACKOFF_S) + 0.25)
+        counted = await peer.rpc.request("test/attempts", {"of": "test/busy"}, timeout_s=WAIT_S)
+        assert counted["attempts"] == 3
         requests = await _read_records(record, "request", 3)
-        assert len(requests) == 3
+        assert len([r for r in requests if r["method"] == "test/busy"]) == 3
 
 
 class TestServerRequests:
@@ -335,6 +342,26 @@ class TestResilience:
             for pid in (server_pid, child_pid):
                 with contextlib.suppress(OSError):
                     os.kill(pid, signal.SIGKILL)
+
+    async def test_a_response_that_cannot_be_written_is_logged_not_swallowed(
+        self, peer_factory, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The one failure this module exists to prevent, made visible.
+
+        A response that never leaves means the app-server is blocked on a
+        callback forever. The write still must not raise (that would kill the
+        reader and every pending future with it), so the only thing standing
+        between this and a turn that silently stops is the log line.
+        """
+        peer = await peer_factory()
+        await peer.rpc.close()
+
+        with caplog.at_level("WARNING", logger="backend.app.orchestrator.codex.jsonrpc"):
+            await peer.rpc._respond_result(4242, {"decision": "approved"})
+
+        assert any("4242" in record.getMessage() for record in caplog.records), (
+            "a response that could not be written must name the request id it abandoned"
+        )
 
     async def test_close_is_idempotent(self, peer_factory) -> None:
         peer = await peer_factory()

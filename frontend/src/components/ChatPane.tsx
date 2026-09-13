@@ -1061,7 +1061,11 @@ function mergeFleetOverride(
         merged.roles[role] = { ...baseRole, ...(o as Partial<FleetRoleConfig>) };
       } else {
         merged.roles[role] = {
-          provider: (o.provider ?? "claude") as "claude" | "opencode",
+          // The role-provider union, not a narrower copy of it: a `codex` role
+          // added by an override reaches exactly this branch (no base role on
+          // the client), and the old two-name cast typed it as something it
+          // is not.
+          provider: (o.provider ?? "claude") as FleetRoleConfig["provider"],
           model: o.model ?? "",
           system_prompt: o.system_prompt ?? "",
         };

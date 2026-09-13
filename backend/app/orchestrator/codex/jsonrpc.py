@@ -425,17 +425,41 @@ class StdioJsonRpc:
         await self._respond_result(request_id, result)
 
     async def _respond_result(self, request_id: Any, result: Any) -> None:
-        with contextlib.suppress(Exception):
-            await self._write({"jsonrpc": "2.0", "id": request_id, "result": result})
+        await self._respond(
+            {"jsonrpc": "2.0", "id": request_id, "result": result}, request_id, "result"
+        )
 
     async def _respond_error(self, request_id: Any, code: int, message: str) -> None:
-        with contextlib.suppress(Exception):
-            await self._write(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {"code": code, "message": message},
-                }
+        await self._respond(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": code, "message": message},
+            },
+            request_id,
+            f"error {code}",
+        )
+
+    async def _respond(self, payload: dict[str, Any], request_id: Any, what: str) -> None:
+        """Write one response, and SAY SO if the write fails.
+
+        The exception is still swallowed — a dead pipe during teardown is
+        ordinary, and raising here would kill the reader task and with it every
+        future still waiting. But it is not swallowed *silently*: a response
+        that never leaves is exactly the "a dropped server request hangs the
+        agent forever" failure this whole module is built to prevent, and
+        without this line it would present as a turn that simply stopped, with
+        nothing anywhere saying why.
+        """
+        try:
+            await self._write(payload)
+        except Exception as exc:  # noqa: BLE001 - logged, never propagated
+            self._log.warning(
+                "could not answer the codex app-server's request id=%r with %s: %s. "
+                "If the server is still running it is now blocked on this callback.",
+                request_id,
+                what,
+                exc,
             )
 
     async def _drain_stderr(self) -> None:

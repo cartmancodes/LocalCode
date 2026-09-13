@@ -244,6 +244,29 @@ class TestHappyTurn:
         # And it runs in the workspace it was asked for.
         assert _same_dir(env[0]["cwd"], tmp_path)
 
+    async def test_a_created_file_is_a_write_not_an_edit(
+        self, provider_factory, tmp_path: Path
+    ) -> None:
+        """The Write branch, which no other scenario reaches.
+
+        Every other file-touching scenario reports ``kind: "update"``, so
+        without this the mapping from a creation to ``Write`` was an
+        unasserted claim — and the transcript would label a new file as an
+        edit of a file that did not exist.
+        """
+        provider = provider_factory("file_create")
+        events = await drain(provider, mk_ctx(tmp_path))
+
+        assert types(events) == [
+            "assistant.tool_use",
+            "tool.result",
+            "assistant.text",
+            "assistant.done",
+        ]
+        assert events[0].data["name"] == "Write"
+        assert events[0].data["input"]["file_path"] == _under(tmp_path, "new_module.py")
+        assert events[0].data["input"]["paths"] == [_under(tmp_path, "new_module.py")]
+
     async def test_additional_dirs_are_forwarded_to_thread_start(
         self, provider_factory, tmp_path: Path
     ) -> None:

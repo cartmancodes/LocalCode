@@ -47,22 +47,48 @@ from ..permissions import (
 )
 from .client import CodexBroker, CodexUnavailable
 from .protocol import (
+    CACHE_CREATION_TOKEN_FIELDS,
+    CACHE_READ_TOKEN_FIELDS,
+    CHANGES_FIELDS,
+    COMMAND_FIELDS,
+    CREATE_KINDS,
     DECISION_APPROVED,
     DECISION_DENIED,
+    ERROR_FIELDS,
+    ERROR_MESSAGE_FIELDS,
+    EXIT_CODE_FIELDS,
+    FAILED_STATUSES,
+    INPUT_TOKEN_FIELDS,
+    ITEM_ERROR_MESSAGE_FIELDS,
+    ITEM_FIELDS,
+    ITEM_ID_FIELDS,
     ITEM_NOTIFICATIONS,
     ITEM_TYPE_AGENT_MESSAGE,
     ITEM_TYPE_COMMAND_EXECUTION,
     ITEM_TYPE_ERROR,
+    ITEM_TYPE_FIELDS,
     ITEM_TYPE_FILE_CHANGE,
     ITEM_TYPE_MCP_TOOL_CALL,
     ITEM_TYPE_REASONING,
     ITEM_TYPE_WEB_SEARCH,
+    KIND_FIELDS,
+    MCP_ARGUMENTS_FIELDS,
+    MCP_SERVER_FIELDS,
+    MCP_TOOL_FIELDS,
     N_ITEM_COMPLETED,
     N_ITEM_STARTED,
     N_ITEM_UPDATED,
     N_TURN_COMPLETED,
     N_TURN_FAILED,
+    OUTPUT_FIELDS,
+    OUTPUT_TOKEN_FIELDS,
+    PATH_FIELDS,
+    QUERY_FIELDS,
     R_EXEC_APPROVAL,
+    STATUS_FIELDS,
+    TEXT_FIELDS,
+    TURN_FIELDS,
+    USAGE_FIELDS,
     pick,
 )
 
@@ -120,17 +146,17 @@ def _changed_paths(params: Mapping[str, Any]) -> list[str]:
     Accepts both shapes the schema has used: a mapping of path → change, and a
     list of change objects carrying a path field.
     """
-    changes = pick(params, "changes", "fileChanges", "file_changes", default=None)
+    changes = pick(params, *CHANGES_FIELDS, default=None)
     paths: list[str] = []
     if isinstance(changes, Mapping):
         paths = [str(key) for key in changes]
     elif isinstance(changes, Sequence) and not isinstance(changes, str | bytes):
         for change in changes:
-            value = pick(change, "path", "file_path", "filePath", default=None)
+            value = pick(change, *PATH_FIELDS, default=None)
             if value:
                 paths.append(str(value))
     if not paths:
-        single = pick(params, "path", "file_path", "filePath", default=None)
+        single = pick(params, *PATH_FIELDS, default=None)
         if single:
             paths.append(str(single))
     return paths
@@ -164,7 +190,7 @@ def approval_tool_request(
     shared path Claude takes.
     """
     if kind == R_EXEC_APPROVAL:
-        return "Bash", {"command": _command_text(pick(params, "command", "argv"))}
+        return "Bash", {"command": _command_text(pick(params, *COMMAND_FIELDS))}
     paths = _changed_paths(params)
     return "Edit", {"file_path": _patch_primary_path(paths, policy), "paths": paths}
 
@@ -188,20 +214,10 @@ def _usage_from(payload: Mapping[str, Any] | None, *, model: str, session_id: st
     return TurnUsage(
         provider=CodexProvider.name,
         model=model,
-        input_tokens=count("input_tokens", "inputTokens"),
-        output_tokens=count("output_tokens", "outputTokens"),
-        cache_read_tokens=count(
-            "cached_input_tokens",
-            "cachedInputTokens",
-            "cache_read_input_tokens",
-            "cacheReadInputTokens",
-            "cache_read_tokens",
-        ),
-        cache_creation_tokens=count(
-            "cache_creation_input_tokens",
-            "cacheCreationInputTokens",
-            "cache_creation_tokens",
-        ),
+        input_tokens=count(*INPUT_TOKEN_FIELDS),
+        output_tokens=count(*OUTPUT_TOKEN_FIELDS),
+        cache_read_tokens=count(*CACHE_READ_TOKEN_FIELDS),
+        cache_creation_tokens=count(*CACHE_CREATION_TOKEN_FIELDS),
         cost_usd=None,
         session_id=session_id,
         ts=0.0,
@@ -241,15 +257,15 @@ class _Translator:
         params = frame.get("params")
         params = params if isinstance(params, Mapping) else {}
         if method in ITEM_NOTIFICATIONS:
-            item = pick(params, "item", default=None)
+            item = pick(params, *ITEM_FIELDS, default=None)
             if not isinstance(item, Mapping):
                 return []
             return list(self._handle_item(method, item))
         if method == N_TURN_FAILED:
             self.saw_error = True
-            error = pick(params, "error", default={}) or {}
+            error = pick(params, *ERROR_FIELDS, default={}) or {}
             message = str(
-                pick(error, "message", "detail", default="") or "the codex turn failed"
+                pick(error, *ERROR_MESSAGE_FIELDS, default="") or "the codex turn failed"
             )
             return [self._error(message)]
         if method == N_TURN_COMPLETED:
@@ -260,8 +276,8 @@ class _Translator:
     # ── items ──────────────────────────────────────────────────────────────
 
     def _handle_item(self, method: str, item: Mapping[str, Any]) -> Iterator[Event]:
-        item_type = str(pick(item, "type", "item_type", default="") or "")
-        item_id = str(pick(item, "id", "item_id", default="") or f"codex-{id(item):x}")
+        item_type = str(pick(item, *ITEM_TYPE_FIELDS, default="") or "")
+        item_id = str(pick(item, *ITEM_ID_FIELDS, default="") or f"codex-{id(item):x}")
         if item_type == ITEM_TYPE_AGENT_MESSAGE:
             yield from self._text(item_id, self._item_text(item))
         elif item_type == ITEM_TYPE_REASONING:
@@ -274,19 +290,19 @@ class _Translator:
                 method,
                 item_id,
                 name="Bash",
-                tool_input={"command": _command_text(pick(item, "command", "argv"))},
+                tool_input={"command": _command_text(pick(item, *COMMAND_FIELDS))},
                 item=item,
             )
         elif item_type == ITEM_TYPE_FILE_CHANGE:
             yield from self._file_change(method, item_id, item)
         elif item_type == ITEM_TYPE_MCP_TOOL_CALL:
-            server = str(pick(item, "server", "server_name", default="") or "")
-            tool = str(pick(item, "tool", "tool_name", "name", default="mcp") or "mcp")
+            server = str(pick(item, *MCP_SERVER_FIELDS, default="") or "")
+            tool = str(pick(item, *MCP_TOOL_FIELDS, default="mcp") or "mcp")
             yield from self._tool_pair(
                 method,
                 item_id,
                 name=f"mcp__{server}__{tool}" if server else tool,
-                tool_input=dict(pick(item, "arguments", "args", "input", default={}) or {}),
+                tool_input=dict(pick(item, *MCP_ARGUMENTS_FIELDS, default={}) or {}),
                 item=item,
             )
         elif item_type == ITEM_TYPE_WEB_SEARCH:
@@ -294,14 +310,14 @@ class _Translator:
                 method,
                 item_id,
                 name="WebSearch",
-                tool_input={"query": str(pick(item, "query", "q", default="") or "")},
+                tool_input={"query": str(pick(item, *QUERY_FIELDS, default="") or "")},
                 item=item,
             )
         elif item_type == ITEM_TYPE_ERROR:
             if method == N_ITEM_COMPLETED or method == N_ITEM_STARTED:
                 self.saw_error = True
                 yield self._error(
-                    str(pick(item, "message", "error", "detail", default="") or "codex error")
+                    str(pick(item, *ITEM_ERROR_MESSAGE_FIELDS, default="") or "codex error")
                 )
         else:
             if item_type not in self._unknown_logged:
@@ -310,7 +326,7 @@ class _Translator:
 
     @staticmethod
     def _item_text(item: Mapping[str, Any]) -> str:
-        return str(pick(item, "text", "delta", "content", "summary", default="") or "")
+        return str(pick(item, *TEXT_FIELDS, default="") or "")
 
     def _text(self, item_id: str, text: str) -> Iterator[Event]:
         if not text:
@@ -345,23 +361,15 @@ class _Translator:
             )
         if method != N_ITEM_COMPLETED:
             return
-        exit_code = pick(item, "exit_code", "exitCode", default=None)
+        exit_code = pick(item, *EXIT_CODE_FIELDS, default=None)
         try:
             is_error = exit_code is not None and int(exit_code) != 0
         except (TypeError, ValueError):
             is_error = False
-        status = str(pick(item, "status", default="") or "")
-        if status in {"failed", "error"}:
+        status = str(pick(item, *STATUS_FIELDS, default="") or "")
+        if status in FAILED_STATUSES:
             is_error = True
-        content = pick(
-            item,
-            "aggregated_output",
-            "aggregatedOutput",
-            "output",
-            "result",
-            "text",
-            default="",
-        )
+        content = pick(item, *OUTPUT_FIELDS, default="")
         yield Event(
             type="tool.result",
             data={
@@ -374,27 +382,27 @@ class _Translator:
     def _file_change(
         self, method: str, item_id: str, item: Mapping[str, Any]
     ) -> Iterator[Event]:
-        changes = pick(item, "changes", "fileChanges", "file_changes", default=None)
+        changes = pick(item, *CHANGES_FIELDS, default=None)
         paths: list[str] = []
         kinds: list[str] = []
         if isinstance(changes, Mapping):
             for key, value in changes.items():
                 paths.append(str(key))
-                kinds.append(str(pick(value, "kind", "type", default="") or ""))
+                kinds.append(str(pick(value, *KIND_FIELDS, default="") or ""))
         elif isinstance(changes, Sequence) and not isinstance(changes, str | bytes):
             for change in changes:
-                value = pick(change, "path", "file_path", "filePath", default=None)
+                value = pick(change, *PATH_FIELDS, default=None)
                 if value:
                     paths.append(str(value))
-                    kinds.append(str(pick(change, "kind", "type", default="") or ""))
+                    kinds.append(str(pick(change, *KIND_FIELDS, default="") or ""))
         if not paths:
-            single = pick(item, "path", "file_path", "filePath", default=None)
+            single = pick(item, *PATH_FIELDS, default=None)
             if single:
                 paths.append(str(single))
-                kinds.append(str(pick(item, "kind", "type", default="") or ""))
+                kinds.append(str(pick(item, *KIND_FIELDS, default="") or ""))
         # A creation is a Write and everything else is an Edit — the same two
         # names the rest of the harness (and the role table) already knows.
-        name = "Write" if kinds and kinds[0] in {"add", "create", "created"} else "Edit"
+        name = "Write" if kinds and kinds[0] in CREATE_KINDS else "Edit"
         yield from self._tool_pair(
             method,
             item_id,
@@ -412,9 +420,9 @@ class _Translator:
             # working indicator with a success it did not earn; the runner
             # emits the single terminal event instead.
             return
-        turn = pick(params, "turn", default={}) or {}
-        usage_payload = pick(params, "usage", default=None) or pick(
-            turn, "usage", default=None
+        turn = pick(params, *TURN_FIELDS, default={}) or {}
+        usage_payload = pick(params, *USAGE_FIELDS, default=None) or pick(
+            turn, *USAGE_FIELDS, default=None
         )
         usage = _usage_from(usage_payload, model=self._model, session_id=self._session_id)
         yield Event(
