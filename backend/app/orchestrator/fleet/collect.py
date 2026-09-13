@@ -39,7 +39,7 @@ from typing import Any
 from ...artifacts import ArtifactStore
 from ...config import get_settings
 from ..base import RunContext
-from .envelope import MAX_TOOL_DIGEST_CHARS, StepResult
+from .envelope import MAX_TOOL_DIGEST_CHARS, StepResult, coerce_usage
 from .gate import GATE_ROLES, parse_verdict
 from .models import RoleConfig
 
@@ -206,23 +206,19 @@ def _token_usage(raw: Any) -> dict[str, int] | None:
     """The token counts out of a sub-provider's ``assistant.done`` usage dict,
     or ``None`` when it reported none.
 
-    Defensive at every step, and deliberately so: usage is telemetry, and
-    Task 5's rule is that telemetry must never be able to fail the step it
-    describes. A provider that reports a string, a list, or a token count of
-    ``"lots"`` loses its usage, not its result.
+    Selects the keys (the event's dict also carries ``provider``, ``model``,
+    ``cost_usd``, which are not token counts) and hands them to
+    ``coerce_usage`` for the ``int`` contract, so this path and ``from_wire``
+    cannot drift apart about what a count is.
+
+    Defensive at every step, deliberately: usage is telemetry, and Task 5's
+    rule is that telemetry must never be able to fail the step it describes. A
+    provider that reports a string, a list, or a token count of ``"lots"``
+    loses its usage, not its result.
     """
     if not isinstance(raw, dict):
         return None
-    counts: dict[str, int] = {}
-    for key in _USAGE_TOKEN_KEYS:
-        value = raw.get(key)
-        if value is None:
-            continue
-        try:
-            counts[key] = int(value)
-        except (TypeError, ValueError):
-            continue
-    return counts or None
+    return coerce_usage({key: raw.get(key) for key in _USAGE_TOKEN_KEYS})
 
 
 def _tool_digest(

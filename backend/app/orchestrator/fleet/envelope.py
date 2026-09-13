@@ -95,7 +95,6 @@ class StepResult:
         rather than as the partial result it actually received.
         """
         structured = data.get("structured")
-        usage = data.get("usage")
         return cls(
             summary=str(data.get("summary") or ""),
             structured=structured if isinstance(structured, dict) else None,
@@ -103,7 +102,13 @@ class StepResult:
             artifact_path=_opt_str(data.get("artifact_path")),
             tool_digest=str(data.get("tool_digest") or ""),
             full_bytes=_as_int(data.get("full_bytes")),
-            usage=usage if isinstance(usage, dict) else None,
+            # Coerced, not merely type-checked: ``usage`` is declared
+            # ``dict[str, int]`` and Task 7's per-turn budget sums it. A
+            # drifted or hand-built payload carrying ``"120"`` or ``None``
+            # would otherwise raise a TypeError inside that sum — in the
+            # parent's stdout pump, the one place this method exists never to
+            # raise from.
+            usage=coerce_usage(data.get("usage")),
         )
 
     def context_text(self) -> str:
@@ -137,6 +142,34 @@ class StepResult:
             )
             body = f"{body}\n\n{pointer}" if body else pointer
         return body
+
+
+def coerce_usage(raw: Any) -> dict[str, int] | None:
+    """Token counts as honest ``int``s, or ``None``.
+
+    The single implementation of the ``dict[str, int]`` contract, shared by
+    ``collect_step`` (which picks the keys it knows) and ``from_wire`` (which
+    takes what the wire gives). Keys whose value cannot become an ``int`` are
+    dropped rather than kept as-is or defaulted to ``0``: a budget must not
+    silently spend a wrong number, and a dropped key reads as "not reported",
+    which is exactly what a garbled count is.
+
+    Never raises — usage is telemetry, and telemetry must not be able to fail
+    the step it describes.
+    """
+    if not isinstance(raw, dict):
+        return None
+    counts: dict[str, int] = {}
+    for key, value in raw.items():
+        if value is None or isinstance(value, bool):
+            # ``bool`` is an ``int`` subclass; a True token count is a bug in
+            # the producer, not a count of 1.
+            continue
+        try:
+            counts[str(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return counts or None
 
 
 def _opt_str(value: Any) -> str | None:

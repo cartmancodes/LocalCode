@@ -148,15 +148,20 @@ def parse_verdict(output: str, role: str | None) -> Verdict:
 
     Precedence, and the reason for it:
 
-    1. A JSON object carrying a recognized ``"verdict"`` wins. It is
-       unambiguous — no backwards walk, no Markdown stripping, no guessing
-       which line the model meant as its classifier.
-    2. Everything else falls back to :func:`classify_gate`, including a JSON
-       block that fails to parse and a JSON block whose ``"verdict"`` names a
-       value we don't recognize. That is the whole point: a malformed machine
-       verdict must not invent a pass, and it must not throw away a perfectly
-       good ``LGTM`` line sitting above it either.
-    3. With neither, ``classify_gate``'s fail-safe applies — ``nack`` for a
+    1. A **fenced** ```` ```json ```` block carrying a recognized ``"verdict"``
+       wins outright. Fencing it is a deliberate act by the model — the
+       prompts ask for exactly that block — so it is unambiguous: no backwards
+       walk, no Markdown stripping, no guessing which line was the classifier.
+    2. An **unfenced** ``{...}`` found loose in the prose is NOT deliberate. It
+       is as likely to be a quotation (a reviewer reviewing gate code, quoting
+       its own prompt's example, or pasting a fixture) as a verdict, so it may
+       never turn a rejection into a pass — see ``_reconcile_loose``.
+    3. Everything else falls back to :func:`classify_gate`, including a block
+       that fails to parse and one whose ``"verdict"`` names a value we don't
+       recognize. A malformed machine verdict must not invent a pass, and it
+       must not throw away a perfectly good ``LGTM`` line sitting above it
+       either.
+    4. With neither, ``classify_gate``'s fail-safe applies — ``nack`` for a
        reviewer, ``nack_code`` for a tester — so unreviewed work loops back
        instead of shipping.
     """
@@ -165,34 +170,67 @@ def parse_verdict(output: str, role: str | None) -> Verdict:
     # emphatically not the gate's verdict.
     body = output.split(TOOL_DIGEST_MARKER, 1)[0]
 
-    for candidate in _verdict_candidates(body):
-        parsed = _verdict_from_json(candidate)
+    fenced, loose = _verdict_candidates(body)
+    if fenced is not None:
+        parsed = _verdict_from_json(fenced)
         if parsed is not None:
             return parsed
 
     # The VALUE always comes from the untouched line classifier; only the
     # human-readable reason is recovered separately.
-    value = classify_gate(output, role or "")
-    line = _classifier_line(body)
-    return Verdict(value=value, reason=line or _NO_VERDICT_REASON, source="line")
+    line_verdict = Verdict(
+        value=classify_gate(output, role or ""),
+        reason=_classifier_line(body) or _NO_VERDICT_REASON,
+        source="line",
+    )
+    if loose is not None:
+        parsed = _verdict_from_json(loose)
+        if parsed is not None:
+            return _reconcile_loose(parsed, line_verdict)
+    return line_verdict
 
 
-def _verdict_candidates(body: str) -> list[str]:
-    """Candidate JSON texts, best first: the LAST fenced ``json`` block, then
-    the LAST balanced ``{...}`` anywhere in the body.
+def _reconcile_loose(loose: Verdict, line: Verdict) -> Verdict:
+    """Settle an unfenced ``{...}`` against the classifier line.
+
+    The rule is one-directional on purpose: **a rejection always survives, a
+    pass needs agreement.** An unfenced object is an ambiguous signal, and the
+    failure this gate exists to prevent is shipping work nobody blessed — so an
+    ambiguous signal may add a rejection but never remove one.
+
+    * Agreement → keep the JSON verdict; its ``reason`` is the model's own
+      sentence, which is better than echoing the classifier line.
+    * The object says pass, the line rejects → the LINE wins, recorded as
+      ``source="line"`` so the audit trail shows the override. This is the
+      false-``lgtm`` case: a reviewer that quotes ``{"verdict": "lgtm"}`` while
+      NACKing used to be read as a pass and its card went green.
+    * The object rejects, the line passes (or found nothing and failed safe) →
+      the REJECTION wins. Fail-safe in this direction too: an ambiguous
+      candidate must not be ignored into a pass any more than it may create
+      one.
+    * Both reject but disagree on which kind → the line wins. Nothing ships
+      either way, so the unambiguous parser picks the retry route.
+    """
+    if loose.value == line.value:
+        return loose
+    if loose.value == "lgtm":
+        return line
+    if line.value == "lgtm":
+        return loose
+    return line
+
+
+def _verdict_candidates(body: str) -> tuple[str | None, str | None]:
+    """``(last fenced json block, last balanced {...})`` — either may be
+    ``None``. The two are kept apart because they carry different authority
+    (see :func:`parse_verdict`), not merely different priority.
 
     Last, not first, because the prompts ask the model to *end* with its
     verdict; an earlier block is typically an example, or a payload the gate
     was reviewing.
     """
-    candidates: list[str] = []
     fenced = _JSON_FENCE_RE.findall(body)
-    if fenced:
-        candidates.append(fenced[-1])
-    braced = _last_balanced_object(body)
-    if braced is not None:
-        candidates.append(braced)
-    return candidates
+    return (fenced[-1] if fenced else None), _last_balanced_object(body)
 
 
 def _last_balanced_object(text: str) -> str | None:

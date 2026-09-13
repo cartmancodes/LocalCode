@@ -107,6 +107,33 @@ class TestWireRoundTrip:
         assert back.structured is None
         assert back.tool_digest == ""
 
+    def test_usage_is_ints_at_the_boundary(self) -> None:
+        """The declared contract is ``dict[str, int]`` and Task 7's per-turn
+        budget does arithmetic on it. A drifted or hand-built payload must not
+        be able to smuggle a string or a ``None`` into that sum — the
+        ``TypeError`` would land inside the parent's pump, the one place
+        ``from_wire`` is written never to raise."""
+        back = StepResult.from_wire(
+            {
+                "summary": "s",
+                "usage": {
+                    "input_tokens": "120",  # numeric string → coerced
+                    "output_tokens": None,  # dropped
+                    "cache_read_tokens": 1.9,  # float → truncated to int
+                    "cache_creation_tokens": "lots",  # dropped
+                },
+            }
+        )
+
+        assert back.usage == {"input_tokens": 120, "cache_read_tokens": 1}
+        assert all(isinstance(v, int) for v in back.usage.values())
+        assert sum(back.usage.values()) == 121  # arithmetic works, which is the point
+
+    def test_a_usage_dict_with_nothing_usable_is_none(self) -> None:
+        back = StepResult.from_wire({"summary": "s", "usage": {"input_tokens": None}})
+
+        assert back.usage is None
+
     def test_junk_typed_fields_are_coerced(self) -> None:
         back = StepResult.from_wire(
             {"summary": "s", "full_bytes": "nope", "structured": ["not", "a", "dict"]}

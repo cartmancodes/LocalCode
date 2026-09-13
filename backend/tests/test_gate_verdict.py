@@ -57,12 +57,15 @@ class TestJsonVerdictWins:
         # ``summary`` is accepted as the reason when ``reason`` is absent.
         assert v.reason == "4 tests, all green"
 
-    def test_bare_json_object_without_a_fence_is_still_read(self) -> None:
-        output = 'Tests all pass.\n\n{"verdict": "lgtm", "reason": "green"}'
+    def test_bare_json_object_is_read_when_the_classifier_line_agrees(self) -> None:
+        """An unfenced object is only trusted with a second opinion — see
+        ``TestAnUnfencedObjectCannotOverruleARejection``."""
+        output = 'Tests all pass.\n\nLGTM\n\n{"verdict": "lgtm", "reason": "green"}'
 
         v = parse_verdict(output, "tester")
 
         assert (v.value, v.source) == ("lgtm", "json")
+        assert v.reason == "green"
 
     def test_the_last_json_block_wins_over_an_earlier_example(self) -> None:
         """Gate prompts contain an example block; the verdict is the final one."""
@@ -93,6 +96,69 @@ class TestJsonVerdictWins:
         output = '```json\n{"verdict": "nack", "reason": "%s"}\n```' % ("x" * 5000)
 
         assert len(parse_verdict(output, "reviewer").reason) <= 500
+
+
+class TestAnUnfencedObjectCannotOverruleARejection:
+    """A fenced ```json block is a deliberate act by the model. A bare
+    ``{...}`` in prose is not — it is as likely to be a quotation (a reviewer
+    reviewing gate code, quoting its own prompt's example, or pasting a
+    fixture) as a verdict. So an unfenced object never gets to turn a
+    rejection into a pass.
+    """
+
+    def test_a_quoted_verdict_object_does_not_overrule_a_nack_line(self) -> None:
+        output = (
+            'The test expects {"verdict": "lgtm", "reason": "all 8 present"} here\n'
+            "but task 3 is absent.\n\nNACK: task 3 missing"
+        )
+
+        v = parse_verdict(output, "reviewer")
+
+        assert v.value == "nack"
+        # The audit trail shows the override: the line decided this.
+        assert v.source == "line"
+        assert classify_gate(output, "reviewer") == "nack"
+
+    def test_an_unfenced_rejection_survives_an_lgtm_line(self) -> None:
+        """Fail-safe in the other direction too: whichever side rejects, the
+        rejection stands. An ambiguous candidate may not create a pass, and it
+        may not be ignored into one either."""
+        output = '{"verdict": "nack", "reason": "task 3 missing"}\n\nLGTM'
+
+        assert parse_verdict(output, "reviewer").value == "nack"
+
+    def test_an_unfenced_pass_with_no_classifier_line_fails_safe(self) -> None:
+        output = 'Tests all pass.\n\n{"verdict": "lgtm", "reason": "green"}'
+
+        v = parse_verdict(output, "tester")
+
+        assert v.value == "nack_code"
+        assert v.source == "line"
+
+    def test_a_fenced_block_still_outranks_the_classifier_line(self) -> None:
+        """The hardening must not go too far: a model that deliberately fenced
+        its verdict is believed, even against a stale line above it."""
+        output = (
+            "Task 3 looked missing at first.\n\nNACK: task 3 missing\n\n"
+            '```json\n{"verdict": "lgtm", "reason": "task 3 is in helpers.py"}\n```'
+        )
+
+        v = parse_verdict(output, "reviewer")
+
+        assert (v.value, v.source) == ("lgtm", "json")
+        assert v.reason == "task 3 is in helpers.py"
+
+    def test_two_rejections_that_differ_defer_to_the_line(self) -> None:
+        """Both say "no", so nothing ships either way; the unambiguous parser
+        picks which kind of no it was."""
+        output = (
+            '{"verdict": "nack_tests", "reason": "my fixture"}\n\n'
+            "NACK_CODE: the scraper returns an empty list"
+        )
+
+        v = parse_verdict(output, "tester")
+
+        assert (v.value, v.source) == ("nack_code", "line")
 
 
 class TestFallsBackToTheLineParser:
