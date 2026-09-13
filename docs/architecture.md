@@ -3,38 +3,53 @@
 ## Overview
 
 LocalCode is a local, single-user coding-agent UI and orchestrator. One
-Claude-Code-style web chat surface sits in front of three interchangeable
-backends:
+Claude-Code-style web chat surface sits in front of three vendor backends plus
+a fleet that composes them:
 
-- **`claude`** — runs the official `claude` CLI through `claude-agent-sdk`.
+- **`claude`** — runs the official `claude` CLI through `claude-agent-sdk`,
+  holding one connected client per session so the prompt cache stays warm.
+- **`codex`** — speaks the `codex app-server` JSON-RPC protocol over stdio to
+  the official `codex` CLI, one app-server per workspace.
 - **`opencode`** — talks to a host-side `opencode serve` process over HTTP
   and SSE.
 - **`fleet`** — runs an LLM-driven orchestrator that delegates work to
   specialist subagents (planner / developer / coder / reviewer / tester)
-  through an in-process MCP server. Subagents can themselves be
-  `claude`- or `opencode`-backed in the same workflow.
+  through an in-process MCP server. Subagents can be backed by any of the
+  three vendors in the same workflow, and a role configured `auto` is
+  resolved to whichever subscription has the most headroom left.
 
 The application is deliberately host-side and single-user:
 
 - OAuth credentials stay in each upstream tool's own auth store
-  (`~/.claude/` or the platform keychain for Claude Code, and
-  `~/.local/share/opencode/auth.json` for OpenCode). LocalCode never sees
-  provider API keys.
+  (`~/.claude/` or the platform keychain for Claude Code, `~/.codex/` for
+  Codex, and `~/.local/share/opencode/auth.json` for OpenCode). LocalCode
+  never sees provider API keys — a source scanner
+  (`backend/app/invariants.py`) enforces that, and
+  `backend/tests/test_auth_invariant.py` runs it over the whole backend.
 - Sessions and planner artifacts are persisted as files on disk under
   `.localcode/`. There is **no application database**.
 - A Vite/React UI connects to a FastAPI backend over REST + WebSocket.
   The backend normalizes every provider's stream into one event protocol
   and fans live events out to WebSocket subscribers.
 
-The two architectural unlocks worth naming up front:
+The architectural unlocks worth naming up front:
 
 1. A `Provider` protocol turns "which agent answered" into an
    implementation detail. The fleet is *itself* a provider, so the UI
    has no special path for multi-agent workflows.
 2. A custom `dispatch_subagent` MCP tool lets one orchestrator dispatch
-   both Claude- and OpenCode-backed subagents in the same workflow —
-   this is what lets you mix `claude-opus-4-7` for planning with
-   `openai/gpt-5.3-codex` (through OpenCode) for the bulk of the coding.
+   subagents backed by different vendors in the same workflow — this is what
+   lets you mix `claude-opus-4-7` for planning with `gpt-5.3-codex` for the
+   bulk of the coding.
+3. One approval bus. Each vendor has its own permission callback shape;
+   all of them resolve through a single provider-neutral gate
+   (`orchestrator/approvals.py`), so the user learns one approval UI and a
+   deny can only be forgotten in one place.
+4. One quota ledger. Remaining subscription headroom per provider is the
+   number the top bar shows and the number `provider: "auto"` routes on.
+
+[harness.md](harness.md) documents what every provider is held to, the
+evaluation layers that keep it honest, and the gaps that remain.
 
 ## Tech Stack
 
@@ -80,7 +95,7 @@ The two architectural unlocks worth naming up front:
 ```text
 .
 |-- README.md                       Project overview, setup entry point
-|-- Makefile                        Developer shortcuts (some docker/db targets are stale)
+|-- Makefile                        Developer shortcuts; every Python tool runs from .venv/bin
 |-- pyproject.toml                  Backend package + Python deps + ruff/pytest config
 |-- setup.sh                        Host bootstrap: deps, .env, .venv, login, start/stop/status/logs
 |-- .env.example                    Backend settings template
@@ -97,25 +112,45 @@ The two architectural unlocks worth naming up front:
 |       |-- main.py                 FastAPI app factory, lifespan, route registration
 |       |-- config.py               Pydantic Settings, CatalogEntry, CORS/cwd allowlist
 |       |-- schemas.py              REST + WebSocket Pydantic schemas
-|       |-- session_runner.py       SessionRunner: per-session turn task, replay buffer, fan-out
+|       |-- invariants.py           Source scanner: the never-read-a-credential gate
+|       |-- artifacts.py            Content-addressed store for evicted large output
+|       |-- usage.py                Per-turn token log + cache-hit-rate
+|       |-- quota.py                Quota governor: remaining headroom per subscription
+|       |-- session_runner/         Turn lifecycle package (split by concern)
+|       |   |-- config.py           Replay-ring / subscriber-queue sizes
+|       |   |-- bus.py              EventBus: stamping, replay ring, fan-out, gap reports
+|       |   |-- turn.py             execute_turn: the whole turn pipeline
+|       |   |-- accumulator.py      TurnAccumulator: message assembly + throttled checkpoints
+|       |   |-- runner.py           SessionRunner: per-session lock, approval channel, turn task
+|       |   `-- registry.py         get_runner / drop_runner / detached turns
 |       |-- orchestrator/
 |       |   |-- __init__.py         Re-exports get_provider
 |       |   |-- base.py             Provider protocol, RunContext, Event, EventType
 |       |   |-- agent_def.py        AgentDef + registry_from_role_library + render_registry_for_prompt
 |       |   |-- registry.py         Lazy provider singleton registry (warm_up / shutdown_all)
-|       |   |-- claude.py           ClaudeProvider — wraps claude-agent-sdk.query()
+|       |   |-- approvals.py        The one approval bus (evaluate_tool_request + EventSink)
+|       |   |-- permissions.py      ToolPolicy role table + the single decide()
+|       |   |-- claude.py           ClaudeProvider — one persistent ClaudeSDKClient per session
+|       |   |-- codex/              CodexProvider package (app-server JSON-RPC over stdio)
+|       |   |   |-- protocol.py     Every wire name, in one file
+|       |   |   |-- jsonrpc.py      StdioJsonRpc transport
+|       |   |   |-- client.py       CodexAppServer + CodexBroker (one server per workspace)
+|       |   |   `-- provider.py     CodexProvider + _Translator
 |       |   |-- opencode.py         OpenCodeProvider — HTTP + SSE against opencode serve
 |       |   |-- fleet/              FleetProvider package (split by concern — see below)
 |       |   |   |-- __init__.py     Public-API facade (re-exports the names below)
-|       |   |   |-- constants.py    VALID_ROLES/PROVIDERS, timeouts, StepTimeoutError
+|       |   |   |-- constants.py    VALID_ROLES/PROVIDERS, budgets, worker wire markers
 |       |   |   |-- models.py       RoleConfig, FleetConfig, Step dataclasses
 |       |   |   |-- prompts.py      Per-role system prompts (PLANNER_SYSTEM, …)
 |       |   |   |-- presets.py      WORKFLOW_PRESETS
 |       |   |   |-- defaults.py     ROLE_LIBRARY, DEFAULT_FLEET_CONFIG
 |       |   |   |-- loader.py       Locate/parse/merge/cache/serialize config
-|       |   |   |-- gate.py         Reviewer/tester classifier (classify_gate)
-|       |   |   |-- collect.py      Sub-provider stream → reviewable text + digest
-|       |   |   |-- subproc.py      Out-of-process sub-provider worker
+|       |   |   |-- router.py       Conditional routing: lookup / simple / standard
+|       |   |   |-- gate.py         Reviewer/tester verdict parser (parse_verdict)
+|       |   |   |-- envelope.py     StepResult — the bounded step envelope
+|       |   |   |-- collect.py      Sub-provider stream → StepResult (eviction happens here)
+|       |   |   |-- pool.py         WorkerPool — long-lived sub-provider processes
+|       |   |   |-- subproc.py      The worker process itself
 |       |   |   `-- provider.py     FleetProvider + _run_step_with_role
 |       |   |-- orchestrator.py     OrchestratorAgent — claude-agent-sdk session + merged event stream
 |       |   `-- dispatch.py         In-process MCP server: dispatch_subagent + request_plan_approval
@@ -124,10 +159,16 @@ The two architectural unlocks worth naming up front:
 |       |   |-- sessions.py         REST + WebSocket for sessions
 |       |   |-- models.py           GET /api/models
 |       |   |-- fleet.py            GET /api/fleet/config
-|       |   `-- system.py           GET /api/system/cwd
+|       |   `-- system.py           GET /api/system/cwd, /usage, /quota
 |       `-- storage/
 |           |-- __init__.py
 |           `-- sessions.py         SessionStore — filesystem CRUD + cleanup + compaction
+|   `-- tests/                      The evaluation net — see docs/harness.md
+|       |-- fakes/                  Scripted SDK client, fake codex app-server, pool workers,
+|       |                           and providers.py (the fakes wrapped as Providers)
+|       |-- replay/                 Hand-authored provider-message fixtures
+|       |-- golden/                 Committed fleet traces (UPDATE_GOLDEN=1 to refresh)
+|       `-- test_*.py               Per-module suites + replay / long-horizon / golden / matrix
 |-- frontend/
 |   |-- package.json                Frontend deps + scripts
 |   |-- vite.config.ts              Vite config, /api → backend proxy with ws: true
@@ -156,6 +197,8 @@ The two architectural unlocks worth naming up front:
 |   `-- media/icon.svg              Activity-bar icon
 |-- docs/
 |   |-- architecture.md             (this file)
+|   |-- harness.md                  What every provider is held to + the evaluation net
+|   |-- codex.md                    The codex app-server integration
 |   |-- fleet.md                    Fleet concept, roles, UX
 |   |-- fleet-config.md             Configuration UX, presets, recipes
 |   |-- storage.md                  Filesystem session store
@@ -177,22 +220,32 @@ are stale.
 
 **Provider.** A protocol declared in `backend/app/orchestrator/base.py`.
 Every backend exposes `open_session(ctx)`, `run(ctx)` (async iterator of
-`Event`), and `aclose()`. Implementations: `ClaudeProvider`,
-`OpenCodeProvider`, `FleetProvider`.
+`Event`), `close_session(session_id)` and `aclose()`. Implementations:
+`ClaudeProvider`, `CodexProvider`, `OpenCodeProvider`, `FleetProvider`.
+`close_session` exists because a provider that keeps a live per-session handle
+has to be told when a session goes away, or the handle — and the vendor CLI
+behind it — outlives the session that owned it.
 
 **`RunContext`.** Dataclass carrying everything a provider needs for one
 turn: `model`, `prompt`, `cwd`, `additional_dirs`, `upstream_session_id`,
-optional `system_prompt`, `extras` (used by the fleet for per-session
-config overrides and role-specific provider controls), and
-`approval_channel` (the HITL back-channel — an `asyncio.Queue` of approval
-messages).
+optional `system_prompt`, `permission_mode`, `session_id` (providers key
+per-session state on it), `role` (the fleet role this context runs as, which
+selects the `ToolPolicy`), `extras` (used by the fleet for per-session config
+overrides and role-specific provider controls), and `approval_channel` (the
+HITL back-channel — an `asyncio.Queue` of approval messages).
 
 **`Event`.** Unified streaming event yielded by every provider. Types are:
 `session.started`, `assistant.text`, `assistant.tool_use`, `tool.result`,
 `assistant.done`, `error`, `pipeline.awaiting_approval`,
-`pipeline.approval_received`. Plus `stream.gap`, which no provider emits —
-the `EventBus` synthesizes it per subscriber to report events that
-subscriber lost.
+`pipeline.approval_received`, and `quota.limit` (a vendor reporting where its
+rate-limit window stands — emitted by a provider, recorded only by the main
+process). Plus `stream.gap`, which no provider emits — the `EventBus`
+synthesizes it per subscriber to report events that subscriber lost.
+
+**`ToolPolicy`.** What one role may touch, as data: writable, exec-allowed,
+the roots it may operate in, denied paths, an allow-list and a deny-list of
+tool names. Produced by `permissions.policy_for_role` and consulted by the one
+gate. A role is a runtime limit, not a paragraph in a system prompt.
 
 **Session.** A chat pinned to one provider + model + cwd. Persisted on
 disk as `meta.json` + append-only `messages.jsonl`. No database.
@@ -256,10 +309,24 @@ by `save_plan()` in `dispatch.py`.
   `MessagesPage`, `CatalogModel`, and the unified WebSocket
   `StreamEvent`.
 
-#### `backend/app/session_runner.py`
+#### `backend/app/session_runner/` (a package, not a file)
+
+Split by concern, one-way: `config` → `bus` → `turn`/`accumulator` →
+`runner` → `registry`.
+
+| Module | Owns |
+| :-- | :-- |
+| `config.py` | `REPLAY_BUFFER_SIZE`, `SUBSCRIBER_QUEUE_MAX` and the relationship between them |
+| `bus.py` | `EventBus` — stamping, the replay ring, per-subscriber fan-out, gap reporting |
+| `turn.py` | `execute_turn` — persist the prompt, drain the provider, checkpoint, always finalize |
+| `accumulator.py` | `TurnAccumulator` — assemble one assistant message, throttle checkpoints, repair dangling `tool_use` |
+| `runner.py` | `SessionRunner` — the per-session lock, the approval channel, the turn task |
+| `registry.py` | `get_runner` / `drop_runner` / `drop_all_runners` and detached-turn bookkeeping |
+
 - `SessionRunner` decouples turn execution from any WebSocket
   connection. State lives on the runner, not on the WS handler.
-- Constants: `REPLAY_BUFFER_SIZE = 2048`, `SUBSCRIBER_QUEUE_MAX = 512`.
+- Constants (`config.py`): `REPLAY_BUFFER_SIZE = 2048`,
+  `SUBSCRIBER_QUEUE_MAX = 512`.
   The ring must stay **larger** than a subscriber queue: it has to be able
   to cover any gap a queue can open, or `?since=` cannot hand back what a
   viewer dropped. Asserted by `backend/tests/test_event_integrity.py`.
@@ -276,24 +343,39 @@ by `save_plan()` in `dispatch.py`.
   evicted past `since_id`, the replay *starts* with a `stream.gap` — a replay
   that silently begins mid-stream leaves the client appending a tail onto a
   transcript with a hole, and `ChatPane` refetches only on an *empty* replay.
-- `_execute_turn`:
-  - Persists the user message first so a failure later still leaves a
-    visible prompt in history.
-  - Builds a `RunContext` with the runner's per-turn `approval_q`.
+- `execute_turn` (`turn.py`):
+  - Persists the user message first — *inside* the `try`, because that is the
+    one step that fails when the session directory was deleted under it, and
+    when it sat outside the turn died with no `error` and no `assistant.done`.
+  - Builds a `RunContext` carrying the runner's per-turn `approval_q`, the
+    session id (providers key per-session state on it) and the permission mode.
   - Drains `provider.run(ctx)`:
     - `assistant.text` (non-heartbeat) accumulates into a text buffer.
     - `assistant.tool_use` flushes any buffered text, appends a
       `tool_use` block, and checkpoints.
     - `tool.result` appends a `tool_result` block and checkpoints.
-    - `assistant.done` captures `cost_usd` and `duration_ms`.
+    - `assistant.done` captures `cost_usd` / `duration_ms`, persists a changed
+      upstream session id, and records the turn's tokens with the quota
+      governor — one of exactly two recording sites (the other is
+      `dispatch.py`, for a fleet sub-step).
+    - `quota.limit` records a vendor's own measurement of its window.
   - Heartbeat text (`heartbeat: True`) is broadcast live but **never
     persisted** — UI chrome only.
   - On `asyncio.CancelledError` (shutdown / delete) emits an `error`
     event and re-raises; on other exceptions logs and emits `error`.
-  - The `finally` block synthesizes `tool_result` blocks for any
-    `tool_use` that never got one (cancellation mid-turn) and always
-    emits an `assistant.done` even on error so the UI clears its
-    spinner.
+  - The `finally` block flushes trailing text, synthesizes `tool_result`
+    blocks for any `tool_use` that never got one (cancellation mid-turn),
+    writes a final checkpoint, and emits `assistant.done` unless the
+    provider's own one already *reached the bus*. Exactly one terminal event
+    per turn, however the turn ends: zero leaves every viewer's working
+    indicator spinning until reload, two clears it for a turn still running.
+- `TurnAccumulator` (`accumulator.py`) throttles mid-turn checkpoints. A
+  checkpoint writes the *whole* message so far, so one per tool boundary cost
+  O(boundaries × final size) — a 200-tool turn ending at 2 MB wrote ~200 MB.
+  A write now needs the message to have grown by at least as much as the last
+  write (capping total checkpoint bytes at roughly twice the final message),
+  with a time arm below a 64 KiB floor so a slow, small turn is still
+  recoverable.
 - `EventBus.broadcast()` stamps each event with a monotonic `_id`,
   appends to the replay ring (`deque(maxlen=REPLAY_BUFFER_SIZE)`),
   notifies the optional `on_event` observer, and `put_nowait`s into every
@@ -328,32 +410,156 @@ by `save_plan()` in `dispatch.py`.
   that outlive the grace window are kept in `_detached_turns` so
   `drop_all_runners()` can make one final attempt at shutdown.
 
+#### `backend/app/artifacts.py`
+- `ArtifactStore` — content-addressed text blobs under
+  `~/.localcode/artifacts/<sha[:2]>/<sha>.txt` (tmp + `os.replace`, so a crash
+  mid-write never leaves a truncated artifact that reads as complete).
+  Identical content dedupes to one file.
+- `store_if_large(text, kind, max_bytes)` -> `(text_or_summary, ref_or_None)`:
+  under the threshold nothing is written; over it the bytes are stored once and
+  the caller gets a head/tail summary (2:1 in favour of the start) with a
+  marker line naming the artifact and its path.
+- Budgets are **bytes**, and the cut is moved to a UTF-8 character boundary.
+  A character-count budget assumes one byte per character and overshoots 3-4x
+  on CJK or emoji — which is the failure this module exists to prevent, since a
+  single oversized turn changes the prompt prefix for every later turn.
+- The default root resolves `Path.home()` inside the constructor, never at
+  import time, so a test that redirects `HOME` is actually contained.
+
+#### `backend/app/usage.py`
+- `TurnUsage` (one turn's token counts, provider, model, cost) and `UsageLog`,
+  which appends one JSON line per turn to `~/.localcode/usage.jsonl`, rotating
+  at 8 MB. A truncated last line (the process was killed mid-write) is skipped
+  on read rather than raising.
+- `parse_claude_usage(result_message, ...)` is entirely defensive: `usage` may
+  be `None`, snake_case, camelCase, or malformed. Nothing here may raise — it
+  runs inside the provider's per-turn loop, and an exception would turn a
+  *successful* turn into an `error` event and drop its `assistant.done`.
+- `cache_hit_rate` / `uncached_share` are what make the persistent-client work
+  observable: without them "the prompt cache stays warm" is an unfalsifiable
+  claim. Surfaced by `GET /api/system/usage`.
+
+#### `backend/app/quota.py`
+- The quota governor: **remaining subscription headroom per provider**, which
+  is the number the top bar shows and the number `provider: "auto"` routes on.
+  Per-turn USD bills nobody under a subscription; a spent window stops work.
+- Windows are a **table** (`DEFAULT_WINDOWS`), not a branch: Claude gets a
+  5-hour window, Codex a 5-hour window *and* a weekly cap, and a provider with
+  no row still gets one rather than silently having no ledger.
+- **Two sources, strict precedence.** A vendor-reported payload replaces
+  `used`/`limit`/`resets_at` and sets `confidence="reported"`; absent that,
+  tokens accumulate locally against an unknown limit and `headroom()` reads
+  `1.0` with `confidence="unknown"` so the meter never draws a bar it did not
+  measure. A CLI reports only on a *transition*, so absence is "no change",
+  never "reset" — which is why the state is persisted to
+  `~/.localcode/quota.json`.
+- **Exactly one writer.** That file is read-modify-write and fleet
+  sub-providers run in worker processes, so providers only ever *emit*; the two
+  main-process sites that record are `session_runner/turn.py` and
+  `orchestrator/dispatch.py`.
+- `choose(candidates)` resolves `auto`; `should_queue` / `refusal` say "every
+  governed subscription is at or below `QUEUE_THRESHOLD` (5 %) — hold this
+  work" rather than silently downgrading to a spent plan.
+- Nothing here may raise into a turn: a governor that estimates badly is a bad
+  number, one that takes the turn down is a bad harness. Read by
+  `GET /api/system/quota`; known limitations are listed in
+  [harness.md](harness.md#8-the-quota-governor).
+
 #### `backend/app/orchestrator/base.py`
 - `EventType` literal, `Event` dataclass, `RunContext` dataclass,
   `Provider` protocol (see [Core Concepts](#core-concepts)).
 
 #### `backend/app/orchestrator/registry.py`
-- Lazily builds and caches singleton providers (`claude`, `opencode`,
-  `fleet`). Lock is created lazily so it binds to the running event
-  loop (avoids cross-loop latching in tests).
-- `warm_up()` constructs all three at startup; `shutdown_all()` calls
+- Lazily builds and caches singleton providers. `PROVIDER_NAMES` names them
+  once — `claude`, `codex`, `opencode`, `fleet` — so the builder and
+  `warm_up()` cannot drift: a provider in the builder but missing from
+  `warm_up` pays its construction cost mid-turn, and one missing from the
+  builder is a 500 on the first request that names it.
+- Lock is created lazily so it binds to the running event loop (avoids
+  cross-loop latching in tests).
+- `warm_up()` constructs all four at startup; `shutdown_all()` calls
   `aclose()` on each.
+- `_build_provider(name)` is also the seam a fleet step builds its
+  sub-provider through (`fleet/collect.py` imports it inside the function, so
+  the sub-provider is loop-local rather than the shared singleton).
 
 #### `backend/app/orchestrator/claude.py`
-- `ClaudeProvider`. Claude Code creates the provider-native session lazily
-  inside `query()`. LocalCode persists the SDK `ResultMessage.session_id`
-  into session `upstream_id`; follow-up turns pass it back through
-  `ClaudeAgentOptions.resume` so the SDK resumes the same transcript.
-- `run()` builds `ClaudeAgentOptions(model=ctx.model, cwd=ctx.cwd,
-  add_dirs=ctx.additional_dirs, system_prompt=ctx.system_prompt,
-  permission_mode="acceptEdits", include_partial_messages=True)` and
-  drives `query()` until the iterator drains.
+- `ClaudeProvider` holds **one connected `ClaudeSDKClient` per LocalCode
+  session**, reused across turns and keyed on `ctx.session_id`. The one-shot
+  `query()` this replaced spawned a fresh `claude` CLI per message: startup
+  cost every turn, a cold server-side prompt cache every turn, and no process
+  left alive to `interrupt()`.
+- `_signature(...)` decides reuse. A client is **rebuilt, never mutated**,
+  when the model, cwd, extra dirs, system prompt, permission mode or tool set
+  changes — mutating a live client's prompt prefix is what invalidates the
+  cache the design exists to keep. `upstream_session_id` is deliberately NOT
+  in the signature: `resume` is build-time only, and counting it would rebuild
+  every session's client on turn 2.
+- **Only a turn whose `ResultMessage` went past leaves a reusable client.**
+  All of a connection's turns share one message stream, so a turn that ended
+  early (Stop, a closed socket, a failed stream) leaves an unread tail the
+  next turn would read first. "The loop ended" is not the test —
+  `receive_response()` also returns at stream EOF — so `_discard` drops the
+  client on anything but an observed result.
+- `run()` is a **two-producer merge**, not a straight `async for`: the
+  permission callback emits its approval card from inside the SDK's message
+  loop and then blocks there, so a single-iterator run would hold the card in
+  a frame nobody is draining and ask the user a question they cannot see.
+  `_TurnBinding` holds the two per-turn halves of that callback (this turn's
+  `EventSink` and approval queue) and is rebound under the handle's lock at
+  the top of each turn.
+- Options are derived from the role policy, and `ctx.extras` may only
+  **narrow** them: allowed tools are intersected with the role's allow-list
+  (and cannot create one where the role has none), disallowed tools are
+  unioned with the role's denials, and a read-only role also gets
+  `setting_sources=[]` / `skills=[]` so a user's own settings file cannot
+  re-grant what the policy took away.
 - `_translate()` maps SDK messages to events: `StreamEvent` →
   `assistant.text` (only `text_delta` deltas); `AssistantMessage` →
   `assistant.tool_use` / `tool.result` (skips `TextBlock` to avoid
   doubling the deltas); `UserMessage` → `tool.result`; `ResultMessage`
-  → `assistant.done` with `cost_usd`, `duration_ms`, `num_turns`;
-  `SystemMessage` → ignored.
+  → `assistant.done` with `cost_usd`, `duration_ms`, `num_turns`,
+  `upstream_session_id` and the parsed `usage`; `RateLimitEvent` →
+  `quota.limit` via `rate_limit_event()` (shared with `orchestrator.py`, so a
+  user who works only in fleet sessions still gets Claude's headroom
+  measured); `SystemMessage` → ignored.
+- Pinned by `backend/tests/test_claude_client_reuse.py` and, for the
+  translation itself, by `backend/tests/test_replay.py`'s fixtures.
+
+#### `backend/app/orchestrator/codex/`
+A package, because the app-server integration is a transport plus a protocol
+plus a provider and each has a different reason to change.
+
+- `protocol.py` — **every wire name in one file**: methods, notifications,
+  server-to-client approval requests, item kinds, decisions, error codes, and
+  the field spellings on both the write side (`F_*`) and the read side
+  (`*_FIELDS` tuples, splatted into `pick()` so one field can carry several
+  historical spellings at no cost). The app-server is explicitly experimental,
+  so a schema bump must be a one-file edit plus the matching edit to the fake.
+  **Every assumption in here is a reading of the documentation, not an
+  observation of a live binary** — each is listed with the cost of being wrong,
+  and `make codex-schema` regenerates the vendor schema for reconciliation.
+- `jsonrpc.py` — `StdioJsonRpc`: newline-framed JSON-RPC over the child's
+  stdio, request/response correlation, `-32001` (busy) backoff, and the rule
+  that **every server request is answered**, including ones we do not
+  implement — a dropped server request hangs the agent forever.
+- `client.py` — `CodexAppServer` (spawn, handshake, thread lifecycle, process
+  group reaping) and `CodexBroker`, which holds one app-server per *workspace*
+  behind a per-workspace lock, never a process-wide one.
+- `provider.py` — `CodexProvider` plus `_Translator`. The translator is
+  stateful for two reasons that would otherwise show in the UI: `item/updated`
+  may carry accumulated text rather than a delta (so only the new suffix is
+  emitted), and a `tool.result` needs the `tool_use` that preceded it (so a
+  pair is synthesized when Codex skips `item/started`). **No branch raises on
+  an unknown name** — it logs once at DEBUG and skips; turning a good turn into
+  an `error` because a newer CLI added an item kind is far worse than not
+  rendering one reasoning block.
+- Approvals go through the same `evaluate_tool_request` Claude's do, and the
+  same `_TurnBinding` pattern keeps turn 2's card on turn 2's sink — the
+  app-server outlives the turn, so a handler that captured turn 1's sink would
+  leave every later approval to time out silently.
+- Exercised end to end against `backend/tests/fakes/fake_codex_app_server.py`,
+  a real subprocess speaking the protocol. See [codex.md](codex.md).
 
 #### `backend/app/orchestrator/opencode.py`
 - `OpenCodeProvider` uses one `httpx.AsyncClient` against
@@ -387,6 +593,56 @@ by `save_plan()` in `dispatch.py`.
   binds each session to a single project; multi-dir grants only affect
   Claude-provider roles.
 
+#### `backend/app/orchestrator/approvals.py`
+The one approval bus, split in two deliberately.
+
+- `evaluate_tool_request(tool_name, tool_input, *, policy, mode, sink,
+  approval_channel, timeout_s)` is **provider-neutral**: a string, a mapping,
+  a `ToolPolicy`, a mode, an event sink and a queue. No vendor SDK type appears
+  in its signature or its body. It returns only `allow` or `deny` — it resolves
+  `ask` itself by publishing `pipeline.awaiting_approval` and waiting for the
+  answer, then emits `pipeline.approval_received` on **every** path (yes / no /
+  timeout), because the UI clears the card on that event.
+- `build_can_use_tool(...)` is a thin **Claude adapter** — outcome to result
+  type, reason to the message the model reads. It holds no policy logic; a
+  branch here would be a branch Codex does not get.
+- `EventSink` — a bounded (256) queue with sentinel shutdown, the channel a
+  tool body uses to reach the WS while it is still running.
+- `_ApprovalRouter` — exactly one task reads the approval channel and hands
+  each answer to the gate that asked, by id. Every waiter used to read the
+  channel itself and skip messages that were not its own, which *discarded*
+  them: two parallel tool calls open two gates, and gate B would eat gate A's
+  answer.
+- The headless answer to `ask` is **deny** (nobody is attached to say yes),
+  with one exception keyed on "no channel attached": exec tools are allowed
+  when the role's own policy already grants exec, or every `pytest` a fleet
+  role runs would refuse.
+
+#### `backend/app/orchestrator/permissions.py`
+Pure policy: zero I/O beyond `Path.resolve()`, no SDK import, no events — so
+the same table can be driven by a list of test cases and serves both vendors
+instead of each reinventing its own gate.
+
+- `ToolPolicy(name, writable, exec_allowed, roots, denied, allow_tools,
+  deny_tools, ask_tools)` and the role table behind
+  `policy_for_role(role, roots, denied)`: planner, developer and reviewer are
+  read-only, coder and tester may write, planner and developer may not execute.
+  A role with no entry gets the permissive "session" policy.
+- `decide(tool_name, tool_input, policy, *, mode)` -> `allow` / `deny` / `ask`.
+  **Branch order is security-critical**: explicit deny, then the allow-list,
+  then writability, then exec, then the path check — and only *then*
+  `bypassPermissions`. A mode is a human-in-the-loop preference, not a
+  structural override; if the bypass branch ran first, enabling it would hand
+  a read-only reviewer write access.
+- `acceptEdits` auto-approves writes only, never exec: `ctx.role` is unset for
+  interactive sessions and `acceptEdits` is the UI default, so widening it
+  would auto-approve every shell command in a plain chat with no card shown.
+- `normalize_permission_mode` folds an unknown mode to `default` (ask), never
+  to something more permissive.
+- `policy_extras(policy)` renders a policy into the vendor extras `claude.py`
+  reads, so the tool list a sub-agent is *offered* and the decision made when
+  it calls one are two renderings of one policy rather than two policies.
+
 #### `backend/app/orchestrator/fleet/`
 
 Originally one ~1k-line `fleet.py`; split into a package by concern. The
@@ -398,13 +654,22 @@ untouched. Dependency flow is one-way:
 `constants → models → defaults → loader/provider`; the cross-package
 imports (`registry`, `agent_def`, `orchestrator`) stay lazy to avoid
 cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
-`defaults`, `loader`, `gate`, `collect`, `provider`.
+`defaults`, `loader`, `router`, `gate`, `collect`, `envelope`, `pool`,
+`subproc`, `provider`.
 
 - Constants (`fleet/constants.py`):
-  - `VALID_PROVIDERS = ("claude", "opencode")`
+  - `VALID_PROVIDERS = ("claude", "codex", "opencode")`
+  - `AUTO_PROVIDER = "auto"` — deliberately **not** a member of
+    `VALID_PROVIDERS`: it names no backend, and everything downstream of
+    `dispatch_subagent` must only ever see a real one. The quota governor
+    resolves it at the single site where a role becomes a `RoleConfig`.
   - `VALID_ROLES = ("planner", "developer", "coder", "reviewer", "tester")`
   - `WORKER_ROLES = ("developer", "coder", "reviewer", "tester")`
-  - `HEARTBEAT_INTERVAL_S = 30.0`, `STEP_TIMEOUT_S = 600.0`
+  - `HEARTBEAT_INTERVAL_S = 30.0`, `STEP_TIMEOUT_S = 600.0`,
+    `STARTUP_GRACE_S = 75.0`, `DISPATCH_HARD_FAIL_CAP = 2`
+  - The worker wire protocol's markers (`FIRST_MARKER`, `RESULT_MARKER`,
+    `WORKER_STDOUT_LIMIT`, `WORKER_PID_DIR_ENV`), shared by the pool and
+    `subproc.py` so neither side can drift by editing its own copy.
 - `WORKFLOW_PRESETS`: 10 named presets the UI exposes as one-click
   starters (`full`, `plan-code-review-test`, `plan-code-test`,
   `plan-and-code`, `design-and-code`, `design-only`, `code-and-review`,
@@ -427,51 +692,142 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
 - `_merge_config` (`fleet/loader.py`) semantics: when `override["roles"]` is supplied it
   *replaces* workflow membership; otherwise base membership survives
   and per-field overrides merge.
-- `FleetProvider` (`fleet/provider.py`). `run()` loads file config, merges any per-session UI
-  override (`ctx.extras["fleet_config_override"]`), and dispatches to
-  `_run_orchestrated()` which builds an `AgentDef` registry via
-  `registry_from_role_library(cfg.roles)`, instantiates
-  `OrchestratorAgent`, and yields the merged stream. The orchestrator prompt
-  requires the registered core roles to run in planner → coder → reviewer
-  order for every fleet turn; read-only tasks still pass through the coder for
-  command-based inspection/verification rather than file edits. Ends with
-  **exactly one** `assistant.done`: the orchestrator's own (the only event
-  carrying `cost_usd`) re-emitted with the turn's `duration_ms` merged in,
-  or — if the orchestrator never got that far — one synthesized here.
+- `FleetProvider` (`fleet/provider.py`). `run()` loads file config
+  (asynchronously — a cache miss parses YAML, and a synchronous parse on the
+  turn's loop stalls every other session's streaming), merges any per-session
+  UI override (`ctx.extras["fleet_config_override"]`), and dispatches to
+  `_run_orchestrated()`. That classifies the prompt with `router.decide`,
+  builds an `AgentDef` registry via `registry_from_role_library(cfg.roles)`,
+  instantiates `OrchestratorAgent` with the route, and yields the merged
+  stream. **The orchestrator prompt no longer mandates the full crew on every
+  turn** — the route decides, and only `always_full_crew` restores the old
+  mandatory paragraph. Ends with **exactly one** `assistant.done`: the
+  orchestrator's own (the only event carrying `cost_usd`) re-emitted with the
+  turn's `duration_ms` merged in, or — if the orchestrator never got that far —
+  one synthesized here.
+- All per-turn state lives as locals in `run()`: `FleetProvider` is a
+  singleton and concurrent turns share `self`. The one exception is the
+  `WorkerPool`, which holds no turn state (its keys carry the session) and must
+  outlive a turn or the pooling buys nothing.
 - `_run_step_with_role(step, role_cfg, ctx, outputs)` is the per-role
   executor that the MCP `dispatch_subagent` tool delegates to:
   - Emits a visible `assistant.tool_use` (name
-    `"<role> [<provider>:<model>]"`, input `{prompt: <≤600 chars>}`).
-  - Passes the role name to the out-of-process worker so `collect_text()`
-    can apply role-specific provider controls.
-  - Concurrently runs `_collect_text` and a heartbeat ticker. Every
-    `HEARTBEAT_INTERVAL_S` it yields an `assistant.text` heartbeat
-    (`"_…<role> still working (Ns)…_\n"`) until `STEP_TIMEOUT_S` is
-    hit — that raises `StepTimeoutError` after emitting a
-    `tool.result is_error=True`.
-  - Classifies reviewer/tester gates via `_classify_gate` and marks
-    the `tool.result` as `is_error=True` for non-LGTM outcomes.
-  - Always `handle.kill()`s in its `finally`. The worker is spawned with
-    `start_new_session=True` and killed with `os.killpg(SIGKILL)` on the
-    pgid captured at spawn, because the vendor CLI is the worker's child:
-    killing only the worker leaves the CLI running on the user's
-    subscription.
-- `collect_text()` (`fleet/collect.py`, aliased `_collect_text`) calls
-  the sub-provider and concatenates assistant text. When tools fired, it
-  appends a `\n---\n(tool activity from <provider>:<model>)\n…` digest so
-  reviewers/testers can verify what the worker actually did rather than
-  trusting its narrative.
-  For planner roles, it sets Claude provider extras that allow only read-only
-  inspection tools (`Read`, `Glob`, `Grep`, `LS`), disable Claude Code
-  settings/skills loading, and disallow mutating or indirect execution tools.
-  The planner should inspect the repo and produce a plan artifact only;
-  implementation is reserved for coder and verification for reviewer/tester.
+    `"<role> [<provider>:<model>]"`, input `{prompt: <≤600 chars>}`). The
+    provider in that name is the **resolved** one, so a role configured `auto`
+    shows which subscription actually served the step.
+  - Submits the step to the `WorkerPool` (see `fleet/pool.py`) and waits on
+    `(first, result)`, narrating the wait every `HEARTBEAT_INTERVAL_S` with a
+    heartbeat whose wording depends on what is actually known: "still working"
+    only once the worker has produced output, "queued behind another step"
+    when it has not reached a worker, and "no response yet" otherwise. A
+    comforting lie is a lie the user acts on.
+  - **Fast-fails** on zero output within `fleet_startup_grace_s` — a wedged
+    backend (auth prompt, dead socket, nested-SDK deadlock) is not a slow
+    model, and the message says so. `fleet_step_timeout_s` is the absolute
+    ceiling for a backend that streams but never finishes; a step still
+    *queued* at that point raises `StepNotAttemptedError` instead, because it
+    never reached a sub-provider and must not count against the retry cap.
+  - Records the step's `StepResult` **envelope** (not its text) in `outputs`,
+    so the caller can have both the bounded `context_text()` and, through the
+    artifact, the complete output.
+  - Marks the `tool.result` `is_error=True` for a gate role whose verdict is
+    not `lgtm`, preferring the verdict the step already parsed from its full
+    output over a re-parse of the bounded text.
+  - In its `finally`, cancels and `abandon`s only an **unresolved** request. A
+    resolved future — success or a structured error the worker reported — means
+    the worker answered and is healthy, so it stays in the pool; killing it
+    unconditionally would give back the interpreter-start cost the pool exists
+    to remove.
+- `collect_step()` (`fleet/collect.py`) drives one sub-provider to completion
+  and reduces its event stream to a `StepResult`: a capped summary, a capped
+  tool digest, the parsed verdict for a gate role, the reported token usage,
+  and a pointer to the artifact holding the full output when it was too large
+  to inline. **Eviction happens here, once, on the way out of the step** — not
+  at each consumer, where one forgetful caller is all it takes to put the
+  megabytes back. `collect_text()` remains as a thin wrapper over
+  `collect_step(...).context_text()`.
+- `collect_step` builds a **fresh** provider via `registry._build_provider`
+  rather than the shared singleton (whose lock is bound to the main loop) and
+  sets `ctx.role`, which is what makes the role policy apply at all: before
+  that was set, every sub-agent ran under the permissive "session" policy and
+  the role table enforced nothing. The role's extras come from
+  `permissions.policy_extras`, the same table the gate consults.
+- An `error` event from a sub-provider raises `RuntimeError`: a step that
+  *failed* must not be reported as a step that produced nothing, because "no
+  output" is a state the pipeline tries to recover from by re-prompting.
+- A `quota.limit` a sub-provider emits inside a worker is **dropped** — the
+  worker's only channels home are `@@FIRST@@` and the framed `StepResult`.
+  The step's tokens still reach the governor via `StepResult.usage`; see
+  [harness.md](harness.md#8-the-quota-governor).
 - `classify_gate(output, role)` (`fleet/gate.py`, aliased
   `_classify_gate`) strips the tool digest, walks the
   body backwards for the last classifier-shaped line, tolerates
   Markdown decoration, and returns `"lgtm"`, `"nack"`, `"nack_code"`,
   or `"nack_tests"`. Fail-safe: unclassified reviewer output is
   `"nack"`; unclassified tester output is `"nack_code"`.
+
+#### `backend/app/orchestrator/fleet/pool.py`
+- `WorkerPool` — long-lived sub-provider worker **processes**, keyed by
+  `worker_key(session_id, provider, model, cwd)`. The process boundary is not
+  an optimisation: driving a second `claude_agent_sdk.query()` from inside the
+  orchestrator's own MCP tool callback deadlocks the SDK (its async-generator
+  state is process-global, so a thread with its own loop does not help), and a
+  child process is the only thing that lets the parent truly kill a wedged
+  vendor CLI.
+- The processes are **pooled** because interpreter start + SDK import + CLI
+  spawn cost 0.7-1.0 s per step. What is reused is the *process*; each request
+  builds a fresh sub-provider, so one role's context cannot leak into the next.
+- `submit(key, request)` returns `(first, result)` and blocks on neither the
+  spawn nor the write — the caller must reach the loop that bounds and narrates
+  the wait. `is_queued` distinguishes "the backend said nothing" from "nothing
+  has been asked of it yet", so a queued step is never blamed on its backend.
+  `abandon` reclaims only what one request holds; `kill` takes the key's worker.
+- Results are **length-prefixed** (`@@RESULT@@ <id> <bytes>`), not
+  newline-terminated: the old framing made correctness depend on an
+  undocumented 64 KiB reader limit, and a 512 KiB plan wedged the parent.
+- Every worker is spawned with `start_new_session=True` and reclaimed by
+  signalling the process *group* on the pgid captured at spawn — the vendor CLI
+  is the worker's child, and ending the leader alone re-parents a paid CLI to
+  `launchd`. Each worker also writes a pidfile so an unclean backend shutdown's
+  orphans are swept on the next pool start.
+
+#### `backend/app/orchestrator/fleet/router.py`
+- `classify(prompt)` -> `lookup` / `simple` / `standard` and
+  `decide(prompt, available_roles, *, always_full_crew)` -> a frozen
+  `RouteDecision(task_class, agents, rationale)`. **No model call** — regex and
+  length only, so the decision is deterministic, free, and printable into a log
+  line an operator can argue with.
+- Three commitments: ambiguity resolves **upward** (over-spending is
+  recoverable, under-planning is not); a prompt shaped like a question is never
+  `simple`, whatever verb it happens to contain; and a prompt carrying both an
+  ask and a mutation verb is two units of work, so `standard`.
+- `MUTATION_VERBS` is closed and deliberately broad — it includes ordinary
+  nouns like `handle`, `run` and `set` — which is safe **only** because
+  `simple` is gated on the question-shape test. Code (fenced blocks *and*
+  inline spans) is stripped before matching, so a pasted diff is not read as a
+  work order.
+- `render_routing_block(decision)` renders the decision into the orchestrator's
+  system prompt as an instruction with both directions pinned: escalation
+  allowed, de-escalation forbidden. `always_full_crew` renders the pre-routing
+  paragraph verbatim, character for character.
+- The class table is in [harness.md](harness.md#7-conditional-routing); the
+  goldens in `backend/tests/golden/` are the standing regression net.
+
+#### `backend/app/orchestrator/fleet/envelope.py`
+- `StepResult(summary, structured, artifact_id, artifact_path, tool_digest,
+  full_bytes, usage)` — the bounded envelope one step hands back. It separates
+  what the orchestrator *reads* (`context_text()`: summary + capped tool digest
+  + a pointer to the evicted full output) from what it *routes on*
+  (`structured`, the already-parsed gate verdict, so no consumer re-parses
+  prose).
+- `context_text()` is deliberately the **only** place that decides what an
+  orchestrator sees. Implemented per-caller it drifts, and the caller that
+  forgets is the one that blows the context window.
+- `to_wire` / `from_wire` speak plain JSON types because the envelope crosses
+  the worker process boundary. `from_wire` tolerates missing keys and coerces
+  `usage` to `dict[str, int]` rather than raising: a `KeyError` or `TypeError`
+  here surfaces in the parent's stdout pump as the useless "worker exited
+  without a result" instead of the partial result it actually received.
 
 #### `backend/app/orchestrator/agent_def.py`
 - `AgentDef` dataclass — `name`, `description`, `provider`, `model`,
@@ -593,6 +949,13 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
   presets, defaults}` — everything the React editor needs.
 
 #### `backend/app/routes/system.py`
+- `GET /api/system/usage` — a read-only snapshot of the raw per-turn log
+  (`usage.py`) over a fixed one-hour window, including the cache hit rate.
+- `GET /api/system/quota` — remaining headroom per subscription, read from the
+  **same** `get_governor()` the recording sites write through, so the meter
+  cannot drift onto a different ledger than the turns. `queue_suggested` is
+  advice, not a queue: "every governed subscription is at or below the
+  threshold, so hold this work rather than starting it".
 - `GET /api/system/cwd` returns
   `{cwd, home, allowed_roots, permissive}` so the UI can choose a
   sensible default project root.
@@ -741,7 +1104,7 @@ error boundary, inline SVG icons, full UI styling.
 
 ## Data Flow
 
-### Standard chat request (Claude / OpenCode provider)
+### Standard chat request (single-vendor provider)
 
 ```mermaid
 sequenceDiagram
@@ -750,8 +1113,8 @@ sequenceDiagram
     participant WS as /api/sessions/{id}/ws
     participant R as SessionRunner
     participant S as SessionStore
-    participant P as ClaudeProvider / OpenCodeProvider
-    participant Up as claude CLI or opencode serve
+    participant P as Claude / Codex / OpenCode provider
+    participant Up as claude CLI, codex app-server, or opencode serve
 
     U->>UI: types prompt, ⌘+↵
     UI->>WS: {"prompt": "..."}
@@ -759,13 +1122,15 @@ sequenceDiagram
     R->>S: append_message(user)
     R->>UI: session.started
     R->>P: run(RunContext)
-    P->>Up: query() / HTTP+SSE prompt
-    Up-->>P: text / tool / done stream
+    P->>Up: prompt on the persistent client / thread / session
+    Up-->>P: text / tool / approval request / done
     P-->>R: normalized Event(s)
+    Note over P,R: a tool needing a human becomes pipeline.awaiting_approval,<br/>answered on the runner's approval_channel
     R->>S: checkpoint(assistant blocks)
     R-->>UI: event with monotonic _id
+    R->>R: record tokens with the quota governor
     R->>S: final checkpoint
-    R-->>UI: assistant.done
+    R-->>UI: assistant.done (exactly one, however the turn ended)
 ```
 
 ### Fleet orchestration request (planner → coder → reviewer)
@@ -777,23 +1142,26 @@ sequenceDiagram
     participant F as FleetProvider
     participant O as OrchestratorAgent
     participant MCP as dispatch_subagent (in-process MCP)
-    participant Sub as Claude / OpenCode sub-provider
+    participant W as WorkerPool (separate OS process)
+    participant Sub as sub-provider (claude / codex / opencode)
     participant S as SessionStore
 
     UI->>R: prompt frame
     R->>S: append user message
     R->>F: run(RunContext)
     F->>F: load fleet config + merge UI override
-    F->>O: run(ctx) with AgentDef registry
+    F->>F: router.decide(prompt) → lookup / simple / standard
+    F->>O: run(ctx) with AgentDef registry + the route
     O->>MCP: dispatch_subagent("planner", prompt)
-    MCP->>Sub: _run_step_with_role(planner)
-    Sub-->>MCP: assistant.tool_use / heartbeats / final text
-    MCP->>S: save_plan(...) → .localcode/plans/<ts>-<slug>.md
-    MCP-->>R: events via EventSink
-    MCP-->>O: planner text + path
-    O->>MCP: dispatch_subagent("coder", plan_text)
-    MCP->>Sub: _run_step_with_role(coder)
-    Sub-->>MCP: tool activity + 'Changes:' summary
+    MCP->>MCP: resolve provider (auto → most headroom), spend budget
+    MCP->>W: submit(step) on the pooled worker key
+    W->>Sub: collect_step(role, prompt, cwd, role_name)
+    Sub-->>W: events → bounded StepResult (large output → artifact)
+    W-->>MCP: framed StepResult
+    MCP->>S: save_plan(full output) → .localcode/plans/<ts>-<slug>.md
+    MCP-->>R: per-step card events via EventSink
+    MCP-->>O: context_text() — summary + capped digest + artifact pointer
+    O->>MCP: dispatch_subagent("coder", ...)
     MCP-->>R: coder card events
     O->>MCP: dispatch_subagent("reviewer", ...)
     MCP-->>R: reviewer card events (LGTM / NACK)
@@ -1243,12 +1611,25 @@ To use OpenCode-backed models you also need `opencode serve` running
 
 ### Build / test / lint
 
+Every Make target runs its tool out of `.venv/bin/`, so none of them needs an
+activated virtualenv:
+
 ```bash
+make test        # .venv/bin/pytest -q
+make lint        # .venv/bin/ruff check .
+make typecheck   # .venv/bin/mypy backend/app
+make format      # .venv/bin/ruff format .
+make codex-schema  # regenerate the codex app-server schema for reconciliation
 cd frontend && npm run build    # tsc -b && vite build
-pytest -q                        # backend tests (none ship today)
-ruff check .                     # lint
-ruff format .                    # format
 ```
+
+The backend suite is the evaluation net described in
+[harness.md](harness.md#9-the-three-evaluation-layers): replay fixtures,
+long-horizon cases, golden fleet traces and the provider x mode matrix, plus
+the per-module suites. Tests needing a real vendor CLI carry the
+`requires_cli` marker and are deselected by default. Refresh the goldens with
+`UPDATE_GOLDEN=1 .venv/bin/pytest backend/tests/test_golden_traces.py`, then
+read the diff.
 
 ### VS Code extension
 

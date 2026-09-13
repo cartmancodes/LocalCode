@@ -1,6 +1,6 @@
 # LocalCode
 
-A provider-agnostic abstraction over **Claude Code** and **OpenCode** — one Claude-Code-style web UI, three backends, and OAuth-based subscription auth so you don't have to hand it API keys.
+A provider-agnostic abstraction over **Claude Code**, **Codex** and **OpenCode** — one Claude-Code-style web UI, three vendor backends plus a fleet that composes them, and OAuth-based subscription auth so you never hand it an API key. Two of those subscriptions are metered: the top bar shows how much of each plan's window is left, and work routes onto whichever has room.
 
 ```text
             ┌────────────────────────┐
@@ -13,38 +13,44 @@ A provider-agnostic abstraction over **Claude Code** and **OpenCode** — one Cl
             │  :8080                 │
             │  ─ Provider protocol   │     unified Event stream
             │   ├ ClaudeProvider     │ ──▶ claude-agent-sdk → `claude` CLI
+            │   ├ CodexProvider      │ ──▶ `codex app-server` (JSON-RPC/stdio)
             │   ├ OpenCodeProvider   │ ──▶ opencode serve  (HTTP + SSE)
             │   └ FleetProvider      │ ──▶ OrchestratorAgent dispatches
             │                        │     planner / coder / reviewer / tester
             │                        │     subagents via in-process MCP
-            └──────┬───────┬─────────┘
-                   │       │
-                   ▼       ▼
-        ~/.claude OAuth   ~/.local/share/opencode/auth.json
-        (claude login)    (opencode auth login)
-                   │       │
-                   ▼       ▼
-              Anthropic   OpenAI (ChatGPT subscription)
+            │  ─ one approval bus    │     every vendor's permission callback
+            │  ─ one quota ledger    │     remaining headroom per subscription
+            └────┬──────┬──────┬─────┘
+                 │      │      │
+                 ▼      ▼      ▼
+        ~/.claude   ~/.codex   ~/.local/share/opencode/auth.json
+        (claude     (codex     (opencode auth login)
+         login)      login)
+                 │      │      │
+                 ▼      ▼      ▼
+           Anthropic   OpenAI (ChatGPT subscription)
 ```
 
-Sessions are persisted as files on disk under `<session.cwd>/.localcode/sessions/<uuid>/` (no database) — same pattern Claude Code uses; see [docs/storage.md](docs/storage.md). Both providers authenticate via host-side OAuth (`claude login` / `opencode auth login`) and stream directly to their upstreams. The fleet uses the orchestrator-as-agent pattern (matches Claude Code / OpenCode architecture); see [docs/architecture.md](docs/architecture.md).
+Sessions are persisted as files on disk under `<session.cwd>/.localcode/sessions/<uuid>/` (no database) — same pattern Claude Code uses; see [docs/storage.md](docs/storage.md). Every provider authenticates via host-side OAuth (`claude login` / `codex login` / `opencode auth login`) and streams directly to its upstream. The fleet uses the orchestrator-as-agent pattern; see [docs/architecture.md](docs/architecture.md) for the modules and [docs/harness.md](docs/harness.md) for what every provider is held to.
 
 ## Why
 
-- **Two agents, one chat surface.** Claude Code is fast and tightly integrated; OpenCode is open-source and pluralistic. Pick per session — or hand both to the **fleet** and let an LLM orchestrator delegate to specialists per step.
-- **No keys to manage.** `./setup.sh login` runs `claude login` and `opencode auth login` once; tokens persist on disk / keychain and auto-refresh.
+- **Three agents, one chat surface.** Claude Code is fast and tightly integrated; Codex brings the ChatGPT subscription with real approvals; OpenCode is open-source and pluralistic. Pick per session — or hand them all to the **fleet** and let an LLM orchestrator delegate to specialists per step.
+- **No keys to manage, and that is enforced.** `./setup.sh login` runs the vendors' own login flows once; tokens persist on disk / keychain and auto-refresh. LocalCode never reads a credential store and never assigns an `*_API_KEY` / `*_OAUTH_TOKEN` / `*_SESSION_KEY` from anything — that is not a convention but a source scanner (`backend/app/invariants.py`) run over the whole backend by [`backend/tests/test_auth_invariant.py`](backend/tests/test_auth_invariant.py), which fails the suite on a credential path in a string literal, an `os.environ` key assignment, an `env=` kwarg carrying one, or a keychain lookup.
+- **One approval bus.** Each vendor has its own permission callback; all of them resolve through a single provider-neutral gate, so you learn one Approve/Deny card and a deny can only be forgotten in one place.
 - **Composable orchestration.** A `Provider` protocol turns "which agent answered" into an implementation detail. The fleet is itself a provider — UI doesn't need to know.
-- **Provider-agnostic dispatch.** A custom `dispatch_subagent` MCP tool lets one orchestrator dispatch both Claude- and OpenCode-backed subagents in the same workflow — the architectural unlock that lets you mix `claude-opus-4-7` for planning with `opencode/openai/gpt-5.3-codex` for the bulk coding work.
+- **Provider-agnostic dispatch.** A custom `dispatch_subagent` MCP tool lets one orchestrator dispatch subagents backed by different vendors in the same workflow — the architectural unlock that lets you mix `claude-opus-4-7` for planning with `gpt-5.3-codex` for the bulk coding work.
 
-## Three providers
+## Four providers
 
 | Provider   | What it does                                                                                              | Auth                                              |
 | :--------- | :-------------------------------------------------------------------------------------------------------- | :------------------------------------------------ |
-| `claude`   | Spawns the `claude` CLI via `claude-agent-sdk`. Streams text deltas (token-level) and tool-use events.    | `claude login` (OAuth, on host)                   |
+| `claude`   | Spawns the `claude` CLI via `claude-agent-sdk`, holding one connected client per session so the prompt cache stays warm. Streams token-level text deltas and tool-use events. | `claude login` (OAuth, on host)                   |
+| `codex`    | Speaks the `codex app-server` JSON-RPC protocol over stdio to the official `codex` CLI, one app-server per workspace. Command and patch approvals surface on the same card Claude's do. **Requires the `codex` CLI on `PATH` and `codex login` completed.** | `codex login` (OAuth, on host)                    |
 | `opencode` | Talks to `opencode serve` over HTTP + SSE. Sends model as `{providerID, modelID}`.                        | `opencode auth login` (OAuth, on host)            |
-| `fleet`    | LLM-driven orchestrator dispatches **planner / developer / coder / reviewer / tester** subagents dynamically. Matches the Claude Code / OpenCode main-session-with-Task pattern; subagents can be claude- or opencode-backed in the same workflow. | Config file + the underlying providers' auth      |
+| `fleet`    | LLM-driven orchestrator dispatches **planner / developer / coder / reviewer / tester** subagents dynamically, routing each turn to as many agents as the prompt deserves. Subagents can be backed by any of the three vendors in the same workflow, and a role set to `auto` goes to whichever subscription has the most headroom left. | Config file + the underlying providers' auth      |
 
-See [docs/fleet.md](docs/fleet.md) for the fleet concept, [docs/fleet-config.md](docs/fleet-config.md) for configuration UX, and [docs/architecture.md](docs/architecture.md) for the technical deep-dive.
+See [docs/fleet.md](docs/fleet.md) for the fleet concept, [docs/fleet-config.md](docs/fleet-config.md) for configuration UX, [docs/codex.md](docs/codex.md) for the Codex integration, [docs/harness.md](docs/harness.md) for what every provider is held to, and [docs/architecture.md](docs/architecture.md) for the technical deep-dive.
 
 ## Layout
 
@@ -56,9 +62,18 @@ See [docs/fleet.md](docs/fleet.md) for the fleet concept, [docs/fleet-config.md]
 | [.localcode/fleet.yaml](.localcode/fleet.yaml)                                                | Active fleet config — picks role → provider → model               |
 | [.localcode/fleet.yaml.example](.localcode/fleet.yaml.example) / [.json.example](.localcode/fleet.json.example) | Drop-in starters                                                  |
 | [backend/app/orchestrator/base.py](backend/app/orchestrator/base.py)                          | `Provider` protocol + `RunContext` + unified `Event` types        |
-| [backend/app/orchestrator/claude.py](backend/app/orchestrator/claude.py)                      | Claude SDK adapter (partial-message streaming, native auth)       |
+| [backend/app/orchestrator/claude.py](backend/app/orchestrator/claude.py)                      | Claude SDK adapter — one persistent client per session, partial-message streaming, native auth |
+| [backend/app/orchestrator/codex/](backend/app/orchestrator/codex/)                            | Codex app-server package — every wire name in `protocol.py`, stdio JSON-RPC transport, one server per workspace |
 | [backend/app/orchestrator/opencode.py](backend/app/orchestrator/opencode.py)                  | OpenCode HTTP/SSE adapter                                         |
-| [backend/app/orchestrator/fleet/](backend/app/orchestrator/fleet/)                            | `FleetProvider` package — config loader, defaults, gate classifier, per-step runner (heartbeats + timeout) |
+| [backend/app/orchestrator/approvals.py](backend/app/orchestrator/approvals.py)                | The one approval bus — `evaluate_tool_request` is provider-neutral; each vendor gets a thin adapter |
+| [backend/app/orchestrator/permissions.py](backend/app/orchestrator/permissions.py)            | The role policy table + the single `decide()` both vendors consult |
+| [backend/app/artifacts.py](backend/app/artifacts.py)                                          | Content-addressed store for output too large to put back in context |
+| [backend/app/usage.py](backend/app/usage.py)                                                  | Per-turn token log + the cache-hit-rate that makes client reuse observable |
+| [backend/app/quota.py](backend/app/quota.py)                                                  | Quota governor — remaining headroom per subscription, and what `auto` routes on |
+| [backend/app/orchestrator/fleet/](backend/app/orchestrator/fleet/)                            | `FleetProvider` package — config loader, defaults, gate verdicts, per-step runner (heartbeats + budgets) |
+| [backend/app/orchestrator/fleet/router.py](backend/app/orchestrator/fleet/router.py)          | Conditional routing — `lookup` / `simple` / `standard`, decided without a model call |
+| [backend/app/orchestrator/fleet/pool.py](backend/app/orchestrator/fleet/pool.py)              | Long-lived sub-provider worker processes, reaped by process group |
+| [backend/app/orchestrator/fleet/envelope.py](backend/app/orchestrator/fleet/envelope.py)      | `StepResult` — the bounded envelope a step hands back to the orchestrator |
 | [backend/app/orchestrator/orchestrator.py](backend/app/orchestrator/orchestrator.py)          | `OrchestratorAgent` — claude-agent-sdk session + merged event stream |
 | [backend/app/orchestrator/dispatch.py](backend/app/orchestrator/dispatch.py)                  | In-process MCP server: `dispatch_subagent` + `request_plan_approval` tools |
 | [backend/app/orchestrator/agent_def.py](backend/app/orchestrator/agent_def.py)                | `AgentDef` — registry entry shape (mirrors Claude Code's `AgentDefinition`) |
@@ -69,7 +84,8 @@ See [docs/fleet.md](docs/fleet.md) for the fleet concept, [docs/fleet-config.md]
 | [frontend/src/components/CrewBar.tsx](frontend/src/components/CrewBar.tsx)                    | Per-agent status indicator (running / done / NACK)                |
 | [frontend/src/components/FleetConfigEditor.tsx](frontend/src/components/FleetConfigEditor.tsx) | Modal that emits per-session fleet override                      |
 | [vscode-extension/](vscode-extension/)                                                        | Optional VS Code extension that embeds the LocalCode UI in a webview beside your code (see [docs/vscode-integration.md](docs/vscode-integration.md)) |
-| [docs/](docs/)                                                                                | Fleet concept, configuration UX, architecture deep-dive, storage, VS Code integration |
+| [backend/tests/](backend/tests/)                                                              | The evaluation net — replay fixtures, long-horizon cases, golden fleet traces, the provider x mode matrix |
+| [docs/](docs/)                                                                                | Harness contract, fleet concept, configuration UX, architecture deep-dive, Codex, storage, VS Code integration |
 
 ## Setup
 
@@ -79,15 +95,20 @@ See [docs/fleet.md](docs/fleet.md) for the fleet concept, [docs/fleet-config.md]
 ./setup.sh login          # one-time browser-based: claude login + opencode auth login
 ```
 
+To use the `codex` provider, install the official `codex` CLI yourself and run
+`codex login` once — `setup.sh` does not install it, and a session pinned to a
+`codex:` model reports one clear error naming the binary if it is missing.
+
 Open <http://localhost:5173>, pick a model from the dropdown (try **`fleet:default`** first), hit **+ New chat**, and start typing. ⌘+↵ to send.
 
 Other subcommands: `./setup.sh status` / `logs` / `stop` / `down`.
 
 ## How model selection works
 
-`MODEL_CATALOG` in `.env` is a comma-separated list of `provider:model` pairs. Each appears in the UI's model picker; whichever you pick at chat-creation pins the session. Three provider prefixes are valid:
+`MODEL_CATALOG` in `.env` is a comma-separated list of `provider:model` pairs. Each appears in the UI's model picker; whichever you pick at chat-creation pins the session. Four provider prefixes are valid:
 
 - **`claude:<model>`** — `model` is the Anthropic model name (e.g. `claude-sonnet-4-6`). The spawned `claude` CLI uses your `claude login` OAuth token.
+- **`codex:<model>`** — e.g. `codex:gpt-5.3-codex`. Driven through `codex app-server`; needs the `codex` CLI on `PATH` and `codex login` completed.
 - **`opencode:<provider>/<model>`** — e.g. `opencode:openai/gpt-5.4-mini`. OpenCode resolves credentials from its own auth store; for ChatGPT models you need `opencode auth login` → OpenAI.
 - **`fleet:<config>`** — e.g. `fleet:default`. The model name selects which fleet config to use; only `default` ships out of the box. The actual models invoked come from the fleet config.
 
@@ -95,17 +116,38 @@ Run `~/.opencode/bin/opencode models` to see what your ChatGPT subscription expo
 
 ## Auth notes
 
-Both providers authenticate via host-side OAuth: the spawned `claude` CLI reads its token from `~/.claude/`, and `opencode serve` reads its token from `~/.local/share/opencode/auth.json`. Run `./setup.sh login` once to mint both; tokens auto-refresh thereafter.
+Every provider authenticates via host-side OAuth: the spawned `claude` CLI reads its token from `~/.claude/` (or the platform keychain), `codex app-server` reads its own from `~/.codex/`, and `opencode serve` reads its token from `~/.local/share/opencode/auth.json`. Run `./setup.sh login` once to mint the Claude and OpenCode tokens (`codex login` is a separate one-off); all of them auto-refresh thereafter.
+
+LocalCode itself never opens any of those files. That is enforced rather than promised — see the invariant bullet under [Why](#why) and [docs/harness.md](docs/harness.md#1-the-invariant).
 
 > **Heads up:** Anthropic blocked Claude OAuth tokens for *third-party* tools in early 2026. Native auth works only because the agent we spawn is the official `claude` CLI itself. Don't try to forward those tokens elsewhere.
 
-## Cost reporting
+## What a turn costs you
 
-Per-turn cost (USD) is reported by each provider in the `assistant.done` event and rendered inline at the bottom of every assistant turn. There is no daily aggregate — under OAuth-only mode that figure would always be a subscription, not a metered spend.
+The prominent number is **remaining subscription headroom**, not dollars. Under
+OAuth-only auth nobody is billed per token, so a dollar figure describes
+nothing you can spend; what actually stops work is a plan's window running out.
+The top bar shows a meter per governed subscription — Claude on its 5-hour
+window, Codex on a 5-hour window and a weekly cap — served by
+`GET /api/system/quota`.
+
+The meter is honest about what it knows. A vendor-reported figure (Claude's
+rate-limit events, whatever Codex's `turn/completed` carries) is authoritative
+and marked as measured; absent one, tokens accumulate locally against an
+unknown ceiling and the bar says so rather than drawing a full one it never
+measured. Below 5 % the governor stops routing work to that subscription and
+says which plan is spent instead of silently downgrading to it — which is also
+what a fleet role set to `provider: auto` routes on.
+
+Per-turn cost (USD) is still reported by each provider in the `assistant.done`
+event and still rendered inline at the bottom of every assistant turn. It is
+informational — useful for comparing models against each other, not a bill.
 
 ## Documentation
 
+- [docs/harness.md](docs/harness.md) — what every provider is held to: the auth invariant and its test, the one approval bus, the provider table, persistent sessions and prompt-prefix discipline, the artifact store, the worker pool and its budgets, conditional routing, the quota governor, and the evaluation layers (plus the gaps they do not cover).
 - [docs/architecture.md](docs/architecture.md) — the technical deep-dive: providers, runner, orchestrator + dispatch, event flow, storage, configuration.
+- [docs/codex.md](docs/codex.md) — the Codex app-server integration, its unverified protocol assumptions, and how to reconcile them against the vendor schema.
 - [docs/fleet.md](docs/fleet.md) — fleet concept: roles, when to use it, what you see in chat.
 - [docs/fleet-config.md](docs/fleet-config.md) — configuration UX, presets, recipes, troubleshooting.
 - [docs/storage.md](docs/storage.md) — filesystem session store: paths, file shapes, atomicity, cleanup, comparison with Claude Code / OpenCode.
@@ -114,7 +156,6 @@ Per-turn cost (USD) is reported by each provider in the `assistant.done` event a
 ## What's next (good first issues)
 
 - **Per-turn model switching in the UI.** The model picker still pins at chat creation. Surface a per-message override and a `/use <provider>:<model>` slash command (Proposal A in the orchestration doc).
-- **Daily token meter.** Sum the tokens from each `assistant.done` over the day and render a per-day usage bar.
 - **Parallel sub-agent dispatch.** The orchestrator can call `dispatch_subagent` multiple times in one turn — the SDK runs them concurrently. Today our dispatch tool body is sequential per call; teach the orchestrator to batch independent dispatches (e.g. reviewer + tester after a coder LGTM).
-- **Per-tool permission enforcement.** Both Claude Code and OpenCode let agents declare allowed/denied tools. Wire `AgentDef.permission_mode` and a per-agent tool allowlist through to the providers so the reviewer is genuinely read-only at the tool layer.
+- **OpenCode behind the same harness.** `opencode` is the one provider that forwards neither the role tool policy nor `additional_dirs`, and it resolves permissions in its own `opencode.json` rather than on the shared approval bus. It is also absent from the provider matrix for want of a fake — see [docs/harness.md](docs/harness.md#what-the-net-does-not-cover).
 - **Alembic migrations.** `db_init.py` uses `metadata.create_all`.

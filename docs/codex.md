@@ -140,3 +140,15 @@ live check that the handshake still works:
 It is excluded from the default suite (see `addopts` in `pyproject.toml`) and
 skips when `codex` is not on `PATH`. Everything else is verified against the
 fake, which needs no binary, no network and no subscription.
+
+## See also
+
+- [harness.md](harness.md) — the contract every provider is held to, and where
+  Codex sits in the provider table, the one approval bus and the quota ledger.
+  `backend/tests/test_matrix.py` runs the same cells against `claude` and
+  `codex`, single and in a fleet; `backend/tests/replay/codex_*.json` pin the
+  translation to fixtures written from the spellings in `protocol.py`. Both
+  agree with this module's reading of the protocol **by construction**, so
+  they cannot falsify a wrong guess about the vendor's schema — only
+  `make codex-schema` and a reconciliation can.
+- [storage.md](storage.md) — where a Codex turn's transcript lands on disk.

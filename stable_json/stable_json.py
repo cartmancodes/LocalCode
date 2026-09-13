@@ -8,7 +8,8 @@ serialization to ``json.dumps``.
 '{"a":{"c":3,"d":4},"b":1}'
 >>> stable_json_dump([{"z", "a"}])
 '[["a","z"]]'
->>> stable_json_dump({"root": [{"flags": (None, True), "inner": {frozenset({2, 1}), frozenset({3})}}]})
+>>> nested = {"flags": (None, True), "inner": {frozenset({2, 1}), frozenset({3})}}
+>>> stable_json_dump({"root": [nested]})
 '{"root":[{"flags":[null,true],"inner":[[1,2],[3]]}]}'
 """
 

@@ -16,7 +16,9 @@ def _parse_number(value, name):
     try:
         return float(value)
     except ValueError as exc:
-        raise ValueError(f"Invalid input for '{name}': expected a numeric value, got {value!r}") from exc
+        raise ValueError(
+            f"Invalid input for '{name}': expected a numeric value, got {value!r}"
+        ) from exc
 
 
 def main():
