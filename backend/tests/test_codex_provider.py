@@ -41,6 +41,12 @@ from backend.app.config import Settings, get_settings
 from backend.app.orchestrator.base import Event, RunContext
 from backend.app.orchestrator.codex import CodexBroker, CodexProvider
 from backend.app.orchestrator.codex.client import CodexAppServer
+from backend.app.orchestrator.codex.protocol import (
+    DECISION_APPROVED,
+    DECISION_DENIED,
+    F_DECISION,
+    R_EXEC_APPROVAL,
+)
 from backend.app.orchestrator.fleet.constants import VALID_PROVIDERS
 from backend.app.schemas import CreateSessionRequest
 
@@ -172,6 +178,11 @@ async def drain(
 
 def types(events: list[Event]) -> list[str]:
     return [ev.type for ev in events]
+
+
+async def _collect(agen: Any) -> list[Event]:
+    """Whatever is left of an already-started turn."""
+    return [ev async for ev in agen]
 
 
 class TestHappyTurn:
@@ -408,6 +419,107 @@ class TestApprovals:
         # server outlives the turn, so a test that spawned two would prove
         # nothing.
         assert len(_records(record, "env")) == 1
+
+    async def test_an_approval_with_no_turn_in_flight_is_denied_not_auto_approved(
+        self, provider_factory, tmp_path: Path
+    ) -> None:
+        """A Stop is not a yes.
+
+        The app-server outlives the turn, ``turn_interrupt`` is best effort,
+        and the server is free to ask about the command already in flight a
+        moment after the turn's reader has gone. The shared gate's headless
+        branch ALLOWS ``Bash`` when the role's policy grants exec — and every
+        interactive session resolves ``policy_for_role(None, ...)``, which
+        does — so a handler that let a turn-less request fall through to it
+        would answer that question with ``approved``: the user's Stop read
+        back as consent to ``rm -rf``.
+        """
+        provider = provider_factory("happy")
+        ctx = mk_ctx(tmp_path, approval_channel=asyncio.Queue())
+        await drain(provider, ctx)  # a completed turn: the binding is cleared
+
+        server = provider._broker._servers[str(tmp_path)]
+        # The real path a stray request takes: the client's RPC dispatch, the
+        # provider's real handler, the real evaluate_tool_request behind it.
+        answer = await asyncio.wait_for(
+            server._make_approval_handler(R_EXEC_APPROVAL)(
+                {
+                    "threadId": "thread-after-the-turn",
+                    "callId": "stray-1",
+                    "command": ["rm", "-rf", _under(tmp_path, "build")],
+                    "cwd": str(tmp_path),
+                }
+            ),
+            WAIT_S,
+        )
+
+        assert answer == {F_DECISION: DECISION_DENIED}
+        # Denied without asking anyone: there is no sink a card could reach.
+        assert ctx.approval_channel is not None
+        assert ctx.approval_channel.empty()
+
+    async def test_a_turns_teardown_does_not_unbind_the_turn_that_replaced_it(
+        self, provider_factory, tmp_path: Path
+    ) -> None:
+        """The binding is per-WORKSPACE; ``turn_lock`` is per-SERVER.
+
+        So when the broker replaces a crashed app-server, turn B does not queue
+        behind turn A's lock: it rebinds the workspace's binding while A is
+        still in teardown. A ``finally`` that cleared the binding
+        unconditionally would then hand B's next approval to the turn-less deny
+        above — for a turn that is very much alive and has a human attached.
+        """
+        record = tmp_path / "rebind.jsonl"
+        provider = provider_factory("approval", record=record)
+        workspace = str(tmp_path)
+
+        channel_a: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        gen_a = provider.run(mk_ctx(tmp_path, approval_channel=channel_a)).__aiter__()
+        card_a = await asyncio.wait_for(gen_a.__anext__(), WAIT_S)
+        assert card_a.type == "pipeline.awaiting_approval"
+
+        binding = provider._bindings[workspace]
+        # Exactly the window the ledger describes: the server turn A is running
+        # on is forgotten (as a crash-replacement forgets it), so turn B spawns
+        # its own and binds under a different lock.
+        server_a = provider._broker._servers.pop(workspace)
+        try:
+            channel_b: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+            gen_b = provider.run(
+                mk_ctx(tmp_path, prompt="turn B", approval_channel=channel_b)
+            ).__aiter__()
+            card_b = await asyncio.wait_for(gen_b.__anext__(), WAIT_S)
+            assert card_b.type == "pipeline.awaiting_approval"
+
+            # Turn A tears down now, with B bound.
+            await asyncio.wait_for(gen_a.aclose(), WAIT_S)
+            assert binding.sink is not None
+
+            # Behaviourally: an approval arriving after A's teardown still
+            # reaches turn B's sink and is answerable by turn B's human.
+            server_b = provider._broker._servers[workspace]
+            probe = asyncio.create_task(
+                server_b._make_approval_handler(R_EXEC_APPROVAL)(
+                    {
+                        "threadId": "thread-b",
+                        "callId": "probe",
+                        "command": ["ls", "-la"],
+                        "cwd": workspace,
+                    }
+                )
+            )
+            probe_card = await asyncio.wait_for(gen_b.__anext__(), WAIT_S)
+            assert probe_card.type == "pipeline.awaiting_approval"
+            assert probe_card.data["input"]["command"] == "ls -la"
+            channel_b.put_nowait({"id": probe_card.data["id"], "value": "yes"})
+            assert await asyncio.wait_for(probe, WAIT_S) == {F_DECISION: DECISION_APPROVED}
+
+            # And B's own card still completes its turn.
+            channel_b.put_nowait({"id": card_b.data["id"], "value": "yes"})
+            tail = await asyncio.wait_for(_collect(gen_b), WAIT_S)
+            assert types(tail)[-1] == "assistant.done"
+        finally:
+            await server_a.close()
 
 
 class TestFailures:

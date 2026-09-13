@@ -123,6 +123,10 @@ class _TurnBinding:
     actually arrives. ``run()`` rebinds the fields at the top of each turn
     while holding ``CodexAppServer.turn_lock``, and therefore before any tool
     call of that turn can reach the handler.
+
+    ``sink is None`` is the "no turn is bound to this workspace" state, and the
+    handler treats it as an outright DENY rather than as a headless run — see
+    ``_make_approval_handler``.
     """
 
     policy: ToolPolicy
@@ -537,19 +541,40 @@ class CodexProvider:
         )
         return policy, mode, settings.tool_approval_timeout_s
 
-    def _make_approval_handler(self, binding: _TurnBinding):
+    def _make_approval_handler(self, binding: _TurnBinding, workspace: str):
         """The single bridge from Codex's approval callbacks to the shared gate."""
 
         async def handle(kind: str, params: dict[str, Any]) -> str:
+            # Read at call time, never captured: the server outlives the turn
+            # and these are reborn with it.
+            sink = binding.sink
+            if sink is None:
+                # NO TURN IS BOUND, so this request cannot belong to a turn
+                # anyone is reading — and it must be refused HERE rather than
+                # by the shared gate. ``evaluate_tool_request``'s headless
+                # branch (no channel, no sink) ALLOWS ``Bash``/``BashOutput``/
+                # ``KillBash`` when the role's policy grants exec, because a
+                # fleet step is headless by construction; every interactive
+                # session resolves ``policy_for_role(None, ...)``, which grants
+                # exec. Falling through would therefore auto-APPROVE a command
+                # nobody asked about. That is not hypothetical: ``Stop``
+                # cancels the turn, ``turn_interrupt`` is best-effort, and the
+                # app-server is free to ask about the command already in
+                # flight a moment later — the user's Stop would come back as a
+                # yes.
+                logger.warning(
+                    "codex asked for %s on %r with no turn bound — denying",
+                    kind,
+                    workspace,
+                )
+                return DECISION_DENIED
             tool_name, tool_input = approval_tool_request(kind, params, binding.policy)
             decision = await evaluate_tool_request(
                 tool_name,
                 tool_input,
-                # Read at call time, never captured: the server outlives the
-                # turn and these four are reborn with it.
                 policy=binding.policy,
                 mode=binding.mode,
-                sink=binding.sink,
+                sink=sink,
                 approval_channel=binding.approval_channel,
                 timeout_s=binding.timeout_s,
             )
@@ -571,7 +596,7 @@ class CodexProvider:
         # for this workspace reads the SAME binding object, so which one is
         # installed cannot matter. What would matter — two handlers over two
         # different bindings — is exactly what the dict above prevents.
-        server.set_approval_handler(self._make_approval_handler(binding))
+        server.set_approval_handler(self._make_approval_handler(binding, workspace))
         return server, binding
 
     async def _thread_for(self, ctx: RunContext, server: Any) -> str:
@@ -703,8 +728,16 @@ class CodexProvider:
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await task
                 # The binding's sink belongs to this turn and is now closed.
-                # Clearing it means a stray approval arriving between turns
-                # takes the headless path (deny) rather than pushing a card
-                # onto a sink nobody is draining.
-                binding.sink = None
-                binding.approval_channel = None
+                # Clearing it means a stray approval arriving between turns is
+                # denied by the handler above rather than pushed onto a sink
+                # nobody is draining.
+                #
+                # Only if it is still OURS. The binding is per-WORKSPACE while
+                # ``turn_lock`` is per-SERVER, so if the broker replaced a
+                # crashed server while this turn was in teardown, turn B is
+                # already bound here under a different lock — and clearing it
+                # then would send B's next approval to the deny above, for a
+                # turn that is very much alive.
+                if binding.sink is sink:
+                    binding.sink = None
+                    binding.approval_channel = None
