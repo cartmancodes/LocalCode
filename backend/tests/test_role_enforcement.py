@@ -31,11 +31,15 @@ from backend.app.orchestrator import claude as claude_mod
 from backend.app.orchestrator import registry as registry_mod
 from backend.app.orchestrator.approvals import build_can_use_tool
 from backend.app.orchestrator.base import Event, RunContext
+from backend.app.orchestrator.claude import _narrowed_allowed_tools
 from backend.app.orchestrator.fleet import subproc as subproc_mod
 from backend.app.orchestrator.fleet.collect import collect_step
 from backend.app.orchestrator.fleet.models import RoleConfig
 from backend.app.orchestrator.permissions import (
+    EXEC_TOOLS,
     VALID_PERMISSION_MODES,
+    WRITE_TOOLS,
+    ToolPolicy,
     decide,
     policy_extras,
     policy_for_role,
@@ -314,6 +318,10 @@ class TestExtrasCannotWiden:
 
         assert "WebFetch" in options.disallowed_tools
         assert "Agent" in options.disallowed_tools  # the coder role's own denial
+        # And the other direction, which is just as much a bug: narrowing must
+        # not stop a coder doing the job it exists for.
+        assert "Write" not in options.disallowed_tools
+        assert "Bash" not in options.disallowed_tools
 
     async def test_no_write_or_exec_tool_is_ever_auto_approved(
         self, tmp_path: Path, fresh_settings
@@ -330,7 +338,84 @@ class TestExtrasCannotWiden:
             )
         )
 
-        assert options.allowed_tools == ["Read"]
+        # Empty, not ["Read"]: the coder role has no allow-list of its own, and
+        # extras may not create one (see the next test).
+        assert options.allowed_tools == []
+
+    async def test_scoped_rule_syntax_cannot_smuggle_a_write_tool(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        # `Write(*)` and `Write()` resolve to a WHOLE-tool allow in the SDK
+        # (`types._whole_tool_allowed`), so a bar that matches the raw string
+        # filters "Write" and waves "Write(*)" through — the callback is then
+        # just as shadowed, by a spelling.
+        options = await _drain(
+            a_ctx(
+                tmp_path,
+                role="coder",
+                extras={"claude_allowed_tools": ["Write(*)", "Bash(rm -rf:*)"]},
+            )
+        )
+
+        assert options.allowed_tools == []
+
+    async def test_extras_cannot_create_an_allow_list_for_a_role_without_one(
+        self, tmp_path: Path, fresh_settings
+    ) -> None:
+        # Adding "just Read" is not a narrowing: an allow-list entry
+        # auto-approves before `can_use_tool` runs, so this would take Read out
+        # of the gate's hands entirely — `denied_cwd_paths` included. A role
+        # with no allow-list keeps having no allow-list.
+        policy = policy_for_role("coder", roots=(tmp_path,), denied=())
+        assert _narrowed_allowed_tools(policy, {"claude_allowed_tools": ["Read"]}) is None
+
+        options = await _drain(
+            a_ctx(tmp_path, role="coder", extras={"claude_allowed_tools": ["Read"]})
+        )
+        assert options.allowed_tools == []
+
+    async def test_the_bar_holds_against_a_table_that_names_a_write_tool(
+        self, tmp_path: Path, fresh_settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The bar must not depend on the role table being right. A row that
+        # allow-listed a write or exec tool — by plain name or scoped — would
+        # otherwise hand it over pre-approved.
+        rogue = ToolPolicy(
+            name="rogue",
+            writable=True,
+            exec_allowed=True,
+            roots=(tmp_path,),
+            denied=(),
+            allow_tools=("Read", "Write", "Write(*)", "Bash(git diff:*)", "Glob"),
+        )
+        monkeypatch.setattr(claude_mod, "policy_for_role", lambda *a, **k: rogue)
+
+        options = await _drain(a_ctx(tmp_path, role="rogue"))
+
+        assert options.allowed_tools == ["Read", "Glob"]
+
+    async def test_disallowed_tools_derive_from_the_policy_not_from_the_table(
+        self, tmp_path: Path, fresh_settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Under bypassPermissions the callback is never invoked, so
+        # `disallowed_tools` is the ONLY enforcement left. A future read-only
+        # row whose `deny_tools` forgot a write tool would lose its guarantee in
+        # silence; deriving the families from `writable`/`exec_allowed` means
+        # the policy's structure and the tools the CLI is offered cannot drift.
+        incomplete = ToolPolicy(
+            name="forgetful",
+            writable=False,
+            exec_allowed=False,
+            roots=(tmp_path,),
+            denied=(),
+            deny_tools=(),
+        )
+        monkeypatch.setattr(claude_mod, "policy_for_role", lambda *a, **k: incomplete)
+
+        options = await _drain(a_ctx(tmp_path, role="forgetful"))
+
+        for tool in WRITE_TOOLS | EXEC_TOOLS:
+            assert tool in options.disallowed_tools, tool
 
     async def test_a_read_only_role_never_loads_settings_or_skills(
         self, tmp_path: Path, fresh_settings
@@ -349,7 +434,16 @@ class TestExtrasCannotWiden:
     ) -> None:
         # Narrowing must not leak into ordinary chat: a session with no role
         # gets no allow-list at all, so `can_use_tool` sees every call.
+        #
+        # `is None` at the source, not `falsy` at the options layer: the
+        # provider sends no `allowed_tools` key at all, and asserting only
+        # `not options.allowed_tools` would still pass if a regression started
+        # sending an explicit `[]` — which reads as a deliberate empty list to
+        # anything that inspects the options.
+        session = policy_for_role(None, roots=(tmp_path,), denied=())
+        assert _narrowed_allowed_tools(session, {}) is None
+
         options = await _drain(a_ctx(tmp_path))
 
-        assert not options.allowed_tools
+        assert options.allowed_tools == []  # the SDK's own default, untouched
         assert options.disallowed_tools == []
