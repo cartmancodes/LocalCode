@@ -39,6 +39,7 @@ from typing import Any
 from ...artifacts import ArtifactStore
 from ...config import get_settings
 from ..base import RunContext
+from ..permissions import policy_extras, policy_for_role, resolve_roots
 from .envelope import MAX_TOOL_DIGEST_CHARS, StepResult, coerce_usage
 from .gate import GATE_ROLES, parse_verdict
 from .models import RoleConfig
@@ -98,7 +99,13 @@ async def collect_step(
         additional_dirs=list(additional_dirs or []),
         system_prompt=role.system_prompt,
         permission_mode=permission_mode,
-        extras=_role_extras(role_name),
+        # The role the provider's permission gate looks up. Nothing set this
+        # before Task 9, so every sub-agent ran under the permissive "session"
+        # policy and the role table enforced nothing at all: a reviewer's write
+        # was refused by a paragraph in the orchestrator prompt and by nothing
+        # else. It is set here, at the one place a sub-agent context is built.
+        role=role_name,
+        extras=_role_extras(role_name, cwd, additional_dirs),
     )
     chunks: list[str] = []
     tool_calls: list[tuple[str, str, Any]] = []  # (id, name, input)
@@ -260,30 +267,24 @@ def _tool_digest(
     return "\n".join(lines)
 
 
-def _role_extras(role_name: str | None) -> dict[str, Any]:
-    if role_name != "planner":
-        return {}
-    # The planner must produce a plan artifact only; implementation belongs to
-    # the coder and review belongs to the reviewer. Superpowers-style planning
-    # still needs read/search access to inspect the repo before writing a plan.
-    return {
-        "claude_allowed_tools": ["Read", "Glob", "Grep", "LS"],
-        "claude_disable_settings": True,
-        "claude_disable_skills": True,
-        "claude_disallowed_tools": [
-            "Edit",
-            "Write",
-            "MultiEdit",
-            "NotebookEdit",
-            "Bash",
-            "BashOutput",
-            "KillBash",
-            "Agent",
-            "Task",
-            "Skill",
-            "ToolSearch",
-            "Monitor",
-            "RemoteTrigger",
-            "TaskStop",
-        ]
-    }
+def _role_extras(
+    role_name: str | None,
+    cwd: str | None,
+    additional_dirs: list[str] | None,
+) -> dict[str, Any]:
+    """Render this role's policy into the vendor extras ``claude.py`` reads.
+
+    This used to be a hand-written dict covering exactly one role (the
+    planner), which meant the guarantees for every OTHER role — a reviewer that
+    must not write, a coder that must not reach outside its roots — lived only
+    in the orchestrator's prompt. Prose is not enforcement. The extras now come
+    from the same table ``claude.py``'s ``can_use_tool`` gate consults, so the
+    tool list the sub-agent is offered and the decision made when it calls one
+    can no longer disagree: two renderings of one policy, not two policies.
+    """
+    policy = policy_for_role(
+        role_name,
+        resolve_roots(cwd, additional_dirs),
+        get_settings().denied_path_list(),
+    )
+    return policy_extras(policy)

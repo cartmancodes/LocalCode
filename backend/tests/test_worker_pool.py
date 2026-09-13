@@ -1449,7 +1449,7 @@ class TestDispatchCaps:
         from backend.app.orchestrator.fleet.collect import _role_extras
 
         for role in ("planner", "coder", "reviewer", "tester", None):
-            extras = _role_extras(role)
+            extras = _role_extras(role, None, None)
             assert "mcp_servers" not in extras
             assert not any(
                 "dispatch" in str(value) for value in extras.values()

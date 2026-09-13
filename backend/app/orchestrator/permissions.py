@@ -60,6 +60,17 @@ _ORCHESTRATOR_BUILTIN_DENY = frozenset(
     }
 )
 
+# Every way a planner could stop planning and start *doing*: hand the work to
+# another agent (Agent/Task), run a packaged procedure (Skill), pull in more
+# tools than the allow-list names (ToolSearch), or steer work outside this turn
+# (Monitor, RemoteTrigger, TaskStop). Spelled out as a set because this list
+# came from fleet/collect.py's hand-written ``_role_extras``: dropping any one
+# of them on the way into this table would have silently re-granted it the
+# moment the table became the real source of those extras.
+_PLANNER_DISPATCH_DENY = frozenset(
+    {"Agent", "Task", "Skill", "ToolSearch", "Monitor", "RemoteTrigger", "TaskStop"}
+)
+
 
 @dataclass(frozen=True)
 class ToolPolicy:
@@ -249,9 +260,9 @@ def decide(
         return Decision("deny", "plan mode forbids write/exec tools")
 
     # 9. acceptEdits auto-approves writes only. Exec is deliberately NOT
-    #    included here: `ctx.role` is set nowhere in the tree (turn.py and
-    #    fleet/collect.py both build a RunContext without it), so every
-    #    interactive session reaches `policy_for_role(None, ...)` and gets the
+    #    included here: Task 9 set `ctx.role` on fleet steps, but session_runner
+    #    /turn.py still builds its RunContext without one, so every interactive
+    #    session reaches `policy_for_role(None, ...)` and gets the
     #    permissive "session" policy — the same policy this branch would use
     #    to auto-approve Bash for a plain chat session, with no card, because
     #    the UI's default mode IS acceptEdits. Widening this branch to exec
@@ -281,7 +292,12 @@ def decide(
 # Role -> (allow_tools, deny_tools, writable, exec_allowed). Anything not a
 # key here gets the `writable_default` policy named "session" instead.
 _ROLE_ALLOW_TOOLS: dict[str, tuple[str, ...] | None] = {
-    "planner": ("Read", "Glob", "Grep", "LS", "TodoWrite"),
+    # Exactly the four tools fleet/collect.py's ``_role_extras`` granted the
+    # planner before Task 9 made this table the source of those extras.
+    # TodoWrite was listed here and was NOT in that dict; leaving it would have
+    # widened the planner's live surface at the moment the table took over,
+    # which is the opposite of what enforcing the table is for.
+    "planner": ("Read", "Glob", "Grep", "LS"),
     "reviewer": None,
     "tester": None,
     "coder": None,
@@ -290,7 +306,7 @@ _ROLE_ALLOW_TOOLS: dict[str, tuple[str, ...] | None] = {
 }
 
 _ROLE_DENY_TOOLS: dict[str, frozenset[str]] = {
-    "planner": WRITE_TOOLS | EXEC_TOOLS | frozenset({"Agent", "Task", "Skill"}),
+    "planner": WRITE_TOOLS | EXEC_TOOLS | _PLANNER_DISPATCH_DENY,
     # reviewer keeps Bash (exec_allowed=True below): reading a repo honestly
     # needs `git diff` and `rg`, and denying that would make review theater
     # rather than review. The write denial below is the actual restriction

@@ -46,7 +46,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -68,6 +68,8 @@ from ..usage import TurnUsage, UsageLog, parse_claude_usage, usage_log_from_sett
 from .approvals import CanUseToolFn, EventSink, build_can_use_tool
 from .base import Event, RunContext
 from .permissions import (
+    EXEC_TOOLS,
+    WRITE_TOOLS,
     ToolPolicy,
     normalize_permission_mode,
     policy_for_role,
@@ -156,6 +158,55 @@ def _frozen(value: Any) -> Any:
     """Make an options list hashable/comparable for the signature, preserving
     the difference between absent (``None``) and empty (``()``)."""
     return tuple(value) if isinstance(value, list) else value
+
+
+def _narrowed_allowed_tools(
+    policy: ToolPolicy, extras: Mapping[str, Any]
+) -> list[str] | None:
+    """The SDK ``allowed_tools`` for this turn: the role's allow-list narrowed
+    by ``ctx.extras``, never widened by it.
+
+    ``None`` means "send no ``allowed_tools`` at all" — the vendor's default
+    set, gated by ``can_use_tool``. It is returned only when neither the policy
+    nor the extras name a list; an explicit empty list is a real narrowing and
+    is passed through as one.
+
+    Two rules, in order:
+
+    1. Intersection, not replacement. A tool the extras ask for that the role's
+       allow-list does not contain is dropped. Before Task 9 the extras simply
+       overwrote the list, so ``claude_allowed_tools=["Write"]`` on a reviewer
+       granted the reviewer ``Write``.
+    2. No write or exec tool is EVER named here, whatever the role and whatever
+       the extras. A whole-tool entry in ``allowed_tools`` auto-approves that
+       tool before ``can_use_tool`` is consulted at all (see
+       ``claude_agent_sdk.types._warn_if_can_use_tool_shadowed``), so a coder
+       with ``Write`` on this list would skip the path-in-roots check and be
+       able to write anywhere on the disk. Narrowing goes through
+       ``disallowed_tools`` plus the callback instead. Shadowing a *read-only*
+       tool (the planner's ``Read``/``Glob``/``Grep``/``LS``) costs nothing the
+       role's roots do not already cover, so those stay.
+    """
+    requested: list[str] | None = None
+    raw = extras.get("claude_allowed_tools")
+    if isinstance(raw, list):
+        requested = [str(tool) for tool in raw]
+    elif extras.get("claude_no_tools"):
+        requested = []
+
+    base = list(policy.allow_tools) if policy.allow_tools is not None else None
+    if base is None:
+        merged = requested
+    elif requested is None:
+        merged = base
+    else:
+        wanted = set(requested)
+        merged = [tool for tool in base if tool in wanted]
+    if merged is None:
+        return None
+
+    barred = set(policy.deny_tools) | WRITE_TOOLS | EXEC_TOOLS
+    return [tool for tool in dict.fromkeys(merged) if tool not in barred]
 
 
 def _signature(
@@ -480,19 +531,40 @@ class ClaudeProvider:
         mode = normalize_permission_mode(
             ctx.permission_mode, allow_bypass=settings.allow_bypass_permissions
         )
+        # ctx.extras may only NARROW this policy, never widen it. Allowed tools
+        # are INTERSECTED with the role's allow-list, disallowed tools are
+        # UNIONED with the role's denials, and settings/skills can only be
+        # switched off. Before Task 9 the extras simply replaced the allowed
+        # list, so any caller that put a tool in `claude_allowed_tools` handed
+        # itself that tool no matter what the role said — which makes the role
+        # table decoration rather than a limit.
         option_extras: dict[str, Any] = {}
-        allowed_tools = ctx.extras.get("claude_allowed_tools")
-        if isinstance(allowed_tools, list):
-            option_extras["allowed_tools"] = [str(tool) for tool in allowed_tools]
-        elif ctx.extras.get("claude_no_tools"):
-            option_extras["allowed_tools"] = []
-        if ctx.extras.get("claude_disable_settings") or ctx.extras.get("claude_no_tools"):
+        allowed_tools = _narrowed_allowed_tools(policy, ctx.extras)
+        if allowed_tools is not None:
+            option_extras["allowed_tools"] = allowed_tools
+        # A read-only role's `setting_sources=[]` is load-bearing, not
+        # belt-and-braces: allow rules in a user's or project's settings file
+        # shadow `can_use_tool` the same way an allow-list entry does, so a
+        # reviewer that loaded the developer's own settings would be handed
+        # back the tools this policy took away. Derived from the policy as well
+        # as the extras so a context that carries no extras still gets it.
+        if (
+            not policy.writable
+            or ctx.extras.get("claude_disable_settings")
+            or ctx.extras.get("claude_no_tools")
+        ):
             option_extras["setting_sources"] = []
-        if ctx.extras.get("claude_disable_skills") or ctx.extras.get("claude_no_tools"):
+        if (
+            not policy.writable
+            or ctx.extras.get("claude_disable_skills")
+            or ctx.extras.get("claude_no_tools")
+        ):
             option_extras["skills"] = []
-        # Union, not replacement: the ad-hoc extras list (Task 9 removes it)
-        # and the role policy's denials are both real, and dropping either one
-        # re-grants a tool someone deliberately took away.
+        # Union, not replacement: a caller's extra denials and the role
+        # policy's denials are both real, and dropping either one re-grants a
+        # tool someone deliberately took away. This is the half of the
+        # reviewer's read-only guarantee that stops the tool being *offered*;
+        # `can_use_tool` below refuses it if it is offered anyway.
         disallowed_tools = list(
             dict.fromkeys(
                 [
