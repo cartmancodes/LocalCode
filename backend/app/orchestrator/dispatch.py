@@ -175,6 +175,11 @@ def build_dispatch_mcp(
             logger.exception("dispatch_subagent: %s raised", name)
             return _err(f"subagent {name!r} raised: {exc}")
 
+        # ``run_step_fn`` records the step's ``StepResult.context_text()`` here
+        # — a bounded envelope (summary + capped tool digest + an artifact
+        # pointer when the output was evicted), not the raw transcript. What
+        # this tool returns IS the orchestrator's context, so an unbounded
+        # value here is the context-runaway defect itself.
         result = outputs.get(step_id, "")
         if not result:
             return _err(
@@ -371,6 +376,18 @@ def _effective_prompt(
     user_prompt: str,
     role_outputs: dict[str, str],
 ) -> str:
+    """Stitch prior-step context into one role's prompt.
+
+    ``role_outputs`` holds bounded step envelopes (see ``dispatch_subagent``),
+    which is what makes this stitching safe to keep doing verbatim. A plan
+    under ``artifact_inline_max_bytes`` is inlined unchanged, exactly as
+    before. A plan over it arrives as a head/tail summary carrying the path of
+    the artifact that holds the whole document — so the "Full Planner Artifact"
+    section below is still the full plan when the plan is small, and a pointer
+    the Coder can ``Read`` when it is not. That is the trade this task accepts:
+    previously the full plan was inlined at any size, and a single large plan
+    consumed the context the Coder needed to execute it.
+    """
     if name == "planner":
         return user_prompt
     if name == "coder" and role_outputs.get("planner"):

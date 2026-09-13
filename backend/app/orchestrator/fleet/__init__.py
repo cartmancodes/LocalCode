@@ -34,13 +34,14 @@ The import surface is unchanged — everything that used to be importable from
   presets.py    ``WORKFLOW_PRESETS``
   defaults.py   ``ROLE_LIBRARY`` + ``DEFAULT_FLEET_CONFIG``
   loader.py     locate / parse / merge / cache / serialize config
-  gate.py       reviewer/tester classifier
-  collect.py    sub-provider stream → reviewable text + tool digest
+  gate.py       reviewer/tester classifier + JSON verdict parsing
+  envelope.py   ``StepResult`` — the bounded thing one step hands back
+  collect.py    sub-provider stream → ``StepResult`` (summary, verdict, usage)
   provider.py   ``FleetProvider``
 """
 from __future__ import annotations
 
-from .collect import _collect_text, collect_text
+from .collect import _collect_text, collect_step, collect_text
 from .constants import (
     DISPATCH_HARD_FAIL_CAP,
     HEARTBEAT_INTERVAL_S,
@@ -53,7 +54,16 @@ from .constants import (
     StepTimeoutError,
 )
 from .defaults import DEFAULT_FLEET_CONFIG, ROLE_LIBRARY
-from .gate import _TOOL_DIGEST_MARKER, _classify_gate, classify_gate
+from .envelope import MAX_TOOL_DIGEST_CHARS, StepResult
+from .gate import (
+    _TOOL_DIGEST_MARKER,
+    GATE_ROLES,
+    VERDICT_VALUES,
+    Verdict,
+    _classify_gate,
+    classify_gate,
+    parse_verdict,
+)
 from .loader import (
     _merge_config,
     _parse_config_file,
@@ -105,7 +115,15 @@ __all__ = [
     "role_library_dict",
     # gate / collect
     "classify_gate",
+    "parse_verdict",
+    "Verdict",
+    "VERDICT_VALUES",
+    "GATE_ROLES",
     "collect_text",
+    "collect_step",
+    # step envelope (the bounded thing a step hands back)
+    "StepResult",
+    "MAX_TOOL_DIGEST_CHARS",
     # provider
     "FleetProvider",
     # back-compat underscore aliases — the pre-split module exposed these;

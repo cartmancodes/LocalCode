@@ -26,7 +26,8 @@ from .constants import (
     STEP_TIMEOUT_S,
     StepTimeoutError,
 )
-from .gate import classify_gate
+from .envelope import StepResult
+from .gate import GATE_ROLES, parse_verdict
 from .loader import _merge_config, load_fleet_config
 from .models import FleetConfig, RoleConfig, Step
 
@@ -47,13 +48,16 @@ class _SubprocHandle:
     Owns the child process and exposes:
       - ``first`` : an ``asyncio.Event`` set the instant the child reports its
         first sub-provider event (drives honest heartbeats / fast-fail);
-      - ``result``: a future resolving to the collected text, or raising;
+      - ``result``: a future resolving to the child's ``StepResult`` envelope,
+        or raising;
       - ``kill()``: true OS-level cancellation of a wedged ``claude`` CLI.
     """
 
     def __init__(self) -> None:
         self.first: asyncio.Event = asyncio.Event()
-        self.result: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self.result: asyncio.Future[StepResult] = (
+            asyncio.get_running_loop().create_future()
+        )
         self._proc: asyncio.subprocess.Process | None = None
         self._stderr: str = ""
         # Process-group id of the worker, captured at spawn time because the
@@ -70,6 +74,7 @@ class _SubprocHandle:
         additional_dirs: list[str] | None,
         permission_mode: str | None,
         role_name: str,
+        session_id: str | None = None,
     ) -> None:
         req = json.dumps(
             {
@@ -81,6 +86,10 @@ class _SubprocHandle:
                 "additional_dirs": additional_dirs or [],
                 "permission_mode": permission_mode,
                 "role_name": role_name,
+                # Forwarded so the sub-provider can key per-session state on
+                # the LocalCode session this step belongs to rather than
+                # treating each step as an unrelated session.
+                "session_id": session_id,
             }
         )
         self._proc = await asyncio.create_subprocess_exec(
@@ -146,10 +155,22 @@ class _SubprocHandle:
                 pass
         if self.result.done():
             return
-        if payload and payload.get("ok"):
-            self.result.set_result(payload.get("text", ""))
+        wire = (payload or {}).get("result")
+        if payload and payload.get("ok") and isinstance(wire, dict):
+            # ``from_wire`` is tolerant by design: a partially-written envelope
+            # must arrive as a degraded result the caller can still report, not
+            # as an exception in this pump (which the parent would then
+            # describe as "exited without a result" — the least useful message
+            # available).
+            self.result.set_result(StepResult.from_wire(wire))
         else:
             err = (payload or {}).get("error") if payload else None
+            if not err and payload and payload.get("ok"):
+                err = (
+                    "sub-provider worker reported success without a result "
+                    "envelope — its stdout protocol is out of sync with this "
+                    "process"
+                )
             if not err:
                 rc = self._proc.returncode if self._proc else None
                 tail = (self._stderr or "").strip().splitlines()[-6:]
@@ -336,10 +357,11 @@ class FleetProvider:
             ctx.additional_dirs,
             ctx.permission_mode,
             step.role,
+            ctx.session_id,
         )
         collect = handle.result
         elapsed_s = 0
-        output: str | None = None
+        output: StepResult | None = None
         error_text: str | None = None
         timed_out = False
         try:
@@ -431,15 +453,28 @@ class FleetProvider:
 
         # Successful step — record output and emit the result card.
         assert output is not None  # if no error_text, we broke out with output set
-        outputs[step.id] = output
+        # The BOUNDED envelope text, not the transcript: a 2 MB step output is
+        # a summary plus an artifact pointer by the time it lands here, so the
+        # orchestrator's context cost per step is capped no matter how chatty
+        # the sub-provider was. ``context_text()`` is the only place that rule
+        # lives (see ``envelope.py``).
+        context = output.context_text()
+        outputs[step.id] = context
         # Mark gate failures as errored tool results so the UI shows them red.
-        # We use the canonical classify_gate (last-line parse, fail-safe to
-        # NACK) so a reviewer that buries its verdict under prose still gets
-        # routed correctly.
-        is_error = step.role in ("reviewer", "tester") and classify_gate(
-            output, step.role
-        ) != "lgtm"
+        # Prefer the verdict the step already parsed from its FULL output; fall
+        # back to parsing the envelope text (JSON block first, then the
+        # canonical last-line classifier, fail-safe to NACK) so a gate whose
+        # envelope arrived without a verdict still routes correctly rather than
+        # reading as a pass.
+        is_error = False
+        if step.role in GATE_ROLES:
+            value = (output.structured or {}).get("value")
+            if not value:
+                value = parse_verdict(context, step.role).value
+            is_error = value != "lgtm"
         yield Event(
             type="tool.result",
-            data={"tool_use_id": step.id, "content": output, "is_error": is_error},
+            # Full envelope text, not just the summary: the UI card is the
+            # place a human goes to see what the step actually said.
+            data={"tool_use_id": step.id, "content": context, "is_error": is_error},
         )

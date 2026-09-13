@@ -257,3 +257,48 @@ NACK_CODE (the more common failure mode) — so always include the classifier
 line. Picking the wrong classifier wastes retries: NACK_TESTS when the impl
 is broken hides bugs; NACK_CODE when the test is broken churns the Coder.
 """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Machine-readable verdicts, appended to the two gate prompts.
+#
+# Appended rather than woven into the prompts above so the existing last-line
+# protocol stays byte-identical. The line classifier is the FALLBACK that makes
+# ``gate.parse_verdict`` safe to be strict: because a missing or malformed JSON
+# block still lands on a trustworthy line parse, the JSON path can refuse
+# anything it doesn't understand instead of guessing a pass. Asking for both is
+# therefore not redundancy for its own sake — dropping either one is what makes
+# a chatty gate able to ship unreviewed work.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_VERDICT_BLOCK_TEMPLATE = """
+# Machine-readable verdict — REQUIRED
+
+End your reply with BOTH a classifier line and a JSON verdict block:
+
+{classifier}
+
+```json
+{{"verdict": "{value}", "reason": "<one sentence>"}}
+```
+
+Allowed `verdict` values: {allowed}. Use the same decision in both places.
+The `reason` is one sentence — the detail belongs above, not in the JSON.
+If the JSON block is missing or malformed, the orchestrator falls back to
+your classifier line, and if that is missing too your work is treated as
+{failsafe} and routed back.
+"""
+
+REVIEWER_SYSTEM += _VERDICT_BLOCK_TEMPLATE.format(
+    classifier="LGTM",
+    value="lgtm",
+    allowed='`"lgtm"` | `"nack"`',
+    failsafe="NACK",
+)
+
+TESTER_SYSTEM += _VERDICT_BLOCK_TEMPLATE.format(
+    classifier="LGTM",
+    value="lgtm",
+    allowed='`"lgtm"` | `"nack_code"` | `"nack_tests"`',
+    failsafe="NACK_CODE",
+)

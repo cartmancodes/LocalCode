@@ -1,7 +1,7 @@
 """Out-of-process sub-provider worker.
 
 Run as ``python -m backend.app.orchestrator.fleet.subproc``. Reads a single
-JSON request line from stdin, runs :func:`collect_text` for one sub-provider
+JSON request line from stdin, runs :func:`collect_step` for one sub-provider
 step, and writes the result back on stdout.
 
 **Why a subprocess.** The orchestrator is itself a ``claude_agent_sdk``
@@ -19,8 +19,14 @@ Stdout protocol (line-oriented, so the parent can react before completion):
   ``@@FIRST@@``            — emitted once, the instant the sub-provider yields
                              its first event (drives the parent's honest
                              heartbeat / fast-fail logic).
-  ``@@RESULT@@ <json>``    — terminal. ``{"ok": true, "text": "..."}`` or
-                             ``{"ok": false, "error": "..."}``.
+  ``@@RESULT@@ <json>``    — terminal. ``{"ok": true, "result": <StepResult
+                             wire dict>}`` or ``{"ok": false, "error": "..."}``.
+
+The success payload carries the whole :class:`StepResult` envelope rather than
+the step's text, because the parent needs more than text: the parsed verdict it
+routes on, the artifact pointer for the output that was too big to inline, and
+the token usage Task 7's per-turn budget spends. Sending text alone forced the
+parent to re-derive all three from prose.
 
 Anything else on stdout/stderr is diagnostic noise and ignored by the parent.
 """
@@ -30,7 +36,7 @@ import asyncio
 import json
 import sys
 
-from .collect import collect_text
+from .collect import collect_step
 from .models import RoleConfig
 
 _FIRST_MARKER = "@@FIRST@@"
@@ -38,7 +44,7 @@ _RESULT_PREFIX = "@@RESULT@@ "
 
 
 class _StdoutFirstSignal:
-    """Duck-typed stand-in for ``threading.Event`` that ``collect_text``
+    """Duck-typed stand-in for ``threading.Event`` that ``collect_step``
     pokes on the first sub-provider event. Instead of flipping an in-memory
     flag (useless across a process boundary) it writes the FIRST marker so
     the parent can stop guessing whether the backend is alive."""
@@ -87,7 +93,7 @@ async def _main() -> None:
             model=req["model"],
             system_prompt=req.get("system_prompt", ""),
         )
-        text = await collect_text(
+        result = await collect_step(
             role,
             req["prompt"],
             req.get("cwd"),
@@ -95,8 +101,9 @@ async def _main() -> None:
             permission_mode=req.get("permission_mode"),
             role_name=req.get("role_name"),
             progress=_StdoutFirstSignal(),
+            session_id=req.get("session_id"),
         )
-        _emit_result({"ok": True, "text": text})
+        _emit_result({"ok": True, "result": result.to_wire()})
     # BaseException (not just Exception): anyio TaskGroups surface failures as
     # BaseExceptionGroup, and a cancelled/torn-down SDK generator raises
     # CancelledError — both must still produce a STRUCTURED result so the
