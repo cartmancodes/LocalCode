@@ -26,6 +26,8 @@ a prompt that carries **both** a lookup marker and a mutation verb ("review
 this PR and fix the flaky test") is ``standard``, not ``simple``. It is two
 pieces of work — an inspection and a change — and collapsing it to the coder
 pair is exactly the under-planning that ambiguity-resolves-upward forbids.
+That guard can only fire on a verb ``MUTATION_VERBS`` actually lists, which is
+why the comment on that list is load-bearing rather than decorative.
 
 A second rule is stricter for the same reason: a feature-scale verb
 ("implement", "refactor", "migrate", "port", "upgrade", "build") is ``standard``
@@ -50,12 +52,34 @@ TaskClass = Literal["lookup", "simple", "standard"]
 
 
 # Verbs that mean "change the repository". Whole-word matched, after code has
-# been stripped, so `git add` inside a pasted diff doesn't count.
+# been stripped, so an "add" inside a pasted diff doesn't count.
+#
+# THIS LIST IS CLOSED, AND THAT IS CONSEQUENTIAL. A prompt is only kept out of
+# ``lookup`` by a verb that appears here. A change request phrased with a verb
+# that is missing — "review the auth module and make it thread-safe", before
+# "make" was on the list — reads as a pure question and is handed to a single
+# read-only agent. That is the one failure this module must never cause.
+#
+# The listed verbs are therefore deliberately broad and include weak, general
+# ones ("make", "set", "run", "handle", "ensure"). Every entry can only push a
+# prompt UPWARD to a larger crew, the recoverable direction: a false positive
+# costs tokens, a false negative ships unplanned work. To extend the list, add
+# the bare infinitive here — matching is whole-word, so "add" never fires
+# inside "address", "fix" never inside "fixture", "build" never inside
+# "builder", and "update" never inside "update_at" (an underscore is a word
+# character) — then add a row to ``CLASSIFY_TABLE`` in ``test_router.py`` and
+# check that no existing ``lookup`` row flips.
 MUTATION_VERBS: tuple[str, ...] = (
     "add", "implement", "fix", "refactor", "write", "create", "delete",
     "remove", "rename", "migrate", "build", "update", "change", "bump",
     "install", "wire", "generate", "port", "upgrade", "patch", "revert",
     "merge", "split", "extract", "replace",
+    # Round 1: weak/general verbs that carry just as much work as the strong
+    # ones. Without these, "list the failing tests and make them pass"
+    # classified as a listing and bought one read-only agent.
+    "make", "set", "convert", "move", "enable", "disable", "ensure", "handle",
+    "support", "stop", "turn", "switch", "run", "apply", "configure",
+    "rewrite", "introduce",
 )
 
 # The subset of those verbs that names a *feature*, not a line. "fix the typo
@@ -156,7 +180,7 @@ def _is_multi_step(text: str) -> bool:
 def classify(prompt: str) -> TaskClass:
     """Bucket a prompt without asking a model.
 
-    ``lookup``   a question, no mutation verb, short.
+    ``lookup``   a question, no mutation verb, short, single-step.
     ``simple``   exactly one mutation verb — and not a feature-scale one —
                  short, single-step, and nothing asked alongside it.
     ``standard`` everything else — including the empty prompt, which tells us
@@ -172,7 +196,10 @@ def classify(prompt: str) -> TaskClass:
     asks = bool(_LOOKUP_RE.search(text))
     mutations = _MUTATION_RE.findall(text)
 
-    if asks and not mutations:
+    if asks and not mutations and not _is_multi_step(text):
+        # The multi-step markers have to bite here too, not only on ``simple``:
+        # "explain the loader then make it faster" is a question with a second
+        # unit of work bolted on, and one read-only agent cannot do the second.
         return "lookup"
     # Both an ask and a change is two units of work — resolve upward.
     if (

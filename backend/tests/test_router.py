@@ -136,6 +136,37 @@ CLASSIFY_TABLE: list[tuple[str, str, str]] = [
      "an empty prompt tells us nothing, and nothing must never justify spending less"),
     ("https://github.com/anthropics/claude-code/pull/1234", "standard",
      "a bare URL carries no marker and no verb — ambiguous, so full crew"),
+    # ── an ask plus a change verb: the change verb must be recognised, or a
+    #    multi-file implementation request is handed to one read-only agent.
+    #    Every row below routed to a single `reviewer` before round 1.
+    ("review the auth module and make it thread-safe", "standard",
+     "ask + change: 'make' must count, or the same sentence with 'fix' routes differently"),
+    ("list the failing tests and make them pass", "standard",
+     "ask + change: 'make them pass' is implementation work, not a listing"),
+    ("find all the places we call foo and make them use bar", "standard",
+     "ask + change: a multi-file rewrite wearing a search's grammar"),
+    ("which of these functions should be async - convert them", "standard",
+     "ask + change: 'convert' is a change verb; the question half is the smaller half"),
+    ("explain why the pool leaks and stop it leaking", "standard",
+     "ask + change: 'stop it leaking' is a fix with no listed verb in it"),
+    ("where we handle the null case, make it raise instead", "standard",
+     "ask + change: 'handle' and 'make' both name work, neither was on the old list"),
+    # ── multi-step markers must bite on the lookup branch too ───────────────
+    ("explain the loader then make it faster", "standard",
+     "'then' is the brief's own multi-step marker — a lookup must not ignore it"),
+    ("can you tell me how to set this up, then set it up", "standard",
+     "'then' plus two changes: asking how AND doing it is two units of work"),
+    ("explain the pool then summarize the loader", "standard",
+     "two asks joined by 'then', no mutation verb at all — only the multi-step guard catches it"),
+    # ── whole-word matching must survive the wider verb list ────────────────
+    ("which fixture redirects HOME?", "lookup",
+     "'fixture' must not match the verb 'fix'"),
+    ("where is the address parsed?", "lookup",
+     "'address' must not match the verb 'add'"),
+    ("explain what the builder does", "lookup",
+     "'builder' must not match the verb 'build'"),
+    ("what is update_at used for?", "lookup",
+     "'update_at' must not match the verb 'update' — an underscore is a word character"),
 ]
 
 
