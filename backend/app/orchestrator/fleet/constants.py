@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-VALID_PROVIDERS = ("claude", "opencode")
+VALID_PROVIDERS = ("claude", "codex", "opencode")
 
 # Canonical execution order:
 #   planner  → produces the markdown plan (committed to disk)

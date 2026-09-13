@@ -1,4 +1,4 @@
-.PHONY: help install dev backend frontend up down logs db-init test lint format
+.PHONY: help install dev backend frontend up down logs db-init test lint format codex-schema
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"}{printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -36,3 +36,6 @@ lint:
 
 format:
 	ruff format .
+
+codex-schema: ## Dump the codex app-server JSON schema for reconciliation
+	codex app-server generate-json-schema > docs/codex-app-server.schema.json

@@ -5,6 +5,7 @@ from typing import Literal
 
 from .base import Provider
 from .claude import ClaudeProvider
+from .codex import CodexProvider
 from .fleet import FleetProvider
 from .opencode import OpenCodeProvider
 
@@ -21,9 +22,21 @@ def _get_lock() -> asyncio.Lock:
     return _lock
 
 
-def _build_provider(name: Literal["claude", "opencode", "fleet"]) -> Provider:
+ProviderName = Literal["claude", "codex", "opencode", "fleet"]
+
+# Every provider the registry can build. Named once so `_build_provider`,
+# `get_provider` and `warm_up` cannot drift: a provider registered in the
+# builder but missing from warm_up pays its construction cost mid-turn
+# instead of at boot, and one missing from the builder is a 500 on the first
+# request that names it.
+PROVIDER_NAMES: tuple[str, ...] = ("claude", "codex", "opencode", "fleet")
+
+
+def _build_provider(name: ProviderName) -> Provider:
     if name == "claude":
         return ClaudeProvider()
+    if name == "codex":
+        return CodexProvider()
     if name == "opencode":
         return OpenCodeProvider()
     if name == "fleet":
@@ -31,7 +44,7 @@ def _build_provider(name: Literal["claude", "opencode", "fleet"]) -> Provider:
     raise ValueError(f"Unknown provider: {name}")  # pragma: no cover
 
 
-async def get_provider(name: Literal["claude", "opencode", "fleet"]) -> Provider:
+async def get_provider(name: ProviderName) -> Provider:
     """Return the singleton provider, building it on first call.
 
     Async + lock-guarded to prevent two concurrent first-callers from each
@@ -54,7 +67,7 @@ async def warm_up() -> None:
     """Eagerly construct every provider at app startup. Avoids first-call
     latency and surfaces config errors during boot rather than mid-WS-turn.
     """
-    for name in ("claude", "opencode", "fleet"):
+    for name in PROVIDER_NAMES:
         await get_provider(name)  # type: ignore[arg-type]
 
 

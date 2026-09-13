@@ -1,4 +1,4 @@
-export type Provider = "claude" | "opencode" | "fleet";
+export type Provider = "claude" | "codex" | "opencode" | "fleet";
 
 // Permission/auto mode forwarded to the upstream agent (Claude:
 // acceptEdits / default / plan / bypassPermissions). Chosen per-session.
@@ -50,7 +50,7 @@ export interface MessagesPage {
 export type FleetRole = "planner" | "developer" | "coder" | "tester" | "reviewer";
 
 export interface FleetRoleConfig {
-  provider: "claude" | "opencode";
+  provider: "claude" | "codex" | "opencode";
   model: string;
   system_prompt: string;
 }
@@ -81,7 +81,7 @@ export interface WorkflowPreset {
 export interface FleetConfigResponse {
   config: FleetConfig;
   is_default: boolean;
-  valid_providers: ("claude" | "opencode")[];
+  valid_providers: ("claude" | "codex" | "opencode")[];
   valid_roles: FleetRole[];
   role_library: Record<FleetRole, FleetRoleConfig>;
   presets: Record<string, WorkflowPreset>;

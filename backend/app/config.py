@@ -7,7 +7,12 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-Provider = Literal["claude", "opencode", "fleet"]
+Provider = Literal["claude", "codex", "fleet", "opencode"]
+
+# The same names, as data. Two validators below used to carry their own copies
+# of this tuple, so adding a provider meant editing the literal in three places
+# and silently rejecting the new name in whichever one was missed.
+PROVIDERS: tuple[str, ...] = ("claude", "codex", "fleet", "opencode")
 
 
 class CatalogEntry:
@@ -45,7 +50,7 @@ class Settings(BaseSettings):
     default_provider: Provider = "claude"
     default_model: str = "claude-sonnet-4-6"
     model_catalog: str = Field(
-        default="claude:claude-sonnet-4-6,opencode:gpt-4o-mini",
+        default="claude:claude-sonnet-4-6,codex:gpt-5.3-codex,opencode:gpt-4o-mini",
         description="Comma-separated provider:model entries.",
     )
 
@@ -112,6 +117,20 @@ class Settings(BaseSettings):
     # turn there reconnects and resumes. Env: CLAUDE_MAX_LIVE_CLIENTS.
     claude_max_live_clients: int = 8
 
+    # The Codex CLI, spawned as `codex app-server`. A NAME, not a path, and not
+    # a credential: the binary finds its own OAuth token (`codex login`) and
+    # LocalCode never holds one — see backend/app/invariants.py. Overridable so
+    # a test can point it at a stand-in and a user at a non-PATH install.
+    # Env: CODEX_BINARY.
+    codex_binary: str = "codex"
+    # Spawn plus handshake. Generous because a cold `codex app-server` on a
+    # large repo is not instant, bounded because a wedged one must surface as
+    # an error rather than a turn that never starts.
+    codex_startup_timeout_s: float = 30.0
+    # Per-request ceiling once the server is up (thread/start, turn/start).
+    # Long, because `turn/start` is answered only when the turn is accepted.
+    codex_request_timeout_s: float = 120.0
+
     # Bound on per-session lock map and per-message pagination caps.
     messages_page_default: int = 50
     messages_page_max: int = 500
@@ -169,8 +188,8 @@ class Settings(BaseSettings):
     @field_validator("default_provider")
     @classmethod
     def _validate_default_provider(cls, v: str) -> str:
-        if v not in ("claude", "opencode", "fleet"):
-            raise ValueError("default_provider must be 'claude', 'opencode', or 'fleet'")
+        if v not in PROVIDERS:
+            raise ValueError(f"default_provider must be one of {', '.join(PROVIDERS)}")
         return v
 
     def catalog(self) -> list[CatalogEntry]:
@@ -180,7 +199,7 @@ class Settings(BaseSettings):
             if not raw:
                 continue
             provider, _, model = raw.partition(":")
-            if provider not in ("claude", "opencode", "fleet") or not model:
+            if provider not in PROVIDERS or not model:
                 # Skip malformed entries silently — surfacing them would block startup.
                 continue
             entries.append(CatalogEntry(provider, model))  # type: ignore[arg-type]

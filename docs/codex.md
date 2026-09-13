@@ -1,0 +1,118 @@
+# Codex (`codex app-server`)
+
+The `codex` provider drives the **official Codex CLI** the same way the
+`claude` provider drives the official Claude CLI: LocalCode spawns the vendor's
+binary and lets it find its own OAuth credentials. LocalCode never reads
+`~/.codex/auth.json`, never sets `OPENAI_API_KEY`, and has no fallback to an
+API key — a missing binary is an error message, never a quiet switch to a paid
+key. (`backend/app/invariants.py` enforces this; `backend/tests/test_auth_invariant.py`
+is the gate.)
+
+What this buys over routing ChatGPT-side work through `opencode`:
+
+| | `opencode` | `codex` |
+| :-- | :-- | :-- |
+| Tool approvals | none — the server decides alone | the **same** approval card as Claude, from the same `evaluate_tool_request` |
+| Extra directories | not supported (one project dir per session) | `additional_dirs` is forwarded to `thread/start` |
+| Transport | third-party HTTP + SSE, filtered client-side | first-party JSON-RPC over the child's stdio |
+| Role policies | advisory | enforced by the shared `ToolPolicy` table |
+
+## Prerequisites
+
+1. Install the Codex CLI (`npm i -g @openai/codex`, or Homebrew — follow
+   OpenAI's current instructions).
+2. Authenticate **once, in the CLI**:
+
+   ```bash
+   codex login
+   ```
+
+   This writes the CLI's own credential store. LocalCode does not read it, and
+   does not want to.
+3. Check the binary is on `PATH`:
+
+   ```bash
+   codex --version
+   ```
+
+If the binary is missing, a Codex turn produces exactly one `error` event
+naming the binary and telling you to run `codex login`. Nothing is retried
+against an API key.
+
+### Settings
+
+| Setting (env var) | Default | What it is |
+| :-- | :-- | :-- |
+| `codex_binary` (`CODEX_BINARY`) | `codex` | A **name**, not a credential. Point it at an absolute path for a non-`PATH` install. |
+| `codex_startup_timeout_s` (`CODEX_STARTUP_TIMEOUT_S`) | `30.0` | Spawn plus the `initialize` handshake. |
+| `codex_request_timeout_s` (`CODEX_REQUEST_TIMEOUT_S`) | `120.0` | Per-request ceiling once the server is up. |
+
+One `codex app-server` process is held **per workspace**, across turns, behind
+`CodexBroker`. Cold start is paid once per directory, not once per message, and
+the whole process *group* is killed on shutdown (the app-server spawns helpers
+of its own; signalling only the leader leaves them running).
+
+## Using it
+
+Pick `codex` as the provider when creating a session, exactly like `claude` or
+`opencode`. Approvals, extra directories, permission modes and role policies
+all behave identically — that is the point of the provider.
+
+### The one-line switch for the fleet's coder
+
+The fleet's `coder` role ships as `opencode:openai/gpt-5.3-codex` **on
+purpose**: the `codex` binary is not installed on every machine, and a default
+that cannot run is worse than one that can. The alternative is already written
+out, commented, in `backend/app/orchestrator/fleet/defaults.py`:
+
+```python
+    "coder": RoleConfig(
+        provider="codex",
+        model="gpt-5.3-codex",
+        system_prompt=CODER_SYSTEM,
+    ),
+```
+
+Swap that in for the `opencode` entry beside it (or override the role in your
+own fleet config — see [fleet-config.md](fleet-config.md), which needs no code
+change at all) and the coder runs on Codex with real approvals and real
+`additional_dirs`. OpenCode keeps working and remains the right choice for
+local and non-frontier models.
+
+## When the protocol changes
+
+The app-server is **explicitly experimental**: method names, item kinds and
+field spellings move between CLI releases. The code is arranged so that costs
+one file.
+
+* `backend/app/orchestrator/codex/protocol.py` holds **every wire name** —
+  every method, notification, item type, decision string and error code. It is
+  the only module a schema change should need to touch. Nothing else in the
+  package contains a protocol string literal, and `pick()` in that module reads
+  both `snake_case` and `camelCase` spellings of the same field so a casing
+  flip costs nothing at all.
+* `backend/tests/fakes/fake_codex_app_server.py` **duplicates** those names
+  deliberately (it runs as a child process and imports nothing from the app).
+  Update it alongside `protocol.py` — if you do not, the tests fail, which is
+  exactly the signal you want.
+* No translator branch may raise on a name it does not know. An unknown item
+  type is logged once at `DEBUG` and skipped: a newer CLI introducing an item
+  kind must cost one unrendered block, never a failed turn.
+
+To reconcile against the real thing:
+
+```bash
+make codex-schema     # codex app-server generate-json-schema > docs/codex-app-server.schema.json
+```
+
+Then diff the generated schema against `protocol.py` and fix any drift there.
+The `requires_cli`-marked test in `backend/tests/test_codex_provider.py` is the
+live check that the handshake still works:
+
+```bash
+.venv/bin/pytest backend/tests/test_codex_provider.py -m requires_cli -o addopts=""
+```
+
+It is excluded from the default suite (see `addopts` in `pyproject.toml`) and
+skips when `codex` is not on `PATH`. Everything else is verified against the
+fake, which needs no binary, no network and no subscription.

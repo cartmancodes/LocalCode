@@ -31,6 +31,17 @@ ROLE_LIBRARY: dict[str, RoleConfig] = {
         model="claude-sonnet-4-6",
         system_prompt=DEVELOPER_SYSTEM,
     ),
+    # The ChatGPT-side coder. It stays on `opencode` deliberately: the `codex`
+    # provider (Task 10) is the better path — real approvals, real
+    # additional_dirs — but the `codex` binary is not installed on this
+    # machine, and a default that cannot run is worse than one that can. The
+    # switch is one line; see docs/codex.md.
+    #
+    #   "coder": RoleConfig(
+    #       provider="codex",
+    #       model="gpt-5.3-codex",
+    #       system_prompt=CODER_SYSTEM,
+    #   ),
     "coder": RoleConfig(
         provider="opencode",
         model="openai/gpt-5.3-codex",
