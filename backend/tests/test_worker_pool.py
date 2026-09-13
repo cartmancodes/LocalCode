@@ -46,6 +46,7 @@ from backend.app.orchestrator.base import Event, RunContext
 from backend.app.orchestrator.dispatch import TurnBudget, build_dispatch_mcp
 from backend.app.orchestrator.fleet import provider as provider_mod
 from backend.app.orchestrator.fleet import subproc as subproc_mod
+from backend.app.orchestrator.fleet.constants import StepNotAttemptedError
 from backend.app.orchestrator.fleet.envelope import StepResult
 from backend.app.orchestrator.fleet.models import RoleConfig, Step
 from backend.app.orchestrator.fleet.pool import (
@@ -54,6 +55,8 @@ from backend.app.orchestrator.fleet.pool import (
     worker_key,
     write_worker_pidfile,
 )
+
+_ROLE = RoleConfig(provider="claude", model="m", system_prompt="s")
 
 _ECHO_WORKER = "backend.tests.fakes.echo_worker"
 _TREE_WORKER = "backend.tests.fakes.tree_worker"
@@ -440,6 +443,128 @@ async def _read_pids(path: Path, timeout_s: float = 20.0) -> tuple[int, int]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# One request per worker at a time — enforced, not hoped for
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Comfortably over a pipe buffer (64 KiB on macOS and Linux), which is what
+# makes the difference observable: under it, an early write is merely
+# premature; over it, the write BLOCKS until the busy worker reads.
+_OVER_PIPE_BUFFER = "x" * (512 * 1024)
+
+
+class TestOneRequestPerWorker:
+    async def test_submit_returns_before_the_worker_could_accept_the_request(
+        self, pool: WorkerPool
+    ) -> None:
+        """``submit`` is awaited BEFORE the caller enters its heartbeat/timeout
+        loop, so anything it blocks on is time the step is neither narrated nor
+        bounded. It used to write and drain there — which stalls on a prompt
+        over the pipe buffer whenever the worker is busy."""
+        key = worker_key("sess-queue", "claude", "m", None)
+
+        _, running = await pool.submit(key, _request("slow:1.5"))
+        started = asyncio.get_running_loop().time()
+        _, queued = await pool.submit(key, _request(_OVER_PIPE_BUFFER))
+        submit_took = asyncio.get_running_loop().time() - started
+
+        try:
+            assert submit_took < 0.5, (
+                f"submit blocked for {submit_took:.2f}s behind a busy worker"
+            )
+            assert pool.is_queued(key, queued)
+            assert not queued.done()
+        finally:
+            await asyncio.wait_for(running, _WAIT_S)
+            await asyncio.wait_for(queued, _WAIT_S)
+
+    async def test_the_queued_request_does_not_start_until_the_first_finishes(
+        self, pool: WorkerPool
+    ) -> None:
+        """``first`` is the caller's evidence that its OWN step has begun. If it
+        flipped while the step was still queued, the caller would start its
+        grace clock against a backend that had not been handed anything."""
+        key = worker_key("sess-order", "claude", "m", None)
+
+        running_first, running = await pool.submit(key, _request("slow:1.5"))
+        queued_first, queued = await pool.submit(key, _request(_OVER_PIPE_BUFFER))
+
+        await asyncio.wait_for(running_first.wait(), _WAIT_S)
+        assert not queued_first.is_set(), "a queued step reported that it started"
+        assert pool.is_queued(key, queued)
+
+        await asyncio.wait_for(running, _WAIT_S)
+        await asyncio.wait_for(queued_first.wait(), _WAIT_S)
+        result = await asyncio.wait_for(queued, _WAIT_S)
+        assert result.summary == _OVER_PIPE_BUFFER
+        assert not pool.is_queued(key, queued)
+
+    async def test_a_kill_for_the_running_step_leaves_the_queued_one_alive(
+        self, pool: WorkerPool
+    ) -> None:
+        """The running step's worker is wedged and must be reclaimed; the step
+        queued behind it reached no process and demonstrated nothing. Failing
+        it too charged a role a hard failure for a step it never attempted —
+        which, after D7.1 made the generic path count, trips the retry cap."""
+        key = worker_key("sess-kill-queue", "claude", "m", None)
+
+        running_first, running = await pool.submit(key, _request("hang"))
+        _, queued = await pool.submit(key, _request("survivor"))
+        await asyncio.wait_for(running_first.wait(), _WAIT_S)
+        assert pool.is_queued(key, queued)
+
+        pool.kill(key)
+
+        with pytest.raises(RuntimeError, match="killed by the pool"):
+            await asyncio.wait_for(running, _WAIT_S)
+        # Re-queued onto a fresh worker rather than failed with the dead one.
+        result = await asyncio.wait_for(queued, _WAIT_S)
+        assert result.summary == "survivor"
+
+    async def test_abandoning_a_queued_step_does_not_touch_the_running_one(
+        self, pool: WorkerPool
+    ) -> None:
+        """The inverse, and the reason ``abandon`` takes the request and not
+        just the key: cancelling a step that is waiting its turn must not kill
+        the worker running somebody else's step."""
+        key = worker_key("sess-abandon", "claude", "m", None)
+
+        running_first, running = await pool.submit(key, _request("slow:1.0"))
+        _, queued = await pool.submit(key, _request("never runs"))
+        # Wait for the FIRST step to actually be running: only then is there a
+        # worker whose survival means anything.
+        await asyncio.wait_for(running_first.wait(), _WAIT_S)
+        assert pool.is_queued(key, queued)
+        pid_before = pool.worker_pid(key)
+        assert pid_before is not None
+
+        pool.abandon(key, queued)
+
+        with pytest.raises(StepNotAttemptedError, match="never reached"):
+            await asyncio.wait_for(queued, _WAIT_S)
+        assert (await asyncio.wait_for(running, _WAIT_S)).summary == "slept 1.0"
+        assert pool.worker_pid(key) == pid_before, "the running step's worker died"
+
+    async def test_a_not_attempted_step_is_not_charged_to_the_retry_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End of the chain: the pool's distinct failure type has to survive
+        all the way into dispatch, or the accounting fix is cosmetic."""
+        from backend.app.orchestrator.fleet import DISPATCH_HARD_FAIL_CAP
+
+        recorder = _Recorder(StepNotAttemptedError("it never reached a worker"))
+        tool, _ = _dispatch_tool(monkeypatch, recorder)
+
+        for _ in range(DISPATCH_HARD_FAIL_CAP + 2):
+            result = await tool({"name": "coder", "prompt": "work"})
+            assert result["is_error"] is True
+            assert "did not run" in result["content"][0]["text"]
+            assert "not held against" in result["content"][0]["text"]
+
+        # Never refused: nothing was ever held against the role.
+        assert recorder.calls == DISPATCH_HARD_FAIL_CAP + 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Ruling 15 — the startup sweep for a previous backend's workers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -501,6 +626,97 @@ class TestStartupSweep:
                 os.killpg(pgid, signal.SIGKILL)
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(stale.wait(), 10)
+
+    async def test_it_signals_only_the_group_the_verified_pid_is_actually_in(
+        self, tmp_path: Path
+    ) -> None:
+        """Every ownership check establishes something about ``pid``. Aiming
+        the kill at the record's own ``pgid`` therefore signals a group NOTHING
+        verified — and it did: with a record naming a live, cmdline-matching pid
+        A and an unrelated group B, the sweep killed B and left A running. A
+        pool-spawned worker always has ``pgid == pid``, but
+        ``write_worker_pidfile`` is public and records ``os.getpgid()``
+        unconditionally, so a worker started without its own session records the
+        shell's job-control group — and that file, left behind with its pid
+        recycled, points SIGKILL at the user's foreground job."""
+        pid_dir = tmp_path / "workers"
+        # A: passes every ownership check — alive, dead owner, matching cmdline.
+        verified = await asyncio.create_subprocess_exec(
+            "/usr/bin/env",
+            "python3",
+            "-c",
+            f"import time\n# {_ECHO_WORKER}\ntime.sleep(30)\n",
+            start_new_session=True,
+        )
+        # B: an unrelated process in its own group. Nothing proves anything
+        # about it, so nothing may be aimed at it.
+        bystander = await asyncio.create_subprocess_exec(
+            "/usr/bin/env", "python3", "-c", "import time; time.sleep(30)",
+            start_new_session=True,
+        )
+        bystander_group = os.getpgid(bystander.pid)
+        path = _pidfile(
+            pid_dir, verified.pid, pgid=bystander_group, owner_pid=_dead_pid()
+        )
+        try:
+            killed = await asyncio.to_thread(
+                sweep_stale_workers, pid_dir, _ECHO_WORKER
+            )
+            await asyncio.sleep(0.5)
+
+            assert killed == 0
+            assert _alive(verified.pid), "the verified worker was killed"
+            assert _alive(bystander.pid), "an unverified group was SIGKILLed"
+            # The record disagrees with the kernel, so it describes a tree that
+            # no longer exists as recorded: deleted, and nothing signalled.
+            assert not path.exists()
+        finally:
+            for proc in (verified, bystander):
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), 10)
+
+    async def test_a_record_without_an_owner_is_refused_not_trusted(
+        self, tmp_path: Path
+    ) -> None:
+        """``owner_pid`` gates the check that protects a concurrently running
+        backend. A record without one used to skip that check entirely and
+        proceed to the kill path — on a kill path, absent must mean refuse."""
+        pid_dir = tmp_path / "workers"
+        bystander = await asyncio.create_subprocess_exec(
+            "/usr/bin/env",
+            "python3",
+            "-c",
+            f"import time\n# {_ECHO_WORKER}\ntime.sleep(30)\n",
+            start_new_session=True,
+        )
+        pid_dir.mkdir(parents=True, exist_ok=True)
+        path = pid_dir / f"{bystander.pid}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "pid": bystander.pid,
+                    "pgid": os.getpgid(bystander.pid),
+                    "worker_module": _ECHO_WORKER,
+                }
+            ),
+            encoding="utf-8",
+        )
+        try:
+            killed = await asyncio.to_thread(
+                sweep_stale_workers, pid_dir, _ECHO_WORKER
+            )
+            await asyncio.sleep(0.5)
+
+            assert killed == 0
+            assert _alive(bystander.pid)
+            assert not path.exists()
+        finally:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.killpg(os.getpgid(bystander.pid), signal.SIGKILL)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(bystander.wait(), 10)
 
     async def test_it_refuses_to_signal_a_live_process_with_a_recycled_pid(
         self, tmp_path: Path
@@ -768,6 +984,14 @@ class _StubPool:
     def kill(self, key: str) -> None:
         self.killed.append(key)
 
+    def is_queued(self, key: str, result) -> bool:  # noqa: ANN001
+        # This stub hands every request straight to its "worker"; nothing it
+        # returns is ever waiting its turn.
+        return False
+
+    def abandon(self, key: str, result) -> None:  # noqa: ANN001
+        self.killed.append(key)
+
     @property
     def keys(self) -> list[str]:
         return []
@@ -778,11 +1002,10 @@ async def _run_step(
 ) -> list[Event]:
     fleet = provider_mod.FleetProvider()
     monkeypatch.setattr(fleet, "_get_pool", lambda: stub)
-    role = RoleConfig(provider="claude", model="m", system_prompt="s")
     step = Step(id="orch.coder.1", role="coder", prompt="do the thing")
     ctx = RunContext(model="m", prompt="p", session_id=session_id, cwd="/w")
     outputs: dict[str, StepResult] = {}
-    return [ev async for ev in fleet._run_step_with_role(step, role, ctx, outputs)]
+    return [ev async for ev in fleet._run_step_with_role(step, _ROLE, ctx, outputs)]
 
 
 class TestProviderUsesThePool:
@@ -814,16 +1037,47 @@ class TestProviderUsesThePool:
         assert result.data["is_error"] is True
         assert "the model refused" in result.data["content"]
 
+    async def test_a_sub_second_heartbeat_still_reaches_the_grace_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``elapsed_s`` used to advance by ``int(HEARTBEAT_INTERVAL_S)``, so
+        any interval below 1 s advanced it by ZERO — neither ``grace_s`` nor
+        ``step_budget_s`` was ever reached and the step looped forever. The
+        asymmetry is what made it reachable: both budgets are settings-driven
+        while the interval is not, so lowering them alone cannot fast-fail."""
+        stub = _StubPool(None)  # never resolves
+        monkeypatch.setattr(provider_mod, "HEARTBEAT_INTERVAL_S", 0.25)
+
+        from backend.app.orchestrator.fleet.constants import StepTimeoutError
+
+        fleet = provider_mod.FleetProvider()
+        monkeypatch.setattr(fleet, "_get_pool", lambda: stub)
+        monkeypatch.setattr(
+            provider_mod,
+            "get_settings",
+            lambda: type(
+                "S", (), {"fleet_startup_grace_s": 0.5, "fleet_step_timeout_s": 5.0}
+            )(),
+        )
+        step = Step(id="orch.coder.1", role="coder", prompt="go")
+        ctx = RunContext(model="m", prompt="p", session_id="s-sub", cwd="/w")
+
+        async def drive() -> None:
+            async for _ in fleet._run_step_with_role(step, _ROLE, ctx, {}):
+                pass
+
+        # Bounded: on the defective code this never returns.
+        with pytest.raises(StepTimeoutError, match="NO output within"):
+            await asyncio.wait_for(drive(), timeout=10)
+
+        assert stub.killed == [worker_key("s-sub", "claude", "m", "/w")]
+
     async def test_an_abandoned_step_kills_the_worker_by_key(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A step whose future never resolved left a wedged worker holding a
         vendor CLI. That one must be killed, by group, through the pool."""
         stub = _StubPool(None)  # never resolves
-        # Not below 1.0: the heartbeat loop advances by ``int(interval)``, so a
-        # sub-second interval advances by zero and the loop never reaches its
-        # grace window. (Harmless in production — the constant is 30.0 — but it
-        # makes a fast test hang rather than fail, which is worse.)
         monkeypatch.setattr(provider_mod, "HEARTBEAT_INTERVAL_S", 1.0)
 
         from backend.app.orchestrator.fleet.constants import StepTimeoutError
@@ -837,12 +1091,11 @@ class TestProviderUsesThePool:
                 "S", (), {"fleet_startup_grace_s": 1.0, "fleet_step_timeout_s": 1.0}
             )(),
         )
-        role = RoleConfig(provider="claude", model="m", system_prompt="s")
         step = Step(id="orch.coder.1", role="coder", prompt="go")
         ctx = RunContext(model="m", prompt="p", session_id="s9", cwd="/w")
 
         with pytest.raises(StepTimeoutError):
-            async for _ in fleet._run_step_with_role(step, role, ctx, {}):
+            async for _ in fleet._run_step_with_role(step, _ROLE, ctx, {}):
                 pass
 
         assert stub.killed == [worker_key("s9", "claude", "m", "/w")]

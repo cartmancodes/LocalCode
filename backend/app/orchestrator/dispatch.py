@@ -91,7 +91,13 @@ def build_dispatch_mcp(
     each other.
     """
     # Importing here to avoid a circular import at module load time.
-    from .fleet import DISPATCH_HARD_FAIL_CAP, RoleConfig, Step, StepTimeoutError
+    from .fleet import (
+        DISPATCH_HARD_FAIL_CAP,
+        RoleConfig,
+        Step,
+        StepNotAttemptedError,
+        StepTimeoutError,
+    )
 
     # Per-TURN hard-failure ledger (this closure is rebuilt every turn). A
     # role that times out / reports an unresponsive backend lands here; once
@@ -179,6 +185,19 @@ def build_dispatch_mcp(
         try:
             async for ev in run_step_fn(step, role_cfg, ctx, outputs):
                 await sink.put(ev)
+        except StepNotAttemptedError as exc:
+            # NOT counted against the cap, and deliberately so. This step never
+            # reached a sub-provider — it was queued behind another step on the
+            # same worker and dropped — so it demonstrated nothing about the
+            # backend. Charging it would refuse a role for a failure it was
+            # never given the chance to have, which is the same class of bug as
+            # a cap that counts nothing at all.
+            logger.info("dispatch_subagent: %s was not attempted: %s", name, exc)
+            return _err(
+                f"subagent {name!r} did not run: {exc}. This is NOT a backend "
+                f"failure and is not held against {name}. Re-dispatch it when "
+                f"the other step on its worker has finished."
+            )
         except StepTimeoutError as exc:
             # Backend unresponsive / wedged. Count it; escalate to a hard
             # ABORT instruction once we hit the cap so the orchestrator can't

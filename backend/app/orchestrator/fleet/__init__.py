@@ -51,6 +51,7 @@ from .constants import (
     VALID_PROVIDERS,
     VALID_ROLES,
     WORKER_ROLES,
+    StepNotAttemptedError,
     StepRole,
     StepTimeoutError,
 )
@@ -103,6 +104,7 @@ __all__ = [
     "STEP_TIMEOUT_S",
     "DISPATCH_HARD_FAIL_CAP",
     "StepTimeoutError",
+    "StepNotAttemptedError",
     # data types
     "RoleConfig",
     "FleetConfig",

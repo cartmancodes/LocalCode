@@ -91,6 +91,17 @@ WORKER_STDOUT_LIMIT = 8 * 1024 * 1024
 WORKER_PID_DIR_ENV = "LOCALCODE_WORKER_PID_DIR"
 
 
+class StepNotAttemptedError(RuntimeError):
+    """Raised when a step is dropped before any sub-provider saw it.
+
+    Distinct from every other failure because the retry cap must NOT count it.
+    A step that was still queued behind another step on the same worker did not
+    demonstrate anything about its backend — charging it against
+    ``DISPATCH_HARD_FAIL_CAP`` would refuse a role for a failure it was never
+    given the chance to have.
+    """
+
+
 class StepTimeoutError(RuntimeError):
     """Raised by ``_run_step_with_role`` when a sub-provider exceeds the
     per-step budget. Distinct from generic exceptions so the outer pipeline

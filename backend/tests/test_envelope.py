@@ -603,6 +603,14 @@ class _StubPool:
     def kill(self, key: str) -> None:
         self.killed.append(key)
 
+    def is_queued(self, key: str, result) -> bool:  # noqa: ANN001
+        # This stub hands every request straight to its "worker"; nothing it
+        # returns is ever waiting its turn.
+        return False
+
+    def abandon(self, key: str, result) -> None:  # noqa: ANN001
+        self.killed.append(key)
+
     @property
     def request(self) -> dict:
         return self.submitted[0][1]

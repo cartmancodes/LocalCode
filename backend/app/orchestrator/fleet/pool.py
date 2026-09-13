@@ -68,6 +68,7 @@ from .constants import (
     RESULT_MARKER,
     WORKER_PID_DIR_ENV,
     WORKER_STDOUT_LIMIT,
+    StepNotAttemptedError,
 )
 from .envelope import StepResult
 
@@ -125,6 +126,24 @@ class _Pending:
 
 
 @dataclass(eq=False)
+class _Queued:
+    """One request accepted by the pool but not yet handed to a worker.
+
+    Queued requests are held per KEY, not per worker, and that is the point: a
+    worker killed for the request it is running does not take the requests
+    behind it with it. They are written to the replacement worker instead, so a
+    step that never reached a process is never charged for that process's
+    failure.
+    """
+
+    request_id: str
+    pending: _Pending
+    # Pre-encoded at submit time so the write path holds no reference to the
+    # caller's dict and cannot be affected by it changing afterwards.
+    line: bytes
+
+
+@dataclass(eq=False)
 class _Worker:
     """One long-lived worker process and everything needed to reclaim it.
 
@@ -163,10 +182,22 @@ class _Worker:
 class WorkerPool:
     """Long-lived sub-provider workers, keyed by :func:`worker_key`.
 
-    One worker serves its requests strictly one at a time — it reads the next
-    request line only after the previous result is written — so a second submit
-    on a busy key queues behind the first. Concurrency comes from running
-    several workers, bounded by ``max_workers``.
+    **One request per worker at a time, and that is enforced here, not hoped
+    for.** A worker reads its next request line only after writing the previous
+    result, so writing a second request early does not make it run early — it
+    makes the write *block* once the prompt exceeds the pipe buffer (a stitched
+    plan easily does). Blocking inside ``submit`` was the defect: ``submit`` is
+    awaited BEFORE the caller's heartbeat/timeout loop, so a queued step emitted
+    no heartbeats and was bounded by the *running* step's ceiling rather than
+    its own.
+
+    So ``submit`` only enqueues, and returns at once. A per-key dispatcher task
+    hands one request to the worker, waits for it to resolve, and only then
+    writes the next — which means the wait for a free worker happens inside the
+    caller's own loop, under the caller's own budget, with the caller's own
+    heartbeats running.
+
+    Concurrency comes from running several workers, bounded by ``max_workers``.
     """
 
     def __init__(
@@ -188,6 +219,13 @@ class WorkerPool:
         # HOME per test.
         self._pid_dir_override = pid_dir
         self._workers: dict[str, _Worker] = {}
+        # Accepted-but-not-yet-written requests, per KEY. Held at the key and
+        # not on the worker so that killing a wedged worker does not fail the
+        # requests queued behind the one it was running.
+        self._queues: dict[str, deque[_Queued]] = {}
+        # One dispatcher task per key with a non-empty queue. Started lazily and
+        # exits when its queue drains, so an idle key holds no task.
+        self._dispatchers: dict[str, asyncio.Task[None]] = {}
         # Every worker whose reader task is still running, registered or not.
         # ``aclose`` waits on these so no reader outlives the pool (an orphaned
         # task is both a leak and a "Task was destroyed" warning at teardown).
@@ -202,64 +240,82 @@ class WorkerPool:
     async def submit(
         self, key: str, request: dict[str, Any]
     ) -> tuple[asyncio.Event, asyncio.Future[StepResult]]:
-        """Queue one step on ``key``'s worker, spawning it if needed.
+        """Enqueue one step on ``key`` and return immediately.
 
         Returns ``(first, result)`` — the same two signals the per-dispatch
-        handle exposed. Neither is resolved here; the worker's reader task
-        resolves them.
+        handle exposed. Neither is resolved here, and crucially neither the
+        spawn nor the write to the worker happens here: this must not block, or
+        the caller is stalled before it enters the loop that would have bounded
+        and narrated the wait.
         """
         if self._closed:
             raise RuntimeError("worker pool is closed")
         loop = asyncio.get_running_loop()
         pending = _Pending(first=asyncio.Event(), result=loop.create_future())
         request_id = f"r{next(_REQUEST_IDS)}"
+        line = (json.dumps({**request, "id": request_id}) + "\n").encode()
 
-        async with self._lock:
-            await self._ensure_started()
-            worker = await self._worker_for(key)
-            worker.pending[request_id] = pending
-            worker.last_used = time.monotonic()
-            worker.requests_served += 1
-            # Eviction runs AFTER this request is registered, never before. A
-            # freshly spawned worker with nothing pending yet looks idle — and
-            # being the only idle worker, it is the one eviction picks. It
-            # killed itself before it read its first request.
-            self._evict()
-            stdin = worker.proc.stdin
-
-        # Written OUTSIDE the lock on purpose. A step's prompt can be hundreds
-        # of KiB (a stitched plan), and a worker that is still finishing its
-        # previous request is not reading stdin — so ``drain()`` can block until
-        # it does. Holding the pool lock across that would stall every other
-        # key's spawn behind one busy worker.
-        assert stdin is not None
-        try:
-            stdin.write((json.dumps({**request, "id": request_id}) + "\n").encode())
-            await stdin.drain()
-        except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError) as exc:
-            # The worker died between spawn and write. Fail this request with
-            # the real reason rather than letting the caller wait out its whole
-            # step budget on a request nothing will ever read.
-            worker.pending.pop(request_id, None)
-            self._close_worker(
-                key, f"worker stdin is gone: {type(exc).__name__}: {exc}", worker=worker
-            )
-            if not pending.result.done():
-                pending.result.set_exception(
-                    RuntimeError(
-                        f"sub-provider worker could not accept the request "
-                        f"({type(exc).__name__}: {exc}){worker.stderr_detail()}"
-                    )
-                )
+        # No await between here and starting the dispatcher: the dispatcher
+        # deregisters itself synchronously when its queue empties, so an
+        # uninterrupted enqueue-then-ensure either finds a live dispatcher that
+        # has not yet looked at the queue, or finds none and starts one.
+        self._queues.setdefault(key, deque()).append(
+            _Queued(request_id=request_id, pending=pending, line=line)
+        )
+        self._ensure_dispatcher(key)
         return pending.first, pending.result
 
-    def kill(self, key: str) -> None:
-        """SIGKILL ``key``'s worker *and everything it spawned*, failing its
-        pending requests.
+    def is_queued(self, key: str, result: asyncio.Future[StepResult]) -> bool:
+        """Has this request not reached a worker yet?
+
+        The caller's fast-fail asks this before declaring a backend
+        unresponsive: "produced NO output" is a false accusation against a
+        backend that has not been handed the request. The absolute step ceiling
+        still applies, so a request queued forever is still bounded.
+        """
+        return any(q.pending.result is result for q in self._queues.get(key, ()))
+
+    def abandon(self, key: str, result: asyncio.Future[StepResult]) -> None:
+        """Give up on ONE request, reclaiming only what that request holds.
 
         Synchronous because the caller invokes it from an ``async`` generator's
         ``finally`` — which also runs during ``aclose()`` on a WS disconnect,
         where awaiting is not reliably possible.
+
+        The distinction this draws is the point. A request that reached the
+        worker owns that worker's vendor CLI, so abandoning it must kill the
+        process group. A request still sitting in the queue owns nothing: it is
+        simply dropped, and the worker — busy with somebody else's step — is
+        left alone. Killing the key for a queued request would have failed the
+        running step to cancel one that never started.
+        """
+        queue = self._queues.get(key)
+        if queue is not None:
+            for queued in list(queue):
+                if queued.pending.result is result:
+                    queue.remove(queued)
+                    _fail(
+                        queued.pending,
+                        StepNotAttemptedError(
+                            "step was abandoned while still queued behind "
+                            "another step on the same worker; it never reached "
+                            "a sub-provider"
+                        ),
+                    )
+                    return
+        worker = self._workers.get(key)
+        if worker is not None and any(
+            p.result is result for p in worker.pending.values()
+        ):
+            self.kill(key)
+
+    def kill(self, key: str) -> None:
+        """SIGKILL ``key``'s worker *and everything it spawned*.
+
+        Fails the request the worker was RUNNING. Requests still queued for the
+        key are untouched — they are written to the replacement worker the
+        dispatcher spawns, because a step that never reached a process must not
+        be charged for that process's failure.
 
         The group, not the process: the worker starts the vendor CLI as its own
         child, so killing only the worker re-parents the CLI and it keeps
@@ -276,6 +332,25 @@ class WorkerPool:
             sweeper.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await sweeper
+        dispatchers = list(self._dispatchers.values())
+        self._dispatchers.clear()
+        for task in dispatchers:
+            task.cancel()
+        if dispatchers:
+            with contextlib.suppress(Exception):
+                await asyncio.wait(dispatchers, timeout=5.0)
+        # Queued requests never reached a sub-provider, so they are reported as
+        # not attempted — not as a backend failure the caller would count.
+        for queue in self._queues.values():
+            while queue:
+                _fail(
+                    queue.popleft().pending,
+                    StepNotAttemptedError(
+                        "the worker pool closed before this step reached a "
+                        "sub-provider"
+                    ),
+                )
+        self._queues.clear()
         for key in list(self._workers):
             self._close_worker(key, "pool closed")
         tasks = [
@@ -312,6 +387,119 @@ class WorkerPool:
         if self._pid_dir_override is not None:
             return self._pid_dir_override
         return Path.home() / ".localcode" / "workers"
+
+    # ── per-key dispatch ─────────────────────────────────────────────────────
+
+    def _ensure_dispatcher(self, key: str) -> None:
+        task = self._dispatchers.get(key)
+        if task is None or task.done():
+            self._dispatchers[key] = asyncio.create_task(self._dispatch_loop(key))
+
+    async def _dispatch_loop(self, key: str) -> None:
+        """Hand ``key``'s queued requests to its worker, strictly one at a time.
+
+        The serialization lives here rather than in the pipe. Writing a second
+        request while the worker is still on the first does not run it sooner —
+        the worker is not reading — it only risks blocking the writer once the
+        prompt exceeds the pipe buffer. Waiting for the previous result before
+        writing makes the queueing explicit, and puts the wait where the caller
+        can see it: in the caller's own heartbeat and budget loop.
+        """
+        try:
+            while True:
+                queue = self._queues.get(key)
+                if not queue:
+                    return  # drained; the next submit restarts this loop
+                queued = queue[0]
+                if queued.pending.result.done():
+                    queue.popleft()  # abandoned or already failed
+                    continue
+                worker = await self._claim_worker(key, queued)
+                if worker is None:
+                    return
+                if not await self._write(key, worker, queued):
+                    continue  # the write failed; that request is resolved
+                # Wait for THIS request to resolve before writing the next.
+                # Never raises here: the exception belongs to the caller that
+                # holds the future, and this loop only needs to know it is done.
+                await asyncio.wait([queued.pending.result])
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("fleet dispatcher for %s failed", key)
+        finally:
+            if self._dispatchers.get(key) is asyncio.current_task():
+                self._dispatchers.pop(key, None)
+
+    async def _claim_worker(self, key: str, queued: _Queued) -> _Worker | None:
+        """A live worker for ``key`` with ``queued`` registered on it."""
+        try:
+            async with self._lock:
+                if self._closed:
+                    return None
+                await self._ensure_started()
+                worker = await self._worker_for(key)
+                # Registered BEFORE the lock is released, so the worker counts
+                # as busy and eviction cannot take it out from under the write
+                # that is about to happen.
+                worker.pending[queued.request_id] = queued.pending
+                worker.last_used = time.monotonic()
+                worker.requests_served += 1
+                # Eviction runs AFTER this request is registered, never before.
+                # A freshly spawned worker with nothing pending yet looks idle —
+                # and being the only idle worker, it is the one eviction picks.
+                # It killed itself before it read its first request.
+                self._evict()
+                return worker
+        except Exception as exc:  # noqa: BLE001 - a spawn failure is the step's
+            queue = self._queues.get(key)
+            if queue and queue[0] is queued:
+                queue.popleft()
+            _fail(
+                queued.pending,
+                RuntimeError(
+                    f"could not start a sub-provider worker "
+                    f"({type(exc).__name__}: {exc})"
+                ),
+            )
+            logger.exception("fleet worker spawn failed for %s", key)
+            return None
+
+    async def _write(self, key: str, worker: _Worker, queued: _Queued) -> bool:
+        """Write one request to ``worker``. ``False`` means it did not land.
+
+        Cannot block behind a busy worker: this is the only writer for the key
+        and it never writes again before the previous request resolves, so the
+        worker is sitting in ``readline`` when we get here.
+        """
+        stdin = worker.proc.stdin
+        assert stdin is not None
+        try:
+            stdin.write(queued.line)
+            await stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError) as exc:
+            # The worker died between spawn and write. Fail THIS request with
+            # the real reason rather than letting the caller wait out its whole
+            # step budget on a request nothing will ever read.
+            worker.pending.pop(queued.request_id, None)
+            queue = self._queues.get(key)
+            if queue and queue[0] is queued:
+                queue.popleft()
+            self._close_worker(
+                key, f"worker stdin is gone: {type(exc).__name__}: {exc}", worker=worker
+            )
+            _fail(
+                queued.pending,
+                RuntimeError(
+                    f"sub-provider worker could not accept the request "
+                    f"({type(exc).__name__}: {exc}){worker.stderr_detail()}"
+                ),
+            )
+            return False
+        queue = self._queues.get(key)
+        if queue and queue[0] is queued:
+            queue.popleft()  # it reached the worker; it is no longer queued
+        return True
 
     # ── startup ──────────────────────────────────────────────────────────────
 
@@ -406,7 +594,11 @@ class WorkerPool:
         memory, not a momentary burst.
         """
         while len(self._workers) > self._max_workers:
-            idle = [(w.last_used, k) for k, w in self._workers.items() if not w.busy]
+            idle = [
+                (w.last_used, k)
+                for k, w in self._workers.items()
+                if not self._occupied(k, w)
+            ]
             if not idle:
                 logger.debug(
                     "fleet worker pool over cap (%d > %d) with every worker busy",
@@ -431,13 +623,26 @@ class WorkerPool:
             now = time.monotonic()
             try:
                 for key, worker in list(self._workers.items()):
-                    if worker.busy or now - worker.last_used <= self._idle_timeout_s:
+                    if (
+                        self._occupied(key, worker)
+                        or now - worker.last_used <= self._idle_timeout_s
+                    ):
                         continue
                     self._close_worker(
                         key, f"reaped: idle for more than {self._idle_timeout_s:g}s"
                     )
             except Exception:  # noqa: BLE001
                 logger.exception("idle worker sweep raised; continuing")
+
+    def _occupied(self, key: str, worker: _Worker) -> bool:
+        """Is this worker running a step, or about to be handed one?
+
+        A key with a queue counts as occupied even when its worker is momentarily
+        idle: the dispatcher is between requests, and reaping the process there
+        would make the next queued step pay a fresh interpreter start for
+        nothing.
+        """
+        return bool(worker.pending) or bool(self._queues.get(key))
 
     def _close_worker(
         self, key: str, reason: str, worker: _Worker | None = None
@@ -488,12 +693,7 @@ class WorkerPool:
         detail = worker.stderr_detail()
         while worker.pending:
             _, pending = worker.pending.popitem()
-            # Unblock anyone waiting on the first signal too — a caller polling
-            # ``first`` in a heartbeat loop should not keep waiting on a
-            # request that is already decided.
-            pending.first.set()
-            if not pending.result.done():
-                pending.result.set_exception(RuntimeError(message + detail))
+            _fail(pending, RuntimeError(message + detail))
 
     # ── stdout demultiplexing ────────────────────────────────────────────────
 
@@ -722,10 +922,24 @@ def sweep_stale_workers(pid_dir: Path, worker_module: str) -> int:
     workers running: nothing gets to run a handler, and the workers are not in
     the terminal's process group either. Returns the number of groups killed.
 
-    Four checks, and each one exists to stop this function from signalling
-    something that is not ours:
+    **The signal is aimed at a group the kernel reports, never at a number the
+    file supplies.** Every check below establishes something about *``pid``*;
+    aiming the kill at the record's own ``pgid`` would then signal a group
+    nothing had verified. That is not hypothetical — a record naming a live,
+    cmdline-matching pid A and an unrelated group B killed B and left A running.
+    A pool-spawned worker always has ``pgid == pid``, but
+    ``write_worker_pidfile`` is public and records ``os.getpgid()``
+    unconditionally, so a worker started *without* ``start_new_session=True``
+    (by hand, or by a future spawner) records the shell's job-control group —
+    and that file, left behind with its pid recycled, would point SIGKILL at
+    the user's foreground job.
 
-    1. a record that does not parse, or carries no pid, is deleted unread;
+    Six checks, and every one exists to stop this function from signalling
+    something that is not ours. On a kill path, a missing field is not a
+    permissive default: *absent means refuse*.
+
+    1. a record that does not parse, or carries no ``pid`` or no
+       ``owner_pid``, is deleted unread;
     2. a record whose pid is **dead** is deleted and nothing is signalled — the
        worker is already gone;
     3. a record whose **owner** (the backend that spawned it) is still alive is
@@ -735,9 +949,15 @@ def sweep_stale_workers(pid_dir: Path, worker_module: str) -> int:
     4. a record whose pid is alive but whose **command line does not name our
        worker module** is deleted *without* being signalled. That is pid
        recycling — some unrelated process now holds the number — and killing it
-       would be far worse than leaving an orphan.
+       would be far worse than leaving an orphan;
+    5. the kill target is ``os.getpgid(pid)`` — the group the *verified* process
+       is actually in, right now;
+    6. the record's own ``pgid`` is used only to **reject**: if it disagrees
+       with the kernel (or is missing), the record describes a process tree
+       that no longer exists as recorded, so the file is deleted and nothing is
+       signalled.
 
-    Only a record that survives all four is killed, by process *group*, because
+    Only a record that survives all six is killed, by process *group*, because
     the vendor CLI in that group is the process actually costing the user money.
     """
     try:
@@ -756,15 +976,18 @@ def sweep_stale_workers(pid_dir: Path, worker_module: str) -> int:
             _unlink(path)
             continue
         pid = _as_pid(record.get("pid"))
-        pgid = _as_pid(record.get("pgid"))
+        recorded_pgid = _as_pid(record.get("pgid"))
         owner = _as_pid(record.get("owner_pid"))
-        if pid is None:
+        if pid is None or owner is None:
+            # ``owner`` gates the check that protects a concurrently running
+            # backend. A record without one cannot pass that check, so it must
+            # not be allowed to skip it either.
             _unlink(path)
             continue
         if not _pid_alive(pid):
             _unlink(path)
             continue
-        if owner is not None and _pid_alive(owner):
+        if _pid_alive(owner):
             continue
         if not _cmdline_names(pid, worker_module):
             logger.info(
@@ -774,7 +997,23 @@ def sweep_stale_workers(pid_dir: Path, worker_module: str) -> int:
             )
             _unlink(path)
             continue
-        target = pgid if pgid is not None else pid
+        target = _live_pgid(pid)
+        if target is None:
+            # The process went away, or we cannot ask. Either way we have no
+            # verified group to signal; leave the file for the next sweep,
+            # which will find the pid dead and clean it up.
+            continue
+        if recorded_pgid != target:
+            logger.info(
+                "worker pidfile %s records group %s but pid %d is in group %d; "
+                "removing the file, not signalling either",
+                path.name,
+                recorded_pgid,
+                pid,
+                target,
+            )
+            _unlink(path)
+            continue
         try:
             os.killpg(target, signal.SIGKILL)
             killed += 1
@@ -789,6 +1028,29 @@ def sweep_stale_workers(pid_dir: Path, worker_module: str) -> int:
             logger.warning("could not killpg stale worker group %d: %s", target, exc)
         _unlink(path)
     return killed
+
+
+def _live_pgid(pid: int) -> int | None:
+    """The group ``pid`` is in *now*, or ``None`` if that cannot be established.
+
+    The only source of a kill target. ``None`` means refuse — a group we could
+    not read is a group we have not verified.
+    """
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
+def _fail(pending: _Pending, exc: BaseException) -> None:
+    """Resolve one request with a failure, idempotently.
+
+    Also releases ``first``: a caller polling it in a heartbeat loop should not
+    keep waiting on a request that is already decided.
+    """
+    pending.first.set()
+    if not pending.result.done():
+        pending.result.set_exception(exc)
 
 
 def _unlink(path: Path) -> None:

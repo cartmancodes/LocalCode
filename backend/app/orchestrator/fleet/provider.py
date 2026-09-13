@@ -19,6 +19,7 @@ from .constants import (
     HEARTBEAT_INTERVAL_S,
     STARTUP_GRACE_S,
     STEP_TIMEOUT_S,
+    StepNotAttemptedError,
     StepTimeoutError,
 )
 from .envelope import StepResult
@@ -251,10 +252,16 @@ class FleetProvider:
                 "session_id": ctx.session_id,
             },
         )
-        elapsed_s = 0
+        # FLOAT, and advanced by the interval itself rather than ``int()`` of
+        # it. Truncating meant any interval under 1 s advanced this by zero, so
+        # neither ``grace_s`` nor ``step_budget_s`` was ever reached and the
+        # step looped forever — and both of those ARE settings-driven while the
+        # interval is not, so lowering them alone could not fast-fail.
+        elapsed_s = 0.0
         output: StepResult | None = None
         error_text: str | None = None
         timed_out = False
+        not_attempted: StepNotAttemptedError | None = None
         try:
             while True:
                 try:
@@ -263,13 +270,21 @@ class FleetProvider:
                     )
                     break
                 except TimeoutError:
-                    elapsed_s += int(HEARTBEAT_INTERVAL_S)
+                    elapsed_s += HEARTBEAT_INTERVAL_S
                     started = first.is_set()
+                    # A step still QUEUED behind another step on the same
+                    # worker has produced no output because nothing has been
+                    # asked of it yet. "The backend produced NO output" would be
+                    # a false accusation, and after D7.1 it is one that counts
+                    # against the role's retry cap. The absolute ceiling below
+                    # is unconditional, so a step queued forever is still
+                    # bounded — it just is not blamed on the backend.
+                    queued = pool.is_queued(key, collect)
                     # Fast-fail: zero output within the startup grace window
                     # means the backend is wedged (auth prompt, dead socket,
                     # nested-SDK deadlock). Don't pretend to wait the full
                     # STEP_TIMEOUT_S — abort loudly now.
-                    if not started and elapsed_s >= grace_s:
+                    if not started and not queued and elapsed_s >= grace_s:
                         timed_out = True
                         error_text = (
                             f"{step.role}: the {role_cfg.provider} backend "
@@ -299,18 +314,30 @@ class FleetProvider:
                         )
                         break
                     # Honest heartbeat: don't say "still working" when we've
-                    # heard nothing at all.
+                    # heard nothing at all, and don't blame the backend for a
+                    # step that is waiting its turn on the worker.
                     if started:
-                        msg = f"_…{step.role} still working ({elapsed_s}s)…_\n"
+                        msg = f"_…{step.role} still working ({elapsed_s:.0f}s)…_\n"
+                    elif queued:
+                        msg = (
+                            f"_…{step.role} queued behind another step on the "
+                            f"same worker ({elapsed_s:.0f}s)…_\n"
+                        )
                     else:
                         msg = (
                             f"_…waiting for the {role_cfg.provider} backend — "
-                            f"no response yet ({elapsed_s}s)…_\n"
+                            f"no response yet ({elapsed_s:.0f}s)…_\n"
                         )
                     yield Event(
                         type="assistant.text",
                         data={"text": msg, "heartbeat": True},
                     )
+        except StepNotAttemptedError as exc:
+            # No sub-provider ever saw this step, so it says nothing about the
+            # backend. Kept distinct all the way up so ``dispatch.py`` does not
+            # charge it against the role's retry cap.
+            not_attempted = exc
+            error_text = str(exc) or repr(exc)
         except Exception as exc:
             # Sub-provider raised in the child (propagated through result).
             # Includes the worker's stderr tail + exit code (see
@@ -331,19 +358,28 @@ class FleetProvider:
             # to remove.
             #
             # An UNRESOLVED future is the dangerous case: a timeout, a
-            # fast-fail, or a generator aclose() on WS disconnect. That worker
-            # is wedged and is holding a vendor CLI, so it is killed by process
-            # group. Cancel first, so the pool's failure does not resolve a
-            # future nobody is left to read.
+            # fast-fail, or a generator aclose() on WS disconnect. ``abandon``
+            # — not ``kill`` — because only the pool knows whether THIS request
+            # reached a worker: if it did, the worker is wedged holding a vendor
+            # CLI and its group is killed; if it was still queued, it owns
+            # nothing and killing the key would have failed somebody else's
+            # running step to cancel one that never started. Cancel first, so
+            # the pool's failure does not resolve a future nobody is left to
+            # read.
             if not collect.done():
                 collect.cancel()
-                pool.kill(key)
+                pool.abandon(key, collect)
 
         if error_text is not None:
             yield Event(
                 type="tool.result",
                 data={"tool_use_id": step.id, "content": error_text, "is_error": True},
             )
+            if not_attempted is not None:
+                # Same shape as the timeout bubble-up, different type on
+                # purpose: the caller must be able to tell "the backend failed"
+                # from "this step never ran".
+                raise not_attempted
             if timed_out:
                 # Bubble up so the outer pipeline aborts cleanly rather than
                 # racing on with no output for this step. _safe_run will
