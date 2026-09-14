@@ -1,4 +1,4 @@
-.PHONY: help install dev backend frontend up down logs db-init test lint typecheck format soak codex-schema
+.PHONY: help install dev backend frontend up down logs status test lint typecheck format soak codex-schema
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"}{printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -15,17 +15,24 @@ install: ## Create the venv, install Python deps (editable) and frontend deps
 	.venv/bin/python -m pip install -e '.[dev]'
 	cd frontend && npm install
 
-up: ## Start postgres via docker compose
-	docker compose up -d
+# The stack is purely host-side: the vendor CLIs authenticate through a browser,
+# which does not work from inside a container, so there is nothing to compose.
+# These targets used to call `docker compose` and `backend.app.db_init`; neither
+# a compose file nor that module has ever existed in this tree, so all four
+# failed on contact. They delegate to `setup.sh`, which is what actually runs
+# the stack.
 
-down: ## Stop all docker services
-	docker compose down
+up: ## Start backend + frontend (setup.sh)
+	./setup.sh
 
-logs: ## Tail logs for the docker stack
-	docker compose logs -f --tail=100
+down: ## Stop backend + frontend
+	./setup.sh stop
 
-db-init: ## Create tables (no migrations yet — uses metadata.create_all)
-	.venv/bin/python -m backend.app.db_init
+logs: ## Tail backend + frontend logs
+	./setup.sh logs
+
+status: ## Show which services are running
+	./setup.sh status
 
 backend: ## Run the FastAPI backend with hot reload
 	.venv/bin/uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8080

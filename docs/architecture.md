@@ -58,15 +58,14 @@ evaluation layers that keep it honest, and the gaps that remain.
 - `pydantic >= 2.9.0`, `pydantic-settings >= 2.6.0`
 - `httpx >= 0.27.2`
 - `websockets >= 13.1`
-- `claude-agent-sdk >= 0.0.10`
+- `claude-agent-sdk >= 0.2.152, < 0.3.0`
 - `python-dotenv >= 1.0.1`
 - `pyyaml >= 6.0.2` (fleet config loading)
 - Dev: `pytest >= 8.3.0`, `pytest-asyncio >= 0.24.0`,
   `pytest-httpx >= 0.32.0`, `ruff >= 0.7.0`, `mypy >= 1.13.0`.
 - Build: `hatchling`. Package wheel includes `backend/app`.
 - Ruff lint selects `E, F, I, B, UP, N, ASYNC`; line length 100.
-- `pytest` asyncio mode is `auto`; `testpaths = ["backend/tests"]`
-  (no tests are shipped in the repo today).
+- `pytest` asyncio mode is `auto`; `testpaths = ["backend/tests"]`.
 
 ### Frontend (`frontend/package.json`)
 
@@ -198,8 +197,12 @@ evaluation layers that keep it honest, and the gaps that remain.
     |-- codex.md                    The codex app-server integration
     |-- fleet.md                    Fleet concept, roles, UX
     |-- fleet-config.md             Configuration UX, presets, recipes
+    |-- core.md                     The second harness under backend/app/core
     |-- storage.md                  Filesystem session store
-    `-- vscode-integration.md       VS Code extension docs
+    |-- roadmap.md                  Harness roadmap: phases, status, rationale
+    |-- harness-roadmap.md          Why the core is shaped like pi.dev
+    |-- vscode-integration.md       VS Code extension docs
+    `-- superpowers/                Dated plan + spec records (historical)
 ```
 
 No `Dockerfile`, no `docker-compose.yml`, no `.github/workflows/` are
@@ -1470,9 +1473,27 @@ queues, in-flight approval queues, and any in-flight provider streams.
 | `MODEL_CATALOG` | (see `.env.example`) | Comma-separated `provider:model` entries the UI exposes. |
 | `LOCALCODE_FLEET_CONFIG` | unset | Optional absolute path to a fleet config file. |
 | `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | CORS allowlist. |
-| `ALLOWED_CWD_ROOTS` | empty | Comma-separated absolute roots accepted as `cwd`/`additional_dirs`. Empty = permissive. |
+| `ALLOWED_CWD_ROOTS` | `~` | Comma-separated roots accepted as `cwd`/`additional_dirs`. Default-deny: `~` is broad enough for real work while refusing `/` and `/etc`. |
 | `MESSAGES_PAGE_DEFAULT` | `50` | Default `/messages` page size. |
 | `MESSAGES_PAGE_MAX` | `500` | Cap on `/messages` page size. |
+| `DENIED_CWD_PATHS` | credential stores (see `config.py`) | Always refused even under an allowed root. |
+| `ALLOW_BYPASS_PERMISSIONS` | `false` | `bypassPermissions` disables every tool gate in the spawned CLI; off unless opted in. |
+| `TOOL_APPROVAL_TIMEOUT_S` | `300.0` | How long an approval card waits before it is denied. |
+| `CLAUDE_MAX_LIVE_CLIENTS` | `8` | Cap on concurrently-held `ClaudeSDKClient`s. |
+| `CODEX_BINARY` | `codex` | Name or path of the Codex CLI to spawn. |
+| `CODEX_STARTUP_TIMEOUT_S` | `30.0` | Budget for `codex app-server` to complete its handshake. |
+| `CODEX_REQUEST_TIMEOUT_S` | `120.0` | Per-request budget on the app-server's JSON-RPC. |
+| `FLEET_MAX_WORKERS` | `4` | Size of the fleet's worker pool. |
+| `FLEET_WORKER_IDLE_S` | `300.0` | How long an idle worker is kept before it is reaped. |
+| `FLEET_STARTUP_GRACE_S` | `90.0` | Zero output within this window means a wedged backend, not a slow one. |
+| `FLEET_STEP_TIMEOUT_S` | `1200.0` | Absolute ceiling on one sub-provider step. |
+| `FLEET_TURN_TOKEN_BUDGET` | `0` | Per-turn token budget for a fleet turn; `0` disables the cap. |
+| `ARTIFACT_ROOT` | unset | Where step artifacts are written; defaults under the session directory. |
+| `ARTIFACT_INLINE_MAX_BYTES` | `8000` | Larger step output is offloaded to an artifact and referenced. |
+| `CHECKPOINT_MIN_INTERVAL_S` | `2.0` | Floor on how often a mid-turn checkpoint is written. |
+| `CHECKPOINT_MIN_GROWTH_BYTES` | `65536` | A checkpoint also waits for this much new content. |
+| `QUOTA_PATH` | unset | Override for `quota.json`; defaults under the user-global dir. |
+| `USAGE_LOG_PATH` | unset | Override for `usage.jsonl`; defaults under the user-global dir. |
 
 ### Fleet config search order
 
