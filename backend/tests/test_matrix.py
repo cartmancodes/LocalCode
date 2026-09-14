@@ -21,7 +21,7 @@ JSON-RPC. Neither vendor CLI is installed, and neither is needed.
 
 **The gap, stated rather than papered over.** The fleet half serves its roles
 through ``collect_step`` in-process rather than through the worker *process*
-(see ``fakes/providers.FakeWorkerPool``). ``opencode`` has no fake at all and
+(see ``fakes/providers.FakeWorkerPool``). The retired ``opencode`` provider had no fake and
 is therefore absent from the matrix: it speaks HTTP + SSE to a host-side
 server, and standing one up would be a different fake from the two here. Both
 gaps are recorded in ``docs/harness.md``; neither is hidden behind a weakened

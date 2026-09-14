@@ -3,27 +3,24 @@
 ## Overview
 
 LocalCode is a local, single-user coding-agent UI and orchestrator. One
-Claude-Code-style web chat surface sits in front of three vendor backends plus
+Claude-Code-style web chat surface sits in front of two vendor backends plus
 a fleet that composes them:
 
 - **`claude`** — runs the official `claude` CLI through `claude-agent-sdk`,
   holding one connected client per session so the prompt cache stays warm.
 - **`codex`** — speaks the `codex app-server` JSON-RPC protocol over stdio to
   the official `codex` CLI, one app-server per workspace.
-- **`opencode`** — talks to a host-side `opencode serve` process over HTTP
-  and SSE.
 - **`fleet`** — runs an LLM-driven orchestrator that delegates work to
   specialist subagents (planner / developer / coder / reviewer / tester)
-  through an in-process MCP server. Subagents can be backed by any of the
-  three vendors in the same workflow, and a role configured `auto` is
-  resolved to whichever subscription has the most headroom left.
+  through an in-process MCP server. Subagents can be backed by either vendor
+  in the same workflow, and a role configured `auto` is resolved to whichever
+  subscription has the most headroom left.
 
 The application is deliberately host-side and single-user:
 
 - OAuth credentials stay in each upstream tool's own auth store
   (`~/.claude/` or the platform keychain for Claude Code, `~/.codex/` for
-  Codex, and `~/.local/share/opencode/auth.json` for OpenCode). LocalCode
-  never sees provider API keys — a source scanner
+  Codex). LocalCode never sees provider API keys — a source scanner
   (`backend/app/invariants.py`) enforces that, and
   `backend/tests/test_auth_invariant.py` runs it over the whole backend.
 - Sessions and planner artifacts are persisted as files on disk under
@@ -59,7 +56,7 @@ evaluation layers that keep it honest, and the gaps that remain.
 - `fastapi >= 0.115.0`
 - `uvicorn[standard] >= 0.32.0`
 - `pydantic >= 2.9.0`, `pydantic-settings >= 2.6.0`
-- `httpx >= 0.27.2` (OpenCode HTTP + SSE)
+- `httpx >= 0.27.2`
 - `websockets >= 13.1`
 - `claude-agent-sdk >= 0.0.10`
 - `python-dotenv >= 1.0.1`
@@ -84,11 +81,12 @@ evaluation layers that keep it honest, and the gaps that remain.
 - Plain CommonJS extension — no build step.
 - VS Code engine `^1.74.0`.
 
-### Host-side CLIs (installed by `setup.sh`)
+### Host-side CLIs
 
 - `claude` CLI (`npm i -g @anthropic-ai/claude-code`).
-- `opencode` CLI (`curl -fsSL https://opencode.ai/install | bash` →
-  `~/.opencode/bin/opencode`).
+- `codex` CLI (`npm i -g @openai/codex`) — optional, and *not* installed
+  automatically. Claude alone is a working install, so `setup.sh` reports a
+  missing `codex` as a warning rather than a failure.
 
 ## Repository Structure
 
@@ -136,7 +134,6 @@ evaluation layers that keep it honest, and the gaps that remain.
 |       |   |   |-- jsonrpc.py      StdioJsonRpc transport
 |       |   |   |-- client.py       CodexAppServer + CodexBroker (one server per workspace)
 |       |   |   `-- provider.py     CodexProvider + _Translator
-|       |   |-- opencode.py         OpenCodeProvider — HTTP + SSE against opencode serve
 |       |   |-- fleet/              FleetProvider package (split by concern — see below)
 |       |   |   |-- __init__.py     Public-API facade (re-exports the names below)
 |       |   |   |-- constants.py    VALID_ROLES/PROVIDERS, budgets, worker wire markers
@@ -195,19 +192,14 @@ evaluation layers that keep it honest, and the gaps that remain.
 |   |-- extension.js                Webview sidebar/panel embedding the LocalCode UI
 |   |-- README.md
 |   `-- media/icon.svg              Activity-bar icon
-|-- docs/
-|   |-- architecture.md             (this file)
-|   |-- harness.md                  What every provider is held to + the evaluation net
-|   |-- codex.md                    The codex app-server integration
-|   |-- fleet.md                    Fleet concept, roles, UX
-|   |-- fleet-config.md             Configuration UX, presets, recipes
-|   |-- storage.md                  Filesystem session store
-|   `-- vscode-integration.md       VS Code extension docs
-|-- stable_json/stable_json.py      Deterministic compact JSON helper
-`-- opencode/
-    |-- opencode.json               Minimal config used when setup.sh starts `opencode serve`
-    |-- multiply.py                 Small standalone sample CLI
-    `-- MEMORY_OPTIMISATIONS.md     Review notes for the sample CLI
+`-- docs/
+    |-- architecture.md             (this file)
+    |-- harness.md                  What every provider is held to + the evaluation net
+    |-- codex.md                    The codex app-server integration
+    |-- fleet.md                    Fleet concept, roles, UX
+    |-- fleet-config.md             Configuration UX, presets, recipes
+    |-- storage.md                  Filesystem session store
+    `-- vscode-integration.md       VS Code extension docs
 ```
 
 No `Dockerfile`, no `docker-compose.yml`, no `.github/workflows/` are
@@ -221,7 +213,7 @@ are stale.
 **Provider.** A protocol declared in `backend/app/orchestrator/base.py`.
 Every backend exposes `open_session(ctx)`, `run(ctx)` (async iterator of
 `Event`), `close_session(session_id)` and `aclose()`. Implementations:
-`ClaudeProvider`, `CodexProvider`, `OpenCodeProvider`, `FleetProvider`.
+`ClaudeProvider`, `CodexProvider`, `FleetProvider`.
 `close_session` exists because a provider that keeps a live per-session handle
 has to be told when a session goes away, or the handle — and the vendor CLI
 behind it — outlives the session that owned it.
@@ -473,13 +465,13 @@ Split by concern, one-way: `config` → `bus` → `turn`/`accumulator` →
 
 #### `backend/app/orchestrator/registry.py`
 - Lazily builds and caches singleton providers. `PROVIDER_NAMES` names them
-  once — `claude`, `codex`, `opencode`, `fleet` — so the builder and
-  `warm_up()` cannot drift: a provider in the builder but missing from
-  `warm_up` pays its construction cost mid-turn, and one missing from the
-  builder is a 500 on the first request that names it.
+  once — `claude`, `codex`, `fleet` — so the builder and `warm_up()` cannot
+  drift: a provider in the builder but missing from `warm_up` pays its
+  construction cost mid-turn, and one missing from the builder is a 500 on
+  the first request that names it.
 - Lock is created lazily so it binds to the running event loop (avoids
   cross-loop latching in tests).
-- `warm_up()` constructs all four at startup; `shutdown_all()` calls
+- `warm_up()` constructs all three at startup; `shutdown_all()` calls
   `aclose()` on each.
 - `_build_provider(name)` is also the seam a fleet step builds its
   sub-provider through (`fleet/collect.py` imports it inside the function, so
@@ -563,38 +555,6 @@ plus a provider and each has a different reason to change.
 - Exercised end to end against `backend/tests/fakes/fake_codex_app_server.py`,
   a real subprocess speaking the protocol. See [codex.md](codex.md).
 
-#### `backend/app/orchestrator/opencode.py`
-- `OpenCodeProvider` uses one `httpx.AsyncClient` against
-  `OPENCODE_BASE_URL` (default `http://localhost:4096`) with a 60s
-  connect timeout, `read=None` (SSE is open-ended), and
-  `Limits(max_connections=5, max_keepalive_connections=2)`.
-- `open_session()` reuses the persisted OpenCode session id from
-  `upstream_id` when present, otherwise POSTs to `/session?directory=<cwd>`
-  and returns `{"id": ...}`. `directory` is a *query* param, not a body
-  field (OpenCode silently drops unknown body keys). If an upstream session
-  was deleted and returns 404, LocalCode creates a replacement and persists
-  the new id.
-- `run()`:
-  - Splits `ctx.model` on `/` into `providerID` / `modelID` and emits a
-    clear error event if the slash is missing (no silent "openai"
-    default).
-  - Opens the SSE stream `GET /global/event` *before* firing the
-    prompt so it doesn't miss early events.
-  - POSTs `/session/{id}/prompt_async?directory=<cwd>` with body
-    `{"model": {providerID, modelID}, "parts": [{type: "text", text}]}`
-    (and `system` when set).
-  - Drains `data:` lines, unwraps the
-    `{directory, project, payload}` envelope, drops `payload.type ==
-    "sync"` duplicates, and translates inner events.
-- `_translate()` correlates `message.updated` (records user message ids
-  to skip echoes; emits `assistant.done` on assistant completion) and
-  `message.part.updated`/`message.part.added` (text deltas via
-  per-part length-seen tracking; tool parts → `assistant.tool_use` on
-  `running`/`pending`, `tool.result` on `completed`/`error`).
-- `ctx.additional_dirs` is intentionally **not forwarded** — OpenCode
-  binds each session to a single project; multi-dir grants only affect
-  Claude-provider roles.
-
 #### `backend/app/orchestrator/approvals.py`
 The one approval bus, split in two deliberately.
 
@@ -660,7 +620,7 @@ cycles. Submodules: `constants`, `models`, `prompts`, `presets`,
 `subproc`, `provider`.
 
 - Constants (`fleet/constants.py`):
-  - `VALID_PROVIDERS = ("claude", "codex", "opencode")`
+  - `VALID_PROVIDERS = ("claude", "codex")`
   - `AUTO_PROVIDER = "auto"` — deliberately **not** a member of
     `VALID_PROVIDERS`: it names no backend, and everything downstream of
     `dispatch_subagent` must only ever see a real one. The quota governor
@@ -1085,10 +1045,10 @@ error boundary, inline SVG icons, full UI styling.
   current editor), `localcode.openSidebar` (focus the sidebar view),
   `localcode.reload` (rebuild webview HTML).
 - The wrapper page is just an iframe pointing at `localcode.url`
-  (default `http://localhost:5173`). `portMapping` tunnels three
-  ports: 5173 (vite), `localcode.backendPort` (default 8080), and
-  4096 (opencode) — so the iframe's WebSocket and `fetch` calls can
-  reach the host processes from the synthetic webview origin.
+  (default `http://localhost:5173`). `portMapping` tunnels two
+  ports: 5173 (vite) and `localcode.backendPort` (default 8080) — so the
+  iframe's WebSocket and `fetch` calls can reach the host processes from the
+  synthetic webview origin.
 - Configuration runtime updates: a `onDidChangeConfiguration` listener
   refreshes both surfaces when `localcode.url` or
   `localcode.backendPort` changes.
@@ -1120,8 +1080,8 @@ sequenceDiagram
     participant WS as /api/sessions/{id}/ws
     participant R as SessionRunner
     participant S as SessionStore
-    participant P as Claude / Codex / OpenCode provider
-    participant Up as claude CLI, codex app-server, or opencode serve
+    participant P as Claude / Codex provider
+    participant Up as claude CLI or codex app-server
 
     U->>UI: types prompt, ⌘+↵
     UI->>WS: {"prompt": "..."}
@@ -1150,7 +1110,7 @@ sequenceDiagram
     participant O as OrchestratorAgent
     participant MCP as dispatch_subagent (in-process MCP)
     participant W as WorkerPool (separate OS process)
-    participant Sub as sub-provider (claude / codex / opencode)
+    participant Sub as sub-provider (claude / codex)
     participant S as SessionStore
 
     UI->>R: prompt frame
@@ -1227,7 +1187,7 @@ sequenceDiagram
 
 The `fleet` provider *is* a provider — the WebSocket layer doesn't have
 any branch for "is this multi-agent?". The fleet provider just yields
-the same `Event` stream as Claude or OpenCode.
+the same `Event` stream as Claude or Codex.
 
 ### Single-path orchestration
 
@@ -1259,9 +1219,15 @@ five-role one.
 | --- | --- | --- |
 | `planner` | `claude` | `claude-opus-4-7` |
 | `developer` | `claude` | `claude-sonnet-4-6` |
-| `coder` | `opencode` | `openai/gpt-5.3-codex` |
+| `coder` | `claude` | `claude-sonnet-4-6` |
 | `tester` | `claude` | `claude-haiku-4-5` |
 | `reviewer` | `claude` | `claude-sonnet-4-6` |
+
+The `coder` defaults to `claude` because that binary is the one every install
+already has — a default that cannot run is worse than one that can. `codex` is
+the better fit for the role when its binary is present, and the swap is one
+commented-out line in `defaults.py` (see [codex.md](codex.md)); it is also
+selectable per role in the fleet editor and in a fleet config file.
 
 Default workflow membership (`DEFAULT_FLEET_CONFIG`) is `planner +
 coder + reviewer + tester`, `entry_role="coder"`.
@@ -1273,7 +1239,7 @@ defaults to:
 | --- | --- | --- |
 | `planner` | `claude` | `claude-sonnet-4-6` |
 | `developer` | `claude` | `claude-opus-4-7` |
-| `coder` | `opencode` | `openai/gpt-5.3-codex` |
+| `coder` | `claude` | `claude-sonnet-4-6` |
 | `reviewer` | `claude` | `claude-haiku-4-5` |
 
 with `max_steps: 4`, `entry_role: coder`, no tester.
@@ -1401,15 +1367,17 @@ with a monotonic `_id` by `SessionRunner._broadcast`.
 ### CLI / Entry Points
 
 - `./setup.sh [up]` — install deps, create `.env` if missing, create
-  `.venv`, install Python/frontend deps, install Claude/OpenCode CLIs
-  if missing, start backend / OpenCode / frontend into `.run/*.pid`
-  and `.run/*.log`, wait for OpenCode `/doc` and backend
-  `/api/health`.
-- `./setup.sh login` — `claude login` + `opencode auth login`.
-- `./setup.sh stop` / `down` — stop the three processes.
+  `.venv`, install Python/frontend deps, install the `claude` CLI if
+  missing, report whether `codex` is present, start backend / frontend
+  into `.run/*.pid` and `.run/*.log`, wait for backend `/api/health`.
+  Codex needs nothing started: the backend spawns `codex app-server` per
+  workspace over stdio, so there is no long-running server to bring up.
+- `./setup.sh login` — `claude login`, then `codex login` if the binary is
+  installed. A missing `codex` is a warning, not a failure.
+- `./setup.sh stop` / `down` — stop the two processes (`down` is an alias
+  now that the stack is purely host-side).
 - `./setup.sh status` — report process state.
-- `./setup.sh logs` — tail `.run/backend.log`, `.run/frontend.log`,
-  `.run/opencode.log`.
+- `./setup.sh logs` — tail `.run/backend.log` and `.run/frontend.log`.
 - `Makefile` targets: `install`, `backend`, `frontend`, `dev`, `test`
   (`pytest -q`), `soak` (the same suite plus the `slow` soak, under
   `-W error::UserWarning` and a per-test wall clock), `lint`
@@ -1473,14 +1441,17 @@ invoked with `name == "planner"`.
 
 - Claude Code: wherever the official `claude` CLI puts them
   (`~/.claude/` on Linux, macOS keychain on Darwin).
-- OpenCode: `~/.local/share/opencode/auth.json` or
-  `~/Library/Application Support/opencode/auth.json`.
+- Codex: `~/.codex/auth.json`, written by `codex login`.
+
+`Settings.denied_cwd_paths` refuses a session `cwd` under any credential
+store, these two included. It also still lists `~/.local/share/opencode`:
+that provider is gone, but its store may well still be on disk, and a deny
+entry costs nothing.
 
 ### Volatile (lost across backend restarts)
 
 Active `SessionRunner` instances, their replay buffers and subscriber
-queues, in-flight approval queues, and any in-flight provider HTTP/SSE
-connections.
+queues, in-flight approval queues, and any in-flight provider streams.
 
 ## Configuration
 
@@ -1494,7 +1465,6 @@ connections.
 | `PORT` | `8080` | Bind port used by `setup.sh`. |
 | `LOG_LEVEL` | `INFO` | Stored on Settings; no explicit logging config is installed. |
 | `SESSION_RETENTION_DAYS` | `7` | Stale-session retention. `0` disables auto-deletion. |
-| `OPENCODE_BASE_URL` | `http://localhost:4096` | OpenCode HTTP base URL. |
 | `DEFAULT_PROVIDER` | `claude` | Default provider hint. |
 | `DEFAULT_MODEL` | `claude-sonnet-4-6` | Default model hint. |
 | `MODEL_CATALOG` | (see `.env.example`) | Comma-separated `provider:model` entries the UI exposes. |
@@ -1525,7 +1495,7 @@ ignored — never crash startup.
 | `max_review_retries` | int (≥0) | Reviewer NACK retry budget. |
 | `require_plan_approval` | bool | When true, the orchestrator's system prompt instructs it to call `request_plan_approval` between planner and coder. |
 
-Valid providers in role configs: `claude`, `opencode`. Valid role
+Valid providers in role configs: `claude`, `codex`. Valid role
 names: `planner`, `developer`, `coder`, `reviewer`, `tester`. Unknown
 roles/providers in a config file are dropped with a warning rather
 than failing the load.
@@ -1551,22 +1521,22 @@ than failing the load.
 ### External / local services
 
 - **Claude Code CLI** (`@anthropic-ai/claude-code`, installed
-  globally) — invoked through `claude-agent-sdk.query()`. Auth via
+  globally) — driven through a persistent `ClaudeSDKClient`. Auth via
   `claude login` (OAuth, host-side).
-- **OpenCode server** (`opencode serve`) — typically started by
-  `setup.sh` from the repo's `opencode/` directory on
-  `127.0.0.1:4096`. Auth via `opencode auth login` (OAuth, host-side).
+- **Codex CLI** (`@openai/codex`, optional) — spawned as
+  `codex app-server` per workspace and spoken to over stdio. No
+  long-running server to start. Auth via `codex login` (OAuth,
+  host-side).
 - **Anthropic APIs** — reached transitively through the official
   `claude` CLI.
-- **OpenAI / other OpenCode-supported providers** — reached through
-  `opencode serve`; for ChatGPT subscription models, via
-  `opencode auth login` → OpenAI.
+- **OpenAI APIs** — reached transitively through the official `codex`
+  CLI; for ChatGPT subscription models, via `codex login`.
 
 ### Network endpoints consumed
 
 - Claude Agent SDK: local CLI spawn + stream API.
-- OpenCode HTTP: `POST /session`, `POST /session/{id}/prompt_async`,
-  `GET /global/event` (SSE).
+- Codex app-server: local CLI spawn + JSON-RPC 2.0 over the child's
+  stdio. Nothing listens on a port.
 - Google Fonts CDN: Inter, JetBrains Mono, loaded by
   `frontend/index.html`. (The UI is a native VS Code-style dark theme;
   a light theme is kept as a fallback.)
@@ -1585,16 +1555,16 @@ than failing the load.
 - `curl`
 - `claude` CLI — installed automatically via
   `npm i -g @anthropic-ai/claude-code` if missing.
-- `opencode` CLI — installed automatically via
-  `curl -fsSL https://opencode.ai/install | bash` into
-  `~/.opencode/bin/opencode` if missing.
+- `codex` CLI — **optional** and never installed for you. `setup.sh`
+  reports whether it is present; without it the ChatGPT path is simply
+  unavailable. Install with `npm i -g @openai/codex`.
 
 ### One-shot bring-up
 
 ```bash
 ./setup.sh                # check deps, create .env + .venv, install deps,
-                          # start backend (8080) + opencode (4096) + frontend (5173)
-./setup.sh login          # one-time: claude login + opencode auth login
+                          # start backend (8080) + frontend (5173)
+./setup.sh login          # one-time: claude login, then codex login if installed
 ```
 
 Then open `http://localhost:5173`, pick a model from the dropdown (try
@@ -1604,7 +1574,7 @@ Other subcommands:
 
 ```bash
 ./setup.sh status
-./setup.sh logs           # tails .run/backend.log, .run/frontend.log, .run/opencode.log
+./setup.sh logs           # tails .run/backend.log, .run/frontend.log
 ./setup.sh stop           # alias: ./setup.sh down
 ```
 
@@ -1617,8 +1587,9 @@ uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8080
 cd frontend && npm run dev        # serves Vite on 5173 with /api proxy to 8080
 ```
 
-To use OpenCode-backed models you also need `opencode serve` running
-(`setup.sh` starts it for you) and `opencode auth login` completed.
+To use Codex-backed models you also need the `codex` binary on `PATH`
+and `codex login` completed. There is no server to start — the backend
+spawns `codex app-server` itself.
 
 ### Build / test / lint
 

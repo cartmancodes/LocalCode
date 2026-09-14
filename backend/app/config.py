@@ -7,12 +7,12 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-Provider = Literal["claude", "codex", "fleet", "opencode"]
+Provider = Literal["claude", "codex", "fleet"]
 
 # The same names, as data. Two validators below used to carry their own copies
 # of this tuple, so adding a provider meant editing the literal in three places
 # and silently rejecting the new name in whichever one was missed.
-PROVIDERS: tuple[str, ...] = ("claude", "codex", "fleet", "opencode")
+PROVIDERS: tuple[str, ...] = ("claude", "codex", "fleet")
 
 
 class CatalogEntry:
@@ -39,7 +39,6 @@ class Settings(BaseSettings):
     port: int = 8080
     log_level: str = "INFO"
 
-    opencode_base_url: str = "http://localhost:4096"
 
     # How long before a session is considered stale and gets swept by the
     # cleanup pass. Mirrors Claude Code's ``cleanupPeriodDays``. Set to 0 to
@@ -50,7 +49,7 @@ class Settings(BaseSettings):
     default_provider: Provider = "claude"
     default_model: str = "claude-sonnet-4-6"
     model_catalog: str = Field(
-        default="claude:claude-sonnet-4-6,codex:gpt-5.3-codex,opencode:gpt-4o-mini",
+        default="claude:claude-sonnet-4-6,codex:gpt-5.3-codex",
         description="Comma-separated provider:model entries.",
     )
 
@@ -98,7 +97,8 @@ class Settings(BaseSettings):
     # refused. Mitigates path traversal via spawned subprocesses.
     allowed_cwd_roots: str = "~"
     # Always refused even when under an allowed root. These hold the very
-    # credentials the invariant exists to protect.
+    # credentials the invariant exists to protect. The opencode entry
+    # outlives its provider deliberately: the store may still be on disk.
     denied_cwd_paths: str = (
         "~/.ssh,~/.aws,~/.gnupg,~/.config/gh,~/.claude,~/.codex,"
         "~/.local/share/opencode,~/Library/Keychains"

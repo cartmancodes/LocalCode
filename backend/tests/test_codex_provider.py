@@ -1,6 +1,6 @@
 """`CodexProvider` end to end, against the fake app-server.
 
-The claim this task makes is not "LocalCode can talk to Codex" — the OpenCode
+The claim this task makes is not "LocalCode can talk to Codex" — the retired OpenCode
 provider could already do that badly. It is that **Codex is behind the same
 harness Claude is**, and that is only true if these hold:
 
@@ -336,7 +336,7 @@ class TestHappyTurn:
         await drain(provider, mk_ctx(tmp_path, additional_dirs=[str(sibling)]))
 
         starts = [r for r in _records(record, "request") if r["method"] == "thread/start"]
-        # Half the reason this provider exists: OpenCode binds a session to one
+        # Half the reason this provider exists: OpenCode bound a session to one
         # project directory and could never be handed a sibling repo.
         assert starts[0]["params"]["additionalDirectories"] == [str(sibling)]
 

@@ -102,7 +102,7 @@ export default function Sidebar(p: Props) {
           </select>
         </div>
         {/* Permission / auto mode for the next new chat — passed straight
-            through to claude/opencode (and every fleet subagent). */}
+            through to claude/codex (and every fleet subagent). */}
         <div
           className="lc-modelsel"
           title={

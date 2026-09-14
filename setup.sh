@@ -2,11 +2,11 @@
 # LocalCode bootstrap — brings up the full stack from a clean checkout.
 #
 #   ./setup.sh            # prep + start everything in the background
-#   ./setup.sh login      # run `claude login` and `opencode auth login` interactively
-#   ./setup.sh stop       # stop backend + frontend + opencode
+#   ./setup.sh login      # run `claude login` and (if installed) `codex login`
+#   ./setup.sh stop       # stop backend + frontend
 #   ./setup.sh down       # stop everything (alias for stop now that the stack is purely host-side)
 #   ./setup.sh status     # show whether services are running
-#   ./setup.sh logs       # tail backend + frontend + opencode logs
+#   ./setup.sh logs       # tail backend + frontend logs
 #
 # Re-runnable: each step is idempotent.
 
@@ -21,14 +21,9 @@ mkdir -p "$RUN_DIR"
 VENV_DIR="$ROOT_DIR/.venv"
 BACKEND_PID="$RUN_DIR/backend.pid"
 FRONTEND_PID="$RUN_DIR/frontend.pid"
-OPENCODE_PID="$RUN_DIR/opencode.pid"
 BACKEND_LOG="$RUN_DIR/backend.log"
 FRONTEND_LOG="$RUN_DIR/frontend.log"
-OPENCODE_LOG="$RUN_DIR/opencode.log"
 
-# Where the official installer lands `opencode` on macOS / Linux.
-OPENCODE_HOME="$HOME/.opencode"
-OPENCODE_BIN="$OPENCODE_HOME/bin/opencode"
 
 # ── colours ──────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -116,7 +111,7 @@ wait_http() {
     fi
     sleep 2; elapsed=$(( elapsed + 2 ))
   done
-  fail "$label did not become ready in ${timeout}s — check $BACKEND_LOG / $OPENCODE_LOG"
+  fail "$label did not become ready in ${timeout}s — check $BACKEND_LOG"
 }
 
 # ── subcommands ──────────────────────────────────────────────────────────────
@@ -124,13 +119,11 @@ cmd_status() {
   load_env
   if is_running "$BACKEND_PID";  then ok  "backend running (pid $(cat "$BACKEND_PID"))";  else warn "backend stopped";  fi
   if is_running "$FRONTEND_PID"; then ok  "frontend running (pid $(cat "$FRONTEND_PID"))"; else warn "frontend stopped"; fi
-  if is_running "$OPENCODE_PID"; then ok  "opencode running (pid $(cat "$OPENCODE_PID"))"; else warn "opencode stopped"; fi
 }
 
 cmd_stop() {
   stop_pidfile "$BACKEND_PID"  "backend"
   stop_pidfile "$FRONTEND_PID" "frontend"
-  stop_pidfile "$OPENCODE_PID" "opencode"
 }
 
 # `down` is now an alias for `stop` — there's no docker stack to bring down
@@ -141,15 +134,14 @@ cmd_down() {
 
 cmd_logs() {
   log "tailing logs (Ctrl-C to exit)"
-  touch "$BACKEND_LOG" "$FRONTEND_LOG" "$OPENCODE_LOG"
-  tail -n 50 -F "$BACKEND_LOG" "$FRONTEND_LOG" "$OPENCODE_LOG"
+  touch "$BACKEND_LOG" "$FRONTEND_LOG"
+  tail -n 50 -F "$BACKEND_LOG" "$FRONTEND_LOG"
 }
 
-# Run `claude login` and `opencode auth login` interactively. One-shot — once a
-# provider is logged in, OpenCode/Claude reuse the OAuth token + auto-refresh,
-# so this rarely needs re-running.
+# Log each vendor CLI in, in its own CLI. One-shot — the token persists and
+# auto-refreshes, so this rarely needs re-running. LocalCode never reads these
+# stores; it spawns the CLI and lets the CLI find its own credentials.
 cmd_login() {
-  ensure_opencode_installed
   if ! command -v claude >/dev/null 2>&1; then
     fail "claude CLI not installed yet — run ./setup.sh first"
   fi
@@ -161,10 +153,17 @@ cmd_login() {
     claude login
   fi
 
-  log "logging in to OpenCode (pick OpenAI for ChatGPT subscription / Codex)"
-  "$OPENCODE_BIN" auth login
-
-  ok "login complete. Tokens persist at ~/.claude and ~/.local/share/opencode/."
+  # Codex is the ChatGPT-subscription path and is optional: Claude alone is a
+  # working install, so a missing binary is a note rather than a failure.
+  if command -v codex >/dev/null 2>&1; then
+    log "logging in to Codex (ChatGPT subscription)"
+    codex login
+    ok "login complete. Tokens persist at ~/.claude and ~/.codex/."
+  else
+    ok "login complete. Tokens persist at ~/.claude/."
+    warn "codex CLI not installed — the ChatGPT path is unavailable until you run:"
+    warn "    npm i -g @openai/codex && codex login"
+  fi
 }
 
 # Claude Code stores its OAuth token in ~/.claude/.credentials.json on Linux,
@@ -179,23 +178,22 @@ _claude_logged_in() {
   return 1
 }
 
-_opencode_logged_in() {
-  [[ -f "$HOME/.local/share/opencode/auth.json" ]] && return 0
-  [[ -f "$HOME/Library/Application Support/opencode/auth.json" ]] && return 0
+# Codex writes its own credential store; we only ask whether one exists.
+_codex_logged_in() {
+  [[ -f "$HOME/.codex/auth.json" ]] && return 0
   return 1
 }
 
-ensure_opencode_installed() {
-  if [[ -x "$OPENCODE_BIN" ]]; then
-    ok "opencode already installed ($("$OPENCODE_BIN" --version 2>/dev/null | head -1))"
-    return
+# Codex is optional. Unlike the retired OpenCode provider it needs no
+# long-running server — the backend spawns `codex app-server` per session over
+# stdio — so there is nothing to start here, only something to check for.
+check_codex() {
+  if command -v codex >/dev/null 2>&1; then
+    ok "codex installed ($(codex --version 2>/dev/null | head -1))"
+  else
+    warn "codex not installed — Claude works without it; for the ChatGPT path run:"
+    warn "    npm i -g @openai/codex && codex login"
   fi
-  log "installing opencode (host-side) — this enables OAuth flows that won't work in Docker"
-  curl -fsSL https://opencode.ai/install | bash >/dev/null
-  if [[ ! -x "$OPENCODE_BIN" ]]; then
-    fail "opencode install completed but $OPENCODE_BIN not found"
-  fi
-  ok "opencode installed at $OPENCODE_BIN"
 }
 
 cmd_up() {
@@ -250,8 +248,8 @@ cmd_up() {
     ok "claude CLI already installed ($(claude --version 2>/dev/null | head -1))"
   fi
 
-  # 4c. OpenCode CLI (host-side) — required for OAuth flows; can't run in Docker.
-  ensure_opencode_installed
+  # 4c. Codex CLI (optional) — the ChatGPT-subscription path.
+  check_codex
 
   # 5. Sessions are stored on disk under <session.cwd>/.localcode/sessions/
   #    plus a user-global index at ~/.localcode/sessions-index.json. No
@@ -273,16 +271,6 @@ cmd_up() {
     ok "backend started (pid $(cat "$BACKEND_PID")) — log: $BACKEND_LOG"
   fi
 
-  # 9. Start opencode serve on host so OAuth tokens at ~/.local/share/opencode/ work.
-  if is_running "$OPENCODE_PID"; then
-    warn "opencode already running (pid $(cat "$OPENCODE_PID")) — leaving as-is"
-  else
-    log "starting opencode serve on :4096"
-    (cd "$ROOT_DIR/opencode" && nohup "$OPENCODE_BIN" serve --hostname 127.0.0.1 --port 4096 \
-      </dev/null >>"$OPENCODE_LOG" 2>&1 & echo $! >"$OPENCODE_PID"; disown 2>/dev/null || true)
-    ok "opencode started (pid $(cat "$OPENCODE_PID")) — log: $OPENCODE_LOG"
-  fi
-  wait_http "http://localhost:4096/doc" 30 "opencode server"
 
   # 10. Start frontend (vite) in the background
   if is_running "$FRONTEND_PID"; then
@@ -299,7 +287,7 @@ cmd_up() {
   # 12. Nudge the user to log in if either OAuth token is missing.
   local need_login=()
   if ! _claude_logged_in; then need_login+=("claude"); fi
-  if ! _opencode_logged_in; then need_login+=("opencode"); fi
+  if command -v codex >/dev/null 2>&1 && ! _codex_logged_in; then need_login+=("codex"); fi
   if (( ${#need_login[@]} > 0 )); then
     warn "not yet authenticated: ${need_login[*]}"
     warn "  Run:  ./setup.sh login   (one-time browser-based login; tokens are reused thereafter)"
@@ -311,16 +299,15 @@ ${C_OK}LocalCode is up.${C_END}
 
   UI:        http://localhost:5173
   Backend:   http://localhost:${PORT:-8080}/api/health
-  OpenCode:  http://localhost:4096   (host process — needed for OAuth flows.)
 
   Sessions: stored on disk under <session.cwd>/.localcode/sessions/
             (index at ~/.localcode/sessions-index.json). Auto-swept after
             SESSION_RETENTION_DAYS days on backend startup.
 
-  ./setup.sh login   # one-shot Claude + OpenCode login (browser opens)
-  ./setup.sh logs    # tail backend + frontend + opencode
+  ./setup.sh login   # one-shot Claude (+ Codex) login (browser opens)
+  ./setup.sh logs    # tail backend + frontend
   ./setup.sh status  # show what's running
-  ./setup.sh stop    # stop backend + frontend + opencode
+  ./setup.sh stop    # stop backend + frontend
   ./setup.sh down    # alias for stop (no docker stack anymore)
 
 EOF

@@ -1,7 +1,7 @@
 """Agent definitions — the registry entries the orchestrator dispatches to.
 
 This is the v2 shape, modelled after Claude Code's ``AgentDefinition`` and
-OpenCode's agent frontmatter. It's deliberately a superset of the existing
+Codex's agent TOML. It's deliberately a superset of the existing
 ``RoleConfig`` so we can convert legacy fleet configs into a registry without
 losing information.
 
@@ -19,7 +19,7 @@ from typing import Any
 class AgentDef:
     """One subagent in the orchestrator's registry.
 
-    Mirrors Claude Code's ``AgentDefinition`` / OpenCode's agent frontmatter:
+    Mirrors Claude Code's ``AgentDefinition`` / Codex's agent TOML:
 
       - ``name`` is the unique identifier the orchestrator passes to the
         ``dispatch_subagent`` tool.
@@ -28,7 +28,7 @@ class AgentDef:
         ("produces a Markdown plan"), not behavioural ("you are a helpful…").
       - ``provider`` + ``model`` route the dispatch to a concrete sub-provider
         (``claude`` → claude-agent-sdk, ``codex`` → the app-server,
-        ``opencode`` → opencode HTTP). It may also be ``"auto"``
+        ``codex`` → codex app-server). It may also be ``"auto"``
         (``fleet.constants.AUTO_PROVIDER``), which names no backend: the quota
         governor resolves it to whichever candidate subscription has the most
         headroom left, at the single site where a role becomes a ``RoleConfig``

@@ -53,10 +53,11 @@ trivia.
 
 ## 3. The structural shift
 
-Today the two backends are asymmetric: Claude goes through a first-party SDK,
-ChatGPT goes through OpenCode's HTTP/SSE server. That asymmetry is why
-approvals, interrupts, sandboxing and `additional_dirs` all work on one side
-and not the other.
+When this was written the two backends were asymmetric: Claude went through a
+first-party SDK, ChatGPT through the third-party OpenCode HTTP/SSE server. That
+asymmetry is why approvals, interrupts, sandboxing and `additional_dirs` worked
+on one side and not the other — and, once Codex closed the gap, why the
+OpenCode provider was retired rather than kept alongside.
 
 Since March 2026 the Codex CLI ships an **app-server** — a JSON-RPC 2.0 agent
 runtime with threads, turns, streaming items and bidirectional approval
@@ -65,8 +66,8 @@ the two sides symmetric, which is what lets one set of harness features apply
 to both.
 
 ```text
-TODAY                                TARGET
-─────                                ──────
+BEFORE                               TARGET
+──────                               ──────
 FastAPI + WS                         Control plane
  (9-type Event union)                 (ACP-shaped bus, artifacts, quota)
    ├─ claude   one-shot query()        ├─ ClaudeSDKClient   persistent
@@ -86,7 +87,7 @@ FastAPI + WS                         Control plane
 | :--- | :--- | :--- | :--- |
 | Claude turn | `query()` spawns a fresh `claude` CLI per turn (`orchestrator/claude.py`) | Zero prompt-cache reuse; no interrupt; no hooks; cold start every message | Hold a `ClaudeSDKClient` per session |
 | Permissions | Unknown mode silently becomes `acceptEdits` (`claude.py:55-60`) | Privilege escalation on every fleet step, by default, to dodge a hang | `can_use_tool` answering into the existing approval channel |
-| ChatGPT path | `opencode serve` + client-side filter of `/global/event` (`orchestrator/opencode.py`) | Every project's events cross the wire; breaks on opencode releases; no approvals, no `add_dirs` | `codex app-server` over JSON-RPC |
+| ChatGPT path | `opencode serve` + client-side filter of `/global/event` (the since-deleted `orchestrator/opencode.py`) | Every project's events cross the wire; breaks on opencode releases; no approvals, no `add_dirs` | `codex app-server` over JSON-RPC |
 | Fleet step | `python -m …fleet.subproc` per dispatch | Interpreter + SDK import + CLI spawn per step — the exact infra overhead worth six benchmark points | Long-lived clients; the SDK deadlock it works around disappears |
 | Tool limits | Bans written in prose in `ORCHESTRATOR_SYSTEM` | Prose is not enforcement — one confident model ignores all of it | `disallowed_tools` / tool preset / read-only sandbox |
 | Subagent return | `collect_text` returns the whole transcript | Context runaway in the orchestrator; compaction fires early and often | `{summary, structured, artifact_refs}` envelope |
@@ -139,8 +140,10 @@ later harness feature apply to both vendors at once.
   central value proposition — the user learns one approval UI, not two.
 - Pin the CLI and regenerate types in CI via
   `codex app-server generate-json-schema`; the schema drifts per release.
-- Keep OpenCode as an optional third provider for local and non-frontier
-  models. Demote it from the ChatGPT path.
+- Demote OpenCode from the ChatGPT path. It was to stay on as an optional
+  third provider for local and non-frontier models; in the event it was
+  deleted instead. Once Codex was a peer, nothing routed through it, and an
+  HTTP provider nobody selects is a maintenance surface with no user.
 
 **Done when** a fleet run mixes a Claude planner and a Codex coder, and both
 raise approval cards through the same UI with the same semantics.

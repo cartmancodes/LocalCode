@@ -16,7 +16,6 @@ This starts:
 
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:8080`
-- OpenCode: `http://localhost:4096`
 
 Check service state with:
 
@@ -177,6 +176,6 @@ Or edit `settings.json` directly:
 VS Code webviews run with a sandboxed origin and cannot freely access localhost services. LocalCode uses two pieces to make the UI work inside VS Code:
 
 1. The webview HTML wraps the frontend in an iframe, usually `http://localhost:5173`.
-2. `portMapping` maps the LocalCode ports through the extension host: frontend, backend, and OpenCode.
+2. `portMapping` maps the LocalCode ports through the extension host: frontend and backend.
 
 `retainContextWhenHidden: true` is set on both the sidebar and panel so an active chat connection is not dropped when you switch files.

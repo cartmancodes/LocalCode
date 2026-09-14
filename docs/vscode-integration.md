@@ -54,7 +54,7 @@ Then reload the window.
 The extension is a viewer. It does not start anything. Bring up the LocalCode stack first:
 
 ```bash
-./setup.sh up    # backend :8080, opencode :4096, frontend :5173
+./setup.sh up    # backend :8080, frontend :5173
 ```
 
 If the frontend isn't running, the webview shows a blank page (or vite's default "Cannot GET /" depending on whether port 5173 has anything listening). The reload command below re-fetches the iframe.
@@ -102,7 +102,7 @@ Everything interesting — chat state, agent dispatch, persistence — happens i
 VS Code webviews run with a synthetic `vscode-webview://...` origin and CORS rules that block direct outbound calls to `localhost:5173` and friends. Two pieces unblock the LocalCode UI:
 
 - **The iframe.** The webview HTML is just `<iframe src="http://localhost:5173">`. The iframe runs in a normal browser context with its own origin (`http://localhost:5173`), and from there WebSocket and fetch calls to other localhost ports work like any browser-tab dev session.
-- **`portMapping`.** Even with the iframe, the extension host has to grant permission for the webview to reach those ports. `portMapping` declares the allowed `(webviewPort, extensionHostPort)` pairs; we map 5173 (frontend), the configurable backend port (default 8080), and 4096 (opencode). Without this, even an iframe gets blocked.
+- **`portMapping`.** Even with the iframe, the extension host has to grant permission for the webview to reach those ports. `portMapping` declares the allowed `(webviewPort, extensionHostPort)` pairs; we map 5173 (frontend) and the configurable backend port (default 8080). Without this, even an iframe gets blocked.
 
 ```js
 // extension.js — portMappings() builds this per call so the backend
@@ -110,7 +110,6 @@ VS Code webviews run with a synthetic `vscode-webview://...` origin and CORS rul
 portMapping: [
   { webviewPort: 5173, extensionHostPort: 5173 },          // vite frontend
   { webviewPort: backend, extensionHostPort: backend },     // FastAPI (default 8080)
-  { webviewPort: 4096, extensionHostPort: 4096 },           // opencode
 ]
 ```
 

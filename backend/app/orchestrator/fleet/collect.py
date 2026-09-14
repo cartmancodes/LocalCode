@@ -83,7 +83,7 @@ async def collect_step(
     # Build a FRESH provider rather than the shared registry singleton: the
     # singleton's asyncio.Lock is bound to the main loop and would explode
     # when touched from this isolated thread's loop. A per-step provider is
-    # loop-local and correct; we close it below so opencode's httpx client
+    # loop-local and correct; we close it below so a provider's HTTP client
     # (bound to this loop) doesn't leak.
     from ..registry import _build_provider
 

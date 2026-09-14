@@ -1,7 +1,7 @@
 [project]
 name = "localcode-orchestrator"
 version = "0.1.0"
-description = "Provider-agnostic abstraction over Claude Code and OpenCode."
+description = "Provider-agnostic abstraction over Claude Code and Codex."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",

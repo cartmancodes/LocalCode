@@ -1,6 +1,6 @@
 # Fleet — orchestrator-driven multi-agent workflow
 
-The `fleet` provider treats your prompt as a **workflow** rather than a single agent call. An LLM-driven **Orchestrator** reads your request, decides which specialist subagents to dispatch, runs them in isolated contexts, reasons about their results, and re-dispatches as needed. The orchestrator itself is a [claude-agent-sdk](https://docs.anthropic.com/en/api/agent-sdk) session running its own ReAct loop; subagents are dispatched via a custom MCP tool, so the same orchestrator can reach both Claude- and OpenCode-backed workers.
+The `fleet` provider treats your prompt as a **workflow** rather than a single agent call. An LLM-driven **Orchestrator** reads your request, decides which specialist subagents to dispatch, runs them in isolated contexts, reasons about their results, and re-dispatches as needed. The orchestrator itself is a [claude-agent-sdk](https://docs.anthropic.com/en/api/agent-sdk) session running its own ReAct loop; subagents are dispatched via a custom MCP tool, so the same orchestrator can reach both Claude- and Codex-backed workers.
 
 This is the same shape Claude Code and OpenCode use for their main-session-with-Task-tool pattern, with one difference: our `dispatch_subagent` MCP tool routes provider-agnostically, so a single orchestrator can mix providers in one workflow.
 
@@ -12,7 +12,7 @@ For the deep technical reference (event streams, cancellation, MCP layer, design
 | :----------- | :-------------------------------------------------------------------------- | :----------------------- |
 | **Planner**  | Produces a comprehensive Markdown implementation plan with file paths, complete code, test commands, and bite-sized steps. The plan is committed to `.localcode/plans/<timestamp>-<slug>.md`. | `claude-opus-4-7`        |
 | **Developer** *(optional)* | Extra design pass — interfaces, files, edge cases. No code. Used only when the plan needs more architectural detail. | `claude-sonnet-4-6`      |
-| **Coder**    | Executes the plan task-by-task using file-edit and bash tools. MUST use tools, not just describe intent. | `openai/gpt-5.3-codex` (via OpenCode) |
+| **Coder**    | Executes the plan task-by-task using file-edit and bash tools. MUST use tools, not just describe intent. | `claude-sonnet-4-6`      |
 | **Reviewer** | Verifies plan compliance + code quality on disk. Replies `LGTM` or `NACK: <reason>`. | `claude-sonnet-4-6`      |
 | **Tester**   | Final gate. Writes executable tests and runs them. Replies `LGTM`, `NACK_CODE` (impl bug), or `NACK_TESTS` (test bug). | `claude-haiku-4-5`       |
 
@@ -33,10 +33,10 @@ If one of the core roles is not registered, the orchestrator continues with the 
 ## When to use it
 
 - **Multi-phase tasks** (plan → code → review → test).
-- **Cost optimization**: keep `claude-opus-4-7` on planning, cheaper opencode-routed `gpt-5.3-codex` on the bulk implementation work, mid-tier sonnet on review, haiku on the test pass.
+- **Cost optimization**: keep `claude-opus-4-7` on planning, cheaper `codex:gpt-5.3-codex` on the bulk implementation work, mid-tier sonnet on review, haiku on the test pass.
 - **Anything you'd hand-prompt one agent through "first plan, then code, then review, then write tests."**
 
-When **not** to use it: short factual questions, one-shots, or tasks where you'd rather keep the conversational thread inside one model. Fleet adds 1–4 LLM hops; trivial prompts feel slower with it on. Pick a direct `claude:…` or `opencode:…` model in those cases.
+When **not** to use it: short factual questions, one-shots, or tasks where you'd rather keep the conversational thread inside one model. Fleet adds 1–4 LLM hops; trivial prompts feel slower with it on. Pick a direct `claude:…` or `codex:…` model in those cases.
 
 ## How a turn flows
 
@@ -65,7 +65,7 @@ assistant.text         "_Plan saved to_ `<...>/.localcode/plans/<timestamp>-<slu
                        ↓
                        (orchestrator decides what's next, possibly with its own narrative)
                        ↓
-assistant.tool_use     name="coder [opencode:openai/gpt-5.3-codex]"
+assistant.tool_use     name="coder [claude:claude-sonnet-4-6]"
 …
 assistant.done         duration_ms=…
 ```
@@ -96,8 +96,8 @@ roles:                              # registry — only these agents run
     provider: claude
     model: claude-opus-4-7
   coder:
-    provider: opencode
-    model: openai/gpt-5.3-codex
+    provider: codex
+    model: gpt-5.3-codex
   reviewer:
     provider: claude
     model: claude-sonnet-4-6

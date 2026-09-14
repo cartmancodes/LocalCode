@@ -32,8 +32,8 @@ roles:
     model: claude-opus-4-7
 
   coder:
-    provider: opencode
-    model: openai/gpt-5.3-codex
+    provider: codex
+    model: gpt-5.3-codex
 
   reviewer:
     provider: claude
@@ -45,8 +45,8 @@ roles:
 # entry_role: coder
 # roles:
 #   coder:
-#     provider: opencode
-#     model: openai/gpt-5.3-codex
+#     provider: codex
+#     model: gpt-5.3-codex
 
 # Plan + code (no design, no review):
 #
@@ -54,4 +54,4 @@ roles:
 # entry_role: coder
 # roles:
 #   planner: { provider: claude, model: claude-sonnet-4-6 }
-#   coder:   { provider: opencode, model: openai/gpt-5.3-codex }
+#   coder:   { provider: codex, model: gpt-5.3-codex }

@@ -1,4 +1,4 @@
-"""``FleetProvider`` — composes Claude + OpenCode into a multi-agent workflow.
+"""``FleetProvider`` — composes the providers into a multi-agent workflow.
 
 Stateless across turns: every per-turn datum is a local in ``run()`` so
 concurrent turns sharing the singleton can't clobber each other's state.
@@ -41,7 +41,7 @@ _REPO_ROOT = str(Path(__file__).resolve().parents[__name__.count(".")])
 
 
 class FleetProvider:
-    """Composes Claude + OpenCode into a planner/coder/reviewer workflow.
+    """Composes Claude and Codex into a planner/coder/reviewer workflow.
 
     Stateless across turns — every per-turn datum is a local in `run()` so
     concurrent turns don't clobber each other's state.

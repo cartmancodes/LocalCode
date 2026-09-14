@@ -92,7 +92,7 @@ DEFAULT_WINDOWS: dict[str, tuple[tuple[str, float], ...]] = {
     # A 5-hour rolling window AND a weekly cap, per the plan spec.
     "codex": (("five_hour", FIVE_HOURS_S), ("weekly", ONE_WEEK_S)),
 }
-# A provider with no row (``opencode``, or one added later) still gets a window
+# A provider with no row (one added later) still gets a window
 # rather than silently having no ledger at all.
 _FALLBACK_WINDOWS: tuple[tuple[str, float], ...] = (("five_hour", FIVE_HOURS_S),)
 

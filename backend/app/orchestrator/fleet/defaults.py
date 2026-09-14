@@ -3,7 +3,7 @@
 Default model picks reflect the economic intent of the fleet:
   - planner  → biggest Claude (deep decomposition is worth the cost)
   - developer→ mid-tier Claude (used only when the plan needs more design)
-  - coder    → cheap opencode-routed codex (mechanical execution)
+  - coder    → mid-tier Claude by default; `codex` when its binary is present
   - tester   → cheap Claude haiku (writes + runs tests; doesn't reason much)
   - reviewer → mid-tier Claude (LGTM/NACK gate needs real judgement)
 """
@@ -31,20 +31,22 @@ ROLE_LIBRARY: dict[str, RoleConfig] = {
         model="claude-sonnet-4-6",
         system_prompt=DEVELOPER_SYSTEM,
     ),
-    # The ChatGPT-side coder. It stays on `opencode` deliberately: the `codex`
-    # provider (Task 10) is the better path — real approvals, real
-    # additional_dirs — but the `codex` binary is not installed on this
-    # machine, and a default that cannot run is worse than one that can. The
-    # switch is one line; see docs/codex.md.
+    # The coder defaults to `claude` because that binary is the one every
+    # install already has — a default that cannot run is worse than one that
+    # can. `codex` is the better fit for this role when its binary is present
+    # (a cheaper model doing the mechanical work, with real approvals and real
+    # additional_dirs); it is one line, and the fleet editor offers it per role:
     #
     #   "coder": RoleConfig(
     #       provider="codex",
     #       model="gpt-5.3-codex",
     #       system_prompt=CODER_SYSTEM,
     #   ),
+    #
+    # See docs/codex.md for what `codex login` needs first.
     "coder": RoleConfig(
-        provider="opencode",
-        model="openai/gpt-5.3-codex",
+        provider="claude",
+        model="claude-sonnet-4-6",
         system_prompt=CODER_SYSTEM,
     ),
     "tester": RoleConfig(

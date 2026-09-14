@@ -147,7 +147,7 @@ The one honest gap is `context`. Everything else maps.
 | :--- | :--- | :--- | :--- |
 | Claude turn | `query()` spawns a fresh `claude` CLI per turn (`orchestrator/claude.py`) | Zero prompt-cache reuse; no interrupt; no hooks | Persistent `ClaudeSDKClient` engine |
 | Permissions | Unknown mode silently becomes `acceptEdits` | Privilege escalation on every fleet step, to dodge a hang | `tool_call` hook → `can_use_tool` → `extension_ui_request` |
-| ChatGPT path | `opencode serve` + client-side filter of `/global/event` | Every project's events cross the wire; breaks on opencode releases; no approvals | `codex app-server` engine |
+| ChatGPT path | `opencode serve` + client-side filter of `/global/event` (since deleted) | Every project's events cross the wire; breaks on opencode releases; no approvals | `codex app-server` engine |
 | Sessions | Flat JSONL, no `parentId`, no fork, no compaction record | Cannot branch; engine compaction is invisible | Pi's entry schema (`core/session_manager.py`) |
 | Protocol | 9-type custom WS union; WS only | UI-specific; no stdio, no editors, no CI | Pi's RPC commands + events on WS *and* stdio |
 | Extensibility | None | Every workflow change is a core change | `on` / `register_tool` / `register_command`; packages |

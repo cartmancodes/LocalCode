@@ -345,7 +345,7 @@ class CodexAppServer:
         """Open a new thread rooted at ``cwd``.
 
         ``additional_dirs`` is forwarded, and that is half the reason this
-        provider exists: OpenCode binds a session to exactly one project
+        provider existed: OpenCode bound a session to exactly one project
         directory and exposes only a binary ``external_directory`` permission,
         so a ChatGPT-side role could never be given a sibling repo. Here it is
         just a field.

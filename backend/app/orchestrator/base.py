@@ -54,8 +54,8 @@ class RunContext:
     # None for a plain single-agent session. Selects the ToolPolicy.
     role: str | None = None
     # Extra absolute paths the agent's tools may operate on beyond `cwd`.
-    # Supported by ClaudeProvider via `add_dirs`; OpenCode currently has no
-    # equivalent so they're informational there.
+    # Supported by ClaudeProvider via `add_dirs` and by CodexProvider via
+    # `additionalDirectories` on thread/start.
     additional_dirs: list[str] = field(default_factory=list)
     upstream_session_id: str | None = None
     system_prompt: str | None = None
@@ -81,8 +81,6 @@ class Provider(Protocol):
     Implementations:
       - ClaudeProvider: spawns claude-agent-sdk; the CLI authenticates via the
         host's `claude login` OAuth token.
-      - OpenCodeProvider: talks to `opencode serve` HTTP API; OpenCode reads
-        its own OAuth credentials from ~/.local/share/opencode/auth.json.
     """
 
     name: str

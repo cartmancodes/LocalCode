@@ -7,7 +7,6 @@ from .base import Provider
 from .claude import ClaudeProvider
 from .codex import CodexProvider
 from .fleet import FleetProvider
-from .opencode import OpenCodeProvider
 
 _singletons: dict[str, Provider] = {}
 _lock: asyncio.Lock | None = None
@@ -22,14 +21,14 @@ def _get_lock() -> asyncio.Lock:
     return _lock
 
 
-ProviderName = Literal["claude", "codex", "opencode", "fleet"]
+ProviderName = Literal["claude", "codex", "fleet"]
 
 # Every provider the registry can build. Named once so `_build_provider`,
 # `get_provider` and `warm_up` cannot drift: a provider registered in the
 # builder but missing from warm_up pays its construction cost mid-turn
 # instead of at boot, and one missing from the builder is a 500 on the first
 # request that names it.
-PROVIDER_NAMES: tuple[str, ...] = ("claude", "codex", "opencode", "fleet")
+PROVIDER_NAMES: tuple[str, ...] = ("claude", "codex", "fleet")
 
 
 def _build_provider(name: ProviderName) -> Provider:
@@ -37,8 +36,6 @@ def _build_provider(name: ProviderName) -> Provider:
         return ClaudeProvider()
     if name == "codex":
         return CodexProvider()
-    if name == "opencode":
-        return OpenCodeProvider()
     if name == "fleet":
         return FleetProvider()
     raise ValueError(f"Unknown provider: {name}")  # pragma: no cover
@@ -49,7 +46,7 @@ async def get_provider(name: ProviderName) -> Provider:
 
     Async + lock-guarded to prevent two concurrent first-callers from each
     constructing a provider (and leaking the loser's resources — e.g.
-    OpenCodeProvider's httpx client). Cheap fast-path: most calls just hit
+    a provider's HTTP client). Cheap fast-path: most calls just hit
     the dict.
     """
     inst = _singletons.get(name)

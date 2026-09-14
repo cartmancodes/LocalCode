@@ -6,6 +6,7 @@ Configuration sources (first hit wins):
   3. ``<orchestrator-cwd>/.localcode/fleet.{yaml,yml,json}``
   4. built-in defaults
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -163,7 +164,8 @@ def _merge_config(base: FleetConfig, override: dict[str, Any]) -> FleetConfig:
             if k not in VALID_ROLES:
                 logger.warning(
                     "fleet config: 'roles.%s' unknown (allowed: %s); ignoring",
-                    k, list(VALID_ROLES),
+                    k,
+                    list(VALID_ROLES),
                 )
     else:
         role_names = base.role_names()
@@ -183,9 +185,7 @@ def _merge_config(base: FleetConfig, override: dict[str, Any]) -> FleetConfig:
 
         per_role = (raw_roles.get(name) or {}) if isinstance(raw_roles, dict) else {}
         if not isinstance(per_role, dict):
-            logger.warning(
-                "fleet config: 'roles.%s' must be a mapping; using defaults", name
-            )
+            logger.warning("fleet config: 'roles.%s' must be a mapping; using defaults", name)
             per_role = {}
 
         provider = per_role.get("provider", role_base.provider)
@@ -193,13 +193,29 @@ def _merge_config(base: FleetConfig, override: dict[str, Any]) -> FleetConfig:
         # resolved to one of them by the quota governor at dispatch time (see
         # ``constants.AUTO_PROVIDER``). Validating it here would reject the
         # one value whose whole point is to be decided later.
-        if provider != AUTO_PROVIDER and provider not in VALID_PROVIDERS:
+        provider_rejected = provider != AUTO_PROVIDER and provider not in VALID_PROVIDERS
+        if provider_rejected:
             logger.warning(
-                "fleet config: 'roles.%s.provider'=%r invalid (allowed: %s); using default %r",
-                name, provider, VALID_PROVIDERS, role_base.provider,
+                "fleet config: 'roles.%s.provider'=%r invalid (allowed: %s); using default "
+                "%r with its model %r — the configured model belonged to the rejected "
+                "provider and would not resolve",
+                name,
+                provider,
+                VALID_PROVIDERS,
+                role_base.provider,
+                role_base.model,
             )
             provider = role_base.provider
-        model = str(per_role.get("model") or role_base.model).strip()
+        # A provider and its model are a pair: a model name is only meaningful
+        # to the provider it was written for. Keeping the configured model
+        # after falling back on the provider is how a stale config
+        # (``opencode:openai/gpt-5.3-codex``) became ``claude:openai/gpt-5.3-codex``
+        # — a combination that resolves nowhere and fails at dispatch.
+        model = (
+            role_base.model
+            if provider_rejected
+            else str(per_role.get("model") or role_base.model).strip()
+        )
         if not model:
             logger.warning("fleet config: 'roles.%s.model' empty; using default", name)
             model = role_base.model
@@ -218,15 +234,11 @@ def _merge_config(base: FleetConfig, override: dict[str, Any]) -> FleetConfig:
         roles=resolved_roles,
         entry_role=entry_role,
         max_steps=max(1, int(override.get("max_steps", base.max_steps))),
-        max_review_retries=max(
-            0, int(override.get("max_review_retries", base.max_review_retries))
-        ),
+        max_review_retries=max(0, int(override.get("max_review_retries", base.max_review_retries))),
         require_plan_approval=bool(
             override.get("require_plan_approval", base.require_plan_approval)
         ),
-        always_full_crew=bool(
-            override.get("always_full_crew", base.always_full_crew)
-        ),
+        always_full_crew=bool(override.get("always_full_crew", base.always_full_crew)),
     )
 
 

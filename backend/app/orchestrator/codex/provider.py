@@ -1,7 +1,7 @@
 """Codex as a first-class peer: `codex app-server` behind the same harness.
 
 The point of this module is not that LocalCode can talk to Codex — the
-OpenCode provider already could, after a fashion. The point is that everything
+the retired OpenCode provider already could, after a fashion. The point is that everything
 Tasks 2-9 built for Claude now applies to Codex unchanged:
 
 * **One approval bus, not two.** ``execCommandApproval`` and
@@ -18,7 +18,7 @@ Tasks 2-9 built for Claude now applies to Codex unchanged:
   them, so a ``codex`` fleet role is bounded by the same table a ``claude``
   one is.
 * **Extra directories work.** ``additional_dirs`` is forwarded to
-  ``thread/start``. OpenCode could not do this at all (it binds a session to
+  ``thread/start``. The retired OpenCode provider could not (it bound a session to
   one project directory), which is half the reason this provider exists.
 
 :class:`_TurnBinding` is the subtle part; read its docstring before changing

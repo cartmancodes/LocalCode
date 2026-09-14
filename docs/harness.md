@@ -1,7 +1,7 @@
 # The harness
 
-LocalCode drives three vendor coding agents through one chat surface. This
-document is about the layer that makes that a single system rather than three
+LocalCode drives two vendor coding agents through one chat surface. This
+document is about the layer that makes that a single system rather than two
 integrations sitting next to each other: what every provider is held to, where
 each guarantee is enforced, and which tests would fail if it stopped being true.
 
@@ -15,11 +15,10 @@ about what the harness *promises* — and what it does not.
 **LocalCode never reads a credential store and never holds a vendor key.**
 
 Each vendor CLI authenticates itself: `claude login` writes an OAuth token to
-`~/.claude/` (or the platform keychain), `codex login` to `~/.codex/`, and
-`opencode auth login` to `~/.local/share/opencode/auth.json`. The orchestrator
-spawns the CLI and never looks inside any of those files. It also never assigns
-an `*_API_KEY`, `*_OAUTH_TOKEN` or `*_SESSION_KEY` from anything, and never
-shells out to the keychain.
+`~/.claude/` (or the platform keychain), and `codex login` to `~/.codex/`. The
+orchestrator spawns the CLI and never looks inside either of those files. It
+also never assigns an `*_API_KEY`, `*_OAUTH_TOKEN` or `*_SESSION_KEY` from
+anything, and never shells out to the keychain.
 
 This is not a convention. `backend/app/invariants.py` is a source scanner, and
 `backend/tests/test_auth_invariant.py` runs it over the whole of
@@ -90,18 +89,18 @@ request alike (`backend/tests/test_matrix.py`).
 
 ## 3. The providers
 
-| | `claude` | `codex` | `opencode` |
-| :-- | :-- | :-- | :-- |
-| Transport | `claude-agent-sdk` → `claude` CLI | JSON-RPC over stdio → `codex app-server` | HTTP + SSE → `opencode serve` |
-| Auth | `claude login` | `codex login` | `opencode auth login` |
-| Streaming text | yes (token deltas) | yes (item updates, suffix-only) | yes (part deltas) |
-| Tool cards | yes | yes (commands, patches, MCP, web search) | yes |
-| Approvals through the one bus | yes (`can_use_tool`) | yes (`execCommandApproval`, `applyPatchApproval`) | **no** — OpenCode resolves permissions itself via `opencode.json` |
-| Role policy enforced | yes | **only when the app-server asks** — see below | partial — tool policy is not forwarded |
-| `additional_dirs` | yes (`add_dirs`) | yes (`additionalDirectories`) | **no** — a session is bound to one project |
-| Persistent session across turns | yes (one `ClaudeSDKClient` per session) | yes (one app-server per workspace, thread resumed) | yes (upstream session id) |
-| Vendor-reported rate limits | yes (`RateLimitEvent`) | unverified — read if present, see `codex/protocol.py` A11 | no |
-| Metered by the quota governor | yes | yes | no (locally estimated only) |
+| | `claude` | `codex` |
+| :-- | :-- | :-- |
+| Transport | `claude-agent-sdk` → `claude` CLI | JSON-RPC over stdio → `codex app-server` |
+| Auth | `claude login` | `codex login` |
+| Streaming text | yes (token deltas) | yes (item updates, suffix-only) |
+| Tool cards | yes | yes (commands, patches, MCP, web search) |
+| Approvals through the one bus | yes (`can_use_tool`) | yes (`execCommandApproval`, `applyPatchApproval`) |
+| Role policy enforced | yes | **only when the app-server asks** — see below |
+| `additional_dirs` | yes (`add_dirs`) | yes (`additionalDirectories`) |
+| Persistent session across turns | yes (one `ClaudeSDKClient` per session) | yes (one app-server per workspace, thread resumed) |
+| Vendor-reported rate limits | yes (`RateLimitEvent`) | unverified — read if present, see `codex/protocol.py` A11 |
+| Metered by the quota governor | yes | yes |
 
 The codex column is pinned to a protocol read from documentation rather than
 observed against a live binary — every assumption is listed in
@@ -390,11 +389,6 @@ and read streaming, byte-identical.
 
 Stated here rather than hidden behind a weakened assertion:
 
-- **`opencode` is absent from the matrix.** It speaks HTTP + SSE to a
-  host-side server; standing one up would be a third fake, unlike the two that
-  already exist. It is also the provider that forwards neither the tool policy
-  nor `additional_dirs`, so a matrix row for it would fail several cells
-  honestly rather than pass them.
 - **The fleet cells do not cross the worker *process* boundary.**
   `fakes/providers.FakeWorkerPool` serves the pool's contract in-process,
   running the same `collect_step` call `fleet/subproc.py` makes in the child.
@@ -452,7 +446,7 @@ open rather than being silently dropped.
 What reshaping it would involve, from where the code now stands: the `Provider`
 protocol and the unified `Event` stream are already the right shape for it —
 an ACP server would be a *consumer* of `SessionRunner` + `EventBus`, not a
-fourth provider. Three things would have to move. The approval bus would need a
+third provider. Three things would have to move. The approval bus would need a
 second front door: today a card is published to an `EventSink` and answered on
 an `asyncio.Queue` fed by the WebSocket handler, so an ACP client would need
 its own adapter onto `approval_channel` rather than a new gate. Session

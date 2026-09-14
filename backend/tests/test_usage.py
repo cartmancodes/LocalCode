@@ -371,7 +371,7 @@ class TestSystemUsageRoute:
         path = tmp_localcode / ".localcode" / "usage.jsonl"
         log = UsageLog(path=path)
         log.append(_entry(provider="claude", cache_read_tokens=80, input_tokens=20))
-        log.append(_entry(provider="opencode", cache_read_tokens=0, input_tokens=10))
+        log.append(_entry(provider="codex", cache_read_tokens=0, input_tokens=10))
 
         body = await system_routes.get_system_usage()
 
@@ -379,7 +379,7 @@ class TestSystemUsageRoute:
         assert body["turns"] == 2
         assert body["input_tokens"] == 30
         assert body["cache_read_tokens"] == 80
-        assert set(body["by_provider"]) == {"claude", "opencode"}
+        assert set(body["by_provider"]) == {"claude", "codex"}
         assert body["by_provider"]["claude"]["turns"] == 1
 
     async def test_empty_log_reports_zeros(self, tmp_localcode: Path) -> None:

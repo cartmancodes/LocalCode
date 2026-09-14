@@ -4,7 +4,7 @@ The Orchestrator agent (a claude-agent-sdk session) drives the workflow via
 a small set of MCP tools defined here:
 
   - ``dispatch_subagent(name, prompt)`` — the core ``Task`` equivalent. Runs
-    the named subagent (claude- or opencode-backed) in its own context and
+    the named subagent (claude- or codex-backed) in its own context and
     returns a text summary.
   - ``request_plan_approval(plan_summary)`` — HITL gate. Pauses the workflow,
     surfaces an Approve/Reject card to the WS client, awaits the decision,
@@ -19,8 +19,8 @@ giant blocking call.
 
 Why custom MCP rather than the SDK's native ``Task`` + ``AgentDefinition``:
 ``AgentDefinition`` only knows how to dispatch claude-agent-sdk subagents.
-We need to dispatch *opencode-backed* subagents too (cheaper coder model
-running on a ChatGPT subscription via opencode). Routing inside our own
+We need to dispatch *codex-backed* subagents too (a cheaper coder model
+running on a ChatGPT subscription). Routing inside our own
 tool gives us the unified provider-agnostic dispatch.
 """
 from __future__ import annotations

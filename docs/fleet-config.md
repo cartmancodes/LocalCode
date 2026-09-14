@@ -83,8 +83,8 @@ roles:                           # REGISTRY — only these agents are eligible t
     provider: claude
     model: claude-opus-4-7
   coder:
-    provider: opencode
-    model: openai/gpt-5.3-codex
+    provider: codex
+    model: gpt-5.3-codex
   reviewer:
     provider: claude
     model: claude-sonnet-4-6
@@ -102,11 +102,11 @@ roles:                           # REGISTRY — only these agents are eligible t
 | `require_plan_approval`| no       | bool; default false. HITL gate after the planner.                     |
 | `entry_role`           | no       | Must be a key in `roles`. Default: `coder` if present, else first role |
 | `roles`                | yes      | Mapping `<role> → {provider, model, system_prompt?}`                   |
-| `roles.<role>.provider`| no       | `claude` or `opencode`. Default: from role library                    |
+| `roles.<role>.provider`| no       | `claude` or `codex`. Default: from role library                       |
 | `roles.<role>.model`   | no       | Free-form model id. Default: from role library                        |
 | `roles.<role>.system_prompt` | no | Override the role's default prompt                              |
 
-**Per-field defaulting:** within a present role, fields fall back to the **role library** (the built-in default per role). So `coder: { model: openai/gpt-5.5-mini }` is enough — provider and system_prompt keep their defaults.
+**Per-field defaulting:** within a present role, fields fall back to the **role library** (the built-in default per role). So `coder: { model: claude-opus-4-7 }` is enough — provider and system_prompt keep their defaults.
 
 **Role removal:** delete the key. There's no "enabled: false" flag to set.
 
@@ -118,15 +118,7 @@ roles:                           # REGISTRY — only these agents are eligible t
 
 **Claude.** Anything the SDK accepts: `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`. Spend hits your Claude Pro / Max subscription; rate-limit windows apply.
 
-**OpenCode.** Run on the host to see what `opencode auth login` exposes:
-
-```bash
-~/.opencode/bin/opencode models
-# openai/gpt-5.5-pro, openai/gpt-5.4-mini, openai/gpt-5.3-codex,
-# opencode/big-pickle (free), opencode/minimax-m2.5-free, ...
-```
-
-Format the value as `<providerID>/<modelID>` exactly as printed.
+**Codex.** Anything the Codex CLI accepts, spelled as the bare model id — `gpt-5.3-codex`, `gpt-5.5`. The value is forwarded verbatim on `thread/start`; spend hits your ChatGPT subscription. The binary has to be installed and `codex login` run first — see [docs/codex.md](codex.md).
 
 **Cost-aware defaults.** The shipped role library reflects an "expensive thinking, cheap doing" split:
 
@@ -134,7 +126,7 @@ Format the value as `<providerID>/<modelID>` exactly as printed.
 | :------- | :------------------------------ | :-------------------------------------------------------------------- |
 | planner  | `claude:claude-opus-4-7`        | Plan quality dominates downstream success. Worth the cost once.       |
 | developer| `claude:claude-sonnet-4-6`      | Optional design pass; mid-tier reasoning.                             |
-| coder    | `opencode:openai/gpt-5.3-codex` | Mechanical execution — a code-tuned model on a cheap subscription.    |
+| coder    | `claude:claude-sonnet-4-6`      | Mechanical execution. `codex:gpt-5.3-codex` is the better fit when that binary is present — a code-tuned model on a cheap subscription — but a default that cannot run is worse than one that can. |
 | reviewer | `claude:claude-sonnet-4-6`      | LGTM/NACK gate needs real judgement.                                  |
 | tester   | `claude:claude-haiku-4-5`       | Writes + runs tests; doesn't need deep reasoning.                     |
 | **(orchestrator)** | `claude:claude-sonnet-4-6` (DEFAULT_ORCHESTRATOR_MODEL) | Meta-routing decisions — sonnet is plenty smart at ~5× cheaper than opus. |
@@ -171,7 +163,7 @@ curl -fsS http://localhost:8080/api/fleet/config | jq
     "name": "default",
     "roles": {
       "planner":   { "provider": "claude",   "model": "claude-opus-4-7", "system_prompt": "..." },
-      "coder":     { "provider": "opencode", "model": "openai/gpt-5.3-codex", "system_prompt": "..." },
+      "coder":     { "provider": "codex",    "model": "gpt-5.3-codex", "system_prompt": "..." },
       "reviewer":  { "provider": "claude",   "model": "claude-sonnet-4-6", "system_prompt": "..." },
       "tester":    { "provider": "claude",   "model": "claude-haiku-4-5", "system_prompt": "..." }
     },
@@ -182,7 +174,7 @@ curl -fsS http://localhost:8080/api/fleet/config | jq
     "config_source": "/Users/you/Projects/LocalCode/.localcode/fleet.yaml"
   },
   "is_default": false,
-  "valid_providers": ["claude", "opencode"],
+  "valid_providers": ["claude", "codex"],
   "valid_roles": ["planner", "developer", "coder", "reviewer", "tester"],
   "presets":      { "full": {...}, "plan-and-code": {...}, "code-only": {...}, ... },
   "role_library": { "planner": {...}, "developer": {...}, "coder": {...}, "reviewer": {...}, "tester": {...} },
@@ -207,10 +199,10 @@ curl -fsS http://localhost:8080/api/fleet/config | jq
 **"My role config didn't apply."** Check the backend log for warnings like:
 
 ```
-fleet config: 'roles.coder.provider'='openai' invalid (allowed: ('claude', 'opencode')); using default 'opencode'
+fleet config: 'roles.coder.provider'='openai' invalid (allowed: ('claude', 'codex')); using default 'claude'
 ```
 
-`provider` must be `claude` or `opencode` — not a model id.
+`provider` must be `claude` or `codex` — not a model id.
 
 **"The reviewer NACKed because nothing was implemented."** The coder agent returned narrative without using tools. The orchestrator should detect this and re-dispatch with an explicit "you MUST use file-edit + bash tools" preface. If it doesn't, the coder's system prompt may have been overridden — re-check the role config.
 

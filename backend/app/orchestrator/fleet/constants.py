@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-VALID_PROVIDERS = ("claude", "codex", "opencode")
+VALID_PROVIDERS = ("claude", "codex")
 
 # "Whichever subscription has the most headroom left." NOT a member of
 # VALID_PROVIDERS and never added to it: it names no backend, and everything

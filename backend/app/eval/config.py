@@ -76,5 +76,4 @@ _CELLS: dict[str, tuple[str, bool]] = {
     "claude-fleet": ("claude", True),
     "codex-single": ("codex", False),
     "codex-fleet": ("codex", True),
-    "opencode-single": ("opencode", False),
 }

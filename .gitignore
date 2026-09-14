@@ -12,3 +12,6 @@ dist/
 build/
 coverage/
 .superpowers/
+
+# Claude Code session state, including git worktrees it manages.
+.claude/

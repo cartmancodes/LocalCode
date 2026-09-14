@@ -10,7 +10,6 @@ const PANEL_TITLE = "LocalCode";
 
 const DEFAULT_FRONTEND_URL = "http://localhost:5173";
 const DEFAULT_BACKEND_PORT = 8080;
-const OPENCODE_PORT = 4096;
 
 const CONFIG_KEYS = Object.freeze({
   url: "url",
@@ -184,7 +183,7 @@ function normalizePort(value, fallback) {
 function buildPortMappings() {
   const { frontendUrl, backendPort } = readConfiguration();
   const frontendPort = getUrlPort(frontendUrl) || 5173;
-  const ports = new Set([frontendPort, backendPort, OPENCODE_PORT]);
+  const ports = new Set([frontendPort, backendPort]);
 
   return Array.from(ports, (port) => ({
     webviewPort: port,

@@ -32,7 +32,7 @@ type RoleProvider = FleetRoleConfig["provider"];
 
 // Only until /api/fleet/config answers — the backend's `valid_providers` is
 // the authority, and it is what the dropdown actually renders.
-const FALLBACK_ROLE_PROVIDERS: RoleProvider[] = ["claude", "codex", "opencode"];
+const FALLBACK_ROLE_PROVIDERS: RoleProvider[] = ["claude", "codex"];
 
 // Fallback role library — used if the backend's /api/fleet/config response
 // somehow omits role_library (e.g. a stale or older backend). Each role MUST
@@ -40,7 +40,7 @@ const FALLBACK_ROLE_PROVIDERS: RoleProvider[] = ["claude", "codex", "opencode"];
 const ROLE_LIBRARY_FALLBACK: Record<FleetRole, FleetRoleConfig> = {
   planner:   { provider: "claude",   model: "claude-opus-4-7",      system_prompt: "" },
   developer: { provider: "claude",   model: "claude-sonnet-4-6",    system_prompt: "" },
-  coder:     { provider: "opencode", model: "openai/gpt-5.3-codex", system_prompt: "" },
+  coder:     { provider: "claude", model: "claude-sonnet-4-6", system_prompt: "" },
   tester:    { provider: "claude",   model: "claude-haiku-4-5",     system_prompt: "" },
   reviewer:  { provider: "claude",   model: "claude-sonnet-4-6",    system_prompt: "" },
 };

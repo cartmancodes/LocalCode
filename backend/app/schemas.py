@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class CreateSessionRequest(BaseModel):
-    provider: Literal["claude", "codex", "fleet", "opencode"]
+    provider: Literal["claude", "codex", "fleet"]
     model: str
     cwd: str | None = None
     # Extra absolute directory paths the agent's tools may read/write under,

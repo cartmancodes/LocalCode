@@ -71,8 +71,8 @@ def test_clean_source_has_no_violations() -> None:
 
 def test_docstring_mentioning_credentials_json_is_exempt() -> None:
     # Guards the false positive that would otherwise make the gate unusable
-    # against claude.py / base.py / opencode.py, which legitimately document
-    # the auth model (including the literal path a vendor CLI reads).
+    # against claude.py / base.py / codex/, which legitimately document the
+    # auth model (including the literal path a vendor CLI reads).
     source = (
         '"""The CLI reads its token from ~/.claude/.credentials.json."""\n'
         "from __future__ import annotations\n\n"
@@ -86,7 +86,7 @@ def test_class_docstring_mentioning_auth_json_is_exempt() -> None:
     source = (
         "from __future__ import annotations\n\n"
         "class Provider:\n"
-        '    """Reads its own OAuth credentials from ~/.local/share/opencode/auth.json."""\n\n'
+        '    """Reads its own OAuth credentials from ~/.codex/auth.json."""\n\n'
         "    name: str\n"
     )
     assert scan_source(source, "documented.py") == []

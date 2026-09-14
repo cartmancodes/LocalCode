@@ -8,7 +8,7 @@ Inspired by the obra/superpowers skill set:
 
 Economic intent: the planner and reviewer are the "expensive thinking" roles
 (default to bigger Claude models); the coder and tester are the "do the work"
-roles (default to cheaper opencode-routed models). All defaults are
+roles (default to cheaper models). All defaults are
 overridable per-role in fleet.yaml.
 """
 from __future__ import annotations

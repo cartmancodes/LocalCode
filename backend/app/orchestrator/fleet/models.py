@@ -12,7 +12,7 @@ from .constants import VALID_ROLES, WORKER_ROLES
 
 @dataclass
 class RoleConfig:
-    provider: str  # "claude" or "opencode"
+    provider: str  # "claude" or "codex"
     model: str
     system_prompt: str
 

@@ -139,11 +139,11 @@ widens on that session's next update.
 | :----------------------- | :---------------------------- | :------------------------------------------------------------------- |
 | `id`                     | 32-hex string                 | Matches the legacy SQLAlchemy `_uuid()` shape so old DB references resolve. |
 | `title`                  | string                        | Default `"New chat"`. Updateable.                                    |
-| `provider`               | `"claude" \| "opencode" \| "fleet"` | Pinned at session creation.                                       |
+| `provider`               | `"claude" \| "codex" \| "fleet"` | Pinned at session creation.                                          |
 | `model`                  | string                        | Provider-native model id.                                            |
 | `cwd`                    | string \| null                | Where the agent operates. Determines on-disk session dir.            |
 | `additional_dirs`        | list[string] \| null          | Extra dirs the agent's tools may read/write under.                   |
-| `upstream_id`            | string \| null                | Provider-native session id (Claude Code `session_id` or OpenCode session id) for resume. |
+| `upstream_id`            | string \| null                | Provider-native session id (Claude Code `session_id` or Codex thread id) for resume. |
 | `fleet_config_override`  | dict \| null                  | Per-session override merged on top of the file-level fleet config.   |
 | `created_at`             | ISO 8601 + tz                 | Set once.                                                            |
 | `updated_at`             | ISO 8601 + tz                 | Bumped on every message append. Drives sort order in the sidebar.    |
@@ -532,11 +532,11 @@ The latter shows the 10 chattiest sessions across all your projects.
   artifacts (markdown, no checkpoint duplication) and are NOT swept by
   session cleanup. Manage their retention separately.
 - **Provider OAuth tokens** stay where the providers put them
-  (`~/.claude/`, `~/.local/share/opencode/auth.json`). LocalCode never
-  reads or copies them.
+  (`~/.claude/`, `~/.codex/auth.json`). LocalCode never reads or copies
+  them.
 - **Provider transcripts** stay in the providers' own stores. LocalCode
   keeps only the opaque `upstream_id` needed to resume Claude Code via
-  `ClaudeAgentOptions.resume` or reuse an OpenCode `/session/{id}`.
+  `ClaudeAgentOptions.resume` or a Codex thread via `thread/resume`.
 - **In-flight per-turn state** (asyncio locks, approval-channel queues,
   WS connections) is in-memory only. A backend bounce drops this state;
   the persisted JSONL state is what's recovered on restart.

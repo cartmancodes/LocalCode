@@ -8,11 +8,13 @@ API key — a missing binary is an error message, never a quiet switch to a paid
 key. (`backend/app/invariants.py` enforces this; `backend/tests/test_auth_invariant.py`
 is the gate.)
 
-What this buys over routing ChatGPT-side work through `opencode`:
+ChatGPT-side work used to be routed through a third-party `opencode` provider,
+now retired. What the first-party binary buys over that arrangement is why this
+provider looks the way it does:
 
-| | `opencode` | `codex` |
+| | `opencode` (retired) | `codex` |
 | :-- | :-- | :-- |
-| Tool approvals | none — the server decides alone | the **same** approval card as Claude, from the same `evaluate_tool_request` |
+| Tool approvals | none — the server decided alone | the **same** approval card as Claude, from the same `evaluate_tool_request` |
 | Extra directories | not supported (one project dir per session) | `additional_dirs` is forwarded to `thread/start` |
 | Transport | third-party HTTP + SSE, filtered client-side | first-party JSON-RPC over the child's stdio |
 | Role policies | advisory | the shared `ToolPolicy` table decides every approval the app-server sends — but see [What the role policy does not cover](#what-the-role-policy-does-not-cover) |
@@ -54,9 +56,9 @@ of its own; signalling only the leader leaves them running).
 
 ## Using it
 
-Pick `codex` as the provider when creating a session, exactly like `claude` or
-`opencode`. Approvals, extra directories, permission modes and role policies
-all behave identically — that is the point of the provider.
+Pick `codex` as the provider when creating a session, exactly like `claude`.
+Approvals, extra directories, permission modes and role policies all behave
+identically — that is the point of the provider.
 
 ### What the role policy does not cover
 
@@ -78,10 +80,10 @@ exactly like one it enforces. Recorded as A12 in
 
 ### The one-line switch for the fleet's coder
 
-The fleet's `coder` role ships as `opencode:openai/gpt-5.3-codex` **on
-purpose**: the `codex` binary is not installed on every machine, and a default
-that cannot run is worse than one that can. The alternative is already written
-out, commented, in `backend/app/orchestrator/fleet/defaults.py`:
+The fleet's `coder` role ships as `claude:claude-sonnet-4-6` **on purpose**:
+the `codex` binary is not installed on every machine, and a default that cannot
+run is worse than one that can. The alternative is already written out,
+commented, in `backend/app/orchestrator/fleet/defaults.py`:
 
 ```python
     "coder": RoleConfig(
@@ -91,9 +93,9 @@ out, commented, in `backend/app/orchestrator/fleet/defaults.py`:
     ),
 ```
 
-Swap that in for the `opencode` entry beside it and the coder runs on Codex
-with real approvals and real `additional_dirs`. OpenCode keeps working and
-remains the right choice for local and non-frontier models.
+Swap that in for the `claude` entry beside it and the coder runs on Codex —
+a cheaper model doing the mechanical work, with real approvals and real
+`additional_dirs`.
 
 **No code change is needed to try it.** The fleet editor's provider dropdown is
 rendered from the backend's `valid_providers`, so `codex` is selectable per

@@ -20,7 +20,7 @@ DOCKER_MEM_REFUSE_GIB = 8.0
 DOCKER_MEM_WARN_GIB = 12.0
 DISK_REFUSE_GIB = 60.0
 
-_BINARY_FOR_PROVIDER = {"claude": "claude", "codex": "codex", "opencode": "opencode"}
+_BINARY_FOR_PROVIDER = {"claude": "claude", "codex": "codex"}
 
 
 @dataclass
