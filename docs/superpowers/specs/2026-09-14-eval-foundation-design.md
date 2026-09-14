@@ -147,9 +147,19 @@ re-probe writes a new file with a new date, and every `HISTORY.md` row names
 the subset it ran on. Fifty is where one instance moves the rate by two
 points — visible levers, and a run fits in a few five-hour windows.
 
-**Why local builds.** Prebuilt images are x86_64; SWE-bench calls arm64
-support experimental and recommends local Buildx builds on M-series. The
-probe makes "does it build" a recorded fact instead of a runtime surprise.
+**What "builds here" means, measured against `swebench` 5.0.2.** Every
+Verified instance names a prebuilt `swebench/sweb.eval.x86_64.<id>` image.
+With `--task-repo` (the published `SWE-bench/swe-bench-tasks` repository of
+per-instance Dockerfiles) the harness builds the image locally with Docker
+Buildx — but `make_image_spec` never sets `ImageSpec.arch`, so the build
+targets **amd64** even on this Mac, and evaluation runs the container under
+Docker Desktop's amd64 emulation (verified working here). There is no native
+arm64 path in 5.0.2. The probe's criterion is therefore "the image builds and
+the **gold** patch resolves on this machine within the harness timeout", and
+the probe records the architecture of the image actually used (via `docker
+image inspect`) so a silent fall-back to the pulled x86_64 image — which the
+harness does on build failure — is visible in the subset file, not hidden.
+Emulation makes scoring slower, not different: the tests are the same tests.
 
 **Pre-flight, enforced by the runner:** Docker daemon reachable; Docker
 memory allocation ≥ 8 GiB (refuse below; warn below 12 GiB — SWE-bench
