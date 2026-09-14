@@ -155,7 +155,8 @@ class ResourceLoader:
             block = ["<project_context>", "", "Project-specific instructions and guidelines:", ""]
             for cf in self.resources.context_files:
                 block.append(
-                    f'<project_instructions path="{cf.path}">\n{cf.content}\n</project_instructions>\n'
+                    f'<project_instructions path="{cf.path}">\n'
+                    f"{cf.content}\n</project_instructions>\n"
                 )
             block.append("</project_context>")
             parts.append("\n".join(block))
