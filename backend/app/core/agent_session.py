@@ -46,6 +46,14 @@ from .engines.base import Engine, EngineConfig, EngineHooks, NotSupportedError
 from .extensions.runner import ExtensionRunner, SimpleExtensionContext
 from .extensions.types import NoUIBridge, UIBridge
 from .messages import message_text, now_ms, user_message
+from .resources import (
+    ResourceLoader,
+    Resources,
+    expand_prompt_template,
+    expand_skill_command,
+    skill_infos,
+    template_infos,
+)
 from .session_manager import SessionManager
 
 Listener = Callable[[dict[str, Any]], None]
@@ -157,8 +165,10 @@ class AgentSession:
         project_trusted: bool = False,
         default_permission: Literal["ask", "allow", "deny"] = "ask",
         engine_extra: dict[str, Any] | None = None,
+        resources: Resources | None = None,
     ) -> None:
         self.engine = engine
+        self.resources = resources or Resources()
         self.session_manager = session_manager
         self.runner = runner or ExtensionRunner()
         self.mode = mode
@@ -324,6 +334,10 @@ class AgentSession:
         if expand_prompt_templates and text.startswith("/"):
             if await self._try_extension_command(text):
                 return
+            expanded = expand_skill_command(text, self.resources.skills)
+            if expanded is None:
+                expanded = expand_prompt_template(text, self.resources.prompt_templates)
+            text = expanded
         if self.is_compacting:
             raise RuntimeError("cannot submit a prompt while compaction is in progress")
         processed = await self.runner.emit_input(
@@ -1177,7 +1191,11 @@ class AgentSession:
         ]
 
     def get_commands(self) -> list[dict[str, Any]]:
-        return list(self.runner.command_infos())
+        return [
+            *self.runner.command_infos(),
+            *template_infos(self.resources.prompt_templates),
+            *skill_infos(self.resources.skills),
+        ]
 
 
 def _exists(path: str) -> bool:
@@ -1225,6 +1243,23 @@ async def create_agent_session(
             discover_extension_paths(cwd=cwd, include_project=project_trusted, extra_paths=paths)
         )
     await load_extensions(paths, runner)
+    discovered = await runner.emit_resources_discover(
+        cwd, "startup", SimpleExtensionContext(cwd=cwd, mode=mode, project_trusted=project_trusted)
+    )
+    loader = ResourceLoader(
+        cwd=cwd,
+        project_trusted=project_trusted,
+        extra_skill_paths=discovered.get("skillPaths", []),
+        extra_prompt_paths=discovered.get("promptPaths", []),
+    )
+    resources = loader.load()
+    if options.get("system_prompt") is None and resources.system_prompt:
+        options["system_prompt"] = resources.system_prompt
+    inject = options.pop("inject_context_files", False)
+    appended = loader.append_prompt(inject_context_files=inject)
+    if appended:
+        caller = options.get("append_system_prompt")
+        options["append_system_prompt"] = f"{caller}\n\n{appended}" if caller else appended
     agent = AgentSession(
         engine=engine,
         session_manager=sm,
@@ -1232,6 +1267,7 @@ async def create_agent_session(
         mode=mode,
         ui_bridge=ui_bridge,
         project_trusted=project_trusted,
+        resources=resources,
         **options,
     )
     return agent

@@ -21,9 +21,12 @@ subscription's auth stays where the vendor put it. See
 | `modes/rpc/*`, `modes/json-event.ts` | `rpc/` | Same commands, responses, events and `extension_ui_request` sub-protocol; same `message_update` thinning. |
 | `modes/print`, `--mode json` | `modes.py`, `cli.py` | `localcode -p "…"`, `localcode --mode json "…"`, `localcode --mode rpc`. |
 
+| `skills.ts`, `prompt-templates.ts`, `resource-loader.ts` | `resources/` | Skills (`SKILL.md` dirs and `.md` files; `/skill:name`), prompt templates (`/name $1 $@`), `AGENTS.md`/`CLAUDE.md` discovery up the parent chain, `SYSTEM.md` / `APPEND_SYSTEM.md`. Discovery: `<agent_dir>/{skills,prompts}`, `<cwd>/.localcode/{skills,prompts}` and `<cwd>/.agents/skills` (trusted only), plus extension `resources_discover` paths. |
+
 Not ported: the TUI (the web UI is the interactive surface), packages
-(`pi install`), skills/prompt-template discovery, themes. Those are the next
-slice.
+(`pi install`), themes. Context files are listed but not injected by
+default — both engines read them natively; pass `inject_context_files=True`
+to `create_agent_session` for one that does not.
 
 ## Engines
 
