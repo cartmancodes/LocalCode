@@ -24,6 +24,9 @@ dev = [
     "mypy>=1.13.0",
 ]
 
+[project.scripts]
+localcode = "backend.app.core.cli:entrypoint"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
