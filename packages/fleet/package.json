@@ -1,0 +1,11 @@
+{
+  "name": "localcode-fleet",
+  "version": "1.0.0",
+  "description": "Multi-agent workflow for LocalCode: an orchestrator dispatches planner/coder/reviewer/tester subagents across engines.",
+  "keywords": ["localcode-package"],
+  "localcode": {
+    "extensions": ["./extensions"],
+    "skills": [],
+    "prompts": []
+  }
+}

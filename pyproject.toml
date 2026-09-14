@@ -27,6 +27,9 @@ eval = [
     "swebench==5.0.2",
 ]
 
+[project.scripts]
+localcode = "backend.app.core.cli:entrypoint"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -46,6 +49,8 @@ select = ["E", "F", "I", "B", "UP", "N", "ASYNC"]
 # call builds a field-info marker FastAPI's dependency system reads at
 # collection time, not a real mutable-default hazard B008 exists to catch.
 "backend/app/routes/*.py" = ["B008"]
+# Test fixtures embed extension source as strings; line length is noise there.
+"backend/tests/*" = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

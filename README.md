@@ -146,6 +146,9 @@ informational — useful for comparing models against each other, not a bill.
 ## Documentation
 
 - [docs/harness.md](docs/harness.md) — what every provider is held to: the auth invariant and its test, the one approval bus, the provider table, persistent sessions and prompt-prefix discipline, the artifact store, the worker pool and its budgets, conditional routing, the quota governor, and the evaluation layers (plus the gaps they do not cover).
+- [docs/core.md](docs/core.md) — the second harness, under `backend/app/core/`: a pi-shaped shell with a session tree, extension API, engines, RPC mode, packages, quota and a CLI.
+- [packages/fleet/README.md](packages/fleet/README.md) — the multi-agent workflow as a core package (`localcode install ./packages/fleet`).
+- [docs/harness-roadmap.md](docs/harness-roadmap.md) — why the core is shaped like pi.dev.
 - [docs/architecture.md](docs/architecture.md) — the technical deep-dive: providers, runner, orchestrator + dispatch, event flow, storage, configuration.
 - [docs/codex.md](docs/codex.md) — the Codex app-server integration, its unverified protocol assumptions, and how to reconcile them against the vendor schema.
 - [docs/fleet.md](docs/fleet.md) — fleet concept: roles, when to use it, what you see in chat.

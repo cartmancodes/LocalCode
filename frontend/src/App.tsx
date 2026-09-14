@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import ChatPane from "./components/ChatPane";
+import CorePane from "./components/CorePane";
 import ErrorBoundary from "./components/ErrorBoundary";
 import FleetConfigEditor from "./components/FleetConfigEditor";
 import Sidebar from "./components/Sidebar";
 import Topbar from "./components/Topbar";
+import type { ConnectOptions } from "./core/protocol";
 import type {
   CatalogModel,
   FleetConfigOverride,
@@ -20,6 +22,17 @@ const ACCENT_KEY = "lc-accent";
 const CWD_KEY = "lc-cwd";          // user's chosen project root for new chats; null = use backend default
 const ADD_DIRS_KEY = "lc-add-dirs"; // user's additional-dirs grant list for new chats (JSON-encoded array)
 const PERM_KEY = "lc-permission-mode"; // permission/auto mode for new chats
+const ENGINE_KEY = "lc-core-engine";   // engine for core-protocol sessions
+
+/**
+ * Engines reachable over /api/core/rpc. These run the official binaries
+ * through the core harness — the loop lives in `claude` / `codex`, not here.
+ * A model left empty lets the engine pick its own default.
+ */
+const CORE_ENGINES: { id: string; label: string; engine: string; model?: string }[] = [
+  { id: "core:claude", label: "Claude (core)", engine: "claude" },
+  { id: "core:codex", label: "Codex (core)", engine: "codex" },
+];
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(() => {
@@ -43,6 +56,9 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [pendingModelId, setPendingModelId] = useState<string>("");
   const [fleetEditorOpen, setFleetEditorOpen] = useState(false);
+  // A core session is owned by its socket, so it is described by connection
+  // options rather than a backend row. Null means the legacy pane is showing.
+  const [coreOptions, setCoreOptions] = useState<ConnectOptions | null>(null);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => {
     const saved = localStorage.getItem(PERM_KEY) as PermissionMode | null;
     return saved &&
@@ -150,13 +166,33 @@ export default function App() {
     setActiveId(fresh.id);
   };
 
+  const startCoreSession = (engineId: string) => {
+    const entry = CORE_ENGINES.find((e) => e.id === engineId) ?? CORE_ENGINES[0];
+    localStorage.setItem(ENGINE_KEY, entry.id);
+    setActiveId(null);
+    setCoreOptions({
+      engine: entry.engine,
+      model: entry.model,
+      cwd: effectiveCwd ?? undefined,
+      session: "new",
+      trustProject: true,
+      permissionMode: permissionMode,
+      permission: "ask",
+    });
+  };
+
   const onCreate = async () => {
     if (!pendingModelId) return;
     const [provider] = pendingModelId.split(":");
+    if (provider === "core") {
+      startCoreSession(pendingModelId);
+      return;
+    }
     if (provider === "fleet") {
       setFleetEditorOpen(true);
       return;
     }
+    setCoreOptions(null);
     await createWithOverride(null);
   };
 
@@ -198,27 +234,36 @@ export default function App() {
         <Sidebar
           sessions={sessions}
           activeId={activeId}
-          models={models}
+          models={[...models, ...CORE_ENGINES.map((e) => ({ id: e.id, provider: "core" as const, model: e.label }))]}
           pendingModelId={pendingModelId}
           onPickModel={setPendingModelId}
           permissionMode={permissionMode}
           onPickPermissionMode={setPermissionMode}
-          onSelect={setActiveId}
+          onSelect={(id) => {
+            setCoreOptions(null);
+            setActiveId(id);
+          }}
           onCreate={onCreate}
           onDelete={onDelete}
           onClearAll={onClearAll}
         />
-        <ErrorBoundary label="ChatPane">
-          <ChatPane
-            session={active}
-            onTurnDone={() => setTurnEpoch((n) => n + 1)}
-            onConfigureFleet={
-              active?.provider === "fleet"
-                ? () => setFleetEditorOpen(true)
-                : undefined
-            }
-          />
-        </ErrorBoundary>
+        {coreOptions ? (
+          <ErrorBoundary label="CorePane">
+            <CorePane options={coreOptions} />
+          </ErrorBoundary>
+        ) : (
+          <ErrorBoundary label="ChatPane">
+            <ChatPane
+              session={active}
+              onTurnDone={() => setTurnEpoch((n) => n + 1)}
+              onConfigureFleet={
+                active?.provider === "fleet"
+                  ? () => setFleetEditorOpen(true)
+                  : undefined
+              }
+            />
+          </ErrorBoundary>
+        )}
       </div>
 
       {fleetEditorOpen && (

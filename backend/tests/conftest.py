@@ -202,3 +202,30 @@ def _per_test_timeout(request: pytest.FixtureRequest) -> object:
             f"test exceeded the {limit_s:g}s wall clock set by {_TIMEOUT_ENV} "
             "(stacks dumped to stderr above)"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core-harness fixtures (backend/app/core)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def agent_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the core's user-global agent dir at a throwaway directory.
+
+    ``_redirect_home`` above already moves HOME, but the core reads
+    ``LOCALCODE_AGENT_DIR`` first; setting it explicitly keeps a test's
+    sessions, settings and packages in one place the test can assert on.
+    """
+    d = tmp_path / "agent"
+    d.mkdir()
+    monkeypatch.setenv("LOCALCODE_AGENT_DIR", str(d))
+    return d
+
+
+@pytest.fixture
+def project(tmp_path: Path) -> Path:
+    """A throwaway project root: the ``cwd`` a core session runs against."""
+    p = tmp_path / "project"
+    p.mkdir()
+    return p

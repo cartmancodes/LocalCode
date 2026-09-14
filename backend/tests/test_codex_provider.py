@@ -686,7 +686,11 @@ class TestWiring:
         assert CreateSessionRequest(provider="codex", model="gpt-5.3-codex").provider == "codex"
         assert "codex" in VALID_PROVIDERS
         assert Settings(default_provider="codex").default_provider == "codex"
-        assert any(entry.provider == "codex" for entry in Settings().catalog())
+        # The claim is about the catalog this repo *ships*, so read the field's
+        # default rather than an ambient ``Settings()`` — that one merges the
+        # developer's own .env, where MODEL_CATALOG is routinely overridden.
+        shipped = Settings(model_catalog=Settings.model_fields["model_catalog"].default)
+        assert any(entry.provider == "codex" for entry in shipped.catalog())
         assert CodexProvider.name == "codex"
 
     async def test_the_registry_builds_it(self) -> None:
