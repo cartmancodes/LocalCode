@@ -24,6 +24,7 @@ Tasks 2-9 built for Claude now applies to Codex unchanged:
 :class:`_TurnBinding` is the subtle part; read its docstring before changing
 how the approval handler is built. The rest is translation.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -76,6 +77,7 @@ from .protocol import (
     MCP_ARGUMENTS_FIELDS,
     MCP_SERVER_FIELDS,
     MCP_TOOL_FIELDS,
+    N_ACCOUNT_RATE_LIMITS,
     N_ITEM_COMPLETED,
     N_ITEM_STARTED,
     N_ITEM_UPDATED,
@@ -346,12 +348,15 @@ class _Translator:
         if method == N_TURN_FAILED:
             self.saw_error = True
             error = pick(params, *ERROR_FIELDS, default={}) or {}
-            message = str(
-                pick(error, *ERROR_MESSAGE_FIELDS, default="") or "the codex turn failed"
-            )
+            message = str(pick(error, *ERROR_MESSAGE_FIELDS, default="") or "the codex turn failed")
             return [self._error(message)]
         if method == N_TURN_COMPLETED:
             return list(self._handle_completed(params))
+        if method == N_ACCOUNT_RATE_LIMITS:
+            # Independent of any turn — see A11. The parser already looks for
+            # ``rateLimits`` beside where it is; this is the one place that
+            # payload actually arrives.
+            return list(_rate_limit_events(params, turn={}, usage_payload=None))
         logger.debug("codex frame %s has no translation", method)
         return []
 
@@ -419,7 +424,7 @@ class _Translator:
         # ``item/updated`` may carry either a delta or the accumulated text.
         # Emitting the suffix covers both without the UI ever seeing the same
         # sentence twice.
-        delta = text[len(already):] if text.startswith(already) else text
+        delta = text[len(already) :] if text.startswith(already) else text
         self._emitted_text[item_id] = already + delta
         if delta:
             yield Event(type="assistant.text", data={"text": delta})
@@ -461,9 +466,7 @@ class _Translator:
             },
         )
 
-    def _file_change(
-        self, method: str, item_id: str, item: Mapping[str, Any]
-    ) -> Iterator[Event]:
+    def _file_change(self, method: str, item_id: str, item: Mapping[str, Any]) -> Iterator[Event]:
         changes = pick(item, *CHANGES_FIELDS, default=None)
         paths: list[str] = []
         kinds: list[str] = []
@@ -521,9 +524,7 @@ class _Translator:
         )
 
     def _error(self, message: str) -> Event:
-        return Event(
-            type="error", data={"message": message, "provider": CodexProvider.name}
-        )
+        return Event(type="error", data={"message": message, "provider": CodexProvider.name})
 
 
 class CodexProvider:
@@ -653,9 +654,7 @@ class CodexProvider:
     async def _thread_for(self, ctx: RunContext, server: Any) -> str:
         if ctx.upstream_session_id:
             return await server.thread_resume(ctx.upstream_session_id)
-        return await server.thread_start(
-            ctx.cwd, ctx.additional_dirs, model=ctx.model
-        )
+        return await server.thread_start(ctx.cwd, ctx.additional_dirs, model=ctx.model)
 
     # ── Provider protocol ──────────────────────────────────────────────────
 

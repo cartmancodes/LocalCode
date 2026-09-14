@@ -1,12 +1,20 @@
 """A stand-in for `codex app-server`, driven by a scenario name.
 
-The `codex` CLI is not installed on the machine this was written on, and even
-where it is, running it in the test suite would mean a network call, a paid
-subscription and a several-second cold start per test. What the provider's
-contract is actually *about* — framing, request/response correlation, the
-approval round-trip, the silent turn, backpressure, a server that dies
-mid-turn — is entirely protocol-shaped, so this script implements the protocol
-and nothing else.
+Running the real `codex` CLI in the test suite would mean a network call, a
+paid subscription and a several-second cold start per test even where the
+binary is installed. What the provider's contract is actually *about* —
+framing, request/response correlation, the approval round-trip, the silent
+turn, backpressure, a server that dies mid-turn — is entirely protocol-shaped,
+so this script implements the protocol and nothing else.
+
+Its shapes were reconciled against the real binary on 2026-09-14
+(codex-cli 0.154.0, a live ChatGPT-subscription login) after three of them
+turned out wrong: ``thread/start`` nests its id under ``thread``, not flat
+(A2); a failed turn's own ``turn.error.message`` was being discarded in favor
+of a generic "no response" text; and ``account/rateLimits/updated`` was never
+even subscribed to, so no rate-limit signal reached the translator at all
+(A11). See ``backend/tests/fixtures/codex_real_trace_2026-09-14.json`` for the
+captured trace and the ``rate_limited`` scenario below, which mirrors it.
 
 **No project imports.** It runs as a child process spawned by the code under
 test; importing the app would mean the fake and the thing it is testing share
@@ -29,7 +37,13 @@ Scenarios:
                       turns, so one process can be driven twice.
   ``busy``            answers the first ``turn/start`` with ``-32001``, then
                       succeeds.
-  ``silent``          a turn that completes with no ``agent_message``.
+  ``silent``          a turn that completes with no ``agent_message``, and no
+                      error either — the generic "no response message" text.
+  ``rate_limited``     a turn that fails WITH a real error (mirroring the
+                      captured trace) and an ``account/rateLimits/updated``
+                      notification beforehand — the server's own message must
+                      survive, not the generic silent-turn text, and the
+                      notification must reach the translator at all.
   ``crash``           exits non-zero mid-turn.
   ``patch_approval``  an ``applyPatchApproval`` request.
   ``file_create``     a ``file_change`` item whose kind is ``add``. Its own
@@ -58,6 +72,7 @@ handed, every request it received, and (for ``child``) the pids. A file is
 used rather than stdout because the code under test owns stdout and parses it
 as protocol — the same reason ``tree_worker.py`` reports through a file.
 """
+
 from __future__ import annotations
 
 import json
@@ -78,6 +93,7 @@ N_ITEM_STARTED = "item/started"
 N_ITEM_UPDATED = "item/updated"
 N_ITEM_COMPLETED = "item/completed"
 N_TURN_COMPLETED = "turn/completed"
+N_ACCOUNT_RATE_LIMITS = "account/rateLimits/updated"
 
 R_EXEC_APPROVAL = "execCommandApproval"
 R_PATCH_APPROVAL = "applyPatchApproval"
@@ -196,11 +212,21 @@ def emit_agent_message(final: str, *, stream: str | None = None) -> None:
     item(N_ITEM_COMPLETED, {"id": "m1", "type": "agent_message", "text": final})
 
 
-def emit_turn_completed() -> None:
+def emit_turn_completed(*, status: str = "completed", error: dict | None = None) -> None:
+    # Confirmed against codex-cli 0.154.0, 2026-09-14: the envelope always
+    # nests "turn" (id/status/error), even on the params usage.py already
+    # reads from. "usage" placement itself stays UNVERIFIED (A4) — the one
+    # real trace this fake is reconciled against was a turn that failed
+    # before any usage was reported, so its absence there proves nothing
+    # about where a successful turn puts it.
+    turn: dict = {"id": "turn-fake", "status": status}
+    if error is not None:
+        turn["error"] = error
     notify(
         N_TURN_COMPLETED,
         {
             "threadId": THREAD_ID,
+            "turn": turn,
             "usage": {
                 "input_tokens": 11,
                 "cached_input_tokens": 4,
@@ -217,7 +243,8 @@ def run_turn(scenario: str, request_id, turn_index: int) -> None:
         respond_error(request_id, ERR_BUSY, "the app-server is busy")
         return
 
-    respond(request_id, {"turnId": f"turn-{turn_index}"})
+    # Confirmed against codex-cli 0.154.0: nested under "turn", like thread/start.
+    respond(request_id, {"turn": {"id": f"turn-{turn_index}", "status": "inProgress"}})
 
     if scenario == "crash":
         item(N_ITEM_STARTED, {"id": "c1", "type": "command_execution", "command": ["sleep", "1"]})
@@ -230,6 +257,37 @@ def run_turn(scenario: str, request_id, turn_index: int) -> None:
         # Completes with no agent_message: the turn produced no response body.
         item(N_ITEM_COMPLETED, {"id": "r1", "type": "reasoning", "text": ""})
         emit_turn_completed()
+        return
+
+    if scenario == "rate_limited":
+        # Shaped after a real captured trace (codex-cli 0.154.0, 2026-09-14,
+        # a rate-limited turn) — see
+        # backend/tests/fixtures/codex_real_trace_2026-09-14.json. Exercises
+        # two things together: the account/rateLimits/updated notification
+        # reaching the translator at all (it did not, before the fix — no
+        # handler was registered for the method), and the turn's OWN error
+        # message surviving instead of the generic "no response message"
+        # text a silent turn gets.
+        notify(
+            N_ACCOUNT_RATE_LIMITS,
+            {
+                "rateLimits": {
+                    "limitId": "premium",
+                    "primary": {"usedPercent": 91, "windowMinutes": 300, "resetsAt": 1789500000},
+                    "secondary": None,
+                    "credits": {"hasCredits": False, "unlimited": False, "balance": "0"},
+                    "planType": "plus",
+                }
+            },
+        )
+        item(N_ITEM_STARTED, {"id": "u1", "type": "userMessage", "content": []})
+        emit_turn_completed(
+            status="failed",
+            error={
+                "message": ("You've hit your usage limit. Upgrade to Pro or try again later."),
+                "codexErrorInfo": "usageLimitExceeded",
+            },
+        )
         return
 
     if scenario == "approval":
@@ -439,7 +497,9 @@ def main() -> None:
                 },
             )
         elif method in (M_THREAD_START, M_THREAD_RESUME):
-            respond(request_id, {"threadId": THREAD_ID})
+            # Confirmed against codex-cli 0.154.0, 2026-09-14 (see A2 in
+            # protocol.py): the id is nested under "thread", not flat.
+            respond(request_id, {"thread": {"id": THREAD_ID, "model": "fake-model"}})
         elif method == M_TURN_START:
             run_turn(scenario, request_id, turn_index)
             turn_index += 1

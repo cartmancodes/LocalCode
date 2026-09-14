@@ -48,11 +48,15 @@ Framing and lifecycle:
     ``{"clientInfo": {"name", "version"}}`` and is followed by an
     ``initialized`` notification, LSP-style. *Wrong ⇒* the handshake fails and
     every turn is one `error` Event naming the binary. Loud, not silent.
-  * **A2 (UNVERIFIED).** ``thread/start`` takes
-    ``{"cwd", "model", "additionalDirectories"}`` and returns
-    ``{"threadId"}``; ``thread/resume`` takes ``{"threadId"}``. *Wrong ⇒*
-    ``CodexUnavailable`` ("returned no thread id"), or extra directories are
-    silently not granted.
+  * **A2 (CONFIRMED WRONG, fixed 2026-09-14 against codex-cli 0.154.0).**
+    ``thread/start`` and ``thread/resume`` take
+    ``{"cwd", "model", "additionalDirectories"}`` as guessed, but the id comes
+    back **nested**: ``{"thread": {"id": ..., "sessionId": ..., "model": ...,
+    ...}}``, not a flat ``{"threadId"}``. The flat reading meant
+    ``thread_start()`` raised ``CodexUnavailable`` on every real call — no
+    Codex turn ever completed against the real binary before this fix. See
+    :data:`THREAD_FIELDS` and the captured real response in
+    ``backend/tests/fixtures/codex_real_trace_2026-09-14.json``.
   * **A3 (UNVERIFIED), and the expensive one.** ``turn/start`` is answered as
     a **prompt acknowledgement** — the response means "the turn was accepted",
     not "the turn is finished" — and the items stream in as notifications
@@ -91,13 +95,18 @@ is not):
     ``kind`` distinguishes a creation (``add`` / ``create`` / ``created`` →
     ``Write``) from a modification (→ ``Edit``). *Wrong ⇒* a created file is
     labelled ``Edit`` in the transcript.
-  * **A11 (UNVERIFIED, and the weakest one here).** ``turn/completed`` *may*
-    carry vendor rate-limit state — as ``rate_limits`` / ``rateLimits`` beside
-    ``usage``, or as ``limits`` under it — each entry naming a window
-    (``type``/``window``) with a ``utilization`` fraction and an absolute
-    ``resets_at``. No such field is documented, so unlike A1-A10 this is not a
-    reading of the docs but a shape to RECOGNISE IF IT APPEARS: nothing is
-    emitted when none of these keys is present. *Wrong ⇒* Codex headroom stays
+  * **A11 (PARTIALLY CONFIRMED, fixed 2026-09-14).** Rate-limit state exists,
+    but not where A11 guessed: it never rode on ``turn/completed``. It arrives
+    as an independent ``account/rateLimits/updated`` notification —
+    ``{"rateLimits": {"limitId", "primary": Window|null, "secondary":
+    Window|null, "credits": {...}, "planType", ...}}`` where a non-null Window
+    carries ``usedPercent`` — at any point, not scoped to a turn. Two things
+    were wrong before this fix, not one: nobody registered a handler for the
+    method at all (dropped at the transport layer, before ``client.py`` even
+    saw it), and even a forwarded copy would have looked in the wrong place.
+    The ``*_FIELDS`` tuples below still describe the payload once it is
+    reached; only the wiring changed — see :data:`N_ACCOUNT_RATE_LIMITS`.
+    *Was wrong ⇒* Codex headroom stayed
     locally estimated with ``confidence="unknown"``, which is what it is today
     anyway. The dangerous direction would be reading a field that means
     something else and reporting a fabricated limit, which is why a payload
@@ -118,6 +127,7 @@ Policy, which is not a payload shape at all:
     reconciling the real schema: a guessed field name would be a policy the
     server silently ignores, indistinguishable from one it enforces.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -153,9 +163,14 @@ N_ITEM_UPDATED = "item/updated"
 N_ITEM_COMPLETED = "item/completed"
 N_TURN_COMPLETED = "turn/completed"
 N_TURN_FAILED = "turn/failed"
+# Independent of any turn — see A11. Forwarded through an open turn's queue
+# when one exists so the translator can meter it; dropped (logged) between
+# turns, same as every other notification here.
+N_ACCOUNT_RATE_LIMITS = "account/rateLimits/updated"
 
 ITEM_NOTIFICATIONS = (N_ITEM_STARTED, N_ITEM_UPDATED, N_ITEM_COMPLETED)
 TURN_NOTIFICATIONS = (N_TURN_COMPLETED, N_TURN_FAILED)
+ACCOUNT_NOTIFICATIONS = (N_ACCOUNT_RATE_LIMITS,)
 
 # ── server → client requests (the approval callbacks) ───────────────────────
 R_EXEC_APPROVAL = "execCommandApproval"
@@ -238,6 +253,8 @@ F_MESSAGE = "message"
 # camelCase (and between two different nouns) for the same field more than
 # once, and reading every spelling we have seen costs nothing. Order is
 # preference order — the first present, non-null key wins.
+# See A2: the id is nested under this key, not flat on the response.
+THREAD_FIELDS = ("thread",)
 THREAD_ID_FIELDS = ("threadId", "thread_id", "id")
 ITEM_FIELDS = ("item",)
 ITEM_TYPE_FIELDS = ("type", "item_type")

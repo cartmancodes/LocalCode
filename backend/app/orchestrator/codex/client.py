@@ -29,20 +29,24 @@ Two failure modes shape the turn stream:
   pushes a marker instead, and the stream ends in a synthetic ``turn/failed``
   naming the exit code.
 """
+
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from ...config import get_settings
 from .jsonrpc import StdioJsonRpc
 from .protocol import (
+    ACCOUNT_NOTIFICATIONS,
     APP_SERVER_SUBCOMMAND,
     DECISION_DENIED,
+    ERROR_FIELDS,
+    ERROR_MESSAGE_FIELDS,
     F_ADDITIONAL_DIRECTORIES,
     F_CLIENT_INFO,
     F_CWD,
@@ -74,7 +78,9 @@ from .protocol import (
     N_TURN_FAILED,
     R_EXEC_APPROVAL,
     R_PATCH_APPROVAL,
+    THREAD_FIELDS,
     THREAD_ID_FIELDS,
+    TURN_FIELDS,
     TURN_NOTIFICATIONS,
     pick,
 )
@@ -271,7 +277,7 @@ class CodexAppServer:
             await self._rpc.close()
 
     def _register_handlers(self, rpc: StdioJsonRpc) -> None:
-        for method in (*ITEM_NOTIFICATIONS, *TURN_NOTIFICATIONS):
+        for method in (*ITEM_NOTIFICATIONS, *TURN_NOTIFICATIONS, *ACCOUNT_NOTIFICATIONS):
             rpc.on_notification(method, self._make_notification_handler(method))
         for method in (R_EXEC_APPROVAL, R_PATCH_APPROVAL):
             rpc.on_request(method, self._make_approval_handler(method))
@@ -357,7 +363,9 @@ class CodexAppServer:
         result = await self._rpc_or_raise().request(
             M_THREAD_START, params, timeout_s=self._request_timeout_s
         )
-        thread_id = str(pick(result, *THREAD_ID_FIELDS, default="") or "")
+        # See A2: the id is nested under "thread", never flat on the result.
+        thread = pick(result, *THREAD_FIELDS, default=None)
+        thread_id = str(pick(thread, *THREAD_ID_FIELDS, default="") or "") if thread else ""
         if not thread_id:
             raise CodexUnavailable("the codex app-server returned no thread id for thread/start")
         self._threads.add(thread_id)
@@ -371,7 +379,13 @@ class CodexAppServer:
         result = await self._rpc_or_raise().request(
             M_THREAD_RESUME, {F_THREAD_ID: thread_id}, timeout_s=self._request_timeout_s
         )
-        resumed = str(pick(result, *THREAD_ID_FIELDS, default="") or thread_id)
+        # See A2: same nesting as thread_start. A missing/empty id here just
+        # means "keep using the id we resumed with" — resume already names a
+        # thread that is presumed to exist, unlike thread_start's blank slate.
+        thread = pick(result, *THREAD_FIELDS, default=None)
+        resumed = (
+            str(pick(thread, *THREAD_ID_FIELDS, default="") or thread_id) if thread else thread_id
+        )
         self._threads.add(resumed)
         return resumed
 
@@ -380,9 +394,7 @@ class CodexAppServer:
 
     # ── turns ──────────────────────────────────────────────────────────────
 
-    async def turn_start(
-        self, thread_id: str, text: str
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def turn_start(self, thread_id: str, text: str) -> AsyncIterator[dict[str, Any]]:
         """Run one turn, yielding raw ``{"method", "params"}`` frames.
 
         The queue is installed BEFORE the request goes out: the app-server is
@@ -416,10 +428,27 @@ class CodexAppServer:
                         descriptions.append(item_type or "unknown")
                     yield frame
                     continue
+                if method in ACCOUNT_NOTIFICATIONS:
+                    # Not item-shaped, not turn-terminal — meters the plan,
+                    # nothing else. See A11.
+                    yield frame
+                    continue
                 if method == N_TURN_COMPLETED and not saw_agent_message:
                     # The silent turn. Never let this reach the UI as a
-                    # success — see the module docstring.
-                    yield self._silent_turn_frame(descriptions)
+                    # success — see the module docstring. When the server told
+                    # us WHY (a rate limit, an auth failure, a model error), use
+                    # that; the generic "no response message" text is a last
+                    # resort for a turn that ended silently with nothing said.
+                    turn = pick(frame.get("params"), *TURN_FIELDS, default={}) or {}
+                    turn_error = pick(turn, *ERROR_FIELDS, default=None)
+                    if isinstance(turn_error, Mapping):
+                        message = str(
+                            pick(turn_error, *ERROR_MESSAGE_FIELDS, default="")
+                            or "the codex turn failed"
+                        )
+                        yield self._turn_error_frame(message)
+                    else:
+                        yield self._silent_turn_frame(descriptions)
                     yield frame
                     return
                 if method in TURN_NOTIFICATIONS:
@@ -443,6 +472,17 @@ class CodexAppServer:
                     ),
                 }
             },
+        }
+
+    @staticmethod
+    def _turn_error_frame(message: str) -> dict[str, Any]:
+        """Same synthetic shape as :meth:`_silent_turn_frame`, carrying the
+        server's own ``turn.error.message`` instead of a generic one — a rate
+        limit or an auth failure should read as what it is, not as "the turn
+        produced no response"."""
+        return {
+            "method": N_ITEM_COMPLETED,
+            "params": {F_ITEM: {F_TYPE: ITEM_TYPE_ERROR, F_MESSAGE: message}},
         }
 
     @staticmethod

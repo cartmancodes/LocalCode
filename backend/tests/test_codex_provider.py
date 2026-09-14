@@ -22,6 +22,7 @@ harness Claude is**, and that is only true if these hold:
 Nothing here needs the `codex` CLI. The one test that does is marked
 ``requires_cli`` and skips without it.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -225,9 +226,7 @@ class TestHappyTurn:
         assert types(events)[-1] == "assistant.done"
 
         log = tmp_path / ".localcode" / "usage.jsonl"
-        rows = [
-            json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line
-        ]
+        rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line]
 
         assert len(rows) == 1
         row = rows[0]
@@ -242,9 +241,7 @@ class TestHappyTurn:
         # The same numbers the viewer was shown: one measurement, two readers.
         assert events[-1].data["usage"] == row
 
-    async def test_an_errored_turn_is_not_metered(
-        self, provider_factory, tmp_path: Path
-    ) -> None:
+    async def test_an_errored_turn_is_not_metered(self, provider_factory, tmp_path: Path) -> None:
         """A turn that produced no response body produced no counts either.
 
         Logging zeros for it would understate nothing and overstate a turn
@@ -633,6 +630,53 @@ class TestFailures:
         # Never a fallback to a key, and never an exception through the WS.
         assert "API key" in message
 
+    async def test_a_turns_own_error_message_survives_not_the_generic_one(
+        self, provider_factory, tmp_path: Path
+    ) -> None:
+        """A turn CAN complete with no agent_message and still say why: a
+        rate limit, an auth failure, a model error. The server told us —
+        confirmed live against codex-cli 0.154.0 on 2026-09-14, see
+        ``backend/tests/fixtures/codex_real_trace_2026-09-14.json`` — and
+        before this fix that specific message was discarded in favor of the
+        generic "no response" text ``test_a_silent_turn_is_an_error_not_a_bare_done``
+        above pins for the genuinely-silent case. Both must keep working:
+        this scenario differs from ``silent`` only in carrying a real error.
+        """
+        provider = provider_factory("rate_limited")
+        events = await drain(provider, mk_ctx(tmp_path))
+
+        errors = [e for e in events if e.type == "error"]
+        assert len(errors) == 1, types(events)
+        message = errors[0].data["message"]
+        assert "usage limit" in message.lower(), message
+        assert "without producing a response" not in message, (
+            "the specific server message was discarded in favor of the generic one"
+        )
+        # Exactly one terminal event either way — a done on top of this error
+        # would clear the UI's working indicator with a success it did not earn.
+        assert "assistant.done" not in types(events)
+
+    async def test_a_standalone_rate_limit_notification_reaches_the_translator(
+        self, provider_factory, tmp_path: Path
+    ) -> None:
+        """``account/rateLimits/updated`` arrives independent of any turn —
+        not nested in ``turn/completed`` as A11 originally guessed. Before
+        the fix, no handler was even registered for the method: it was
+        dropped at the transport layer, before the translator ever ran.
+        """
+        provider = provider_factory("rate_limited")
+        events = await drain(provider, mk_ctx(tmp_path))
+
+        limits = [e for e in events if e.type == "quota.limit"]
+        assert len(limits) == 1, types(events)
+        assert limits[0].data["provider"] == "codex"
+        assert limits[0].data["utilization"] == 91.0
+        assert limits[0].data["rate_limit_type"] == "primary"
+        # The rate-limit signal arrives before the turn's terminal event —
+        # a meter that updates after the thing it describes already happened
+        # is not a meter, it is a history book.
+        assert types(events).index("quota.limit") < types(events).index("error")
+
     async def test_a_busy_app_server_is_retried_rather_than_surfaced(
         self, provider_factory, tmp_path: Path
     ) -> None:
@@ -664,9 +708,7 @@ class TestBroker:
         assert len(_records(record, "env")) == 1
         assert len(provider._broker._servers) == 1
 
-    async def test_aclose_leaves_no_process_behind(
-        self, provider_factory, tmp_path: Path
-    ) -> None:
+    async def test_aclose_leaves_no_process_behind(self, provider_factory, tmp_path: Path) -> None:
         provider = provider_factory("happy")
         await provider.open_session(mk_ctx(tmp_path))
         server = next(iter(provider._broker._servers.values()))
@@ -677,6 +719,74 @@ class TestBroker:
 
         await _wait_until_dead(pid, "the app-server")
         assert not _alive(pid), "the app-server survived aclose()"
+
+
+class TestAgainstTheCapturedRealTrace:
+    """Pins the exact bytes a real ``codex app-server`` sent, so the two bugs
+    those bytes caught — the nested thread id (A2) and the standalone
+    rate-limit notification (A11) — cannot silently regress even if the fake
+    server's shapes and this file's assertions both drift back together.
+
+    Captured live against codex-cli 0.154.0 on 2026-09-14, a real
+    ChatGPT-subscription login, through
+    ``backend/tests/fixtures/codex_real_trace_2026-09-14.json``. No mocks,
+    no fake: this is the literal wire content of a real, rate-limited turn.
+    """
+
+    @staticmethod
+    def _fixture() -> list[dict[str, Any]]:
+        path = Path(__file__).resolve().parent / "fixtures" / "codex_real_trace_2026-09-14.json"
+        return json.loads(path.read_text())
+
+    def test_the_real_thread_start_response_is_nested(self) -> None:
+        from backend.app.orchestrator.codex.protocol import THREAD_FIELDS, THREAD_ID_FIELDS, pick
+
+        response = next(
+            f for f in self._fixture() if f.get("kind") == "response" and f.get("id") == 2
+        )
+        result = response["result"]
+        # The bug, pinned: this must be absent at the top level.
+        assert not any(k in result for k in THREAD_ID_FIELDS)
+        thread = pick(result, *THREAD_FIELDS, default=None)
+        assert thread is not None
+        thread_id = pick(thread, *THREAD_ID_FIELDS, default=None)
+        assert thread_id == "01a0a0ed-54a7-7910-a3aa-4844a9bd5838"
+
+    def test_the_real_rate_limit_notification_translates(self) -> None:
+        from backend.app.orchestrator.codex.provider import _Translator
+
+        notification = next(
+            f for f in self._fixture() if f.get("method") == "account/rateLimits/updated"
+        )
+        translator = _Translator(thread_id="t", model="m", session_id=None)
+        events = translator.handle(
+            {"method": notification["method"], "params": notification["params"]}
+        )
+        # This account is credits-based (no primary/secondary window), so the
+        # correct, honest answer is zero events — never a fabricated ceiling.
+        # The claim this test makes is narrower and just as real: the frame
+        # reaches the translator and comes back with no exception, which is
+        # what "dropped before the translator ever saw it" broke.
+        assert events == []
+
+    def test_the_real_turn_completed_error_is_extractable(self) -> None:
+        from backend.app.orchestrator.codex.protocol import (
+            ERROR_FIELDS,
+            ERROR_MESSAGE_FIELDS,
+            TURN_FIELDS,
+            pick,
+        )
+
+        notification = next(
+            f
+            for f in self._fixture()
+            if f.get("kind") == "notification" and f.get("method") == "turn/completed"
+        )
+        turn = pick(notification["params"], *TURN_FIELDS, default=None)
+        assert turn is not None and turn["status"] == "failed"
+        error = pick(turn, *ERROR_FIELDS, default=None)
+        message = pick(error, *ERROR_MESSAGE_FIELDS, default=None)
+        assert message is not None and "usage limit" in message.lower()
 
 
 class TestWiring:
