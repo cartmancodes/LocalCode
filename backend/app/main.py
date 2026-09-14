@@ -9,13 +9,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .orchestrator.registry import shutdown_all, warm_up
 from .routes import (
+    core_rpc as core_rpc_route,
+)
+from .routes import (
     fleet as fleet_route,
+)
+from .routes import (
     models as models_route,
+)
+from .routes import (
     sessions,
+)
+from .routes import (
     system as system_route,
 )
 from .storage.sessions import store as session_store
-
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +67,7 @@ def create_app() -> FastAPI:
     app.include_router(models_route.router)
     app.include_router(fleet_route.router)
     app.include_router(system_route.router)
+    app.include_router(core_rpc_route.router)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:
