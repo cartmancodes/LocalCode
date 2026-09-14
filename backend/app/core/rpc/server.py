@@ -227,6 +227,10 @@ class RpcServer:
                 self._respond(cmd)
             elif kind == "get_session_stats":
                 self._respond(cmd, s.get_session_stats())
+            elif kind == "get_quota":
+                self._respond(cmd, s.get_quota())
+            elif kind == "get_packages":
+                self._respond(cmd, {"packages": self._packages()})
             elif kind == "export_html":
                 self._respond(cmd, error="export_html is not supported yet")
             elif kind == "switch_session":
@@ -274,6 +278,18 @@ class RpcServer:
             self._respond(cmd, error=f"not found: {exc.args[0] if exc.args else exc}")
         except Exception as exc:  # noqa: BLE001 — every command gets a response
             self._respond(cmd, error=f"{type(exc).__name__}: {exc}")
+
+    # ── packages ───────────────────────────────────────────────────────
+
+    def _packages(self) -> list[dict[str, Any]]:
+        from ..packages import load_packages
+
+        return [
+            {"source": p.source, "path": p.path, "scope": p.scope, "name": p.name}
+            for p in load_packages(
+                cwd=self.session.cwd, include_project=self.session.project_trusted
+            )
+        ]
 
     # ── models ─────────────────────────────────────────────────────────
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 from typing import Any
@@ -52,6 +53,8 @@ async def core_rpc(websocket: WebSocket) -> None:
     server = None
     try:
         engine = create_engine(q.get("engine", "claude"))
+        if q.get("rate_limit") and hasattr(engine, "rate_limit"):
+            engine.rate_limit = json.loads(q["rate_limit"])
         ui = RpcUIBridge(send)
         session = await create_agent_session(
             engine=engine,

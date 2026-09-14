@@ -105,7 +105,8 @@ Per-turn cost (USD) is reported by each provider in the `assistant.done` event a
 
 ## Documentation
 
-- [docs/core.md](docs/core.md) — the pi-shaped core under `backend/app/core/`: session tree, extension API, engines, RPC mode, CLI.
+- [docs/core.md](docs/core.md) — the pi-shaped core under `backend/app/core/`: session tree, extension API, engines, RPC mode, packages, quota, CLI.
+- [packages/fleet/README.md](packages/fleet/README.md) — the multi-agent workflow, now a package (`localcode install ./packages/fleet`).
 - [docs/harness-roadmap.md](docs/harness-roadmap.md) — why the core is shaped like pi.dev and what comes next.
 
 - [docs/architecture.md](docs/architecture.md) — the technical deep-dive: providers, runner, orchestrator + dispatch, event flow, storage, configuration.

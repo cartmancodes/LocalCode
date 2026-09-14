@@ -46,6 +46,7 @@ from .engines.base import Engine, EngineConfig, EngineHooks, NotSupportedError
 from .extensions.runner import ExtensionRunner, SimpleExtensionContext
 from .extensions.types import NoUIBridge, UIBridge
 from .messages import message_text, now_ms, user_message
+from .quota import QuotaGovernor
 from .resources import (
     ResourceLoader,
     Resources,
@@ -192,6 +193,8 @@ class AgentSession:
         self.abort_signal = asyncio.Event()
         self.shutdown_requested = asyncio.Event()
         self.last_rate_limit: dict[str, Any] | None = None
+        # Rolling-window headroom, fed by the rate_limit events both engines emit.
+        self.quota = QuotaGovernor()
 
         self._listeners: list[Listener] = []
         self._steering: list[str] = []
@@ -536,6 +539,7 @@ class AgentSession:
             return
         elif kind == "rate_limit":
             self.last_rate_limit = event.get("info")
+            self.quota.record(self.engine.name, event.get("info") or {})
         elif kind == "agent_end":
             self._emit(
                 {"type": "agent_end", "messages": event.get("messages", []), "willRetry": False}
@@ -1067,6 +1071,8 @@ class AgentSession:
             "pendingMessageCount": self.pending_message_count,
             "engine": self.engine.name,
             "engineSessionId": self.engine.session_id,
+            "quotaStatus": self.quota.status(self.engine.name),
+            "quotaHeadroom": round(self.quota.headroom(self.engine.name), 4),
         }
 
     def get_session_stats(self) -> dict[str, Any]:
@@ -1101,6 +1107,24 @@ class AgentSession:
             "tokens": tokens,
             "cost": cost,
             "rateLimit": self.last_rate_limit,
+            "quota": self.get_quota(),
+        }
+
+    def get_quota(self) -> dict[str, Any]:
+        """Headroom per engine, normalised across vendors.
+
+        Under OAuth the per-turn dollar figure is decoration — nobody is billed
+        per token. What runs out is the rolling window, so that is what the UI
+        and any router should read.
+        """
+        snapshot = self.quota.snapshot(self.engine.name)
+        return {
+            "engine": self.engine.name,
+            "status": self.quota.status(self.engine.name),
+            "headroom": round(self.quota.headroom(self.engine.name), 4),
+            "summary": self.quota.describe(),
+            "engines": self.quota.to_dict(),
+            "current": snapshot.to_dict() if snapshot else None,
         }
 
     def get_last_assistant_text(self) -> str | None:
@@ -1223,10 +1247,12 @@ async def create_agent_session(
     project_trusted: bool = False,
     ui_bridge: UIBridge | None = None,
     mode: str = "rpc",
+    use_packages: bool = True,
     **options: Any,
 ) -> AgentSession:
     """Build a session: session manager, extensions, engine, in that order."""
     from .extensions.loader import discover_extension_paths, load_extensions
+    from .packages import extension_files, load_packages, resource_paths
 
     if in_memory:
         sm = SessionManager.in_memory(cwd)
@@ -1237,11 +1263,14 @@ async def create_agent_session(
     else:
         sm = SessionManager.open(session, session_dir)
     runner = ExtensionRunner()
+    packages = load_packages(cwd=cwd, include_project=project_trusted) if use_packages else []
     paths = list(extension_paths or [])
     if discover_extensions:
         paths = list(
             discover_extension_paths(cwd=cwd, include_project=project_trusted, extra_paths=paths)
         )
+    # Package extensions load after the user's own, so a local file wins.
+    paths.extend(extension_files(packages))
     await load_extensions(paths, runner)
     discovered = await runner.emit_resources_discover(
         cwd, "startup", SimpleExtensionContext(cwd=cwd, mode=mode, project_trusted=project_trusted)
@@ -1249,8 +1278,14 @@ async def create_agent_session(
     loader = ResourceLoader(
         cwd=cwd,
         project_trusted=project_trusted,
-        extra_skill_paths=discovered.get("skillPaths", []),
-        extra_prompt_paths=discovered.get("promptPaths", []),
+        extra_skill_paths=[
+            *resource_paths(packages, "skills"),
+            *discovered.get("skillPaths", []),
+        ],
+        extra_prompt_paths=[
+            *resource_paths(packages, "prompts"),
+            *discovered.get("promptPaths", []),
+        ],
     )
     resources = loader.load()
     if options.get("system_prompt") is None and resources.system_prompt:

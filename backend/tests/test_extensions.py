@@ -333,3 +333,17 @@ def test_simple_context_defaults(project: Path, mode: str) -> None:
     c = ctx(project, mode=mode)
     assert c.mode == mode and c.has_ui is False and c.is_idle() and not c.is_project_trusted()
     assert c.get_system_prompt() == "" and c.get_context_usage() is None
+
+
+async def test_directory_extension_imports_its_own_siblings(project: Path) -> None:
+    """An <name>/index.py is a package: relative imports of siblings resolve."""
+    root = project / "ext" / "bundle"
+    write(root / "helpers.py", "GREETING = 'hi from sibling'\n")
+    write(
+        root / "index.py",
+        "from .helpers import GREETING\n\n\ndef setup(api):\n    api.register_flag('greeting', type='string', default=GREETING)\n",
+    )
+    runner = ExtensionRunner()
+    ext = await load_extension(root / "index.py", runner)
+    assert ext is not None and ext.name == "bundle"
+    assert runner.get_flag("greeting") == "hi from sibling"

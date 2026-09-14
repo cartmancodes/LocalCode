@@ -1,4 +1,6 @@
-export type Provider = "claude" | "opencode" | "fleet";
+// "core" entries are not backend rows — they open a session on the core
+// RPC protocol at /api/core/rpc, where the loop runs in the vendor binary.
+export type Provider = "claude" | "opencode" | "fleet" | "core";
 
 // Permission/auto mode forwarded to the upstream agent (Claude:
 // acceptEdits / default / plan / bypassPermissions). Chosen per-session.

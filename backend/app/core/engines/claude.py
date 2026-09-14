@@ -22,11 +22,13 @@ Not available through the Python SDK as callbacks: ``SessionStart`` /
 from __future__ import annotations
 
 import asyncio
+import warnings
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from claude_agent_sdk import (
     AssistantMessage,
+    CanUseToolShadowedWarning,
     ClaudeAgentOptions,
     ClaudeSDKClient,
     HookMatcher,
@@ -206,6 +208,13 @@ class ClaudeEngine:
     async def _ensure_client(self) -> None:
         if self._client is not None and not self._needs_reconnect:
             return
+        # Our own extension tools are auto-approved by being in `allowed_tools`,
+        # which the SDK warns about because it shadows `can_use_tool`. That is
+        # the intent: we mounted those tools, so prompting for them would be
+        # asking the user to approve our own plumbing. Extensions that *do*
+        # want to gate them use the `tool_call` hook, which compiles to
+        # PreToolUse and still fires.
+        warnings.filterwarnings("ignore", category=CanUseToolShadowedWarning)
         if self._client is not None:
             try:
                 await self._client.disconnect()

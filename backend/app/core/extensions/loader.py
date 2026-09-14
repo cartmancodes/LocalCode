@@ -93,11 +93,22 @@ def _normalize(path: str | Path) -> Path:
 
 
 def _import_factory(p: Path) -> Any:
-    """Blocking part of loading: import the module, find ``setup``."""
-    spec = importlib.util.spec_from_file_location(_module_name(p), p)
+    """Blocking part of loading: import the module, find ``setup``.
+
+    A directory extension (``<name>/index.py``) is imported as a *package* so
+    its ``from .helpers import x`` resolves against its own directory. A bare
+    ``<name>.py`` is imported as a plain module.
+    """
+    name = _module_name(p)
+    is_package = p.name == "index.py"
+    spec = importlib.util.spec_from_file_location(
+        name, p, submodule_search_locations=[str(p.parent)] if is_package else None
+    )
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot create import spec for {p}")
     module = importlib.util.module_from_spec(spec)
+    if is_package:
+        module.__package__ = name
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     factory = next(

@@ -53,6 +53,12 @@ class ExtensionAPI:
     def events(self) -> EventBus:
         return self._runner.event_bus
 
+    @property
+    def engine_factories(self) -> dict[str, Any]:
+        """Engines registered by any loaded extension, for code that builds
+        its own sessions (the fleet's subagents, for one)."""
+        return dict(self._runner.engine_factories)
+
     # ── registrations ──────────────────────────────────────────────────
 
     def register_tool(self, tool: ToolDefinition | dict[str, Any]) -> None:

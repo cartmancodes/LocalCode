@@ -68,6 +68,8 @@ class FakeEngine:
         self.executor: ToolExecutor | None = None
         self.thinking_level = "off"
         self.closed = False
+        # Set to a vendor rate-limit payload to exercise the quota path.
+        self.rate_limit: dict[str, Any] | None = None
 
     # ── protocol ───────────────────────────────────────────────────────
 
@@ -99,6 +101,8 @@ class FakeEngine:
         run = self.runs.pop(0) if self.runs else [{"text": f"echo: {_text_of(message)}"}]
         produced: list[dict[str, Any]] = []
         yield {"type": "engine_session", "engine": self.name, "sessionId": self._session_id}
+        if self.rate_limit is not None:
+            yield {"type": "rate_limit", "info": self.rate_limit}
         yield {"type": "agent_start"}
         aborted = False
         for turn in run:
