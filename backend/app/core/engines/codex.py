@@ -262,6 +262,12 @@ class CodexEngine:
         aborted = False
         pending_close: list[EngineEvent] = []
         pending_message: dict[str, Any] | None = None
+        # The real app-server can send a standalone "error" notification AND
+        # turn/completed's own turn.error for the SAME failure, byte-identical
+        # message (see codex_real_trace_2026-09-14.json). Only dedupe on that
+        # exact match — never assume the two are always redundant in general,
+        # since nothing in the protocol guarantees "error" is turn-scoped.
+        last_error_message: str | None = None
 
         def open_turn() -> list[EngineEvent]:
             nonlocal builder, turn_open
@@ -451,9 +457,11 @@ class CodexEngine:
                     continue
                 if method == "error":
                     err = p.get("error") or {}
+                    message = err.get("message", "error")
+                    last_error_message = message
                     yield {
                         "type": "error",
-                        "message": err.get("message", "error"),
+                        "message": message,
                         "willRetry": bool(p.get("willRetry")),
                     }
                     continue
@@ -462,11 +470,9 @@ class CodexEngine:
                     status = turn.get("status")
                     aborted = status == "interrupted"
                     if status == "failed" and turn.get("error"):
-                        yield {
-                            "type": "error",
-                            "message": (turn["error"] or {}).get("message", "turn failed"),
-                            "willRetry": False,
-                        }
+                        message = (turn["error"] or {}).get("message", "turn failed")
+                        if message != last_error_message:
+                            yield {"type": "error", "message": message, "willRetry": False}
                     for e in close_turn(
                         "aborted" if aborted else ("error" if status == "failed" else "stop")
                     ):

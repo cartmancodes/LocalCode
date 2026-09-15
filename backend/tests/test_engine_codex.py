@@ -132,6 +132,21 @@ async def _allow(name: str, args: dict, ctx: dict) -> dict:
     return {"allow": True}
 
 
+async def test_a_duplicate_error_message_is_not_reported_twice() -> None:
+    """The real app-server can send BOTH a standalone "error" notification
+    and turn/completed's own turn.error for the exact same failure (see
+    backend/tests/fixtures/codex_real_trace_2026-09-14.json, captured live
+    against codex-cli 0.154.0). The engine must not surface that as two
+    separate error events to a client."""
+    eng = await make_engine()
+    evs = await run(eng, "rate limited")
+    errors = [e for e in evs if e["type"] == "error"]
+    assert len(errors) == 1, [e["message"] for e in errors]
+    assert "usage limit" in errors[0]["message"].lower()
+    assert evs[-1]["type"] == "agent_end"
+    await eng.close()
+
+
 async def test_rpc_client_busy_retry_and_unknown_method() -> None:
     client = CodexAppServerClient(FAKE)
     await client.start()

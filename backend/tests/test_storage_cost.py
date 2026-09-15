@@ -394,6 +394,42 @@ async def test_rapid_checkpoints_inside_the_interval_write_once(
     assert len(msgs[0]["content"]) == 50, "the throttle must not drop accumulated blocks"
 
 
+async def test_a_throttled_checkpoint_never_builds_a_snapshot(
+    isolated_store: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``checkpoint()`` used to call ``_snapshot()`` (a full copy of
+    ``self.blocks``) before checking whether the throttle would skip the
+    write, paying that copy on every tool boundary even when nothing was
+    going to be written. The throttle decision (``_should_write``, and the
+    final-emptiness check) must be made from cheap running state so a
+    skipped write is genuinely skipped, not just its file write."""
+    meta = await _new_session(isolated_store)
+    sid = meta["id"]
+    acc = TurnAccumulator()
+
+    calls = 0
+    real_snapshot = TurnAccumulator._snapshot
+
+    def counting_snapshot(self: TurnAccumulator) -> list[dict[str, Any]]:
+        nonlocal calls
+        calls += 1
+        return real_snapshot(self)
+
+    monkeypatch.setattr(TurnAccumulator, "_snapshot", counting_snapshot)
+
+    acc.add_tool_use({"id": "t0", "name": "dispatch", "input": {"d": "tiny"}})
+    await acc.checkpoint(sid)  # first write is never throttled
+    assert calls == 1
+
+    for i in range(1, 10):
+        acc.add_tool_use({"id": f"t{i}", "name": "dispatch", "input": {"d": "tiny"}})
+        await acc.checkpoint(sid)  # inside both the growth and time throttle
+    assert calls == 1, f"expected the throttle to skip every one of these 9 checkpoints without snapshotting, got {calls} snapshot(s)"
+
+    await acc.checkpoint(sid, final=True)  # final=True always writes
+    assert calls == 2
+
+
 async def test_growth_past_the_threshold_forces_a_checkpoint(
     isolated_store: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -158,11 +158,15 @@ class TurnAccumulator:
         once, fsyncs, clears ``current.json`` and bumps ``updated_at`` so the
         sidebar reflects the activity.
         """
-        flushed = self._snapshot()
-        if not flushed:
+        # Cheap emptiness/throttle checks BEFORE building the snapshot: a
+        # skipped write must not pay for the copy it isn't going to use.
+        # ``not self.blocks and not self._text_buf`` is exactly the condition
+        # under which ``_snapshot()`` would come back empty.
+        if not self.blocks and not self._text_buf:
             return
         if not final and not self._should_write():
             return
+        flushed = self._snapshot()
         try:
             payload: dict[str, Any] = {
                 "role": "assistant",

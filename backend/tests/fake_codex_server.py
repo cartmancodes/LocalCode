@@ -44,6 +44,26 @@ def run_turn(turn_id: str, text: str) -> None:
         "turn/started",
         {"threadId": tid, "turn": {"id": turn_id, "status": "inProgress", "items": []}},
     )
+    if "rate limited" in text:
+        # Mirrors the real app-server (codex-cli 0.154.0, see
+        # backend/tests/fixtures/codex_real_trace_2026-09-14.json): a
+        # standalone "error" notification AND turn/completed's own
+        # turn.error, both carrying the identical message, for one failure.
+        msg = "You've hit your usage limit. Try again later."
+        notify("error", {"error": {"message": msg}})
+        notify(
+            "turn/completed",
+            {
+                "threadId": tid,
+                "turn": {
+                    "id": turn_id,
+                    "status": "failed",
+                    "items": [],
+                    "error": {"message": msg},
+                },
+            },
+        )
+        return
     notify(
         "item/started",
         {
