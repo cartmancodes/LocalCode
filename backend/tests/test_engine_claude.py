@@ -113,6 +113,68 @@ async def test_options_carry_hooks_permissions_and_resume() -> None:
     assert eng.session_id == "sess-1"
 
 
+async def test_the_builtin_toolset_excludes_claude_codes_own_meta_tools() -> None:
+    """Real finding (see the fleet-package validation): ``allowed_tools`` only
+    auto-approves tools, it never restricts which ones are AVAILABLE — every
+    engine session got the CLI's full native palette, including its own
+    session-orchestration tools (``Agent``, ``ListAgents``, ``SendMessage``,
+    ``ToolSearch``, ``Workflow``, ``TaskOutput``, ...). Confirmed live: a
+    nested session could see and reason about calling those, once even
+    discovering two other real, independent peer sessions on the machine via
+    ``ListAgents``. ``ClaudeAgentOptions.tools`` is the field that actually
+    controls availability (its own docstring: "to restrict which tools the
+    model may call... use allowed_tools instead" -- i.e. tools is the OTHER
+    one). This pins a real coding baseline in and everything meta-tool-shaped
+    out, so a session built on this engine can never again discover the host
+    environment's own agent-orchestration surface."""
+    eng, _ = await make([result()])
+    await run(eng, "x")
+    opts = FakeClient.instances[0].options
+    assert opts.tools == [
+        "Bash",
+        "Read",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+        "WebFetch",
+        "WebSearch",
+    ]
+    meta_tools = {
+        "Agent",
+        "ListAgents",
+        "SendMessage",
+        "ToolSearch",
+        "Workflow",
+        "TaskOutput",
+        "TaskStop",
+        "Monitor",
+        "RemoteTrigger",
+        "CronCreate",
+        "CronDelete",
+        "CronList",
+        "EnterWorktree",
+        "ExitWorktree",
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "DesignSync",
+        "PushNotification",
+        "AskUserQuestion",
+        "ReportFindings",
+        "ScheduleWakeup",
+    }
+    assert not meta_tools & set(opts.tools)
+
+
+async def test_a_caller_can_still_override_the_builtin_toolset() -> None:
+    """The escape hatch (cfg.extra["claude_options"]) must still win, for a
+    caller that genuinely wants a different baseline — e.g. tools=[] for a
+    session whose only capabilities should come from mounted extension
+    tools."""
+    eng, _ = await make([result()], extra={"claude_options": {"tools": []}})
+    await run(eng, "x")
+    assert FakeClient.instances[0].options.tools == []
+
+
 async def test_streamed_text_then_tool_use_and_result() -> None:
     script = [
         SystemMessage(subtype="init", data={"session_id": "sess-1"}),

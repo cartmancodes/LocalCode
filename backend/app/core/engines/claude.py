@@ -81,6 +81,23 @@ _NO_APPROVAL_MSG = (
     "or start the engine with permission_mode='acceptEdits'"
 )
 
+# ClaudeAgentOptions.tools controls which built-in tools are AVAILABLE at
+# all — a different axis from allowed_tools, which only auto-approves tools
+# that are already available (see that field's own docstring: "to restrict
+# which tools the model may call... use allowed_tools instead"). Left unset,
+# a session gets the CLI's full native palette, including its own
+# session-orchestration surface (Agent, ListAgents, SendMessage, ToolSearch,
+# Workflow, TaskOutput/TaskStop, Cron*, *Worktree, *PlanMode, ...) — a real
+# session was once able to enumerate and reason about calling those,
+# including discovering unrelated peer sessions on the host via ListAgents.
+# This is the coding baseline LocalCode's engine sessions actually need
+# (proven by every prior turn's use of Bash for tool calls); everything
+# meta-tool-shaped is excluded by omission rather than by naming an
+# ever-growing denylist. A caller that genuinely wants a different baseline
+# (e.g. tools=[] for a session that should only reach mounted extension
+# tools) still wins via cfg.extra["claude_options"]["tools"].
+_BUILTIN_TOOLS = ["Bash", "Read", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch"]
+
 
 class ClaudeEngine:
     name = "claude"
@@ -178,6 +195,7 @@ class ClaudeEngine:
         if self._tools:
             kwargs["mcp_servers"] = {"localcode": self._mcp_server()}
             kwargs["allowed_tools"] = [f"mcp__localcode__{t.name}" for t in self._tools]
+        kwargs["tools"] = list(_BUILTIN_TOOLS)
         kwargs.update(cfg.extra.get("claude_options", {}))
         return ClaudeAgentOptions(**kwargs)
 
