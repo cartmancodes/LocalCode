@@ -1,0 +1,33 @@
+diff --git a/backend/app/orchestrator/fleet/pool.py b/backend/app/orchestrator/fleet/pool.py
+index 5557b19..7004b31 100644
+--- a/backend/app/orchestrator/fleet/pool.py
++++ b/backend/app/orchestrator/fleet/pool.py
+@@ -74,6 +74,15 @@ from .envelope import StepResult
+
+ logger = logging.getLogger(__name__)
+
++
++def worker_command(executable: str, worker_module: str) -> list[str]:
++    """Use the bundled executable as a worker only for the production module."""
++    if getattr(sys, "frozen", False):
++        if worker_module != "backend.app.orchestrator.fleet.subproc":
++            raise ValueError(f"unsupported frozen worker module: {worker_module}")
++        return [executable, "--internal-fleet-worker", worker_module]
++    return [executable, "-m", worker_module]
++
+ # Prefixes as they appear on the wire, with the separating space, so the reader
+ # never re-derives them (and never accidentally matches a diagnostic line that
+ # merely starts with the marker).
+@@ -573,10 +582,8 @@ class WorkerPool:
+         # could disagree about where the file is.
+         env[WORKER_PID_DIR_ENV] = str(self.pid_dir())
+         proc = await asyncio.create_subprocess_exec(
+-            sys.executable,
+-            "-m",
+-            self._worker_module,
+-            cwd=self._repo_root,
++            *worker_command(sys.executable, self._worker_module),
++            cwd=None if getattr(sys, "frozen", False) else self._repo_root,
+             stdin=asyncio.subprocess.PIPE,
+             stdout=asyncio.subprocess.PIPE,
+             # Captured, never discarded — see ``_STDERR_TAIL_LINES``.

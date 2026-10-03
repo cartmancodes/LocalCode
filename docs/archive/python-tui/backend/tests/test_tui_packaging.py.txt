@@ -1,0 +1,85 @@
+"""Installed artifacts and frozen worker entry must work away from this tree."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tarfile
+from pathlib import Path
+
+import pytest
+
+from backend.app.orchestrator.fleet.pool import worker_command
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_frozen_worker_command_uses_allowlisted_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = "backend.app.orchestrator.fleet.subproc"
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert worker_command("/opt/localcode/localcode", module) == [
+        "/opt/localcode/localcode", "--internal-fleet-worker", module,
+    ]
+    monkeypatch.delattr(sys, "frozen")
+    assert worker_command("/usr/bin/python3", module) == [
+        "/usr/bin/python3", "-m", module,
+    ]
+
+
+def test_internal_worker_exits_on_eof_and_rejects_other_modules(tmp_path: Path) -> None:
+    script = ROOT / "packaging" / "entrypoint.py"
+    env = {**os.environ, "LOCALCODE_WORKER_PID_DIR": str(tmp_path / "pids")}
+    valid = subprocess.run(
+        [sys.executable, str(script), "--internal-fleet-worker", "backend.app.orchestrator.fleet.subproc"],
+        input="", text=True, capture_output=True, cwd=tmp_path, env=env, timeout=15,
+    )
+    assert valid.returncode == 0, valid.stderr
+    invalid = subprocess.run(
+        [sys.executable, str(script), "--internal-fleet-worker", "os"],
+        input="", text=True, capture_output=True, cwd=tmp_path, env=env, timeout=15,
+    )
+    assert invalid.returncode != 0
+    assert "unsupported worker" in invalid.stderr
+
+
+def test_frozen_extension_path_loads_an_explicit_dependency(tmp_path: Path) -> None:
+    from packaging.entrypoint import configure_extension_path
+
+    dep = tmp_path / "dependency"
+    dep.mkdir()
+    (dep / "custom_dependency.py").write_text("VALUE = 'loaded'\n")
+    previous = list(sys.path)
+    try:
+        configure_extension_path(str(dep))
+        result = subprocess.run(
+            [sys.executable, "-c", "import custom_dependency; print(custom_dependency.VALUE)"],
+            cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(dep)},
+            text=True, capture_output=True, timeout=10,
+        )
+        assert str(dep) in sys.path
+        assert result.stdout.strip() == "loaded"
+    finally:
+        sys.path[:] = previous
+
+
+def test_local_installer_refuses_overwrite_without_replace(tmp_path: Path) -> None:
+    bundle_name = "localcode-0.1.0-linux-x86_64"
+    source = tmp_path / bundle_name
+    source.mkdir()
+    binary = source / "localcode"
+    binary.write_text("#!/bin/sh\necho bundle-v1\n")
+    binary.chmod(0o755)
+    archive = tmp_path / f"{bundle_name}.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(source, arcname=bundle_name)
+    prefix = tmp_path / "install"
+    cmd = ["sh", str(ROOT / "scripts" / "install-linux.sh"), str(archive), "--prefix", str(prefix)]
+    first = subprocess.run(cmd, text=True, capture_output=True, timeout=15)
+    assert first.returncode == 0, first.stderr
+    assert subprocess.check_output([prefix / "bin" / "localcode"], text=True).strip() == "bundle-v1"
+    second = subprocess.run(cmd, text=True, capture_output=True, timeout=15)
+    assert second.returncode != 0
+    assert subprocess.check_output([prefix / "bin" / "localcode"], text=True).strip() == "bundle-v1"
+    third = subprocess.run([*cmd, "--replace"], text=True, capture_output=True, timeout=15)
+    assert third.returncode == 0, third.stderr

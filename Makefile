@@ -1,4 +1,4 @@
-.PHONY: help install dev backend frontend up down logs status test lint typecheck format soak codex-schema
+.PHONY: help install dev backend frontend up down logs status test lint typecheck format soak codex-schema rust-check rust-build tui tui-demo
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"}{printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -45,6 +45,20 @@ dev: ## Run backend and frontend together (requires `tmux` or two terminals)
 
 test: ## Run the backend test suite
 	.venv/bin/pytest -q
+
+rust-check: ## Check formatting, tests and lint for the Rust workspace
+	scripts/rust-env.sh cargo fmt --all -- --check
+	scripts/rust-env.sh cargo test --locked --workspace
+	scripts/rust-env.sh cargo clippy --locked --workspace --all-targets -- -D warnings
+
+rust-build: ## Build the optimized native Rust TUI
+	scripts/rust-env.sh cargo build --release --locked -p localcode
+
+tui: ## Open the Rust TUI with Codex
+	scripts/rust-env.sh cargo run --locked -p localcode -- --engine codex
+
+tui-demo: ## Preview the terminal UI offline
+	scripts/rust-env.sh cargo run --locked -p localcode -- --engine demo
 
 lint: ## Lint the tree (ruff)
 	.venv/bin/ruff check .

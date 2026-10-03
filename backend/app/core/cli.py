@@ -11,7 +11,7 @@
     localcode list
     localcode update
 
-Interactive use is the web UI (or any RPC client); there is no TUI here.
+Interactive use defaults to RPC; the Rust terminal UI is under development.
 """
 
 from __future__ import annotations
@@ -166,6 +166,17 @@ def _models(spec: str) -> list[dict[str, str]]:
     return out
 
 
+def choose_mode(args: argparse.Namespace, *, interactive: bool) -> str:
+    """Preserve existing CLI behavior during the Rust migration."""
+    if args.mode:
+        return args.mode
+    if args.print_mode:
+        return "print"
+    if args.prompt is not None:
+        return "print"
+    return "rpc"
+
+
 async def _main(args: argparse.Namespace) -> int:
     engine = create_engine(args.engine)
     mode = "rpc" if args.mode == "rpc" else ("json" if args.mode == "json" else "print")
@@ -206,10 +217,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_package_command(build_package_parser().parse_args(raw))
     args = build_parser().parse_args(raw)
     args.cwd = os.path.abspath(args.cwd)
-    if not args.mode and not args.print_mode:
-        args.mode = "rpc" if args.prompt is None else None
-        if args.mode is None:
-            args.print_mode = True
+    selected = choose_mode(args, interactive=sys.stdin.isatty() and sys.stdout.isatty())
+    args.mode = selected
     try:
         return asyncio.run(_main(args))
     except KeyboardInterrupt:

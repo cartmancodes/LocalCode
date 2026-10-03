@@ -12,6 +12,12 @@ dist/
 build/
 coverage/
 .superpowers/
+/target/
 
 # Claude Code session state, including git worktrees it manages.
 .claude/
+
+# Local runtime output and private conversation state.
+/.run/
+/.localcode/sessions/
+.ruff_cache/

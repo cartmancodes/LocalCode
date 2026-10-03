@@ -1,5 +1,11 @@
 # LocalCode
 
+**Rust terminal UI preview:** run `make tui-demo` for an offline preview, or
+`make rust-build` then `./target/release/localcode --engine codex` for a real
+conversation. No browser or Python runtime is needed for the Rust binary.
+See [installation, shortcuts, and current scope](docs/tui.md). The existing
+application below remains available while feature migration continues.
+
 A provider-agnostic abstraction over **Claude Code** and **Codex** — one Claude-Code-style web UI, two vendor backends plus a fleet that composes them, and OAuth-based subscription auth so you never hand it an API key. Both subscriptions are metered: the top bar shows how much of each plan's window is left, and work routes onto whichever has room.
 
 ```text

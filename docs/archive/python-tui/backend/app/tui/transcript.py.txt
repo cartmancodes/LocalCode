@@ -1,0 +1,122 @@
+"""Bounded transcript previews backed by complete temporary disk output."""
+
+from __future__ import annotations
+
+import json
+import re
+import tempfile
+from collections import deque
+from dataclasses import dataclass
+from pathlib import Path
+
+_ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])")
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def sanitize_terminal(value: str) -> str:
+    """Remove terminal instructions while retaining ordinary text and newlines."""
+    return _CONTROL.sub("", _ANSI.sub("", value)).replace("\r", "")
+
+
+@dataclass(frozen=True)
+class TranscriptEntry:
+    index: int
+    kind: str
+    preview: str
+    data_offset: int
+    data_length: int
+
+
+class TranscriptStore:
+    """Append-only raw payloads and compact index records for page-at-a-time display."""
+
+    def __init__(self, directory: Path | None = None, *, window: int = 200) -> None:
+        if window < 1:
+            raise ValueError("window must be positive")
+        self._temporary = tempfile.TemporaryDirectory(dir=directory)
+        root = Path(self._temporary.name)
+        self.data_path = root / "content.bin"
+        self.index_path = root / "index.jsonl"
+        self._data = self.data_path.open("w+b")
+        self._index = self.index_path.open("w+b")
+        self._recent: deque[TranscriptEntry] = deque(maxlen=window)
+        self.window = window
+        self.count = 0
+
+    def append(self, kind: str, value: str) -> TranscriptEntry:
+        clean = sanitize_terminal(value)
+        payload = clean.encode("utf-8")
+        offset = self._data.tell()
+        self._data.write(payload)
+        self._data.flush()
+        preview = clean[:2000] + ("…" if len(clean) > 2000 else "")
+        entry = TranscriptEntry(self.count, kind, preview, offset, len(payload))
+        self._index.write((json.dumps(entry.__dict__, ensure_ascii=False) + "\n").encode("utf-8"))
+        self._index.flush()
+        self._recent.append(entry)
+        self.count += 1
+        return entry
+
+    def tail(self) -> list[TranscriptEntry]:
+        return list(self._recent)
+
+    def older(self, *, before: int, limit: int = 200) -> list[TranscriptEntry]:
+        if limit < 1 or before <= 0:
+            return []
+        # Index records are bounded by the preview cap, so paging does not load payloads.
+        found: deque[TranscriptEntry] = deque(maxlen=limit)
+        self._index.flush()
+        self._index.seek(0)
+        for raw in self._index:
+            item = json.loads(raw)
+            if item["index"] >= before:
+                break
+            found.append(TranscriptEntry(**item))
+        self._index.seek(0, 2)
+        return list(found)
+
+    def entry(self, index: int) -> TranscriptEntry:
+        if index < 0 or index >= self.count:
+            raise IndexError(index)
+        for entry in self._recent:
+            if entry.index == index:
+                return entry
+        self._index.flush()
+        self._index.seek(0)
+        for raw in self._index:
+            item = json.loads(raw)
+            if item["index"] == index:
+                self._index.seek(0, 2)
+                return TranscriptEntry(**item)
+        raise IndexError(index)
+
+    def read_full(self, index: int) -> str:
+        entry = self.entry(index)
+        self._data.flush()
+        self._data.seek(entry.data_offset)
+        return self._data.read(entry.data_length).decode("utf-8")
+
+    def read_chunk(self, index: int, offset: int = 0, limit: int = 4000) -> str:
+        entry = self.entry(index)
+        if offset < 0 or limit < 1:
+            raise ValueError("offset must be nonnegative and limit positive")
+        self._data.flush()
+        self._data.seek(entry.data_offset + min(offset, entry.data_length))
+        return self._data.read(min(limit, entry.data_length - min(offset, entry.data_length))).decode("utf-8", "replace")
+
+    def export(self, index: int, path: Path) -> Path:
+        entry = self.entry(index)
+        self._data.flush()
+        self._data.seek(entry.data_offset)
+        with path.open("xb") as out:
+            left = entry.data_length
+            while left:
+                chunk = self._data.read(min(left, 65536))
+                out.write(chunk)
+                left -= len(chunk)
+        return path
+
+    def close(self) -> None:
+        self._index.close()
+        self._data.close()
+        self._temporary.cleanup()

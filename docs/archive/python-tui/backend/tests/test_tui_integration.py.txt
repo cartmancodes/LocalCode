@@ -1,0 +1,71 @@
+"""Exercise the real terminal-to-core boundary, without vendor network calls."""
+from __future__ import annotations
+
+import asyncio
+import threading
+from pathlib import Path
+
+from textual.widgets import RichLog, TextArea
+
+from backend.app.core.cli import build_parser
+from backend.app.core.session_manager import SessionManager
+from backend.app.tui.app import LocalCodeApp
+
+
+def app_for(project: Path) -> LocalCodeApp:
+    options = build_parser().parse_args([
+        "--engine", "fake", "--no-extensions", "--no-packages", "--cwd", str(project),
+    ])
+    return LocalCodeApp(options)
+
+
+async def displayed(app: LocalCodeApp, text: str) -> None:
+    async with asyncio.timeout(8):
+        while not any(text in line.text for line in app.query_one("#transcript", RichLog).lines):
+            await asyncio.sleep(0.01)
+
+
+async def test_real_terminal_prompt_reaches_core_and_persists(project: Path, agent_dir: Path) -> None:
+    app = app_for(project)
+    async with app.run_test(size=(100, 32)) as pilot:
+        app.query_one("#composer", TextArea).load_text("terminal integration")
+        await pilot.press("ctrl+enter")
+        await displayed(app, "echo: terminal integration")
+        assert app.query_one("#composer", TextArea).text == ""
+    sessions = SessionManager.list(str(project))
+    assert len(sessions) == 1
+    restored = SessionManager.open(sessions[0]["path"])
+    messages = restored.build_session_context()["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert "terminal integration" in str(messages[-1]["content"])
+
+
+async def test_blocked_core_storage_does_not_block_terminal_input(
+    project: Path, agent_dir: Path, monkeypatch,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    original = SessionManager._persist_entry
+
+    def slow_persist(self, entry):
+        entered.set()
+        if not release.wait(8):
+            raise RuntimeError("test failed to release storage")
+        return original(self, entry)
+
+    monkeypatch.setattr(SessionManager, "_persist_entry", slow_persist)
+    app = app_for(project)
+    try:
+        async with app.run_test(size=(100, 32)) as pilot:
+            app.query_one("#composer", TextArea).load_text("disk delay")
+            await pilot.press("ctrl+enter")
+            assert await asyncio.to_thread(entered.wait, 3)
+            # The engine loop is demonstrably still blocked on storage here.
+            # A terminal on that same loop cannot consume this key.
+            await pilot.press("x")
+            assert app.query_one("#composer", TextArea).text == "x"
+            assert not release.is_set()
+            release.set()
+            await displayed(app, "echo: disk delay")
+    finally:
+        release.set()

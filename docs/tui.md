@@ -1,0 +1,203 @@
+# LocalCode terminal UI — Rust preview
+
+A native terminal application now runs against the official Codex and Claude
+CLIs. The harness uses Rust only: no browser, HTTP server or Python runtime.
+This is an interactive vertical slice, not the completed feature-parity release.
+The existing application and its sessions remain untouched.
+
+## Run
+
+From the repository root, with the pinned Rust toolchain and a native linker:
+
+```sh
+make rust-build
+./target/release/localcode --engine demo
+./target/release/localcode --engine codex --cwd /path/to/project
+./target/release/localcode --engine claude --cwd /path/to/project
+```
+
+`make tui-demo` builds and opens the offline demo. `make tui` opens Codex.
+Vendor modes require the corresponding CLI on PATH and its normal login. Use
+`--binary /absolute/path/to/cli` when needed. LocalCode does not read credentials.
+`--model MODEL` selects a model when opening the session.
+
+Build on Linux to produce a Linux executable. For a user-level installation:
+
+```sh
+scripts/rust-env.sh cargo install --locked --path crates/localcode --root "$HOME/.local"
+"$HOME/.local/bin/localcode" --engine demo
+```
+
+The install command deliberately omits `--force`: resolve any existing `localcode`
+binary before replacing it. The optimized executable can also be run directly.
+Published musl archives and cross-architecture installation gates remain pending.
+
+## Interaction
+
+The graphite background, mint accents and restrained amber approval state adapt
+to narrow terminals; a workspace/session panel appears at 112 columns. NO_COLOR
+is respected. The minimum usable size is 38 columns by 12 rows.
+
+| Key | Action |
+| --- | --- |
+| Enter | Send prompt |
+| Alt+Enter, Shift+Enter, Ctrl+J | Newline (terminal modifier support varies) |
+| Left/Right, Home/End | Edit by Unicode grapheme / move within a line |
+| Up/Down | Prompt history, or vertical movement in a multiline draft |
+| Ctrl+U | Clear draft |
+| PageUp/PageDown | Scroll the conversation or approval details |
+| Ctrl+End | Follow the latest output |
+| Esc / Ctrl+C | Cancel the active operation |
+| Ctrl+P | Command palette |
+| F1 | Help |
+| Ctrl+Q | Stop vendor children, finish journal writes, exit |
+| Ctrl+Z | Restore terminal and suspend; use the shell's `fg` to return |
+| A / D / Esc in an approval | Allow once / deny / deny |
+
+Bracketed paste preserves newlines without submitting them. A rejected oversized
+paste leaves the draft intact. Approval requests are never answered by pasted
+text. Approval expiration (120 seconds), cancellation and unknown request types
+fail closed; requests too large to display completely are denied explicitly.
+Vendor sandbox policy still applies. Codex uses workspace-write plus untrusted
+approval policy; this is not a promise that every vendor action raises a dialog.
+
+Commands: `/help`, `/model`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/quit`.
+Changing sessions or exporting requires an idle turn. `/approval-demo` exercises
+the dialog in offline demo mode. Unknown preview commands return a visible error.
+
+## Switch models and providers
+
+```text
+/model                         Show full model details and live catalog
+/model list 2                  Show the second catalog page
+/model MODEL_NAME              Change model within the current provider
+/model codex MODEL_NAME        Select a Codex model
+/model claude MODEL_NAME       Select a Claude model
+/model claude/MODEL_NAME        Equivalent provider-qualified form
+/model default                 Use the current provider's default model
+/model codex                   Switch to Codex with its default model
+```
+
+Use a model name supported by your installed vendor CLI and account. LocalCode
+passes the name to that CLI; it does not maintain a hard-coded catalog or guarantee
+that every name is available. Vendor errors remain visible in the conversation.
+
+Model changes require an idle session. Changing models within one provider
+reconnects with the existing vendor session ID. Switching providers starts fresh
+vendor context; the old conversation is not automatically sent to the new provider.
+A notice marks this boundary. Earlier messages and prompt history remain visible,
+and the previous journal is retained; the new connection writes a new journal.
+The header and sidebar show the provider-reported name and full ID where space
+permits. `/session` and `/model` print complete, scrollable details: requested
+selection, catalog ID, confirmed session model ID, name and description. An alias
+or default is marked unconfirmed until the runtime reports the active model.
+Names unavailable in the catalog are explicitly marked as not reported.
+
+Codex discovery uses paginated `model/list`; Claude discovery uses initialization
+`models` metadata, including `resolvedModel` when supplied. Reconnecting refreshes
+the catalog; `/model list <page>` pages through 20 entries at a time. Catalogs are
+bounded to 256 entries and eight Codex pages, with a notice on partial results.
+Discovery uses the existing CLI process and does not make inference calls or add
+an idle polling timer. Provider model metadata is also recorded in the journal.
+A missing catalog does not prevent entering a custom model ID.
+
+Existing `--binary` overrides are
+remembered per provider for this TUI invocation; a newly selected provider otherwise
+uses its CLI from PATH. If a CLI is unavailable or login fails, fix it and use
+`/reconnect`, or switch back with `/model`.
+
+## Check the Claude catalog
+
+```sh
+make rust-build
+./target/release/localcode --engine claude
+```
+
+Once connected, enter `/model`. The list opens at its beginning and reports its
+entry count. Use PageDown/PageUp to read all names, full IDs, descriptions and
+selection commands. `/model list 2` opens another page when there are more than
+20 entries. `/session` shows the current model details.
+
+From a Codex session, `/model claude` switches to Claude with fresh provider
+context; then `/model` lists Claude's catalog. `/model claude opus` selects Opus.
+LocalCode displays all entries returned by the installed Claude CLI (up to the
+256-entry discovery bound), including multiple aliases for the same model. This
+is its advertised picker catalog, not an exhaustive inventory of every historical
+Anthropic API model. Full custom IDs are accepted even when absent from the list.
+Update the vendor CLI separately with `claude update`, then `/reconnect` to refresh.
+
+## Persistence and limits
+
+`/session` shows the vendor session ID and journal path. `/reconnect` reopens that
+vendor context; `--resume VENDOR_SESSION_ID` does the same on a later launch.
+Reconnection does not load the earlier local transcript into the viewport yet.
+`/new` starts fresh vendor context without deleting previous journals.
+
+Preview journals are separate append-only JSONL files under
+`$XDG_DATA_HOME/localcode/rust-preview`, or `~/.local/share/localcode/rust-preview`.
+Use `--journal-dir PATH` to choose another location. Files are created exclusively
+with mode 0600. Completed turns and shutdown events are synced. `/export` writes a
+new JSONL file and refuses to overwrite an existing file. Journals may contain
+source code and tool output; keep them in a private directory.
+
+The viewport retains at most 160 blocks / 512 KiB of text, with 64 KiB per block;
+earlier content remains in the journal. Wrapping is cached by block and width.
+Rendering is dirty-triggered and capped near 30 Hz, with no idle animation timer.
+Prompts are limited to 64 KiB, stdout frames to 8 MiB, queued raw frames to 16 MiB,
+and each session journal to 64 MiB. Bounded event queues stop an overloaded session
+with an error; they do not silently discard a completed response. These capacities
+are not a whole-process RSS guarantee. A crash may leave an incomplete journal
+line; journals are never reopened for append. Abrupt termination is not a durable
+v3 recovery implementation.
+
+## Preview scope
+
+Implemented: real multi-turn conversations, streamed responses, tool events,
+per-request command/file approval, cancellation, vendor context resume, model
+selection and in-session switching, multiline editing, history, scrollback, new sessions, journal
+export, terminal restoration and an offline demo.
+
+Pending: pi v3 session browsing/recovery, images, steer/follow-up queues, full
+thinking/compaction controls, fleet, quota routing, resources, plugins, legacy
+session semantics, compatible print/JSON/RPC, and distributable release archives.
+The existing Python application continues to provide its existing functionality;
+this preview does not replace it. Python extensions remain the explicitly accepted
+compatibility break for the final Rust design.
+
+Claude preview launches with vendor setting sources disabled and strict MCP
+configuration. It does not yet expose the existing hook/plugin/resource surface.
+Codex currently uses its vendor configuration. Do not infer plugin parity from
+successful chat. The [acceptance matrix](rust/parity-matrix.md) tracks the remaining
+migration, including comparative performance and long-session tests.
+
+## Checks
+
+```sh
+make rust-check
+scripts/rust-env.sh cargo test --release -p localcode terminal_idle_diagnostic -- --ignored --nocapture
+```
+
+Tests include real pseudoterminals, Unicode paste, approval responses, resize,
+suspension, SIGTERM, terminal mode restoration, duplicate/stale events, cancellation
+and non-overwriting journal export. Live CLI tests are separate from the offline
+suite and require vendor authentication.
+
+UI backend references: [Ratatui installation](https://ratatui.rs/installation/)
+and [Crossterm events](https://docs.rs/crossterm/0.29.0/crossterm/event/index.html).
+
+## Model discovery verification (2026-10-03)
+
+The official [Codex app-server documentation](https://learn.chatgpt.com/docs/app-server)
+requires using returned model metadata because availability depends on the client
+and account. The [Claude model configuration documentation](https://code.claude.com/docs/en/model-config)
+also distinguishes aliases, deployment-specific resolution, and organization
+restrictions. Consequently LocalCode does not freeze a global list of latest IDs.
+
+Read-only discovery on this development machine returned GPT-6-Astra,
+GPT-5.6-Sol/Terra/Luna and GPT-5.5 from Codex. Claude returned Sonnet 5, Opus 5,
+Fable 5.1 and Haiku 4.5, with full resolved IDs and descriptions. These are runtime
+observations, not guaranteed availability for other accounts. The online Claude
+docs describe newer Opus/Sonnet defaults than this installed CLI advertises;
+LocalCode faithfully displays the installed CLI's metadata rather than claiming
+that a documentation example is available to the current account. No model
+inference request was made for these discovery checks.

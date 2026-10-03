@@ -1,0 +1,7 @@
+"""Terminal presentation for LocalCode."""
+
+
+def run_tui(options: object) -> int:
+    from .app import run_tui as _run_tui
+
+    return _run_tui(options)
