@@ -62,6 +62,10 @@ pub struct App {
     pub history_index: Option<usize>,
     pub saved_draft: String,
     pub notice: String,
+    pub goal: Option<lc_core::goal::Goal>,
+    pub goal_store: Option<lc_core::goal::GoalStore>,
+    pub goal_running: bool,
+    pub goal_output: String,
 }
 impl App {
     pub fn new(config: &lc_core::Config, journal: PathBuf) -> Self {
@@ -94,6 +98,10 @@ impl App {
             history_index: None,
             saved_draft: String::new(),
             notice: String::new(),
+            goal: None,
+            goal_store: None,
+            goal_running: false,
+            goal_output: String::new(),
         }
     }
     pub fn connection(&mut self, config: &lc_core::Config, journal: PathBuf) {
@@ -112,6 +120,14 @@ impl App {
         self.usage.clear();
         self.approvals.clear();
         self.approval_scroll = 0;
+        self.goal_running = false;
+        self.goal_output.clear();
+    }
+    pub async fn save_goal(&self) -> Result<(), String> {
+        match &self.goal_store {
+            Some(store) => store.save(self.goal.as_ref()).await,
+            None => Ok(()),
+        }
     }
     fn refresh_model_label(&mut self) {
         self.model = match &self.resolved_model {
@@ -708,6 +724,17 @@ fn sidebar(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled(" SESSION", Style::default().fg(MUTED))),
         Line::from(format!(" {id}")),
         Line::default(),
+        Line::from(Span::styled(" GOAL", Style::default().fg(MUTED))),
+        Line::from(match &app.goal {
+            Some(goal) => format!(
+                " {:?} · {}/{} turns",
+                goal.status,
+                goal.turns,
+                lc_core::goal::MAX_GOAL_TURNS
+            ),
+            None => " No active goal".into(),
+        }),
+        Line::default(),
         Line::from(Span::styled(" QUICK COMMANDS", Style::default().fg(MUTED))),
         Line::from(" /model      Model / provider"),
         Line::from(" /new        Fresh context"),
@@ -744,7 +771,7 @@ fn modal(area: Rect, width: u16, height: u16) -> Rect {
 fn help(frame: &mut Frame, area: Rect) {
     let area = modal(area, 76, 24);
     frame.render_widget(Clear, area);
-    let text="A little room to think.\n\nEnter              Send prompt\nAlt+Enter / Ctrl+J  Insert newline\n← → Home End       Move in the editor\n↑ ↓                Prompt history / multiline navigation\nCtrl+U             Clear draft\nPageUp / PageDown  Scroll conversation\nCtrl+End           Follow latest output\nEsc / Ctrl+C       Cancel the current turn\nCtrl+Q             Stop children, save, and quit\nCtrl+Z             Suspend; foreground with fg\n\n/model [provider] <name> · /model default\n/help  /new  /reconnect  /session  /export [new-path]\n/approval-demo      Offline demo permission dialog\n\nApproval dialog: A allow once · D or Esc deny\nSession journals retain output beyond the visible history.\n\nEsc or F1 closes this panel";
+    let text="LocalCode terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+Q quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
     frame.render_widget(
         Paragraph::new(text)
             .block(card(" Help "))
@@ -753,9 +780,10 @@ fn help(frame: &mut Frame, area: Rect) {
         area,
     );
 }
-pub const COMMANDS: [(&str, &str); 7] = [
+pub const COMMANDS: [(&str, &str); 8] = [
     ("/help", "Keyboard shortcuts"),
     ("/model", "Switch model or provider"),
+    ("/goal", "Inspect or manage an autonomous goal"),
     ("/session", "Session ID and journal path"),
     ("/export", "Export journal to a new file"),
     ("/new", "Start a fresh conversation"),
@@ -763,7 +791,7 @@ pub const COMMANDS: [(&str, &str); 7] = [
     ("/quit", "Save and exit"),
 ];
 fn palette(frame: &mut Frame, area: Rect, selected: usize) {
-    let area = modal(area, 66, 13);
+    let area = modal(area, 66, 14);
     frame.render_widget(Clear, area);
     let mut lines = vec![Line::default()];
     for (index, (command, description)) in COMMANDS.iter().enumerate() {

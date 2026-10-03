@@ -111,6 +111,7 @@ enum Action {
     Reconnect,
     Suspend,
     Model(lc_core::model::Selection),
+    GoalPrompt(String),
 }
 pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     let old = std::panic::take_hook();
@@ -123,6 +124,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     let mut retained_app: Option<App> = None;
     let mut binaries =
         std::collections::HashMap::from([(config.engine.clone(), config.binary.clone())]);
+    let goal_store = lc_core::goal::GoalStore::new(&directory, &config.cwd);
     loop {
         let mut session = Session::open(config.clone(), directory.clone())
             .await
@@ -130,11 +132,30 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         let mut app = retained_app
             .take()
             .unwrap_or_else(|| App::new(&config, session.journal.clone()));
+        if app.goal_store.is_none() {
+            app.goal_store = Some(goal_store.clone());
+            app.goal = goal_store.load().await.map_err(io::Error::other)?;
+            if app
+                .goal
+                .as_ref()
+                .is_some_and(|g| g.status == lc_core::goal::Status::Paused)
+            {
+                app.save_goal().await.map_err(io::Error::other)?;
+                app.notice("Stored goal loaded in paused state. Use /goal resume to continue.");
+            }
+        }
         app.connection(&config, session.journal.clone());
         let result = run_session(&mut terminal, &guard, &mut app, &mut session).await;
         session.shutdown().await;
         match result? {
             Action::Model(selection) => {
+                if let Some(goal) = &mut app.goal {
+                    if goal.status == lc_core::goal::Status::Active {
+                        goal.status = lc_core::goal::Status::Paused;
+                        app.save_goal().await.map_err(io::Error::other)?;
+                        app.notice("Goal paused for model switch. Use /goal resume to continue.");
+                    }
+                }
                 let cross_provider = selection.provider != config.engine;
                 let binary = binaries.get(&selection.provider).cloned();
                 let next = selection.configure(&config, &app.session, binary);
@@ -183,7 +204,42 @@ async fn run_session(
         tokio::select! {
             _=tokio::time::sleep_until(last_paint+frame_time),if dirty=>{},
             event=session.events.recv(),if events_open=>{
-                if let Some(event)=event{if matches!(event,lc_core::Event::Finished{..}|lc_core::Event::Error(_)){last_paint=Instant::now()-frame_time;}app.event(event);}
+                if let Some(event)=event{
+                    if matches!(event,lc_core::Event::Finished{..}|lc_core::Event::Error(_)){last_paint=Instant::now()-frame_time;}
+                    if app.goal_running {
+                        if let lc_core::Event::Text(text)=&event {
+                            app.goal_output.push_str(text);
+                            if app.goal_output.len()>64*1024 {
+                                let mut start=app.goal_output.len()-64*1024;
+                                while !app.goal_output.is_char_boundary(start) {start+=1;}
+                                app.goal_output.drain(..start);
+                            }
+                        }
+                    }
+                    let outcome=if let lc_core::Event::Finished{outcome}=&event {Some(outcome.clone())} else {None};
+                    let failed=matches!(&event,lc_core::Event::Error(_));
+                    app.event(event);
+                    if failed && app.goal_running {
+                        if let Some(goal)=&mut app.goal {goal.status=lc_core::goal::Status::Paused;}
+                        app.goal_running=false;
+                        if let Err(e)=app.save_goal().await {if let Some(goal)=&mut app.goal {goal.status=lc_core::goal::Status::Paused;}app.notice(format!("Goal persistence failed; paused: {e}"));}
+                    }
+                    if let Some(outcome)=outcome.filter(|_|app.goal_running) {
+                        app.goal_running=false;
+                        let continue_goal=app.goal.as_mut().is_some_and(|g|g.finish_turn(&outcome,&app.goal_output));
+                        if let Err(e)=app.save_goal().await {if let Some(goal)=&mut app.goal {goal.status=lc_core::goal::Status::Paused;}app.notice(format!("Goal persistence failed; paused: {e}"));}
+                        else if continue_goal {
+                            if let Some(goal)=&app.goal {
+                                let prompt=goal.prompt(false,false);
+                                let display=format!("Goal continuation · turn {}",goal.turns+1);
+                                match session.handle.send(Command::PromptWithDisplay{wire:prompt,display}) {
+                                    Ok(())=>{app.goal_running=true;app.goal_output.clear();app.running=true;app.status="continuing goal".into();}
+                                    Err(e)=>{if let Some(g)=&mut app.goal {g.status=lc_core::goal::Status::Paused;}let _=app.save_goal().await;app.notice(format!("Goal paused: {e}"));}
+                                }
+                            }
+                        } else if let Some(goal)=&app.goal {app.notice(goal.summary());}
+                    }
+                }
                 else{events_open=false;app.event(lc_core::Event::Stopped);}
                 dirty=true;
             },
@@ -194,7 +250,15 @@ async fn run_session(
                     Some(Ok(Input::Resize(_,_)))=>{terminal.resize(terminal.size()?.into())?;Action::Continue},
                     Some(Err(e))=>return Err(e),None=>return Ok(Action::Quit),_=>Action::Continue
                 };
-                match action{Action::Continue=>{},Action::Suspend=>{guard.suspend()?;terminal.resize(terminal.size()?.into())?;},other=>return Ok(other)}
+                match action{
+                    Action::Continue=>{},
+                    Action::GoalPrompt(prompt)=>match session.handle.send(Command::PromptWithDisplay{wire:prompt,display:app.goal.as_ref().map(|g|format!("Goal: {}",g.objective)).unwrap_or_else(||"Goal audit".into())}) {
+                        Ok(())=>{app.goal_running=true;app.goal_output.clear();app.running=true;app.status="working on goal".into();},
+                        Err(e)=>{if let Some(goal)=&mut app.goal {goal.status=lc_core::goal::Status::Paused;}let _=app.save_goal().await;app.notice(format!("Goal paused: {e}"));}
+                    },
+                    Action::Suspend=>{guard.suspend()?;terminal.resize(terminal.size()?.into())?;},
+                    other=>return Ok(other)
+                }
                 dirty=true;
             },
             _=quit_signal()=>return Ok(Action::Quit),
@@ -271,6 +335,12 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         }
         KeyCode::Char('c') if ctrl => {
             if app.running || !app.ready && !app.stopped {
+                if app.goal_running {
+                    if let Some(goal) = &mut app.goal {
+                        goal.status = lc_core::goal::Status::Paused;
+                    }
+                    let _ = app.save_goal().await;
+                }
                 session.handle.interrupt();
                 app.notice = "Cancelling…".into();
             } else {
@@ -279,6 +349,12 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         }
         KeyCode::Esc => {
             if app.running || !app.ready && !app.stopped {
+                if app.goal_running {
+                    if let Some(goal) = &mut app.goal {
+                        goal.status = lc_core::goal::Status::Paused;
+                    }
+                    let _ = app.save_goal().await;
+                }
                 session.handle.interrupt();
                 app.notice = "Cancelling…".into();
             } else {
@@ -314,6 +390,11 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
             }
             match session.handle.send(Command::Prompt(draft.clone())) {
                 Ok(()) => {
+                    app.goal_running = app
+                        .goal
+                        .as_ref()
+                        .is_some_and(|goal| goal.status == lc_core::goal::Status::Active);
+                    app.goal_output.clear();
                     app.editor.take();
                     app.running = true;
                     app.status = "sending".into();
@@ -362,6 +443,28 @@ async fn command(app: &mut App, input: &str) -> Action {
         },
         "/new"|"/reconnect"=>{if app.running{app.notice="Cancel the active turn before changing sessions".into();}else{return if name=="/new"{Action::New}else{Action::Reconnect};}},
         "/session"=>app.notice(format!("{}\nSession: {}\nJournal: {}\nWorkspace: {}",app.model_details(),if app.session.is_empty(){"not assigned"}else{&app.session},app.journal.display(),app.workspace)),
+        "/goal"=>{
+            use lc_core::goal::{Goal,Status};
+            match argument {
+                ""|"status"=>app.notice(app.goal.as_ref().map(Goal::summary).unwrap_or_else(||"No goal set. Use /goal <objective>.".into())),
+                "pause"=>{if let Some(goal)=&mut app.goal {goal.status=Status::Paused;app.notice("Goal paused. Current vendor turn may finish; no next turn will start.");}else{app.notice("No goal set");}},
+                "clear"=>{app.goal=None;app.goal_running=false;app.notice("Goal cleared. Current vendor turn may finish.");},
+                "resume"|"complete"=>{
+                    if app.running||!app.ready||app.stopped {app.notice("Wait for a ready, idle session before resuming or auditing a goal");}
+                    else if let Some(goal)=&mut app.goal {
+                        if goal.status==Status::Complete {app.notice("Goal is already complete; set a new goal to continue.");}
+                        else if goal.turns>=lc_core::goal::MAX_GOAL_TURNS {app.notice("Goal reached the 200-turn guard. Set a new goal to continue.");}
+                        else {goal.status=Status::Active;let prompt=goal.prompt(false,argument=="complete");if let Err(e)=app.save_goal().await {if let Some(goal)=&mut app.goal {goal.status=Status::Paused;}app.notice(format!("Goal persistence failed; paused: {e}"));return Action::Continue;}else{return Action::GoalPrompt(prompt);}}
+                    }else{app.notice("No goal set");}
+                },
+                objective=>{
+                    if app.running||!app.ready||app.stopped {app.notice("Wait for a ready, idle session before starting a goal");}
+                    else if app.goal.as_ref().is_some_and(|g|g.status==Status::Active) {app.notice("Pause or clear the active goal before replacing it");}
+                    else {match Goal::new(objective){Ok(goal)=>{let prompt=goal.prompt(true,false);app.goal=Some(goal);if let Err(e)=app.save_goal().await {app.goal=None;app.notice(format!("Goal persistence failed: {e}"));return Action::Continue;}else{return Action::GoalPrompt(prompt);}},Err(e)=>app.notice(e)}}
+                }
+            }
+            if let Err(e)=app.save_goal().await {app.notice(format!("Goal persistence failed: {e}"));}
+        },
         "/export"=>{
             if app.running{app.notice="Wait for completion or cancel before exporting".into();return Action::Continue;}
             let path=if argument.trim().is_empty(){std::env::current_dir().unwrap_or_default().join(app.journal.file_name().unwrap_or_default())}else{PathBuf::from(argument.trim())};
@@ -410,5 +513,43 @@ mod model_tests {
             assert!(matches!(command(&mut app, input).await, Action::Continue));
             assert_eq!(app.session, "thread-1");
         }
+    }
+
+    #[tokio::test]
+    async fn goal_commands_start_pause_resume_and_clear_without_a_vendor_turn() {
+        let mut app = app();
+        assert!(matches!(
+            command(&mut app, "/goal Ship the project").await,
+            Action::GoalPrompt(_)
+        ));
+        assert_eq!(app.goal.as_ref().unwrap().objective, "Ship the project");
+        assert!(matches!(
+            command(&mut app, "/goal pause").await,
+            Action::Continue
+        ));
+        assert_eq!(
+            app.goal.as_ref().unwrap().status,
+            lc_core::goal::Status::Paused
+        );
+        assert!(matches!(
+            command(&mut app, "/goal resume").await,
+            Action::GoalPrompt(_)
+        ));
+        let goal = app.goal.as_mut().unwrap();
+        goal.status = lc_core::goal::Status::Paused;
+        goal.turns = lc_core::goal::MAX_GOAL_TURNS;
+        assert!(matches!(
+            command(&mut app, "/goal resume").await,
+            Action::Continue
+        ));
+        assert_eq!(
+            app.goal.as_ref().unwrap().status,
+            lc_core::goal::Status::Paused
+        );
+        assert!(matches!(
+            command(&mut app, "/goal clear").await,
+            Action::Continue
+        ));
+        assert!(app.goal.is_none());
     }
 }

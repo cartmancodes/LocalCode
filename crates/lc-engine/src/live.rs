@@ -86,7 +86,15 @@ pub enum Event {
 #[derive(Debug)]
 pub enum Command {
     Prompt(String),
+    PromptWithDisplay { wire: String, display: String },
     Answer { id: u64, allow: bool },
+}
+fn prompt_parts(command: Command) -> (String, String) {
+    match command {
+        Command::Prompt(text) => (text.clone(), text),
+        Command::PromptWithDisplay { wire, display } => (wire, display),
+        Command::Answer { .. } => unreachable!("only prompt commands reach prompt_parts"),
+    }
 }
 #[derive(Clone)]
 pub struct Handle {
@@ -96,7 +104,9 @@ pub struct Handle {
 }
 impl Handle {
     pub fn send(&self, command: Command) -> Result<(), String> {
-        if matches!(&command, Command::Prompt(text) if text.len() > PROMPT_LIMIT) {
+        if matches!(&command, Command::Prompt(text) if text.len() > PROMPT_LIMIT)
+            || matches!(&command, Command::PromptWithDisplay { wire, display } if wire.len()>PROMPT_LIMIT || display.len()>PROMPT_LIMIT)
+        {
             return Err("Prompt exceeds the 64 KiB limit".into());
         }
         self.commands
@@ -288,11 +298,12 @@ async fn vendor(
                 },
                 command = commands.recv() => match command {
                     None => break,
-                    Some(Command::Prompt(text)) => {
+                    Some(command @ (Command::Prompt(_) | Command::PromptWithDisplay { .. })) => {
+                        let (text,display)=prompt_parts(command);
                         if !ready || running { emit(tx,Event::Notice("Wait for the current operation, or cancel it first".into()))?; continue; }
                         running=true; turn=None; streamed=false; text_items.clear(); interrupt_pending=false;
                         deadline=Instant::now()+Duration::from_secs(600);
-                        emit(tx,Event::User(text.clone()))?;
+                        emit(tx,Event::User(display))?;
                         emit(tx,Event::Started)?;
                         if claude { send(&process,json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":text}]},"parent_tool_use_id":null})).await?; }
                         else {
@@ -476,15 +487,16 @@ async fn demo(
             _=stop.changed()=>break,
             _=cancel.changed()=>{},
             command=commands.recv()=>match command{
-                Some(Command::Prompt(text))=>{
-                    emit(tx,Event::User(text.clone()))?;
+                Some(command @ (Command::Prompt(_) | Command::PromptWithDisplay { .. }))=>{
+                    let (text,display)=prompt_parts(command);
+                    emit(tx,Event::User(display.clone()))?;
                     emit(tx,Event::Started)?;
                     let reply=if text.trim()=="/approval-demo" {
                         emit(tx,Event::Approval{id:1,detail:"Demo only — no command will execute.\n\nWrite a greeting to hello.txt?".into()})?;
                         let allowed=tokio::select!{_=stop.changed()=>return Ok(()),_=cancel.changed()=>false,_=tokio::time::sleep(Duration::from_secs(120))=>false,c=commands.recv()=>matches!(c,Some(Command::Answer{id:1,allow:true}))};
                         emit(tx,Event::ApprovalClosed(1))?;
                         if allowed{"Approved. In a live session, the vendor would now continue.".to_owned()}else{"Denied. No action was performed.".to_owned()}
-                    }else{format!("This is an offline demo. Your prompt was:\n\n{text}\n\nThe editor, streaming transcript, approval dialog, history, and cancellation are live. Start with --engine codex or --engine claude to work with a model.\n\nTry /approval-demo to preview a permission request.")};
+                    }else{format!("This is an offline demo. Your prompt was:\n\n{display}\n\nThe editor, streaming transcript, approval dialog, history, and cancellation are live. Start with --engine codex or --engine claude to work with a model.\n\nTry /approval-demo to preview a permission request.")};
                     let mut interrupted=false;
                     for word in reply.split_inclusive(' '){tokio::select!{_=stop.changed()=>return Ok(()),_=cancel.changed()=>{interrupted=true;break;},_=tokio::time::sleep(Duration::from_millis(18))=>{emit(tx,Event::Text(word.into()))?;}}}
                     emit(tx,Event::Finished{outcome:if interrupted{"interrupted"}else{"completed"}.into()})?;

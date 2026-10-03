@@ -118,6 +118,7 @@ pub async fn export_journal(
     output.sync_data().await.map_err(|e| e.to_string())
 }
 
+pub mod goal;
 pub mod model;
 
 pub use lc_engine::live::ModelInfo;

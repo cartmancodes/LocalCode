@@ -192,3 +192,39 @@ async fn claude_catalog_alias_is_distinct_from_confirmed_session_model() {
         .unwrap()
         .unwrap();
 }
+
+#[tokio::test]
+async fn provider_receives_wire_prompt_while_transcript_keeps_user_facing_text() {
+    let (handle, mut events, task) = spawn(config());
+    while !matches!(next(&mut events).await, Event::Ready { .. }) {}
+    handle
+        .send(Command::PromptWithDisplay {
+            wire: "hold".into(),
+            display: "hello".into(),
+        })
+        .unwrap();
+    let mut seen_user = false;
+    loop {
+        match next(&mut events).await {
+            Event::User(text) => {
+                assert_eq!(text, "hello");
+                seen_user = true;
+            }
+            Event::Started => {
+                handle.interrupt();
+            }
+            Event::Finished { outcome } => {
+                assert_eq!(outcome, "interrupted");
+                break;
+            }
+            Event::Error(e) => panic!("{e}"),
+            _ => {}
+        }
+    }
+    assert!(seen_user);
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}

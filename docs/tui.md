@@ -62,6 +62,7 @@ Vendor sandbox policy still applies. Codex uses workspace-write plus untrusted
 approval policy; this is not a promise that every vendor action raises a dialog.
 
 Commands: `/help`, `/model`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/quit`.
+The preview also supports persistent multi-turn goals through `/goal`.
 Changing sessions or exporting requires an idle turn. `/approval-demo` exercises
 the dialog in offline demo mode. Unknown preview commands return a visible error.
 
@@ -128,6 +129,23 @@ Update the vendor CLI separately with `claude update`, then `/reconnect` to refr
 
 ## Persistence and limits
 
+### Goals
+
+`/goal <objective>` begins a persistent multi-turn goal. After each successful
+turn, LocalCode asks the same provider to continue. The goal completes only when
+the assistant gives an evidence summary followed by
+`[[LOCALCODE_GOAL_COMPLETE]]` on its final line. This is a model-reported audit,
+not independent verification. `/goal` or `/goal status` shows state; `/goal pause`,
+`/goal resume`, `/goal complete` (request an audit turn), and `/goal clear` manage
+it. Esc/Ctrl+C pauses an active goal while interrupting its current turn. Failed
+turns and the 200-turn guard also pause it. State is stored in a private goal
+file per workspace alongside the preview journals. On restart, an active goal
+loads paused and needs `/goal resume`; no inference starts automatically.
+There is no token-budget option yet because the two drivers do not expose a
+comparable, reliable per-turn token count.
+
+See [the goal workflow guide](rust/goals.md).
+
 `/session` shows the vendor session ID and journal path. `/reconnect` reopens that
 vendor context; `--resume VENDOR_SESSION_ID` does the same on a later launch.
 Reconnection does not load the earlier local transcript into the viewport yet.
@@ -155,7 +173,7 @@ v3 recovery implementation.
 Implemented: real multi-turn conversations, streamed responses, tool events,
 per-request command/file approval, cancellation, vendor context resume, model
 selection and in-session switching, multiline editing, history, scrollback, new sessions, journal
-export, terminal restoration and an offline demo.
+export, terminal restoration, persistent goals, and an offline demo.
 
 Pending: pi v3 session browsing/recovery, images, steer/follow-up queues, full
 thinking/compaction controls, fleet, quota routing, resources, plugins, legacy
