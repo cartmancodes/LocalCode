@@ -300,3 +300,30 @@ fn auto_mode_skips_the_demo_dialog_and_shift_tab_cycles() {
     p.send(b"\x11");
     p.finish();
 }
+#[test]
+fn live_mode_change_survives_a_new_session() {
+    let mut p = Pty::spawn_with(&["--mode", "auto"]);
+    p.wait(|p| {
+        p.records()
+            .iter()
+            .any(|v| v["type"] == "mode" && v["data"] == "auto")
+    });
+    p.send(b"\x1b[Z");
+    p.wait(|p| {
+        p.records()
+            .iter()
+            .any(|v| v["type"] == "mode" && v["data"] == "ask")
+    });
+    p.send(b"/new\r");
+    p.wait(|p| p.count("session") == 2);
+    let sessions: Vec<_> = p
+        .records()
+        .into_iter()
+        .filter(|v| v["type"] == "session")
+        .map(|v| v["data"]["mode"].as_str().unwrap_or("").to_owned())
+        .collect();
+    assert!(sessions.contains(&"auto".to_owned()), "{sessions:?}");
+    assert!(sessions.contains(&"ask".to_owned()), "{sessions:?}");
+    p.send(b"\x11");
+    p.finish();
+}

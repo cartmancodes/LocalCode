@@ -149,6 +149,8 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         app.connection(&config, session.journal.clone());
         let result = run_session(&mut terminal, &guard, &mut app, &mut session).await;
         session.shutdown().await;
+        // Carry the last vendor-confirmed mode, never an unconfirmed pending one.
+        config.mode = app.mode;
         match result? {
             Action::Model(selection) => {
                 if let Some(goal) = &mut app.goal {
@@ -486,7 +488,8 @@ async fn command(app: &mut App, input: &str) -> Action {
                 Some(target) if target==app.mode && target==Mode::FullAccess=>app.notice("Already in full-access mode"),
                 Some(target) if target==Mode::FullAccess || app.mode==Mode::FullAccess=>{
                     if app.running||!app.approvals.is_empty(){app.notice="Cancel or finish the current turn before changing full access".into();}
-                    else if !app.ready{app.notice="Wait for a ready session before changing full access".into();}
+                    // Tightening out of full access is always allowed once the vendor has stopped.
+                    else if !app.ready && !(app.stopped && target!=Mode::FullAccess){app.notice="Wait for a ready session before changing full access".into();}
                     else {return Action::Mode(target);}
                 },
                 Some(target)=>return Action::SetMode(target),
@@ -686,5 +689,21 @@ mod model_tests {
             Action::Continue
         ));
         assert!(app.notice.contains("pending"));
+    }
+    #[tokio::test]
+    async fn stopped_session_can_always_leave_full_access() {
+        let mut app = app();
+        app.mode = lc_core::Mode::FullAccess;
+        app.ready = false;
+        app.stopped = true;
+        assert!(matches!(
+            command(&mut app, "/mode ask").await,
+            Action::Mode(lc_core::Mode::Ask)
+        ));
+        app.mode = lc_core::Mode::Ask;
+        assert!(matches!(
+            command(&mut app, "/mode full-access").await,
+            Action::Continue
+        ));
     }
 }
