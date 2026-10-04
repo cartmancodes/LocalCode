@@ -327,6 +327,36 @@ fn unknown_mode_flag_is_a_startup_error() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown mode bogus"));
 }
 
+#[test]
+fn corrupt_goal_does_not_prevent_chat_or_explicit_recovery() {
+    let directory = std::env::temp_dir().join(format!("lc-corrupt-goal-{}", std::process::id()));
+    let workspace = std::env::current_dir().unwrap().canonicalize().unwrap();
+    let store = lc_core::goal::GoalStore::new(&directory, &workspace);
+    let goal = lc_core::goal::Goal::new("recover this goal").unwrap();
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(store.save(Some(&goal)))
+        .unwrap();
+    let path = fs::read_dir(&directory)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    fs::write(&path, b"{broken goal").unwrap();
+    let mut p = Pty::spawn_with(&["--journal-dir", directory.to_str().unwrap()]);
+    p.directory = directory;
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"/goal status\r");
+    p.send(b"hello\r");
+    p.wait(|p| p.count("finished") == 1 && p.shows("● completed"));
+    assert_eq!(fs::read(&path).unwrap(), b"{broken goal");
+    p.send(b"/goal clear\r");
+    p.wait(|_| !path.exists());
+    p.send(b"\x11");
+    p.finish();
+}
+
 fn provider_fixture() -> PathBuf {
     static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     BINARY
@@ -418,6 +448,11 @@ fn goals_pause_cancel_resume_audit_and_stop_on_failure_for_both_providers() {
         p.send(b"/goal fixture-fail\r");
         p.wait(|p| p.count("finished") == 3 && p.shows("● failed"));
         assert_eq!(p.goal().unwrap()["status"], "paused");
+        assert_eq!(
+            p.goal().unwrap()["turns"],
+            1,
+            "failed {engine} turn must be counted"
+        );
         p.send(b"/goal fixture-goal\r");
         p.wait(|p| p.goal().is_some_and(|g| g["status"] == "complete"));
         p.send(b"/goal clear\r");

@@ -136,7 +136,12 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
             .unwrap_or_else(|| App::new(&config, session.journal.clone()));
         if app.goal_store.is_none() {
             app.goal_store = Some(goal_store.clone());
-            app.goal = goal_store.load().await.map_err(io::Error::other)?;
+            match goal_store.load().await {
+                Ok(goal) => app.goal = goal,
+                Err(error) => app.notice(format!(
+                    "Stored goal could not be loaded: {error}. Chat is available. Use /goal clear to remove the saved goal, or /goal <objective> to replace it."
+                )),
+            }
             if app
                 .goal
                 .as_ref()
@@ -230,7 +235,7 @@ async fn run_session(
                     let failed=matches!(&event,lc_core::Event::Error(_));
                     app.event(event);
                     if failed && app.goal_running {
-                        if let Some(goal)=&mut app.goal {goal.status=lc_core::goal::Status::Paused;}
+                        if let Some(goal)=&mut app.goal {goal.finish_turn("failed", &app.goal_output);}
                         app.goal_running=false;
                         if let Err(e)=app.save_goal().await {if let Some(goal)=&mut app.goal {goal.status=lc_core::goal::Status::Paused;}app.notice(format!("Goal persistence failed; paused: {e}"));}
                     }
@@ -597,6 +602,7 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
         )),
         "/goal" => {
             use lc_core::goal::{Goal, Status};
+            let mut changed = false;
             match argument {
                 "" | "status" => app.notice(
                     app.goal
@@ -613,6 +619,7 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                         app.notice("Goal is already complete; set a new goal to continue.");
                     } else if let Some(goal) = &mut app.goal {
                         goal.status = Status::Paused;
+                        changed = true;
                         app.notice(
                             "Goal paused. Current vendor turn may finish; no next turn will start.",
                         );
@@ -623,6 +630,7 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                 "clear" => {
                     app.goal = None;
                     app.goal_running = false;
+                    changed = true;
                     app.notice("Goal cleared. Current vendor turn may finish.");
                 }
                 "resume" | "complete" => {
@@ -681,8 +689,10 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                     }
                 }
             }
-            if let Err(e) = app.save_goal().await {
-                app.notice(format!("Goal persistence failed: {e}"));
+            if changed {
+                if let Err(e) = app.save_goal().await {
+                    app.notice(format!("Goal persistence failed: {e}"));
+                }
             }
         }
         "/export" => {

@@ -33,7 +33,7 @@ Published musl archives and cross-architecture installation gates remain pending
 
 ## Interaction
 
-The graphite background, mint accents and restrained amber approval state adapt
+The warm charcoal background, muted crimson accents and amber approval state adapt
 to narrow terminals; a workspace/session panel appears at 112 columns. NO_COLOR
 is respected. The minimum usable size is 38 columns by 12 rows.
 
