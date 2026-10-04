@@ -11,7 +11,32 @@ use tokio::{
 pub const PROMPT_LIMIT: usize = 64 * 1024;
 const EVENT_CAPACITY: usize = 128;
 const EVENT_BYTES: usize = 32 * 1024;
-const MODE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Driver time limits. The defaults suit real vendors; tests shorten them.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// Spawn to a usable session.
+    pub connect: Duration,
+    /// Longest silence from the vendor inside a turn. Not a cap on turn length.
+    pub turn_idle: Duration,
+    /// Interrupt request to the turn's terminal event.
+    pub interrupt: Duration,
+    /// Unanswered approval before it is denied.
+    pub approval: Duration,
+    /// Unanswered Claude mode switch before it is reported as unconfirmed.
+    pub mode_confirm: Duration,
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            connect: Duration::from_secs(30),
+            turn_idle: Duration::from_secs(600),
+            interrupt: Duration::from_secs(10),
+            approval: Duration::from_secs(120),
+            mode_confirm: Duration::from_secs(10),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -242,9 +267,15 @@ impl Handle {
 // Output is split before enqueueing. A stalled consumer fails the session rather
 // than blocking the control path or silently dropping semantic output.
 fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), String> {
-    let (text, tool) = match event {
-        Event::Text(text) => (text, false),
-        Event::Tool(text) => (text, true),
+    let text = match event {
+        Event::Text(text) => text,
+        // Tool detail is a preview: megabytes of command output must not flood
+        // the queue, so it is cut to one event.
+        Event::Tool(text) => {
+            return tx
+                .try_send(Event::Tool(limited(&text)))
+                .map_err(|_| "Output consumer overloaded; session stopped".into())
+        }
         event => {
             return tx
                 .try_send(event)
@@ -258,12 +289,8 @@ fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), String> {
             end -= 1;
         }
         let chunk = remaining[..end].to_owned();
-        tx.try_send(if tool {
-            Event::Tool(chunk)
-        } else {
-            Event::Text(chunk)
-        })
-        .map_err(|_| "Output consumer overloaded; session stopped".to_string())?;
+        tx.try_send(Event::Text(chunk))
+            .map_err(|_| "Output consumer overloaded; session stopped".to_string())?;
         remaining = &remaining[end..];
     }
     Ok(())
@@ -287,6 +314,12 @@ async fn send(process: &Process, value: Value) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 pub fn spawn(config: Config) -> (Handle, mpsc::Receiver<Event>, tokio::task::JoinHandle<()>) {
+    spawn_with_limits(config, Limits::default())
+}
+pub fn spawn_with_limits(
+    config: Config,
+    limits: Limits,
+) -> (Handle, mpsc::Receiver<Event>, tokio::task::JoinHandle<()>) {
     let (commands, rx) = mpsc::channel(16);
     let (interrupt, cancel) = watch::channel(0);
     let (stop, stopping) = watch::channel(false);
@@ -300,7 +333,7 @@ pub fn spawn(config: Config) -> (Handle, mpsc::Receiver<Event>, tokio::task::Joi
         let result = if config.engine == "demo" {
             demo(config.mode, rx, cancel, stopping, &events).await
         } else {
-            vendor(config, rx, cancel, stopping, &events).await
+            vendor(config, limits, rx, cancel, stopping, &events).await
         };
         if let Err(error) = result {
             // After the driver stops, bounded waiting can deliver the final error.
@@ -316,6 +349,7 @@ struct Pending {
 }
 async fn vendor(
     config: Config,
+    limits: Limits,
     mut commands: mpsc::Receiver<Command>,
     mut cancel: watch::Receiver<u64>,
     mut stopping: watch::Receiver<bool>,
@@ -397,7 +431,7 @@ async fn vendor(
         let mut streamed = false;
         let mut text_items = std::collections::HashSet::new();
         let mut pending: HashMap<u64, Pending> = HashMap::new();
-        let mut deadline = Instant::now() + Duration::from_secs(30);
+        let mut deadline = Instant::now() + limits.connect;
         loop {
             // The connect/turn deadline is stale when idle; counting it then would
             // make every idle timer fire immediately and spin.
@@ -417,14 +451,18 @@ async fn vendor(
                             interrupt_request = Some(request_id);
                             send(&process,json!({"id":request_id,"method":"turn/interrupt","params":{"threadId":session,"turnId":id}})).await?;
                         }
-                        deadline = Instant::now() + Duration::from_secs(10);
+                        deadline = Instant::now() + limits.interrupt;
                         for (id,p) in pending.drain() { send(&process, answer(claude,&p.wire,false)).await?; emit(tx,Event::ApprovalClosed(id))?; }
                     }
                 },
                 _ = tokio::time::sleep_until(next_deadline), if !ready || running || !pending.is_empty() || mode_request.is_some() => {
                     // The connect/turn deadline only applies while connecting or in a turn;
                     // when idle it is stale and other timers can wake this branch.
-                    if (!ready || running) && Instant::now() >= deadline { return Err("Vendor deadline exceeded; session stopped. Resume using the session ID.".into()); }
+                    if (!ready || running) && Instant::now() >= deadline {
+                        return Err(if !ready { format!("Vendor did not finish connecting within {}; session stopped.",seconds(limits.connect)) }
+                            else if interrupt_pending { format!("Vendor did not stop within {} of the interrupt; session stopped. Resume using the session ID.",seconds(limits.interrupt)) }
+                            else { format!("Vendor sent nothing for {}; session stopped. Resume using the session ID.",seconds(limits.turn_idle)) });
+                    }
                     let expired: Vec<u64> = pending.iter().filter(|(_,p)|p.deadline <= Instant::now()).map(|(id,_)|*id).collect();
                     for id in expired { let p=pending.remove(&id).unwrap(); send(&process,answer(claude,&p.wire,false)).await?; emit(tx,Event::ApprovalClosed(id))?; emit(tx,Event::Notice("Approval timed out and was denied".into()))?; }
                     if let Some((id,target,_))=mode_request.take_if(|r| r.2<=Instant::now()) {
@@ -439,7 +477,7 @@ async fn vendor(
                         let (text,display)=prompt_parts(command);
                         if !ready || running { emit(tx,Event::Notice("Wait for the current operation, or cancel it first".into()))?; continue; }
                         running=true; turn=None; streamed=false; text_items.clear(); interrupt_pending=false;
-                        deadline=Instant::now()+Duration::from_secs(600);
+                        deadline=Instant::now()+limits.turn_idle;
                         emit(tx,Event::User(display))?;
                         emit(tx,Event::Started)?;
                         if claude { send(&process,json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":text}]},"parent_tool_use_id":null})).await?; }
@@ -465,7 +503,7 @@ async fn vendor(
                             mode_seq+=1;
                             let id=format!("lc-mode-{mode_seq}");
                             send(&process,json!({"type":"control_request","request_id":id,"request":{"subtype":"set_permission_mode","mode":claude_mode(target)}})).await?;
-                            mode_request=Some((id,target,Instant::now()+MODE_CONFIRM_TIMEOUT));
+                            mode_request=Some((id,target,Instant::now()+limits.mode_confirm));
                         } else {
                             mode=target;
                             emit(tx,Event::ModeChanged(mode))?;
@@ -475,6 +513,8 @@ async fn vendor(
                 },
                 frame=process.next_frame() => {
                     let v=frame.map_err(|e|e.to_string())?.ok_or("Vendor disconnected. Check its login and installation.")?;
+                    // The turn limit is a silence watchdog, not a cap on turn length.
+                    if running && !interrupt_pending { deadline=Instant::now()+limits.turn_idle; }
                     if claude {
                         let kind=v["type"].as_str().unwrap_or("");
                         let response_id=v.pointer("/response/request_id").and_then(Value::as_str);
@@ -515,8 +555,8 @@ async fn vendor(
                                 if detail.len()>EVENT_BYTES {send(&process,answer(true,&v,false)).await?;emit(tx,Event::Notice("Oversized approval denied: cannot show the complete request".into()))?;continue;}
                                 request_id+=1;
                                 emit(tx,Event::Approval{id:request_id,detail})?;
-                                pending.insert(request_id,Pending{wire:v,deadline:Instant::now()+Duration::from_secs(120)});
-                            } else if let Some(reply)=crate::claude_response_for_request(&v) { send(&process,reply).await?; }
+                                pending.insert(request_id,Pending{wire:v,deadline:Instant::now()+limits.approval});
+                            } else if let Some(reply)=claude_stray_reply(&v) { send(&process,reply).await?; }
                             continue;
                         }
                         if kind=="control_cancel_request" {
@@ -526,7 +566,6 @@ async fn vendor(
                         if !running { continue; }
                         if kind=="stream_event" {
                             if let Some(text)=v.pointer("/event/delta/text").and_then(Value::as_str) { streamed=true; emit(tx,Event::Text(text.into()))?; }
-                            if v.pointer("/event/content_block/type").and_then(Value::as_str)==Some("tool_use") { emit(tx,Event::Tool(limited(v.pointer("/event/content_block/name").and_then(Value::as_str).unwrap_or("tool"))))?; }
                         }
                         if kind=="assistant" {
                             if let Some(blocks)=v.pointer("/message/content").and_then(Value::as_array) {
@@ -538,7 +577,7 @@ async fn vendor(
                             streamed=false;
                         }
                         if kind=="result" {
-                            if v["is_error"].as_bool()!=Some(false) && !interrupt_pending { emit(tx,Event::Error(limited(v["result"].as_str().unwrap_or("Claude returned an error"))))?; }
+                            if v["is_error"].as_bool()!=Some(false) && !interrupt_pending { emit(tx,Event::Error(claude_result_error(&v)))?; }
                             if let Some(cost)=v["total_cost_usd"].as_f64() { emit(tx,Event::Usage(format!("${cost:.4} session cost")))?; }
                             running=false;
                             for (id,_) in pending.drain(){emit(tx,Event::ApprovalClosed(id))?;}
@@ -556,6 +595,7 @@ async fn vendor(
                             if let Some(model)=&config.model{params["model"]=json!(model);}
                             send(&process,json!({"id":2,"method":method,"params":params})).await?;
                         } else if method.is_empty() && v["id"]==2 {
+                            if let Some(error)=v.get("error") { return Err(format!("Codex could not open the session: {}",error_text(error))); }
                             session=v.pointer("/result/thread/id").and_then(Value::as_str).ok_or("Codex could not open the session")?.into();
                             ready=true; emit(tx,Event::Ready{session:session.clone()})?;
                             mode=confirm_mode(tx,"Codex",mode,codex_reported(&v["result"]))?; emit(tx,Event::ModeChanged(mode))?;
@@ -578,7 +618,7 @@ async fn vendor(
                             }
                         } else if method.is_empty() && v["id"].as_u64()==start_request && start_request.is_some() {
                             start_request=None;
-                            if v.get("error").is_some(){ running=false; emit(tx,Event::Error(limited(&v["error"].to_string())))?; emit(tx,Event::Finished{outcome:"failed".into()})?; }
+                            if v.get("error").is_some(){ running=false; emit(tx,Event::Error(error_text(&v["error"])))?; emit(tx,Event::Finished{outcome:"failed".into()})?; }
                         } else if method.is_empty() && v["id"].as_u64()==interrupt_request && interrupt_request.is_some() {
                             interrupt_request=None;
                             if v.get("error").is_some(){emit(tx,Event::Notice("Interrupt was rejected; waiting for terminal outcome".into()))?;}
@@ -589,8 +629,8 @@ async fn vendor(
                                 if detail.len()>EVENT_BYTES {send(&process,answer(false,&v,false)).await?;emit(tx,Event::Notice("Oversized approval denied: cannot show the complete request".into()))?;continue;}
                                 request_id+=1;
                                 emit(tx,Event::Approval{id:request_id,detail})?;
-                                pending.insert(request_id,Pending{wire:v,deadline:Instant::now()+Duration::from_secs(120)});
-                            } else if let Some(reply)=crate::codex_response_for_request(&v){send(&process,reply).await?; emit(tx,Event::Notice(format!("Request declined: {method}")))?;}
+                                pending.insert(request_id,Pending{wire:v,deadline:Instant::now()+limits.approval});
+                            } else if let Some(reply)=codex_stray_reply(&v){send(&process,reply).await?; emit(tx,Event::Notice(format!("Request declined: {method}")))?;}
                             continue;
                         }
                         if v.pointer("/params/threadId").and_then(Value::as_str)!=Some(session.as_str()){continue;}
@@ -616,7 +656,7 @@ async fn vendor(
                                 running=false;
                                 for (id,_) in pending.drain(){emit(tx,Event::ApprovalClosed(id))?;}
                                 let status=v.pointer("/params/turn/status").and_then(Value::as_str).unwrap_or("unknown");
-                                if status=="failed"{emit(tx,Event::Error(limited(&v["params"]["turn"]["error"].to_string())))?;}
+                                if status=="failed"{emit(tx,Event::Error(error_text(&v["params"]["turn"]["error"])))?;}
                                 emit(tx,Event::Finished{outcome:status.into()})?;
                             },
                             _=>{}
@@ -632,7 +672,41 @@ async fn vendor(
     if !report.reaped || !report.descendants_stopped {
         return Err("Could not verify all vendor children stopped".into());
     }
-    result
+    result.map_err(|error| with_stderr(error, &config.engine, &report.stderr_tail))
+}
+/// A failure plus what the vendor itself said on stderr, which usually names
+/// the real cause (an unknown session ID, an expired login).
+fn with_stderr(error: String, engine: &str, tail: &[u8]) -> String {
+    let start = tail.len().saturating_sub(1024);
+    let text = String::from_utf8_lossy(&tail[start..]);
+    let text = text.trim();
+    if text.is_empty() {
+        error
+    } else {
+        format!("{error}\n{engine} stderr: {text}")
+    }
+}
+fn seconds(limit: Duration) -> String {
+    match limit.as_secs() {
+        1 => "1 second".into(),
+        n => format!("{n} seconds"),
+    }
+}
+fn claude_result_error(result: &Value) -> String {
+    let errors = result["errors"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .unwrap_or_default();
+    match result["result"].as_str().filter(|text| !text.is_empty()) {
+        Some(text) => limited(text),
+        None if !errors.is_empty() => limited(&errors),
+        None => "Claude returned an error".into(),
+    }
 }
 /// Adopt the mode the vendor confirmed. An unmapped report keeps the requested
 /// mode and says what the vendor actually uses; LocalCode never guesses.
@@ -674,6 +748,54 @@ fn switch_reply_mode(
         .and_then(Value::as_str)
         .map(|raw| (claude_reported_mode(raw), limited(raw)));
     confirm_mode(tx, "Claude", target, reported)
+}
+/// Reply to a Claude control request the driver will not put in front of the
+/// user: a permission request outside an active turn is denied, anything else
+/// is reported as unsupported. The deny text is shown to the model.
+fn claude_stray_reply(value: &Value) -> Option<Value> {
+    if value.get("type")?.as_str()? != "control_request" {
+        return None;
+    }
+    let id = value.get("request_id")?;
+    Some(
+        if value.pointer("/request/subtype")?.as_str()? == "can_use_tool" {
+            json!({"type":"control_response","response":{"subtype":"success","request_id":id,"response":{"behavior":"deny","message":"Denied by LocalCode: the turn was cancelled or too many approvals are waiting"}}})
+        } else {
+            json!({"type":"control_response","response":{"subtype":"error","request_id":id,"error":"LocalCode does not support this control request"}})
+        },
+    )
+}
+/// Codex counterpart of `claude_stray_reply`.
+fn codex_stray_reply(value: &Value) -> Option<Value> {
+    let id = value.get("id")?;
+    Some(match value.get("method")?.as_str()? {
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+            json!({"id":id,"result":{"decision":"decline"}})
+        }
+        "item/permissions/requestApproval" => {
+            json!({"id":id,"result":{"permissions":{},"scope":"turn"}})
+        }
+        _ => {
+            json!({"id":id,"error":{"code":-32601,"message":"LocalCode does not support this request"}})
+        }
+    })
+}
+/// A vendor error as a person should read it: the message, including one
+/// nested as JSON text, with Codex's error kind when it says more than "other".
+fn error_text(error: &Value) -> String {
+    let Some(message) = error.as_str().or(error["message"].as_str()) else {
+        return limited(&error.to_string());
+    };
+    let inner = serde_json::from_str::<Value>(message).ok().and_then(|v| {
+        v.pointer("/error/message")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
+    let text = inner.unwrap_or_else(|| message.to_owned());
+    match error["codexErrorInfo"].as_str() {
+        Some(kind) if kind != "other" => limited(&format!("{text} ({kind})")),
+        _ => limited(&text),
+    }
 }
 fn answer(claude: bool, wire: &Value, allow: bool) -> Value {
     if claude {
@@ -856,5 +978,49 @@ mod mode_tests {
         assert_eq!(mode, None);
         assert!(raw.contains("readOnly"), "{raw}");
         assert_eq!(codex_reported(&json!({"thread":{}})), None);
+    }
+    #[test]
+    fn stray_request_replies_use_production_wording() {
+        let permission = json!({"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{}}});
+        let unknown = json!({"type":"control_request","request_id":"r2","request":{"subtype":"hook_callback"}});
+        let codex = json!({"id":7,"method":"item/tool/requestUserInput","params":{}});
+        for reply in [
+            claude_stray_reply(&permission).unwrap(),
+            claude_stray_reply(&unknown).unwrap(),
+            codex_stray_reply(&codex).unwrap(),
+        ] {
+            assert!(!reply.to_string().contains("fixture"), "{reply}");
+        }
+        assert_eq!(
+            claude_stray_reply(&permission).unwrap()["response"]["response"]["behavior"],
+            "deny"
+        );
+        assert_eq!(
+            claude_stray_reply(&unknown).unwrap()["response"]["subtype"],
+            "error"
+        );
+        assert_eq!(codex_stray_reply(&codex).unwrap()["error"]["code"], -32601);
+        let approval = json!({"id":8,"method":"item/commandExecution/requestApproval","params":{}});
+        assert_eq!(
+            codex_stray_reply(&approval).unwrap()["result"]["decision"],
+            "decline"
+        );
+    }
+    #[test]
+    fn error_text_prefers_the_vendor_message() {
+        assert_eq!(
+            error_text(&json!({"message":"plain","codexErrorInfo":"other"})),
+            "plain"
+        );
+        assert_eq!(
+            error_text(&json!({"message":"limit","codexErrorInfo":"usageLimitExceeded"})),
+            "limit (usageLimitExceeded)"
+        );
+        assert_eq!(
+            error_text(&json!({"message":"{\"error\":{\"message\":\"inner\"}}"})),
+            "inner"
+        );
+        assert_eq!(error_text(&json!({"code":-1})), "{\"code\":-1}");
+        assert_eq!(error_text(&json!("text")), "text");
     }
 }

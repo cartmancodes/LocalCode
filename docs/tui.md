@@ -192,8 +192,17 @@ The viewport retains at most 160 blocks / 512 KiB of text, with 64 KiB per block
 earlier content remains in the journal. Wrapping is cached by block and width.
 Rendering is dirty-triggered and capped near 30 Hz, with no idle animation timer.
 Prompts are limited to 64 KiB, stdout frames to 8 MiB, queued raw frames to 16 MiB,
-and each session journal to 64 MiB. Bounded event queues stop an overloaded session
-with an error; they do not silently discard a completed response. These capacities
+and each session journal to 64 MiB. Tool activity is a preview: each tool entry is
+cut at 32 KiB, in the journal as well, and the vendor keeps the full output. Bounded
+event queues stop an overloaded session with an error; they do not silently discard
+a completed response.
+
+A turn may run for any length of time. The session is stopped only if the vendor
+sends nothing at all for 10 minutes inside a turn, does not finish connecting
+within 30 seconds, or does not end the turn within 10 seconds of an interrupt.
+When a vendor fails or exits, the error shows the vendor's own message and the end
+of its stderr, which usually names the cause (an unknown session ID, an expired
+login, a usage limit). These capacities
 are not a whole-process RSS guarantee. A crash may leave an incomplete journal
 line; journals are never reopened for append. Abrupt termination is not a durable
 v3 recovery implementation.

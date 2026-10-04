@@ -102,6 +102,11 @@ fn interactive_codex() {
                 }
             }
             Some("initialize") => emit(&json!({"id":v["id"],"result":{}})),
+            Some("thread/start" | "thread/resume") if v["params"]["model"] == "refuse-thread" => {
+                emit(
+                    &json!({"id":v["id"],"error":{"code":-32600,"message":"no rollout found for thread id fixture"}}),
+                );
+            }
             Some("thread/start" | "thread/resume") => {
                 thread_params = v["params"].clone();
                 thread_params["method"] = v["method"].clone();
@@ -144,6 +149,42 @@ fn interactive_codex() {
                 if text == "approval" {
                     emit(
                         &json!({"id":"permission","method":"item/commandExecution/requestApproval","params":{"threadId":"fixture-thread","turnId":active,"command":"echo fixture"}}),
+                    );
+                    continue;
+                }
+                if text == "bigtool" {
+                    // One completed command whose output is far larger than the event queue.
+                    let output = "x".repeat(6 * 1024 * 1024);
+                    emit(
+                        &json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":active,"item":{"id":"cmd","type":"commandExecution","command":"cat big","aggregatedOutput":output}}}),
+                    );
+                    emit(
+                        &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"completed"}}}),
+                    );
+                    continue;
+                }
+                if text == "fail" {
+                    emit(
+                        &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"failed","error":{"additionalDetails":null,"codexErrorInfo":"usageLimitExceeded","message":"You've hit your usage limit."}}}}),
+                    );
+                    continue;
+                }
+                if text == "fail-nested" {
+                    emit(
+                        &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"failed","error":{"codexErrorInfo":"other","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The model is not supported.\"}}"}}}}),
+                    );
+                    continue;
+                }
+                if text == "slow" {
+                    // Stays active longer than a short idle limit, never silent for long.
+                    for _ in 0..8 {
+                        thread::sleep(Duration::from_millis(300));
+                        emit(
+                            &json!({"method":"item/agentMessage/delta","params":{"threadId":"fixture-thread","turnId":active,"itemId":"slow","delta":"."}}),
+                        );
+                    }
+                    emit(
+                        &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"completed"}}}),
                     );
                     continue;
                 }
@@ -198,6 +239,13 @@ fn interactive_claude() {
     let mut held: Vec<Value> = Vec::new();
     for line in io::stdin().lock().lines() {
         let v: Value = serde_json::from_str(&line.unwrap()).unwrap();
+        if v["type"] == "control_request"
+            && v["request"]["subtype"] == "initialize"
+            && argv.iter().any(|a| a == "die-stderr")
+        {
+            eprintln!("No conversation found with session ID: fixture");
+            process::exit(1);
+        }
         if v["type"] == "control_request" && v["request"]["subtype"] == "initialize" {
             let requested = argv
                 .iter()
@@ -235,10 +283,10 @@ fn interactive_claude() {
                     &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"mode":"plan"}}}),
                 );
             } else if argv.iter().any(|a| a == "late-mode") {
-                // Confirm after the driver's 10-second mode deadline.
+                // Confirm after the test's shortened mode deadline.
                 let reply = json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"mode":v["request"]["mode"]}}});
                 thread::spawn(move || {
-                    thread::sleep(Duration::from_secs(11));
+                    thread::sleep(Duration::from_millis(2500));
                     emit(&reply);
                 });
             } else if argv.iter().any(|a| a == "reject-mode") {
@@ -264,6 +312,27 @@ fn interactive_claude() {
                         json!({"type":"control_response","response":{"request_id":id,"subtype":"error","error":"fixture refusal"}})
                     });
                 }
+            }
+            if text == "tool" {
+                emit(
+                    &json!({"type":"system","subtype":"init","session_id":"claude-fixture","model":"claude-fixture-full-id"}),
+                );
+                emit(
+                    &json!({"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"Bash","input":{}}}}),
+                );
+                emit(
+                    &json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo fixture"}}]}}),
+                );
+                emit(
+                    &json!({"type":"result","is_error":false,"result":"","session_id":"claude-fixture","total_cost_usd":0.0}),
+                );
+                continue;
+            }
+            if text == "errors" {
+                emit(
+                    &json!({"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Fixture failure detail"],"session_id":"claude-fixture","total_cost_usd":0.0}),
+                );
+                continue;
             }
             if text == "hold" {
                 // Stay mid-turn until the driver interrupts.

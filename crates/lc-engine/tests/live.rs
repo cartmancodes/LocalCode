@@ -1,4 +1,4 @@
-use lc_engine::live::{spawn, Command, Config, Event, Mode};
+use lc_engine::live::{spawn, spawn_with_limits, Command, Config, Event, Limits, Mode};
 use std::{path::PathBuf, sync::OnceLock, time::Duration};
 use tokio::{sync::mpsc, time::timeout};
 fn config() -> Config {
@@ -418,6 +418,15 @@ async fn codex_header_follows_a_stricter_reported_policy() {
     handle.shutdown();
     task.await.unwrap();
 }
+/// Real limits shortened so timeout paths run in seconds.
+fn quick() -> Limits {
+    Limits {
+        connect: Duration::from_secs(2),
+        turn_idle: Duration::from_secs(1),
+        mode_confirm: Duration::from_secs(1),
+        ..Limits::default()
+    }
+}
 async fn wait_long(
     events: &mut mpsc::Receiver<Event>,
     seconds: u64,
@@ -442,11 +451,11 @@ async fn unconfirmed_claude_switch_times_out_then_applies_a_late_confirmation() 
     let mut c = config();
     c.engine = "claude".into();
     c.model = Some("late-mode".into());
-    let (handle, mut events, task) = spawn(c);
+    let (handle, mut events, task) = spawn_with_limits(c, quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
-    // Idle past the 30-second connect deadline: the mode timer firing later
-    // must not be mistaken for an expired turn.
-    tokio::time::sleep(Duration::from_secs(21)).await;
+    // Idle past the connect deadline: the mode timer firing later must not be
+    // mistaken for an expired turn.
+    tokio::time::sleep(Duration::from_millis(2200)).await;
     handle.send(Command::SetMode(Mode::Auto)).unwrap();
     let event = wait_long(&mut events, 12, |e| {
         matches!(e, Event::Notice(_) | Event::ModeChanged(_))
@@ -562,10 +571,10 @@ async fn codex_resume_carries_the_mode() {
 async fn idle_switch_long_after_connect_confirms_promptly() {
     let mut c = config();
     c.engine = "claude".into();
-    let (handle, mut events, task) = spawn(c);
+    let (handle, mut events, task) = spawn_with_limits(c, quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
-    // Past the 30-second connect deadline, which is stale once idle.
-    tokio::time::sleep(Duration::from_secs(31)).await;
+    // Past the connect deadline, which is stale once idle.
+    tokio::time::sleep(Duration::from_millis(2200)).await;
     let sent = tokio::time::Instant::now();
     handle.send(Command::SetMode(Mode::Auto)).unwrap();
     let event = wait_long(&mut events, 12, |e| {
@@ -574,7 +583,7 @@ async fn idle_switch_long_after_connect_confirms_promptly() {
     .await;
     assert!(matches!(event, Event::ModeChanged(Mode::Auto)), "{event:?}");
     assert!(
-        sent.elapsed() < Duration::from_secs(2),
+        sent.elapsed() < Duration::from_millis(700),
         "{:?}",
         sent.elapsed()
     );
@@ -586,7 +595,7 @@ async fn every_timed_out_switch_can_still_be_confirmed_late() {
     let mut c = config();
     c.engine = "claude".into();
     c.model = Some("hang-mode".into());
-    let (handle, mut events, task) = spawn(c);
+    let (handle, mut events, task) = spawn_with_limits(c, quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     for target in [Mode::AcceptEdits, Mode::Auto] {
         handle.send(Command::SetMode(target)).unwrap();
@@ -631,5 +640,156 @@ async fn unmapped_switch_reply_keeps_the_target_with_a_notice() {
         Event::ModeChanged(Mode::Auto)
     ));
     handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn vendor_exit_reports_its_stderr() {
+    let mut c = config();
+    c.engine = "claude".into();
+    c.model = Some("die-stderr".into());
+    let (_handle, mut events, task) = spawn(c);
+    let error = loop {
+        match next(&mut events).await {
+            Event::Error(error) => break error,
+            Event::Stopped => panic!("stopped without an error"),
+            _ => {}
+        }
+    };
+    assert!(
+        error.contains("No conversation found with session ID: fixture"),
+        "{error}"
+    );
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn codex_thread_refusal_reports_the_vendor_message() {
+    let mut c = config();
+    c.model = Some("refuse-thread".into());
+    let (_handle, mut events, task) = spawn(c);
+    let error = loop {
+        match next(&mut events).await {
+            Event::Error(error) => break error,
+            Event::Stopped => panic!("stopped without an error"),
+            _ => {}
+        }
+    };
+    assert!(
+        error.contains("no rollout found for thread id fixture"),
+        "{error}"
+    );
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn large_tool_item_is_bounded_and_the_turn_completes() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
+    handle.send(Command::Prompt("bigtool".into())).unwrap();
+    let mut tool_bytes = 0;
+    loop {
+        match next(&mut events).await {
+            Event::Tool(text) => tool_bytes += text.len(),
+            Event::Finished { outcome } => {
+                assert_eq!(outcome, "completed");
+                break;
+            }
+            Event::Error(error) => panic!("{error}"),
+            _ => {}
+        }
+    }
+    assert!(tool_bytes > 0 && tool_bytes <= 40 * 1024, "{tool_bytes}");
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn turn_errors_show_the_vendor_message_not_raw_json() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
+    for (prompt, expected) in [
+        ("fail", "You've hit your usage limit. (usageLimitExceeded)"),
+        ("fail-nested", "The model is not supported."),
+    ] {
+        handle.send(Command::Prompt(prompt.into())).unwrap();
+        let error = loop {
+            match next(&mut events).await {
+                Event::Error(error) => break error,
+                Event::Finished { .. } => panic!("finished without an error"),
+                _ => {}
+            }
+        };
+        assert_eq!(error, expected);
+        assert!(
+            matches!(next(&mut events).await, Event::Finished { outcome } if outcome == "failed")
+        );
+    }
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn claude_result_errors_are_shown() {
+    let mut c = config();
+    c.engine = "claude".into();
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
+    handle.send(Command::Prompt("errors".into())).unwrap();
+    let error = loop {
+        match next(&mut events).await {
+            Event::Error(error) => break error,
+            Event::Finished { .. } => panic!("finished without an error"),
+            _ => {}
+        }
+    };
+    assert_eq!(error, "Fixture failure detail");
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn claude_tool_is_announced_once_with_its_input() {
+    let mut c = config();
+    c.engine = "claude".into();
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
+    handle.send(Command::Prompt("tool".into())).unwrap();
+    let mut tools = Vec::new();
+    loop {
+        match next(&mut events).await {
+            Event::Tool(text) => tools.push(text),
+            Event::Finished { .. } => break,
+            Event::Error(error) => panic!("{error}"),
+            _ => {}
+        }
+    }
+    assert_eq!(tools.len(), 1, "{tools:?}");
+    assert!(
+        tools[0].starts_with("Bash") && tools[0].contains("echo fixture"),
+        "{tools:?}"
+    );
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn active_turn_outlives_the_idle_limit() {
+    let (handle, mut events, task) = spawn_with_limits(config(), quick());
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
+    // The fixture streams for about 2.4 seconds; the idle limit is 1 second.
+    handle.send(Command::Prompt("slow".into())).unwrap();
+    let event = wait_long(&mut events, 6, |e| matches!(e, Event::Finished { .. })).await;
+    assert!(matches!(event, Event::Finished { outcome } if outcome == "completed"));
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn silent_turn_is_stopped_at_the_idle_limit() {
+    let (handle, mut events, task) = spawn_with_limits(config(), quick());
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
+    handle.send(Command::Prompt("hold".into())).unwrap();
+    let error = loop {
+        match next(&mut events).await {
+            Event::Error(error) => break error,
+            Event::Stopped => panic!("stopped without an error"),
+            _ => {}
+        }
+    };
+    assert!(error.contains("sent nothing for 1 second"), "{error}");
+    let _ = handle;
     task.await.unwrap();
 }
