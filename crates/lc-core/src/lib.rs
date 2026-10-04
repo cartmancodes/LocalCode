@@ -22,7 +22,23 @@ impl Session {
         let control = handle.clone();
         let (tx, events) = mpsc::channel(128);
         let task = tokio::spawn(async move {
+            // Refusals re-send the current mode so the UI can clear its pending
+            // state; the journal only records actual changes.
+            let mut journaled_mode = None;
             while let Some(event) = engine_events.recv().await {
+                if let Event::ModeChanged(mode) = event {
+                    if journaled_mode == Some(mode) {
+                        if timeout(Duration::from_secs(2), tx.send(event))
+                            .await
+                            .is_err()
+                        {
+                            control.shutdown();
+                            break;
+                        }
+                        continue;
+                    }
+                    journaled_mode = Some(mode);
+                }
                 let (kind, data) = record(&event);
                 let durable = matches!(event, Event::Finished { .. } | Event::Stopped);
                 let written =

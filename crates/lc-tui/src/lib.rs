@@ -176,11 +176,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                         app.notice("Goal paused for mode switch. Use /goal resume to continue.");
                     }
                 }
-                app.notice(if mode == lc_core::Mode::FullAccess {
-                    "Full access: the agent can run any command and edit any file without asking. Reconnecting…".to_owned()
-                } else {
-                    format!("Leaving full access for {}. Reconnecting…", mode.label())
-                });
+                app.notice(full_access_notice(mode, &config.engine, &app.session));
                 config.mode = mode;
                 if !app.session.is_empty() && config.engine != "demo" {
                     config.resume = Some(app.session.clone());
@@ -454,6 +450,22 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
     }
     Action::Continue
 }
+/// Says whether a full-access change resumes the vendor session or starts over.
+fn full_access_notice(mode: lc_core::Mode, engine: &str, session: &str) -> String {
+    let change = if mode == lc_core::Mode::FullAccess {
+        "Full access: the agent can run any command and edit any file without asking.".to_owned()
+    } else {
+        format!("Leaving full access for {}.", mode.label())
+    };
+    let next = if engine == "demo" {
+        "Restarting the offline demo…"
+    } else if session.is_empty() {
+        "Starting a new session (no session ID yet)…"
+    } else {
+        "Reconnecting to the same session…"
+    };
+    format!("{change} {next}")
+}
 fn cycle_mode(app: &mut App) -> Action {
     if app.mode == lc_core::Mode::FullAccess {
         app.notice = "Use /mode to leave full access".into();
@@ -705,5 +717,21 @@ mod model_tests {
             command(&mut app, "/mode full-access").await,
             Action::Continue
         ));
+    }
+    #[test]
+    fn full_access_notice_says_what_the_reconnect_does() {
+        use lc_core::Mode;
+        let entering = full_access_notice(Mode::FullAccess, "claude", "session-1");
+        assert!(entering.starts_with("Full access:"), "{entering}");
+        assert!(
+            entering.ends_with("Reconnecting to the same session…"),
+            "{entering}"
+        );
+        assert!(full_access_notice(Mode::FullAccess, "claude", "")
+            .ends_with("Starting a new session (no session ID yet)…"));
+        assert!(full_access_notice(Mode::Ask, "demo", "demo · offline")
+            .ends_with("Restarting the offline demo…"));
+        assert!(full_access_notice(Mode::Ask, "codex", "thread")
+            .starts_with("Leaving full access for ask."));
     }
 }
