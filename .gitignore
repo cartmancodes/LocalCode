@@ -1,24 +1,18 @@
-__pycache__/
-*.pyc
-.venv/
-.env
-.mypy_cache/
-.pytest_cache/
-ruff_cache/
-node_modules/
 .DS_Store
 .vscode/
-dist/
-build/
-*.tsbuildinfo
-coverage/
-.superpowers/
 /target/
+.superpowers/
 
 # Claude Code session state, including git worktrees it manages.
 .claude/
 
-# Local runtime output and private conversation state.
-/.run/
-/.localcode/sessions/
-.ruff_cache/
+# Local leftovers from the removed Python and web stack (virtualenv, build
+# output, env file, local chat data). Nothing in the repository uses them;
+# delete them when no longer needed, then drop these lines.
+.env
+.venv/
+.run/
+.localcode/
+backend/
+frontend/
+packages/
