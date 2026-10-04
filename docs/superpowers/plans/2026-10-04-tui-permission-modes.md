@@ -4,22 +4,22 @@
 
 **Goal:** Add a provider-neutral permission-mode picker (`ask`, `accept-edits`, `auto`, `full-access`) to the Rust TUI, with each vendor's native auto mode, for Claude, Codex and the offline demo.
 
-**Architecture:** A `Mode` enum and the only vendor mapping live in `lc-engine::live`. `Config.mode` drives launch arguments; `Command::SetMode` switches `ask`/`accept-edits`/`auto` live (Claude `set_permission_mode` control request, Codex per-turn overrides, demo in-process); `full-access` changes reconnect with the same vendor session through a new TUI `Action::Mode`. The engine reports the accepted mode with `Event::ModeChanged`, which the TUI shows as a header chip.
+**Architecture:** A `Mode` enum and the only vendor mapping live in `octet-engine::live`. `Config.mode` drives launch arguments; `Command::SetMode` switches `ask`/`accept-edits`/`auto` live (Claude `set_permission_mode` control request, Codex per-turn overrides, demo in-process); `full-access` changes reconnect with the same vendor session through a new TUI `Action::Mode`. The engine reports the accepted mode with `Event::ModeChanged`, which the TUI shows as a header chip.
 
-**Tech Stack:** Rust 1.98.1 workspace (`tokio`, `serde_json`, `ratatui`, `crossterm`), fake vendor `lc-testkit/src/bin/protocol-child.rs`.
+**Tech Stack:** Rust 1.98.1 workspace (`tokio`, `serde_json`, `ratatui`, `crossterm`), fake vendor `octet-testkit/src/bin/protocol-child.rs`.
 
 **Spec:** `docs/superpowers/specs/2026-10-04-tui-permission-modes-design.md`
 
 ## Global Constraints
 
 - Mode spellings, everywhere user-facing: `ask`, `accept-edits`, `auto`, `full-access`. Default `ask`.
-- Mapping (the only copy lives in `crates/lc-engine/src/live.rs`):
+- Mapping (the only copy lives in `crates/octet-engine/src/live.rs`):
   - Claude: `ask`→`default`, `accept-edits`→`acceptEdits`, `auto`→`auto`, `full-access`→`bypassPermissions` plus `--allow-dangerously-skip-permissions`.
   - Codex (sandbox, approvalPolicy, approvalsReviewer): `ask`→(`workspace-write`,`untrusted`,`user`), `accept-edits`→(`workspace-write`,`on-request`,`user`), `auto`→(`workspace-write`,`on-request`,`auto_review`), `full-access`→(`danger-full-access`,`never`,`user`).
 - Shift+Tab cycles `ask → accept-edits → auto → ask`; it never reaches `full-access`.
 - `full-access` is entered or left only by reconnect, on an idle, ready session.
 - Unknown mode values are errors, never a fallback.
-- LocalCode never auto-answers a real vendor approval; existing fail-closed approval handling is unchanged.
+- Octet never auto-answers a real vendor approval; existing fail-closed approval handling is unchanged.
 - Mode is not persisted between launches; it is carried across `/model`, `/new`, `/reconnect`.
 - Run cargo through `scripts/rust-env.sh`. Gate for every task: `scripts/rust-env.sh cargo fmt --all`, then `make rust-check` (fmt check, workspace tests, clippy `-D warnings`) must pass before the commit.
 - Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
@@ -30,30 +30,30 @@
 2. Shift+Tab or `/mode` pressed again while a Claude switch is pending → ignored with a notice, not a second control request (Task 4 test `cycle_is_ignored_while_a_switch_is_pending`); a driver-refused switch re-emits the current mode so the chip never sticks on `…` (Task 3 test `driver_refuses_live_full_access`).
 3. `/mode full-access` typed while a turn runs or an approval is open → refused, no reconnect (Task 4 test `full_access_requires_idle_ready_session`).
 4. `/model codex …` while in `auto` → the new provider also starts in `auto` (Task 1 test `configure_carries_mode`).
-5. `localcode --mode bogus` → exits non-zero with "Unknown mode", never starts in another mode (Task 4 test `unknown_mode_flag_is_a_startup_error`).
+5. `octet --mode bogus` → exits non-zero with "Unknown mode", never starts in another mode (Task 4 test `unknown_mode_flag_is_a_startup_error`).
 
 ---
 
 ### Task 1: Mode type, mapping and plumbing
 
 **Files:**
-- Modify: `crates/lc-engine/src/live.rs` (add `Mode`, mapping functions, `Config.mode`, `Command::SetMode`, `Event::ModeChanged`; tests module)
-- Modify: `crates/lc-core/src/lib.rs` (re-export `Mode`, journal `mode` in session record, `record()` arm)
-- Modify: `crates/lc-core/src/model.rs` (`configure` carries `mode`; test)
-- Modify: `crates/lc-tui/src/view.rs` (`App.mode`, `ModeChanged` arm, test `Config` literals)
-- Modify: Config literals in `crates/lc-engine/tests/live.rs`, `crates/lc-core/tests/session.rs`, `crates/lc-tui/src/lib.rs` (tests), `crates/localcode/src/main.rs`
+- Modify: `crates/octet-engine/src/live.rs` (add `Mode`, mapping functions, `Config.mode`, `Command::SetMode`, `Event::ModeChanged`; tests module)
+- Modify: `crates/octet-core/src/lib.rs` (re-export `Mode`, journal `mode` in session record, `record()` arm)
+- Modify: `crates/octet-core/src/model.rs` (`configure` carries `mode`; test)
+- Modify: `crates/octet-tui/src/view.rs` (`App.mode`, `ModeChanged` arm, test `Config` literals)
+- Modify: Config literals in `crates/octet-engine/tests/live.rs`, `crates/octet-core/tests/session.rs`, `crates/octet-tui/src/lib.rs` (tests), `crates/octet/src/main.rs`
 
 **Interfaces:**
 - Produces:
-  - `pub enum lc_engine::live::Mode { Ask, AcceptEdits, Auto, FullAccess }` (`Clone, Copy, Debug, Default=Ask, PartialEq, Eq`), re-exported as `lc_core::Mode`.
+  - `pub enum octet_engine::live::Mode { Ask, AcceptEdits, Auto, FullAccess }` (`Clone, Copy, Debug, Default=Ask, PartialEq, Eq`), re-exported as `octet_core::Mode`.
   - `Mode::ALL: [Mode; 4]`, `Mode::parse(&str) -> Option<Mode>`, `Mode::label(self) -> &'static str`, `Mode::cycle(self) -> Mode`, `Mode::describe(self, engine: &str) -> &'static str`.
   - `pub fn claude_permission_args(mode: Mode) -> Vec<&'static str>`, `pub fn codex_thread_params(mode: Mode) -> serde_json::Value`, `pub fn codex_turn_overrides(mode: Mode) -> serde_json::Value`, private `fn claude_mode(mode: Mode) -> &'static str`.
   - `Config.mode: Mode`, `Command::SetMode(Mode)`, `Event::ModeChanged(Mode)`.
-  - `lc_tui::view::App.mode: lc_core::Mode`.
+  - `octet_tui::view::App.mode: octet_core::Mode`.
 
 - [ ] **Step 1: Write the failing unit tests**
 
-Append to the end of `crates/lc-engine/src/live.rs`:
+Append to the end of `crates/octet-engine/src/live.rs`:
 
 ```rust
 #[cfg(test)]
@@ -112,7 +112,7 @@ mod mode_tests {
 }
 ```
 
-Append to the `tests` module in `crates/lc-core/src/model.rs` (and add `mode: crate::Mode::Auto,` to that module's `config()` literal):
+Append to the `tests` module in `crates/octet-core/src/model.rs` (and add `mode: crate::Mode::Auto,` to that module's `config()` literal):
 
 ```rust
     #[test]
@@ -124,12 +124,12 @@ Append to the `tests` module in `crates/lc-core/src/model.rs` (and add `mode: cr
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `scripts/rust-env.sh cargo test -p lc-engine --lib mode_tests`
+Run: `scripts/rust-env.sh cargo test -p octet-engine --lib mode_tests`
 Expected: compile errors — `Mode`, `claude_permission_args`, `codex_thread_params`, `codex_turn_overrides` not found.
 
 - [ ] **Step 3: Implement the type and mapping**
 
-In `crates/lc-engine/src/live.rs`, add `mode` to `Config`:
+In `crates/octet-engine/src/live.rs`, add `mode` to `Config`:
 
 ```rust
 #[derive(Clone, Debug)]
@@ -148,7 +148,7 @@ Directly below `Config`, add:
 ```rust
 /// Provider-neutral permission mode. The vendor mapping lives only in the
 /// functions below; `Auto` delegates to each vendor's own reviewer and
-/// LocalCode never answers a vendor approval by itself.
+/// Octet never answers a vendor approval by itself.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
     #[default]
@@ -240,27 +240,27 @@ The driver must still compile: in `vendor()`'s `commands.recv()` match and in `d
 
 - [ ] **Step 4: Plumb `mode` through the other crates**
 
-`crates/lc-core/src/lib.rs`:
-- Re-export: `pub use lc_engine::live::{Command, Config, Event, Handle, Mode, PROMPT_LIMIT};`
+`crates/octet-core/src/lib.rs`:
+- Re-export: `pub use octet_engine::live::{Command, Config, Event, Handle, Mode, PROMPT_LIMIT};`
 - Session record: `json!({"engine":config.engine,"cwd":config.cwd,"resume":config.resume,"model":config.model,"mode":config.mode.label()})`
 - `record()`: add `Event::ModeChanged(mode) => ("mode", json!(mode.label())),`
 
-`crates/lc-core/src/model.rs` `configure`: add `mode: current.mode,` to the returned `Config`.
+`crates/octet-core/src/model.rs` `configure`: add `mode: current.mode,` to the returned `Config`.
 
-`crates/lc-tui/src/view.rs`:
-- `App` field `pub mode: lc_core::Mode,`; in `App::new` set `mode: config.mode,`; in `connection()` add `self.mode = config.mode;`.
+`crates/octet-tui/src/view.rs`:
+- `App` field `pub mode: octet_core::Mode,`; in `App::new` set `mode: config.mode,`; in `connection()` add `self.mode = config.mode;`.
 - `App::event`: add `Event::ModeChanged(mode) => self.mode = mode,`.
 
-Add `mode: lc_core::Mode::Ask,` (or `mode: Mode::Ask` / `mode: Default::default()` where the crate does not import it) to every remaining `Config { … }` literal: `crates/lc-engine/tests/live.rs` (`config()`), `crates/lc-core/tests/session.rs`, `crates/lc-tui/src/view.rs` tests (4 literals), `crates/lc-tui/src/lib.rs` tests (`app()`), and `crates/localcode/src/main.rs` (`mode: lc_core::Mode::Ask,` — Task 4 replaces it with the flag value).
+Add `mode: octet_core::Mode::Ask,` (or `mode: Mode::Ask` / `mode: Default::default()` where the crate does not import it) to every remaining `Config { … }` literal: `crates/octet-engine/tests/live.rs` (`config()`), `crates/octet-core/tests/session.rs`, `crates/octet-tui/src/view.rs` tests (4 literals), `crates/octet-tui/src/lib.rs` tests (`app()`), and `crates/octet/src/main.rs` (`mode: octet_core::Mode::Ask,` — Task 4 replaces it with the flag value).
 
-Extend `crates/lc-core/tests/session.rs` after reading `text`:
+Extend `crates/octet-core/tests/session.rs` after reading `text`:
 
 ```rust
     let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
     assert_eq!(first["data"]["mode"], "ask");
 ```
 
-(`serde_json` is already a dependency of `lc-core`; if the test target cannot see it, use `lc_core`'s re-export path or add `serde_json.workspace = true` to `[dev-dependencies]`.)
+(`serde_json` is already a dependency of `octet-core`; if the test target cannot see it, use `octet_core`'s re-export path or add `serde_json.workspace = true` to `[dev-dependencies]`.)
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -281,9 +281,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 2: Launch with the configured mode
 
 **Files:**
-- Modify: `crates/lc-engine/src/live.rs` (`vendor()` launch args, Codex thread params, `ModeChanged` after ready; `demo()` signature and initial `ModeChanged`)
-- Modify: `crates/lc-testkit/src/bin/protocol-child.rs` (echo argv and params)
-- Test: `crates/lc-engine/tests/live.rs`
+- Modify: `crates/octet-engine/src/live.rs` (`vendor()` launch args, Codex thread params, `ModeChanged` after ready; `demo()` signature and initial `ModeChanged`)
+- Modify: `crates/octet-testkit/src/bin/protocol-child.rs` (echo argv and params)
+- Test: `crates/octet-engine/tests/live.rs`
 
 **Interfaces:**
 - Consumes: `Mode`, `claude_permission_args`, `codex_thread_params`, `codex_turn_overrides`, `Config.mode`, `Event::ModeChanged` (Task 1).
@@ -291,7 +291,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Teach the fake vendor to echo what it received**
 
-In `crates/lc-testkit/src/bin/protocol-child.rs`:
+In `crates/octet-testkit/src/bin/protocol-child.rs`:
 
 `interactive_codex()`: add `let mut thread_params = Value::Null;` beside `turn`/`active`; in the `thread/start | thread/resume` arm, first do `thread_params = v["params"].clone();` (make the arm a block). In the `turn/start` arm, after the `text == "approval"` block, add:
 
@@ -319,7 +319,7 @@ and use `reply` in place of the three `"Hello Claude"` literals (stream delta te
 
 - [ ] **Step 2: Write the failing integration tests**
 
-Add to `crates/lc-engine/tests/live.rs` (extend the `use` line to `use lc_engine::live::{spawn, Command, Config, Event, Mode};`):
+Add to `crates/octet-engine/tests/live.rs` (extend the `use` line to `use octet_engine::live::{spawn, Command, Config, Event, Mode};`):
 
 ```rust
 async fn wait_for(events: &mut mpsc::Receiver<Event>, wanted: impl Fn(&Event) -> bool) -> Event {
@@ -379,12 +379,12 @@ async fn claude_launches_with_the_mapped_permission_flag() {
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `scripts/rust-env.sh cargo test -p lc-engine --test live`
+Run: `scripts/rust-env.sh cargo test -p octet-engine --test live`
 Expected: the two new tests time out in `next()` waiting for `ModeChanged` (panic on `timeout(...).unwrap()`); existing tests pass.
 
 - [ ] **Step 4: Implement launch wiring**
 
-In `vendor()` in `crates/lc-engine/src/live.rs`:
+In `vendor()` in `crates/octet-engine/src/live.rs`:
 - Remove `"--permission-mode",` and `"default",` from the Claude literal argument array. In the existing `if claude { … }` block that appends `--model`/`--resume`, first add:
 
 ```rust
@@ -428,9 +428,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 3: Live mode switching in the driver
 
 **Files:**
-- Modify: `crates/lc-engine/src/live.rs` (`SetMode` handling in `vendor()` and `demo()`, Claude `control_response` for mode, demo approval auto-allow)
-- Modify: `crates/lc-testkit/src/bin/protocol-child.rs` (answer `set_permission_mode`)
-- Test: `crates/lc-engine/tests/live.rs`
+- Modify: `crates/octet-engine/src/live.rs` (`SetMode` handling in `vendor()` and `demo()`, Claude `control_response` for mode, demo approval auto-allow)
+- Modify: `crates/octet-testkit/src/bin/protocol-child.rs` (answer `set_permission_mode`)
+- Test: `crates/octet-engine/tests/live.rs`
 
 **Interfaces:**
 - Consumes: Task 1 types; Task 2 `wait_for`, `turn_text`, fixture `argv`/`params` echoes; driver state `mode`.
@@ -460,7 +460,7 @@ In `interactive_claude()`, add a branch before the `v["type"] == "user"` branch:
 
 - [ ] **Step 2: Write the failing integration tests**
 
-Add to `crates/lc-engine/tests/live.rs`:
+Add to `crates/octet-engine/tests/live.rs`:
 
 ```rust
 #[tokio::test]
@@ -519,7 +519,7 @@ Note: `wait_for` in `claude_refusal_keeps_the_previous_mode` stops at the first 
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `scripts/rust-env.sh cargo test -p lc-engine --test live`
+Run: `scripts/rust-env.sh cargo test -p octet-engine --test live`
 Expected: `codex_live_switch…`, `claude_live_switch…` and `claude_refusal…` fail (they get Task 1's "not available yet" notice or time out); `driver_refuses_live_full_access` fails its `/mode` assertion.
 
 - [ ] **Step 4: Implement live switching**
@@ -537,7 +537,7 @@ Replace Task 1's temporary `SetMode` arm with:
                         else if target==mode { emit(tx,Event::ModeChanged(mode))?; }
                         else if claude {
                             mode_seq+=1;
-                            let id=format!("lc-mode-{mode_seq}");
+                            let id=format!("octet-mode-{mode_seq}");
                             send(&process,json!({"type":"control_request","request_id":id,"request":{"subtype":"set_permission_mode","mode":claude_mode(target)}})).await?;
                             mode_request=Some((id,target));
                         } else {
@@ -601,26 +601,26 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 4: `/mode`, Shift+Tab, `--mode` and the full-access reconnect
 
 **Files:**
-- Modify: `crates/lc-tui/src/lib.rs` (`Action::SetMode`, `Action::Mode`, `/mode` command, BackTab, run loop)
-- Modify: `crates/lc-tui/src/view.rs` (`App.mode_pending`, `mode_details()`, `ModeChanged`/`Stopped` arms)
-- Modify: `crates/localcode/src/main.rs` (`--mode` flag, help text)
-- Test: `crates/lc-tui/src/lib.rs` (`model_tests` module), `crates/lc-tui/src/view.rs` (tests), `crates/localcode/tests/terminal.rs`
+- Modify: `crates/octet-tui/src/lib.rs` (`Action::SetMode`, `Action::Mode`, `/mode` command, BackTab, run loop)
+- Modify: `crates/octet-tui/src/view.rs` (`App.mode_pending`, `mode_details()`, `ModeChanged`/`Stopped` arms)
+- Modify: `crates/octet/src/main.rs` (`--mode` flag, help text)
+- Test: `crates/octet-tui/src/lib.rs` (`model_tests` module), `crates/octet-tui/src/view.rs` (tests), `crates/octet/tests/terminal.rs`
 
 **Interfaces:**
-- Consumes: `lc_core::Mode`, `Command::SetMode`, `Event::ModeChanged`, `App.mode` (Tasks 1–3).
-- Produces: `Action::SetMode(lc_core::Mode)`, `Action::Mode(lc_core::Mode)`; `App.mode_pending: Option<lc_core::Mode>`; `App::mode_details(&self) -> String`; `fn cycle_mode(app: &mut App) -> Action` in `lib.rs`.
+- Consumes: `octet_core::Mode`, `Command::SetMode`, `Event::ModeChanged`, `App.mode` (Tasks 1–3).
+- Produces: `Action::SetMode(octet_core::Mode)`, `Action::Mode(octet_core::Mode)`; `App.mode_pending: Option<octet_core::Mode>`; `App::mode_details(&self) -> String`; `fn cycle_mode(app: &mut App) -> Action` in `lib.rs`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `mod model_tests` in `crates/lc-tui/src/lib.rs`:
+Append to `mod model_tests` in `crates/octet-tui/src/lib.rs`:
 
 ```rust
     #[tokio::test]
     async fn mode_command_switches_live_modes_and_rejects_unknown() {
         let mut app = app();
-        assert!(matches!(command(&mut app, "/mode auto").await, Action::SetMode(lc_core::Mode::Auto)));
+        assert!(matches!(command(&mut app, "/mode auto").await, Action::SetMode(octet_core::Mode::Auto)));
         app.running = true;
-        assert!(matches!(command(&mut app, "/mode accept-edits").await, Action::SetMode(lc_core::Mode::AcceptEdits)));
+        assert!(matches!(command(&mut app, "/mode accept-edits").await, Action::SetMode(octet_core::Mode::AcceptEdits)));
         assert!(matches!(command(&mut app, "/mode yolo").await, Action::Continue));
         assert!(app.notice.contains("Unknown mode"));
         assert!(matches!(command(&mut app, "/mode").await, Action::Continue));
@@ -638,25 +638,25 @@ Append to `mod model_tests` in `crates/lc-tui/src/lib.rs`:
         app.ready = false;
         assert!(matches!(command(&mut app, "/mode full-access").await, Action::Continue));
         app.ready = true;
-        assert!(matches!(command(&mut app, "/mode full-access").await, Action::Mode(lc_core::Mode::FullAccess)));
-        app.mode = lc_core::Mode::FullAccess;
-        assert!(matches!(command(&mut app, "/mode auto").await, Action::Mode(lc_core::Mode::Auto)));
+        assert!(matches!(command(&mut app, "/mode full-access").await, Action::Mode(octet_core::Mode::FullAccess)));
+        app.mode = octet_core::Mode::FullAccess;
+        assert!(matches!(command(&mut app, "/mode auto").await, Action::Mode(octet_core::Mode::Auto)));
         assert!(matches!(command(&mut app, "/mode full-access").await, Action::Continue));
     }
     #[test]
     fn cycle_follows_order_and_never_reaches_full_access() {
         let mut app = app();
-        assert!(matches!(cycle_mode(&mut app), Action::SetMode(lc_core::Mode::AcceptEdits)));
-        app.mode = lc_core::Mode::Auto;
-        assert!(matches!(cycle_mode(&mut app), Action::SetMode(lc_core::Mode::Ask)));
-        app.mode = lc_core::Mode::FullAccess;
+        assert!(matches!(cycle_mode(&mut app), Action::SetMode(octet_core::Mode::AcceptEdits)));
+        app.mode = octet_core::Mode::Auto;
+        assert!(matches!(cycle_mode(&mut app), Action::SetMode(octet_core::Mode::Ask)));
+        app.mode = octet_core::Mode::FullAccess;
         assert!(matches!(cycle_mode(&mut app), Action::Continue));
         assert!(app.notice.contains("/mode"));
     }
     #[tokio::test]
     async fn cycle_is_ignored_while_a_switch_is_pending() {
         let mut app = app();
-        app.mode_pending = Some(lc_core::Mode::AcceptEdits);
+        app.mode_pending = Some(octet_core::Mode::AcceptEdits);
         assert!(matches!(cycle_mode(&mut app), Action::Continue));
         assert!(app.notice.contains("pending"));
         assert!(matches!(command(&mut app, "/mode auto").await, Action::Continue));
@@ -664,35 +664,35 @@ Append to `mod model_tests` in `crates/lc-tui/src/lib.rs`:
     }
 ```
 
-Append to the tests module in `crates/lc-tui/src/view.rs`:
+Append to the tests module in `crates/octet-tui/src/view.rs`:
 
 ```rust
     #[test]
     fn stopped_session_clears_pending_mode() {
-        let c = lc_core::Config {
+        let c = octet_core::Config {
             engine: "claude".into(),
             binary: "claude".into(),
             cwd: "/tmp".into(),
             model: None,
             resume: None,
-            mode: lc_core::Mode::Ask,
+            mode: octet_core::Mode::Ask,
         };
         let mut a = App::new(&c, "journal".into());
-        a.mode_pending = Some(lc_core::Mode::Auto);
-        a.event(Event::ModeChanged(lc_core::Mode::Auto));
-        assert_eq!((a.mode, a.mode_pending), (lc_core::Mode::Auto, None));
-        a.mode_pending = Some(lc_core::Mode::Ask);
+        a.mode_pending = Some(octet_core::Mode::Auto);
+        a.event(Event::ModeChanged(octet_core::Mode::Auto));
+        assert_eq!((a.mode, a.mode_pending), (octet_core::Mode::Auto, None));
+        a.mode_pending = Some(octet_core::Mode::Ask);
         a.event(Event::Stopped);
-        assert_eq!((a.mode, a.mode_pending), (lc_core::Mode::Auto, None));
+        assert_eq!((a.mode, a.mode_pending), (octet_core::Mode::Auto, None));
     }
 ```
 
-Append to `crates/localcode/tests/terminal.rs` (no PTY needed — option parsing fails before the terminal check):
+Append to `crates/octet/tests/terminal.rs` (no PTY needed — option parsing fails before the terminal check):
 
 ```rust
 #[test]
 fn unknown_mode_flag_is_a_startup_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_localcode"))
+    let output = Command::new(env!("CARGO_BIN_EXE_octet"))
         .args(["--engine", "demo", "--mode", "bogus"])
         .output()
         .unwrap();
@@ -703,12 +703,12 @@ fn unknown_mode_flag_is_a_startup_error() {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `scripts/rust-env.sh cargo test -p lc-tui -p localcode`
+Run: `scripts/rust-env.sh cargo test -p octet-tui -p octet`
 Expected: compile errors — `Action::SetMode`, `Action::Mode`, `cycle_mode`, `mode_pending` not found.
 
 - [ ] **Step 3: Implement `App` support in `view.rs`**
 
-- Field `pub mode_pending: Option<lc_core::Mode>,`; `mode_pending: None,` in `App::new`; `self.mode_pending = None;` in `connection()`.
+- Field `pub mode_pending: Option<octet_core::Mode>,`; `mode_pending: None,` in `App::new`; `self.mode_pending = None;` in `connection()`.
 - `App::event`: `Event::ModeChanged(mode) => { self.mode = mode; self.mode_pending = None; }`; in the `Event::Stopped` arm add `self.mode_pending = None;`.
 - Method on `App`:
 
@@ -719,7 +719,7 @@ Expected: compile errors — `Action::SetMode`, `Action::Mode`, `cycle_mode`, `m
             text.push_str(&format!(" (switching to {})", pending.label()));
         }
         text.push_str(&format!("\n\n{} mapping:\n", self.engine));
-        for mode in lc_core::Mode::ALL {
+        for mode in octet_core::Mode::ALL {
             let marker = if mode == self.mode { "●" } else { " " };
             text.push_str(&format!("{marker} {:<13} {}\n", mode.label(), mode.describe(&self.engine)));
         }
@@ -730,13 +730,13 @@ Expected: compile errors — `Action::SetMode`, `Action::Mode`, `cycle_mode`, `m
 
 - [ ] **Step 4: Implement commands, keys and the reconnect in `lib.rs`**
 
-`Action` gains `SetMode(lc_core::Mode),` and `Mode(lc_core::Mode),`.
+`Action` gains `SetMode(octet_core::Mode),` and `Mode(octet_core::Mode),`.
 
 `command()` gains an arm after `"/model"`:
 
 ```rust
         "/mode"=>{
-            use lc_core::Mode;
+            use octet_core::Mode;
             if argument.is_empty(){app.notice(app.mode_details());}
             else if app.mode_pending.is_some(){app.notice("Mode change pending; wait for the vendor to confirm");}
             else {match Mode::parse(argument){
@@ -756,7 +756,7 @@ Add the cycle helper next to `command()`:
 
 ```rust
 fn cycle_mode(app: &mut App) -> Action {
-    if app.mode == lc_core::Mode::FullAccess {
+    if app.mode == octet_core::Mode::FullAccess {
         app.notice = "Use /mode to leave full access".into();
     } else if app.mode_pending.is_some() {
         app.notice = "Mode change pending; wait for the vendor to confirm".into();
@@ -783,13 +783,13 @@ fn cycle_mode(app: &mut App) -> Action {
 ```rust
             Action::Mode(mode) => {
                 if let Some(goal) = &mut app.goal {
-                    if goal.status == lc_core::goal::Status::Active {
-                        goal.status = lc_core::goal::Status::Paused;
+                    if goal.status == octet_core::goal::Status::Active {
+                        goal.status = octet_core::goal::Status::Paused;
                         app.save_goal().await.map_err(io::Error::other)?;
                         app.notice("Goal paused for mode switch. Use /goal resume to continue.");
                     }
                 }
-                app.notice(if mode == lc_core::Mode::FullAccess {
+                app.notice(if mode == octet_core::Mode::FullAccess {
                     "Full access: the agent can run any command and edit any file without asking. Reconnecting…".to_owned()
                 } else {
                     format!("Leaving full access for {}. Reconnecting…", mode.label())
@@ -804,8 +804,8 @@ fn cycle_mode(app: &mut App) -> Action {
 
 - [ ] **Step 5: Implement `--mode` in `main.rs`**
 
-- Add `let mut mode = lc_core::Mode::Ask;` with the other option variables.
-- Match arm: `"--mode" => mode = lc_core::Mode::parse(&value).ok_or_else(|| format!("Unknown mode {value}. Use ask, accept-edits, auto or full-access."))?,`
+- Add `let mut mode = octet_core::Mode::Ask;` with the other option variables.
+- Match arm: `"--mode" => mode = octet_core::Mode::parse(&value).ok_or_else(|| format!("Unknown mode {value}. Use ask, accept-edits, auto or full-access."))?,`
 - `Config { … mode, }` (replacing Task 1's literal).
 - `HELP`: change the usage line to `[--model MODEL] [--mode MODE] [--resume VENDOR_SESSION_ID]`, add after the Defaults line: `Modes: ask (default) · accept-edits · auto (vendor auto-review) · full-access\n`, add `Shift+Tab mode` to the Keys line, and `/mode` to the Commands line.
 
@@ -828,8 +828,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 5: Header chip, discoverability, PTY acceptance and docs
 
 **Files:**
-- Modify: `crates/lc-tui/src/view.rs` (header chip, `COMMANDS`, help text, sidebar quick commands; render test)
-- Modify: `crates/localcode/tests/terminal.rs` (`Pty::spawn_with`, new PTY test)
+- Modify: `crates/octet-tui/src/view.rs` (header chip, `COMMANDS`, help text, sidebar quick commands; render test)
+- Modify: `crates/octet/tests/terminal.rs` (`Pty::spawn_with`, new PTY test)
 - Modify: `docs/tui.md`
 
 **Interfaces:**
@@ -838,18 +838,18 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to the tests module in `crates/lc-tui/src/view.rs`:
+Append to the tests module in `crates/octet-tui/src/view.rs`:
 
 ```rust
     #[test]
     fn header_shows_confirmed_and_pending_mode() {
-        let c = lc_core::Config {
+        let c = octet_core::Config {
             engine: "codex".into(),
             binary: "codex".into(),
             cwd: "/tmp/project".into(),
             model: None,
             resume: None,
-            mode: lc_core::Mode::Auto,
+            mode: octet_core::Mode::Auto,
         };
         let mut a = App::new(&c, "journal".into());
         let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
@@ -859,16 +859,16 @@ Append to the tests module in `crates/lc-tui/src/view.rs`:
         t.draw(|f| draw(f, &mut a)).unwrap();
         assert!(screen(&t).contains("auto"));
         assert_eq!(mode_chip(&a).style.fg, Some(ACCENT));
-        a.mode_pending = Some(lc_core::Mode::Ask);
+        a.mode_pending = Some(octet_core::Mode::Ask);
         t.draw(|f| draw(f, &mut a)).unwrap();
         assert!(screen(&t).contains("ask…"));
-        a.event(Event::ModeChanged(lc_core::Mode::FullAccess));
+        a.event(Event::ModeChanged(octet_core::Mode::FullAccess));
         assert_eq!(mode_chip(&a).style.fg, Some(AMBER));
         assert!(COMMANDS.iter().any(|(name, _)| *name == "/mode"));
     }
 ```
 
-In `crates/localcode/tests/terminal.rs`, rename `fn spawn() -> Self` to `fn spawn_with(args: &[&str]) -> Self`, add `.args(args)` right after `.arg(&directory)`, and add:
+In `crates/octet/tests/terminal.rs`, rename `fn spawn() -> Self` to `fn spawn_with(args: &[&str]) -> Self`, add `.args(args)` right after `.arg(&directory)`, and add:
 
 ```rust
     fn spawn() -> Self {
@@ -896,7 +896,7 @@ fn auto_mode_skips_the_demo_dialog_and_shift_tab_cycles() {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `scripts/rust-env.sh cargo test -p lc-tui -p localcode`
+Run: `scripts/rust-env.sh cargo test -p octet-tui -p octet`
 Expected: `header_shows_confirmed_and_pending_mode` fails to compile (`mode_chip` missing). The PTY test may already pass (behavior landed in Tasks 3–4); that is acceptable — it is the acceptance check for the whole feature.
 
 - [ ] **Step 3: Implement the chip and discoverability**
@@ -906,9 +906,9 @@ In `view.rs`:
 ```rust
 fn mode_chip(app: &App) -> Span<'static> {
     let color = match app.mode {
-        lc_core::Mode::Ask => MUTED,
-        lc_core::Mode::AcceptEdits | lc_core::Mode::Auto => ACCENT,
-        lc_core::Mode::FullAccess => AMBER,
+        octet_core::Mode::Ask => MUTED,
+        octet_core::Mode::AcceptEdits | octet_core::Mode::Auto => ACCENT,
+        octet_core::Mode::FullAccess => AMBER,
     };
     let text = match app.mode_pending {
         Some(pending) => format!("{}…", pending.label()),
@@ -964,7 +964,7 @@ provider. The header shows the mode the vendor confirmed.
 | `auto` | `auto` (Claude's classifier) | workspace-write · on-request · `auto_review` |
 | `full-access` | `bypassPermissions` | danger-full-access · never · user |
 
-`auto` hands approval decisions to the vendor's own reviewer; LocalCode never
+`auto` hands approval decisions to the vendor's own reviewer; Octet never
 answers a vendor approval by itself. Codex has no edits-only mode, so
 `accept-edits` is its closest analogue: in-workspace edits already proceed under
 workspace-write, and the model asks only to escalate.
@@ -1014,7 +1014,7 @@ Expected: `"subtype":"success"` for both; no error output.
 - [ ] **Step 2: Codex accepts `auto_review` on `thread/start` (no inference)**
 
 ```bash
-( printf '%s\n' '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"localcode","version":"0.1.0"},"capabilities":{"experimentalApi":true}}}'; sleep 2;
+( printf '%s\n' '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"octet","version":"0.1.0"},"capabilities":{"experimentalApi":true}}}'; sleep 2;
   printf '%s\n' '{"method":"initialized","params":{}}';
   printf '%s\n' "{\"id\":2,\"method\":\"thread/start\",\"params\":{\"cwd\":\"$PWD\",\"sandbox\":\"workspace-write\",\"approvalPolicy\":\"on-request\",\"approvalsReviewer\":\"auto_review\"}}"; sleep 4 ) \
   | codex app-server 2>/dev/null | grep '"id":2' | head -c 400
@@ -1024,4 +1024,4 @@ Expected: a `result` containing `thread`, no `error`.
 
 - [ ] **Step 3: Interactive check**
 
-`make rust-build && ./target/release/localcode --engine claude --mode auto` → header chip `auto`; `/mode` shows the Claude table; Shift+Tab → `ask` then `accept-edits`. Repeat with `--engine codex`. Report outcomes verbatim to the user.
+`make rust-build && ./target/release/octet --engine claude --mode auto` → header chip `auto`; `/mode` shows the Claude table; Shift+Tab → `ask` then `accept-edits`. Repeat with `--engine codex`. Report outcomes verbatim to the user.

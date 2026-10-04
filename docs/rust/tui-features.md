@@ -1,4 +1,4 @@
-# LocalCode TUI features
+# Octet TUI features
 
 This document describes the **Rust terminal UI preview**. It is a native terminal
 application for Linux and macOS that runs the installed `codex` or `claude` CLI as
@@ -36,9 +36,9 @@ terminal:
 
 ```sh
 make rust-build
-./target/release/localcode --engine demo
-./target/release/localcode --engine codex --cwd /path/to/project
-./target/release/localcode --engine claude --cwd /path/to/project
+./target/release/octet --engine demo
+./target/release/octet --engine codex --cwd /path/to/project
+./target/release/octet --engine claude --cwd /path/to/project
 ```
 
 Codex and Claude modes require the corresponding vendor CLI installed and signed
@@ -50,8 +50,8 @@ For a user-level Linux installation, build **on Linux** and install from the
 repository:
 
 ```sh
-scripts/rust-env.sh cargo install --locked --path crates/localcode --root "$HOME/.local"
-"$HOME/.local/bin/localcode" --engine codex
+scripts/rust-env.sh cargo install --locked --path crates/octet --root "$HOME/.local"
+"$HOME/.local/bin/octet" --engine codex
 ```
 
 An existing executable at the destination needs to be resolved before install;

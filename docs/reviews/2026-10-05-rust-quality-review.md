@@ -25,7 +25,7 @@ deliberate ways, each described below:
 
 ### The vendor driver was invisible to rustfmt and clippy
 
-`lc-engine/src/live.rs` ran both provider protocols in one 270-line
+`octet-engine/src/live.rs` ran both provider protocols in one 270-line
 `tokio::select!` block. That block held about 25 shared mutable locals, and
 both protocols were interleaved behind `if claude`. rustfmt does not format
 inside the macro, so 58 lines exceeded 140 characters while `fmt --check`
@@ -69,7 +69,7 @@ policies. Two call sites dropped the error with `let _ =`. Two others
 propagated it with `?`, which closed the terminal UI whenever the goal file
 could not be written during a reconnect or model switch.
 
-`lc_core::goal::GoalRunner` now owns the goal, its store, the running goal turn
+`octet_core::goal::GoalRunner` now owns the goal, its store, the running goal turn
 and its bounded output. It is unit-tested without a PTY.
 
 **Deliberate behaviour change:** every goal persistence failure is now shown
@@ -88,10 +88,10 @@ The TUI changed in three smaller ways:
 ### Smaller items
 
 - **Test fixtures.** The fake-vendor fixture was copied three times. It is now
-  `lc_testkit::protocol_child()`, which builds for the running profile, so
+  `octet_testkit::protocol_child()`, which builds for the running profile, so
   `cargo test --release` works. `TempDir` cleans up after a failing test.
-  `lc-testkit` no longer declares an unused `libc` dependency.
-- **Unix only.** LocalCode is stated as Unix-only with `compile_error!`. Dead
+  `octet-testkit` no longer declares an unused `libc` dependency.
+- **Unix only.** Octet is stated as Unix-only with `compile_error!`. Dead
   non-Unix branches are removed.
 - **`unsafe`.** Every `unsafe` block has a `SAFETY` comment. Process-group
   signals use `killpg` with a typed `pid_t`, and suspend uses `raise`.
@@ -121,16 +121,16 @@ The TUI changed in three smaller ways:
 ## Deferred, with reasons
 
 - **Protocol-gate binary restructure** (`Scenario` enum, statistics struct,
-  moving fixtures out of `lc-engine`'s root): it is a developer tool and
+  moving fixtures out of `octet-engine`'s root): it is a developer tool and
   belongs in a separate plan.
 - **`App` phase and overlay enums, and an `app.rs` split:** the predicates
   removed the duplication; an enum rewrite would be churn without a defect
   behind it.
-- **Typed `lc-core` errors:** every one is shown verbatim and no caller
+- **Typed `octet-core` errors:** every one is shown verbatim and no caller
   branches on them, so they stay `String` with added context.
 - **The `claude: bool` parameter on `model_catalog`:** it is internal and has
   one call site per protocol.
-- **Byte-at-a-time frame reading in `lc-proc`:** no measurement shows it
+- **Byte-at-a-time frame reading in `octet-proc`:** no measurement shows it
   matters.
 
 ## Verification evidence
@@ -152,7 +152,7 @@ The TUI changed in three smaller ways:
   - a failed `/goal pause` still saying the goal stopped;
   - private-file creation and identifier bounds;
   - the CLI rejecting an unknown engine.
-- `cargo test --release -p lc-proc --test transport` passes. The fixture is
+- `cargo test --release -p octet-proc --test transport` passes. The fixture is
   built under `target/release`.
 - The PTY suite exercises both providers in all four modes, including goal
   continuation, pause and cancel counting, and malformed-goal recovery.

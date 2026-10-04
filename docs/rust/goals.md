@@ -6,10 +6,10 @@ journals and is independent of vendor plugins.
 
 ## Usage
 
-Start LocalCode normally, for example:
+Start Octet normally, for example:
 
 ```sh
-./target/release/localcode --engine codex
+./target/release/octet --engine codex
 ```
 
 | Command | Behavior |
@@ -40,13 +40,13 @@ another turn.
 
 ## Completion and limits
 
-After each successful turn, LocalCode requests another turn unless the assistant
-provides a nonempty evidence summary followed by `[[LOCALCODE_GOAL_COMPLETE]]`
-alone on its final line. LocalCode then records the evidence and marks the goal
+After each successful turn, Octet requests another turn unless the assistant
+provides a nonempty evidence summary followed by `[[OCTET_GOAL_COMPLETE]]`
+alone on its final line. Octet then records the evidence and marks the goal
 complete. This is a model-reported audit, not independent verification.
 
 The design takes inspiration from [Claurst's goal workflow](https://github.com/Kuberwastaken/claurst/blob/main/docs/commands.md),
-including persistent state, turn continuation, and a 200-turn guard. LocalCode's
+including persistent state, turn continuation, and a 200-turn guard. Octet's
 current adapters use the final-line marker instead of Claurst's typed
 `GoalComplete` tool. A shared completion tool and normalized token accounting
 remain future work. There is no token-budget option yet because the two drivers
@@ -67,15 +67,15 @@ The opt-in live test uses installed, authenticated vendor CLIs and subscription
 usage. Each provider creates and reads back one file in a disposable workspace:
 
 ```sh
-LOCALCODE_LIVE_ENGINE=codex LOCALCODE_LIVE_CODEX_MODEL=gpt-5.5 \
-  scripts/rust-env.sh cargo test --locked -p localcode \
+OCTET_LIVE_ENGINE=codex OCTET_LIVE_CODEX_MODEL=gpt-5.5 \
+  scripts/rust-env.sh cargo test --locked -p octet \
   installed_providers_complete_a_goal_in_auto_mode -- --ignored --nocapture
-LOCALCODE_LIVE_ENGINE=claude \
-  scripts/rust-env.sh cargo test --locked -p localcode \
+OCTET_LIVE_ENGINE=claude \
+  scripts/rust-env.sh cargo test --locked -p octet \
   installed_providers_complete_a_goal_in_auto_mode -- --ignored --nocapture
 ```
 
-Choose a model supported by your account. `LOCALCODE_LIVE_CLAUDE_MODEL` also
+Choose a model supported by your account. `OCTET_LIVE_CLAUDE_MODEL` also
 overrides the Claude model; without an override, the vendor default is used.
 Both live auto-mode checks passed on macOS with Codex 0.154.0 (`gpt-5.5`) and
 Claude Code 2.1.270. The configured Codex default `gpt-6.1-sol` was rejected by

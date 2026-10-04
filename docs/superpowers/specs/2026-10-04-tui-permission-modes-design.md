@@ -5,7 +5,7 @@ Status: approved in conversation; awaiting written-spec review
 
 ## Intent
 
-The Rust TUI preview (`crates/lc-tui`, `crates/lc-engine`) hard-codes the most
+The Rust TUI preview (`crates/octet-tui`, `crates/octet-engine`) hard-codes the most
 restrictive permission setting for every provider: Claude launches with
 `--permission-mode default`, Codex opens threads with `workspace-write` +
 `approvalPolicy: untrusted` + `approvalsReviewer: user`. Every write or command
@@ -17,7 +17,7 @@ without stopping for routine approvals — for Claude, Codex and the offline dem
 
 Success:
 
-- `localcode --mode auto` and `/mode auto` put either provider into its native
+- `octet --mode auto` and `/mode auto` put either provider into its native
   auto mode; the header shows the mode the vendor actually accepted.
 - Shift+Tab cycles `ask → accept-edits → auto` live, including mid-turn on
   Claude.
@@ -43,7 +43,7 @@ Success:
 
 ## Modes and provider mapping
 
-One enum, `lc_engine::live::Mode { Ask, AcceptEdits, Auto, FullAccess }`,
+One enum, `octet_engine::live::Mode { Ask, AcceptEdits, Auto, FullAccess }`,
 spelled `ask`, `accept-edits`, `auto`, `full-access` everywhere user-facing.
 
 | Mode | Claude | Codex (sandbox, approvalPolicy, approvalsReviewer) | Demo |
@@ -59,7 +59,7 @@ Notes:
   inside the workspace already proceed, so `accept-edits` relaxes `untrusted`
   to `on-request`. This is the closest analogue, not an equivalent; the docs say
   so.
-- `auto` delegates to the vendor's reviewer. LocalCode itself never
+- `auto` delegates to the vendor's reviewer. Octet itself never
   auto-answers a real vendor approval in any mode.
 - The mapping lives in exactly one place: pure functions in `live.rs`
   (`claude_permission_args(mode)`, `codex_thread_params(mode)`,
@@ -77,7 +77,7 @@ Notes:
 - An unknown `--mode` value is a startup error; an unknown `/mode` argument is a
   visible error. Neither falls back to another mode.
 
-## Engine changes (`crates/lc-engine/src/live.rs`)
+## Engine changes (`crates/octet-engine/src/live.rs`)
 
 - `Config.mode: Mode`; `Command::SetMode(Mode)`; `Event::ModeChanged(Mode)`.
 - `Mode::parse`, `Mode::label`, `Mode::cycle` (`ask → accept-edits → auto →
@@ -90,7 +90,7 @@ Notes:
   - After the session is ready the driver emits `ModeChanged(config.mode)`.
 - Live switch (`SetMode(target)`):
   - Refused with a `Notice` when `target` or the current mode is `FullAccess`.
-  - Claude: send `control_request {request_id: "lc-mode-N", request: {subtype:
+  - Claude: send `control_request {request_id: "octet-mode-N", request: {subtype:
     "set_permission_mode", mode}}`; remember it as pending. On a `success`
     `control_response` for that id emit `ModeChanged(target)`; on `error` emit
     `Notice("Mode change refused by Claude: <message>")`, keep the old mode and
@@ -107,12 +107,12 @@ Notes:
   loosens; approval timeout, oversized-request and unknown-request handling stay
   fail-closed.
 
-## Session/journal (`crates/lc-core`)
+## Session/journal (`crates/octet-core`)
 
 - `Session::open` records `mode` in the `session` journal record.
 - `ModeChanged` is journaled as `mode` with the mode label.
 
-## TUI (`crates/lc-tui`, `crates/localcode`)
+## TUI (`crates/octet-tui`, `crates/octet`)
 
 - `main.rs`: `--mode ask|accept-edits|auto|full-access`; listed in `--help`.
 - `/mode`: with no argument, shows the current mode and the mapping table for
@@ -133,9 +133,9 @@ Notes:
 
 ## Testing
 
-1. `lc-engine` unit tests: `Mode` parse/label/cycle; each mapping function
+1. `octet-engine` unit tests: `Mode` parse/label/cycle; each mapping function
    checked cell by cell against the table above.
-2. `lc-engine/tests/live.rs` with `lc-testkit`'s `protocol-child`:
+2. `octet-engine/tests/live.rs` with `octet-testkit`'s `protocol-child`:
    - Codex: initial `thread/start` params reflect `Config.mode`; after
      `SetMode(Auto)` the next `turn/start` carries `approvalsReviewer:
      "auto_review"` and `approvalPolicy: "on-request"`.
@@ -143,10 +143,10 @@ Notes:
      `set_permission_mode` and yields `ModeChanged(Auto)` on success, a `Notice`
      followed by `ModeChanged(<old mode>)` on error.
    - `SetMode(FullAccess)` is refused by the driver.
-3. `lc-tui` unit tests (existing `command()` style): `/mode` parsing and errors,
+3. `octet-tui` unit tests (existing `command()` style): `/mode` parsing and errors,
    full-access idle gate and `Action::Mode`, BackTab cycle and full-access
    lockout.
-4. PTY test (`crates/localcode/tests/terminal.rs`): `--engine demo --mode auto`
+4. PTY test (`crates/octet/tests/terminal.rs`): `--engine demo --mode auto`
    shows the `auto` chip and `/approval-demo` completes without a dialog.
 5. Manual smoke against the installed CLIs before claiming completion: Claude
    launched with `--mode auto` reports the mode; Codex `thread/start` with

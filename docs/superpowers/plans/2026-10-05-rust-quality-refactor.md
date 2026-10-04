@@ -4,9 +4,9 @@
 
 **Goal:** Bring the Rust workspace in line with Rust best practices without changing what users see: typed engine/outcome/error values instead of strings, a decomposed vendor driver, goal orchestration out of the TUI event loop, and one shared test fixture.
 
-**Architecture:** Behaviour-preserving refactor in eight tasks, each verified by the existing suite (`make rust-check`, 119 tests incl. PTY end-to-end). New enums keep their wire/journal spelling through `as_str()`, so journals and vendor traffic are byte-identical. `lc-engine/src/live.rs` becomes a `live/` module with one `Driver` state struct and per-vendor `impl` blocks; goal turn bookkeeping moves to `lc_core::goal::GoalRunner`.
+**Architecture:** Behaviour-preserving refactor in eight tasks, each verified by the existing suite (`make rust-check`, 119 tests incl. PTY end-to-end). New enums keep their wire/journal spelling through `as_str()`, so journals and vendor traffic are byte-identical. `octet-engine/src/live.rs` becomes a `live/` module with one `Driver` state struct and per-vendor `impl` blocks; goal turn bookkeeping moves to `octet_core::goal::GoalRunner`.
 
-**Tech Stack:** Rust 1.98 workspace (`tokio`, `serde_json`, `thiserror`, `ratatui`, `crossterm`, `libc`), fake vendor `crates/lc-testkit/src/bin/protocol-child.rs`.
+**Tech Stack:** Rust 1.98 workspace (`tokio`, `serde_json`, `thiserror`, `ratatui`, `crossterm`, `libc`), fake vendor `crates/octet-testkit/src/bin/protocol-child.rs`.
 
 **Spec:** Whole-tree quality review of HEAD `70b2ee3` (findings recorded in `docs/reviews/2026-10-05-rust-quality-review.md`, written in Task 8). Prior functional review: `docs/reviews/2026-10-05-rust-tui-review.md`.
 
@@ -16,22 +16,22 @@
 - Deliberate behaviour changes (only these): goal persistence failures are always reported as a notice and never silently dropped or fatal to the TUI (Task 7).
 - Linux and macOS only (`docs/rust/tui-features.md`): non-Unix code paths are removed, a `compile_error!` states it.
 - Run cargo through `scripts/rust-env.sh`. Gate for every task: `scripts/rust-env.sh cargo fmt --all`, then `make rust-check` (fmt check, workspace tests, clippy `-D warnings`) must pass before the commit.
-- After Task 6, no line in `crates/*/src` may exceed 120 characters outside string literals (`awk 'length>120' crates/lc-engine/src/live/*.rs` prints only literal-bearing lines). This is what keeps code formattable by rustfmt.
+- After Task 6, no line in `crates/*/src` may exceed 120 characters outside string literals (`awk 'length>120' crates/octet-engine/src/live/*.rs` prints only literal-bearing lines). This is what keeps code formattable by rustfmt.
 - Work on branch `refactor/rust-quality`. Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Match the surrounding idiom: `parse(&str) -> Option<Self>` + `as_str()`/`label()` (as `Mode` does), short doc comments that say *why*.
 
 ## Out of scope (reviewed and deferred, with reason)
 
-- Protocol-gate binary restructure (`Scenario` enum, `GateStats`, moving fixtures out of `lc-engine/src/lib.rs`): developer tool, separate plan.
+- Protocol-gate binary restructure (`Scenario` enum, `GateStats`, moving fixtures out of `octet-engine/src/lib.rs`): developer tool, separate plan.
 - `App` `Phase`/`Overlay` enums and moving `App` to `app.rs`: Task 7 adds the predicates that remove the duplication; the enum rewrite is churn without a bug behind it.
-- Typed (`thiserror`) errors in `lc-core`: every one is shown verbatim to the user and no caller branches on them, so they stay `String` and gain context instead (Task 2).
+- Typed (`thiserror`) errors in `octet-core`: every one is shown verbatim to the user and no caller branches on them, so they stay `String` and gain context instead (Task 2).
 - A separate `Provider` type: `Engine` plus `Selection::parse` rejecting `Demo` is enough (YAGNI).
 - `read_frames` byte-at-a-time loop: no measurement shows it matters.
 
 ## Review Focus
 
-1. Journal spelling drifts when strings become enums (`engine`, `finished`) → a reader of an old and a new journal sees the same values. Test: Task 4 `journal_keeps_engine_and_outcome_spelling` in `crates/lc-core/tests/session.rs`.
-2. Codex reports a turn status LocalCode does not know (e.g. `"inProgress"`) → it is shown and journaled verbatim, never mapped to `completed`. Test: Task 4 `unknown_vendor_status_is_kept_verbatim`.
+1. Journal spelling drifts when strings become enums (`engine`, `finished`) → a reader of an old and a new journal sees the same values. Test: Task 4 `journal_keeps_engine_and_outcome_spelling` in `crates/octet-core/tests/session.rs`.
+2. Codex reports a turn status Octet does not know (e.g. `"inProgress"`) → it is shown and journaled verbatim, never mapped to `completed`. Test: Task 4 `unknown_vendor_status_is_kept_verbatim`.
 3. Vendor stderr gets attached to a driver-local failure (or stops being attached to a vendor failure) once errors are typed → identical text to today. Test: Task 5 `stderr_is_attached_only_to_vendor_failures_and_starts_on_a_line` (rewritten over `DriverError`).
 4. The goal file cannot be written during `/reconnect` or a model switch → the TUI stays open with a notice instead of exiting. Test: Task 7 `pause_active_reports_persistence_failure`.
 5. `cargo test --release` or a custom `CARGO_TARGET_DIR` runs a stale or missing fake vendor → the fixture is built for the running profile. Verified in Task 1 Step 4.
@@ -41,14 +41,14 @@
 ### Task 1: Shared test fixture crate
 
 **Files:**
-- Create: `crates/lc-testkit/src/lib.rs`
-- Modify: `crates/lc-testkit/Cargo.toml` (drop `libc`, add `[lib]`)
-- Modify: `crates/lc-proc/Cargo.toml`, `crates/lc-engine/Cargo.toml`, `crates/localcode/Cargo.toml`, `crates/lc-core/Cargo.toml`, `crates/lc-tui/Cargo.toml`, `crates/lc-store/Cargo.toml` (`[dev-dependencies] lc-testkit = { path = "../lc-testkit" }`)
-- Modify: `crates/lc-proc/tests/transport.rs:6-29`, `crates/lc-engine/tests/live.rs:4-27`, `crates/localcode/tests/terminal.rs:366-389`
+- Create: `crates/octet-testkit/src/lib.rs`
+- Modify: `crates/octet-testkit/Cargo.toml` (drop `libc`, add `[lib]`)
+- Modify: `crates/octet-proc/Cargo.toml`, `crates/octet-engine/Cargo.toml`, `crates/octet/Cargo.toml`, `crates/octet-core/Cargo.toml`, `crates/octet-tui/Cargo.toml`, `crates/octet-store/Cargo.toml` (`[dev-dependencies] octet-testkit = { path = "../octet-testkit" }`)
+- Modify: `crates/octet-proc/tests/transport.rs:6-29`, `crates/octet-engine/tests/live.rs:4-27`, `crates/octet/tests/terminal.rs:366-389`
 - Modify: every test using `std::env::temp_dir().join(...)` for a directory it later removes (`grep -rn 'temp_dir()' crates`)
 
 **Interfaces:**
-- Produces: `lc_testkit::protocol_child() -> PathBuf`, `lc_testkit::TempDir` (`TempDir::new(prefix: &str) -> TempDir`, `TempDir::path(&self) -> &Path`, removes the directory on drop).
+- Produces: `octet_testkit::protocol_child() -> PathBuf`, `octet_testkit::TempDir` (`TempDir::new(prefix: &str) -> TempDir`, `TempDir::path(&self) -> &Path`, removes the directory on drop).
 
 - [ ] **Step 1: Write the library**
 
@@ -85,7 +85,7 @@ pub fn protocol_child() -> PathBuf {
             let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
             let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
             let status = Command::new(cargo)
-                .args(["build", "--quiet", "--locked", "-p", "lc-testkit", "--bin", "protocol-child"])
+                .args(["build", "--quiet", "--locked", "-p", "octet-testkit", "--bin", "protocol-child"])
                 .args(["--profile", profile])
                 .arg("--target-dir")
                 .arg(target_dir)
@@ -126,8 +126,8 @@ mod tests {
     use super::*;
     #[test]
     fn temp_dirs_are_unique_and_removed() {
-        let first = TempDir::new("lc-testkit");
-        let second = TempDir::new("lc-testkit");
+        let first = TempDir::new("octet-testkit");
+        let second = TempDir::new("octet-testkit");
         assert_ne!(first.path(), second.path());
         std::fs::create_dir_all(first.path()).unwrap();
         let path = first.path().to_path_buf();
@@ -139,7 +139,7 @@ mod tests {
 
 `TempDir::new` does not create the directory: the code under test (`Journal::create`, `GoalStore::save`) creates it, as today.
 
-`Cargo.toml` of lc-testkit: remove `libc.workspace = true`; add
+`Cargo.toml` of octet-testkit: remove `libc.workspace = true`; add
 
 ```toml
 [lib]
@@ -148,13 +148,13 @@ path = "src/lib.rs"
 
 - [ ] **Step 2: Replace the three copies**
 
-Delete `child_binary()` (transport.rs), the fixture body inside `config()` (tests/live.rs) and `provider_fixture()` (terminal.rs); call `lc_testkit::protocol_child()` instead. In `tests/live.rs` `config()` becomes:
+Delete `child_binary()` (transport.rs), the fixture body inside `config()` (tests/live.rs) and `provider_fixture()` (terminal.rs); call `octet_testkit::protocol_child()` instead. In `tests/live.rs` `config()` becomes:
 
 ```rust
 fn config() -> Config {
     Config {
         engine: "codex".into(),
-        binary: lc_testkit::protocol_child(),
+        binary: octet_testkit::protocol_child(),
         cwd: std::env::temp_dir(),
         model: None,
         resume: None,
@@ -167,35 +167,35 @@ fn config() -> Config {
 
 - [ ] **Step 3: Use `TempDir` in tests**
 
-Replace each `let dir = std::env::temp_dir().join(format!("lc-…-{}", std::process::id()));` + trailing `remove_dir_all(dir)` with `let dir = lc_testkit::TempDir::new("lc-…");` and `dir.path()`; delete the explicit `remove_dir_all` (the guard does it). In `lc-tui/src/lib.rs` tests the same applies to `lc-goal-cancel` and `lc-tui-draft`.
+Replace each `let dir = std::env::temp_dir().join(format!("lc-…-{}", std::process::id()));` + trailing `remove_dir_all(dir)` with `let dir = octet_testkit::TempDir::new("lc-…");` and `dir.path()`; delete the explicit `remove_dir_all` (the guard does it). In `octet-tui/src/lib.rs` tests the same applies to `octet-goal-cancel` and `octet-tui-draft`.
 
 - [ ] **Step 4: Verify, including the release profile**
 
 Run: `make rust-check` — Expected: PASS, same test count + 1.
-Run: `scripts/rust-env.sh cargo test --release -p lc-proc --test transport` — Expected: PASS and `target/release/protocol-child` exists.
+Run: `scripts/rust-env.sh cargo test --release -p octet-proc --test transport` — Expected: PASS and `target/release/protocol-child` exists.
 
-- [ ] **Step 5: Commit** — `git commit -am "Share the fake vendor fixture and temp dirs through lc-testkit"` (add `crates/lc-testkit/src/lib.rs` first).
+- [ ] **Step 5: Commit** — `git commit -am "Share the fake vendor fixture and temp dirs through octet-testkit"` (add `crates/octet-testkit/src/lib.rs` first).
 
 ---
 
 ### Task 2: Small hygiene (Unix-only, unsafe, boundaries, helpers)
 
 **Files:**
-- Modify: `crates/lc-proc/src/lib.rs:138,164-177,318-339,346`
-- Modify: `crates/lc-tui/src/lib.rs:92-100,206-212,284-296`
-- Modify: `crates/lc-tui/src/text.rs` (Sanitizer state enum)
-- Modify: `crates/lc-engine/src/live.rs:108-162` (visibility), `:181-189,555,610` (identifier check), `:287-290,300-303,764-767` (boundaries)
-- Modify: `crates/lc-core/src/model.rs:28`
-- Modify: `crates/lc-tui/src/view.rs:255-259,331-334`
-- Modify: `crates/lc-store/src/lib.rs` (add `create_private`), `crates/lc-core/src/lib.rs:15-19,117-136`, `crates/lc-core/src/goal.rs:145-185`
-- Modify: `crates/lc-tui/src/editor.rs:9`
+- Modify: `crates/octet-proc/src/lib.rs:138,164-177,318-339,346`
+- Modify: `crates/octet-tui/src/lib.rs:92-100,206-212,284-296`
+- Modify: `crates/octet-tui/src/text.rs` (Sanitizer state enum)
+- Modify: `crates/octet-engine/src/live.rs:108-162` (visibility), `:181-189,555,610` (identifier check), `:287-290,300-303,764-767` (boundaries)
+- Modify: `crates/octet-core/src/model.rs:28`
+- Modify: `crates/octet-tui/src/view.rs:255-259,331-334`
+- Modify: `crates/octet-store/src/lib.rs` (add `create_private`), `crates/octet-core/src/lib.rs:15-19,117-136`, `crates/octet-core/src/goal.rs:145-185`
+- Modify: `crates/octet-tui/src/editor.rs:9`
 
 **Interfaces:**
-- Produces: `lc_engine::live::valid_identifier(&str) -> bool`; `lc_store::create_private(&Path) -> io::Result<tokio::fs::File>`.
+- Produces: `octet_engine::live::valid_identifier(&str) -> bool`; `octet_store::create_private(&Path) -> io::Result<tokio::fs::File>`.
 
 - [ ] **Step 1: Write failing tests**
 
-In `crates/lc-engine/src/live.rs` `mod model_tests`:
+In `crates/octet-engine/src/live.rs` `mod model_tests`:
 
 ```rust
 #[test]
@@ -209,13 +209,13 @@ fn identifiers_are_bounded_single_line_and_non_empty() {
 }
 ```
 
-In `crates/lc-store/src/lib.rs` tests:
+In `crates/octet-store/src/lib.rs` tests:
 
 ```rust
 #[tokio::test]
 async fn private_files_are_new_and_owner_only() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = lc_testkit::TempDir::new("lc-store-private");
+    let dir = octet_testkit::TempDir::new("octet-store-private");
     fs::create_dir_all(dir.path()).await.unwrap();
     let path = dir.path().join("file");
     drop(create_private(&path).await.unwrap());
@@ -225,23 +225,23 @@ async fn private_files_are_new_and_owner_only() {
 }
 ```
 
-Run: `scripts/rust-env.sh cargo test -p lc-engine -p lc-store` — Expected: FAIL (`valid_identifier`, `create_private` not found).
+Run: `scripts/rust-env.sh cargo test -p octet-engine -p octet-store` — Expected: FAIL (`valid_identifier`, `create_private` not found).
 
 - [ ] **Step 2: Helpers**
 
-`crates/lc-engine/src/live.rs`:
+`crates/octet-engine/src/live.rs`:
 
 ```rust
-/// A vendor model identifier LocalCode will pass on or display: non-empty,
+/// A vendor model identifier Octet will pass on or display: non-empty,
 /// at most 256 bytes, no control characters.
 pub fn valid_identifier(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
 }
 ```
 
-Use it in `model_catalog` (both checks), the Claude model check (`actual.filter(|m| valid_identifier(m))`), the Codex `result.model` check, and `Selection::parse` (`if !lc_engine::live::valid_identifier(model)` — keep the existing error text).
+Use it in `model_catalog` (both checks), the Claude model check (`actual.filter(|m| valid_identifier(m))`), the Codex `result.model` check, and `Selection::parse` (`if !octet_engine::live::valid_identifier(model)` — keep the existing error text).
 
-`crates/lc-store/src/lib.rs`:
+`crates/octet-store/src/lib.rs`:
 
 ```rust
 /// Opens a new owner-only file for writing; fails if `path` exists.
@@ -269,14 +269,14 @@ Replace every hand-written boundary loop with the std method (stable since 1.91)
 
 - [ ] **Step 4: Unix-only and `unsafe`**
 
-At the top of `crates/lc-proc/src/lib.rs`:
+At the top of `crates/octet-proc/src/lib.rs`:
 
 ```rust
 #[cfg(not(unix))]
-compile_error!("LocalCode supports Linux and macOS only");
+compile_error!("Octet supports Linux and macOS only");
 ```
 
-Delete both `#[cfg(not(unix))]` functions (`signal_group`, `group_alive`) and drop the now-redundant `#[cfg(unix)]` attributes in lc-proc and lc-tui. Store the group as `libc::pid_t`:
+Delete both `#[cfg(not(unix))]` functions (`signal_group`, `group_alive`) and drop the now-redundant `#[cfg(unix)]` attributes in octet-proc and octet-tui. Store the group as `libc::pid_t`:
 
 ```rust
 let process_group = libc::pid_t::try_from(child.id().expect("spawned child must have pid"))
@@ -336,7 +336,7 @@ pub struct Sanitizer {
 
 Map `0→Text`, `1→Escape`, `2→Csi`, `3→String`, `4 (the `_` arm)→StringEscape`; keep every transition identical. Existing `strips_split_osc_and_csi` covers it.
 
-- [ ] **Step 7: Error context in lc-core**
+- [ ] **Step 7: Error context in octet-core**
 
 `export_journal` keeps returning `String` but says which step failed:
 
@@ -349,7 +349,7 @@ let size = input
     .await
     .map_err(|e| format!("Cannot read journal {}: {e}", source.display()))?
     .len();
-let mut output = lc_store::create_private(target)
+let mut output = octet_store::create_private(target)
     .await
     .map_err(|e| format!("Cannot create {}: {e}", target.display()))?;
 let write = |e: std::io::Error| format!("Cannot write {}: {e}", target.display());
@@ -369,14 +369,14 @@ output.sync_data().await.map_err(write)
 ### Task 3: `Engine` enum
 
 **Files:**
-- Modify: `crates/lc-engine/src/live.rs:41-49,83-96,316-345,350-360,403-408,683-711`
-- Modify: `crates/lc-core/src/lib.rs:3,19`, `crates/lc-core/src/model.rs`
-- Modify: `crates/lc-tui/src/lib.rs:127-189,494-508`, `crates/lc-tui/src/view.rs:40,149,183-189,205,562,604,678,709-736`
-- Modify: `crates/localcode/src/main.rs:13,33,47-49,74`
-- Modify: tests in `crates/lc-engine/tests/live.rs`, `crates/lc-core/tests/session.rs`, `crates/lc-tui/src/{lib,view}.rs`, `crates/localcode/tests/terminal.rs`
+- Modify: `crates/octet-engine/src/live.rs:41-49,83-96,316-345,350-360,403-408,683-711`
+- Modify: `crates/octet-core/src/lib.rs:3,19`, `crates/octet-core/src/model.rs`
+- Modify: `crates/octet-tui/src/lib.rs:127-189,494-508`, `crates/octet-tui/src/view.rs:40,149,183-189,205,562,604,678,709-736`
+- Modify: `crates/octet/src/main.rs:13,33,47-49,74`
+- Modify: tests in `crates/octet-engine/tests/live.rs`, `crates/octet-core/tests/session.rs`, `crates/octet-tui/src/{lib,view}.rs`, `crates/octet/tests/terminal.rs`
 
 **Interfaces:**
-- Produces: `lc_engine::live::Engine { Claude, Codex, Demo }` with `ALL`, `parse(&str) -> Option<Engine>`, `as_str(self) -> &'static str`, `is_vendor(self) -> bool`, `Display`; `Config::new(engine: Engine, binary: impl Into<PathBuf>, cwd: impl Into<PathBuf>) -> Config`; `Config.engine: Engine`; `Selection.provider: Engine`; `Selection::parse(input: &str, current: Engine)`; `Mode::describe(self, engine: Engine)`. Re-exported from `lc_core` as `lc_core::Engine`.
+- Produces: `octet_engine::live::Engine { Claude, Codex, Demo }` with `ALL`, `parse(&str) -> Option<Engine>`, `as_str(self) -> &'static str`, `is_vendor(self) -> bool`, `Display`; `Config::new(engine: Engine, binary: impl Into<PathBuf>, cwd: impl Into<PathBuf>) -> Config`; `Config.engine: Engine`; `Selection.provider: Engine`; `Selection::parse(input: &str, current: Engine)`; `Mode::describe(self, engine: Engine)`. Re-exported from `octet_core` as `octet_core::Engine`.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -396,12 +396,12 @@ fn engines_parse_their_own_spelling_only() {
 
 Change `every_mode_is_described_for_every_engine` to iterate `Engine::ALL`.
 
-`crates/localcode/tests/terminal.rs`, next to `unknown_mode_flag_is_a_startup_error` (copy its process-spawning style):
+`crates/octet/tests/terminal.rs`, next to `unknown_mode_flag_is_a_startup_error` (copy its process-spawning style):
 
 ```rust
 #[test]
 fn unknown_engine_is_a_startup_error() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_localcode"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_octet"))
         .args(["--engine", "gemini"])
         .output()
         .unwrap();
@@ -410,7 +410,7 @@ fn unknown_engine_is_a_startup_error() {
 }
 ```
 
-Run: `scripts/rust-env.sh cargo test -p lc-engine --lib` — Expected: FAIL (`Engine` not found). The CLI test passes before and after (it pins existing behaviour).
+Run: `scripts/rust-env.sh cargo test -p octet-engine --lib` — Expected: FAIL (`Engine` not found). The CLI test passes before and after (it pins existing behaviour).
 
 - [ ] **Step 2: Add the type**
 
@@ -466,7 +466,7 @@ impl Config {
 - `spawn_with_limits`: `if config.engine == Engine::Demo`.
 - `vendor`: `let claude = config.engine == Engine::Claude;` (Task 6 replaces this).
 - `with_stderr(error, engine: Engine, tail)` and `"Cannot start {}"` use `Display`.
-- `lc-core/src/lib.rs`: re-export `Engine`; journal `"engine": config.engine.as_str()`.
+- `octet-core/src/lib.rs`: re-export `Engine`; journal `"engine": config.engine.as_str()`.
 - `model.rs`:
 
 ```rust
@@ -494,7 +494,7 @@ impl Selection {
         if !provider.is_vendor() {
             return Err("Choose a real provider: /model codex or /model claude. Demo has no model.".into());
         }
-        if !lc_engine::live::valid_identifier(model) {
+        if !octet_engine::live::valid_identifier(model) {
             return Err("Model must be a non-empty vendor model name, at most 256 bytes".into());
         }
         Ok(Self {
@@ -509,13 +509,13 @@ impl Selection {
 
 - [ ] **Step 4: TUI and binary**
 
-- `App.engine: lc_core::Engine`; string comparisons become `== Engine::Demo`; `format!` sites keep `{}` (Display).
+- `App.engine: octet_core::Engine`; string comparisons become `== Engine::Demo`; `format!` sites keep `{}` (Display).
 - `run`: `HashMap<Engine, PathBuf>`, keys copied (`config.engine`), `!config.engine.is_vendor()` replaces `== "demo"`.
 - `full_access_notice(mode, engine: Engine, session)`.
 - `main.rs`: keep parsing order (validation after the loop, so `--engine x --help` still prints help):
 
 ```rust
-let engine = lc_core::Engine::parse(&engine).ok_or("Engine must be codex, claude or demo")?;
+let engine = octet_core::Engine::parse(&engine).ok_or("Engine must be codex, claude or demo")?;
 ```
 
 and `binary.unwrap_or_else(|| PathBuf::from(engine.as_str()))`.
@@ -533,13 +533,13 @@ Replace `Config { … }` literals in tests with `Config::new(Engine::…, …)` 
 ### Task 4: Turn outcome and goal types
 
 **Files:**
-- Modify: `crates/lc-engine/src/live.rs:222` (`Event::Finished`), `:592,629,666-668,932`
-- Modify: `crates/lc-core/src/lib.rs:109`, `crates/lc-core/src/goal.rs`
-- Modify: `crates/lc-tui/src/view.rs:350-353,774-781`, `crates/lc-tui/src/lib.rs:234-256,650,677`
-- Test: `crates/lc-engine/tests/live.rs` (8 assertions), `crates/lc-core/src/goal.rs` tests, `crates/lc-core/tests/session.rs`
+- Modify: `crates/octet-engine/src/live.rs:222` (`Event::Finished`), `:592,629,666-668,932`
+- Modify: `crates/octet-core/src/lib.rs:109`, `crates/octet-core/src/goal.rs`
+- Modify: `crates/octet-tui/src/view.rs:350-353,774-781`, `crates/octet-tui/src/lib.rs:234-256,650,677`
+- Test: `crates/octet-engine/tests/live.rs` (8 assertions), `crates/octet-core/src/goal.rs` tests, `crates/octet-core/tests/session.rs`
 
 **Interfaces:**
-- Produces: `lc_engine::live::Outcome { Completed, Interrupted, Failed, Other(String) }` with `from_vendor(&str) -> Outcome`, `as_str(&self) -> &str`, `Display`; `Event::Finished { outcome: Outcome }`; `lc_core::goal::GoalStep { Begin, Continue, Audit }`; `Goal::prompt(&self, step: GoalStep) -> String`; `Goal::finish_turn(&mut self, outcome: &Outcome, assistant: &str) -> bool`; `Status` gains `Copy`, `as_str()`, `parse_stored(&str) -> Option<Status>` and a `Display` printing `Active`/`Paused`/`Complete` (today's `{:?}` text); `GoalStore::save(&self, goal: &Goal)`, `GoalStore::clear(&self)`. Re-export `Outcome` from `lc_core`.
+- Produces: `octet_engine::live::Outcome { Completed, Interrupted, Failed, Other(String) }` with `from_vendor(&str) -> Outcome`, `as_str(&self) -> &str`, `Display`; `Event::Finished { outcome: Outcome }`; `octet_core::goal::GoalStep { Begin, Continue, Audit }`; `Goal::prompt(&self, step: GoalStep) -> String`; `Goal::finish_turn(&mut self, outcome: &Outcome, assistant: &str) -> bool`; `Status` gains `Copy`, `as_str()`, `parse_stored(&str) -> Option<Status>` and a `Display` printing `Active`/`Paused`/`Complete` (today's `{:?}` text); `GoalStore::save(&self, goal: &Goal)`, `GoalStore::clear(&self)`. Re-export `Outcome` from `octet_core`.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -571,12 +571,12 @@ fn prompts_name_their_step() {
 }
 ```
 
-`crates/lc-core/tests/session.rs` (reuse the file's existing session setup; it already reads the journal):
+`crates/octet-core/tests/session.rs` (reuse the file's existing session setup; it already reads the journal):
 
 ```rust
 #[tokio::test]
 async fn journal_keeps_engine_and_outcome_spelling() {
-    let dir = lc_testkit::TempDir::new("lc-journal-spelling");
+    let dir = octet_testkit::TempDir::new("octet-journal-spelling");
     let config = Config::new(Engine::Demo, "demo", dir.path());
     let mut session = Session::open(config, dir.path().to_path_buf()).await.unwrap();
     session.handle.send(Command::Prompt("hi".into())).unwrap();
@@ -594,9 +594,9 @@ async fn journal_keeps_engine_and_outcome_spelling() {
 }
 ```
 
-Add `lc-testkit` and `serde_json` to lc-core `[dev-dependencies]` if missing.
+Add `octet-testkit` and `serde_json` to octet-core `[dev-dependencies]` if missing.
 
-Run: `scripts/rust-env.sh cargo test -p lc-engine --lib -p lc-core` — Expected: FAIL (types not found).
+Run: `scripts/rust-env.sh cargo test -p octet-engine --lib -p octet-core` — Expected: FAIL (types not found).
 
 - [ ] **Step 2: `Outcome`**
 
@@ -607,7 +607,7 @@ pub enum Outcome {
     Completed,
     Interrupted,
     Failed,
-    /// A status LocalCode does not map, exactly as the vendor sent it.
+    /// A status Octet does not map, exactly as the vendor sent it.
     Other(String),
 }
 impl Outcome {
@@ -691,8 +691,8 @@ Callers: `App::save_goal` becomes `match (&self.goal_store, &self.goal) { (None,
 ### Task 5: Typed driver and send errors
 
 **Files:**
-- Modify: `crates/lc-engine/Cargo.toml` (already has `thiserror`), `crates/lc-engine/src/live.rs:227-315,350,409,683-711,778-816,881-898`
-- Modify: `crates/lc-tui/src/lib.rs` (`.send(...)` error sites: `app.notice = error` → `error.to_string()`)
+- Modify: `crates/octet-engine/Cargo.toml` (already has `thiserror`), `crates/octet-engine/src/live.rs:227-315,350,409,683-711,778-816,881-898`
+- Modify: `crates/octet-tui/src/lib.rs` (`.send(...)` error sites: `app.notice = error` → `error.to_string()`)
 
 **Interfaces:**
 - Produces: `pub(crate) enum DriverError { Cancelled, ConsumerOverloaded, TurnItemLimit, Vendor(String) }` with `From<String>` and `From<&str>` (→ `Vendor`); `pub enum SendError { PromptTooLong, Busy }` (`thiserror`, `Display` identical to today); `Handle::send(&self, Command) -> Result<(), SendError>`; `emit`, `send`, `confirm_mode`, `switch_reply_mode`, `demo_set_mode`, `demo` return `Result<_, DriverError>`; `with_stderr(error: DriverError, engine: Engine, tail: &[u8]) -> String`.
@@ -728,13 +728,13 @@ fn send_errors_keep_their_wording() {
 }
 ```
 
-Run: `scripts/rust-env.sh cargo test -p lc-engine --lib` — Expected: FAIL (types missing).
+Run: `scripts/rust-env.sh cargo test -p octet-engine --lib` — Expected: FAIL (types missing).
 
 - [ ] **Step 2: Types**
 
 ```rust
 /// Why the driver stopped. Only `Vendor` failures get the vendor's stderr
-/// attached; the others are LocalCode's own and stderr would mislead.
+/// attached; the others are Octet's own and stderr would mislead.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DriverError {
     #[error("Connection cancelled")]
@@ -806,13 +806,13 @@ TUI: sites doing `app.notice = error` / `app.notice(e)` / `format!("Goal paused:
 ### Task 6: Decompose the vendor driver
 
 **Files:**
-- Delete: `crates/lc-engine/src/live.rs`
-- Create: `crates/lc-engine/src/live/mod.rs` — public types (`Limits`, `Config`, `Engine`, `Event`, `Outcome`, `Command`, `Handle`, `SendError`, `ModelInfo`), `PROMPT_LIMIT`, `EVENT_BYTES`, `DriverError`, `emit`, `limited`, `valid_identifier`, `model_catalog`, `spawn`, `spawn_with_limits`; `mod mode; mod driver; mod claude; mod codex; mod demo; pub use mode::Mode;`; `model_tests`.
-- Create: `crates/lc-engine/src/live/mode.rs` — `Mode` and its impl, `claude_mode`, `claude_permission_args`, `codex_thread_params`, `claude_reported_mode`, `codex_reported`, `codex_turn_overrides`, `confirm_mode`; the mode/mapping tests.
-- Create: `crates/lc-engine/src/live/driver.rs` — `Protocol`, `Pending`, `ModeRequest`, `Driver`, `vendor()`, `with_stderr`, `seconds`; the stderr/seconds tests.
-- Create: `crates/lc-engine/src/live/claude.rs` — `impl Driver<'_>` Claude methods, `claude_stray_reply`, `claude_result_error`, `switch_reply_mode`, Claude `answer`; their tests.
-- Create: `crates/lc-engine/src/live/codex.rs` — `impl Driver<'_>` Codex methods, `codex_stray_reply`, `codex_tool_detail`, `error_text`, Codex `answer`; their tests.
-- Create: `crates/lc-engine/src/live/demo.rs` — `demo`, `demo_set_mode` (unchanged bodies, formatted).
+- Delete: `crates/octet-engine/src/live.rs`
+- Create: `crates/octet-engine/src/live/mod.rs` — public types (`Limits`, `Config`, `Engine`, `Event`, `Outcome`, `Command`, `Handle`, `SendError`, `ModelInfo`), `PROMPT_LIMIT`, `EVENT_BYTES`, `DriverError`, `emit`, `limited`, `valid_identifier`, `model_catalog`, `spawn`, `spawn_with_limits`; `mod mode; mod driver; mod claude; mod codex; mod demo; pub use mode::Mode;`; `model_tests`.
+- Create: `crates/octet-engine/src/live/mode.rs` — `Mode` and its impl, `claude_mode`, `claude_permission_args`, `codex_thread_params`, `claude_reported_mode`, `codex_reported`, `codex_turn_overrides`, `confirm_mode`; the mode/mapping tests.
+- Create: `crates/octet-engine/src/live/driver.rs` — `Protocol`, `Pending`, `ModeRequest`, `Driver`, `vendor()`, `with_stderr`, `seconds`; the stderr/seconds tests.
+- Create: `crates/octet-engine/src/live/claude.rs` — `impl Driver<'_>` Claude methods, `claude_stray_reply`, `claude_result_error`, `switch_reply_mode`, Claude `answer`; their tests.
+- Create: `crates/octet-engine/src/live/codex.rs` — `impl Driver<'_>` Codex methods, `codex_stray_reply`, `codex_tool_detail`, `error_text`, Codex `answer`; their tests.
+- Create: `crates/octet-engine/src/live/demo.rs` — `demo`, `demo_set_mode` (unchanged bodies, formatted).
 
 Pure functions move **verbatim** (only `use` lines and visibility change: `pub(super)`). The only rewritten code is the `vendor` loop.
 
@@ -869,7 +869,7 @@ pub(super) struct Driver<'a> {
 
 - [ ] **Step 1: Move pure code, no logic change**
 
-`git mv crates/lc-engine/src/live.rs crates/lc-engine/src/live/mod.rs`, then cut the items listed under **Files** into their new files verbatim, adding `use super::*`-style imports (prefer explicit `use super::{emit, limited, Event, …};`). Tests move with the functions they test. Run `make rust-check` — Expected: PASS. Commit: `git commit -am "Split the live driver into modules"`.
+`git mv crates/octet-engine/src/live.rs crates/octet-engine/src/live/mod.rs`, then cut the items listed under **Files** into their new files verbatim, adding `use super::*`-style imports (prefer explicit `use super::{emit, limited, Event, …};`). Tests move with the functions they test. Run `make rust-check` — Expected: PASS. Commit: `git commit -am "Split the live driver into modules"`.
 
 - [ ] **Step 2: `Driver` and the loop**
 
@@ -1007,7 +1007,7 @@ Keep line 524's watchdog reset as written (it deliberately ignores `pending`). `
 
 `continue` inside a frame arm skipped only the init-order check, which cannot fire after a handled frame (`ready` is set only after `initialized`); running it after every frame is equivalent.
 
-- [ ] **Step 3: Verify** — `make rust-check` (the 38 driver tests in `tests/live.rs` and the PTY suite cover both protocols); `awk 'length>120' crates/lc-engine/src/live/*.rs` prints only string-literal lines. Expected: PASS.
+- [ ] **Step 3: Verify** — `make rust-check` (the 38 driver tests in `tests/live.rs` and the PTY suite cover both protocols); `awk 'length>120' crates/octet-engine/src/live/*.rs` prints only string-literal lines. Expected: PASS.
 
 - [ ] **Step 4: Commit** — `git commit -am "Give the vendor driver a state struct and per-protocol handlers"`.
 
@@ -1016,9 +1016,9 @@ Keep line 524's watchdog reset as written (it deliberately ignores `pending`). `
 ### Task 7: Goal runner and TUI session flow
 
 **Files:**
-- Modify: `crates/lc-core/src/goal.rs` (add `GoalRunner`, `Next`)
-- Modify: `crates/lc-tui/src/view.rs:39-74,108-112,132-140,774-781` (`App.goals`, predicates)
-- Modify: `crates/lc-tui/src/lib.rs:107-189,219-289,297-479,603-697` and tests
+- Modify: `crates/octet-core/src/goal.rs` (add `GoalRunner`, `Next`)
+- Modify: `crates/octet-tui/src/view.rs:39-74,108-112,132-140,774-781` (`App.goals`, predicates)
+- Modify: `crates/octet-tui/src/lib.rs:107-189,219-289,297-479,603-697` and tests
 
 **Interfaces:**
 - Consumes: `Goal`, `GoalStep`, `GoalStore::{save, clear}`, `Outcome` (Task 4).
@@ -1093,7 +1093,7 @@ async fn completed_turn_continues_until_the_marker() {
     assert!(prompt.contains("Continue the objective"));
     assert_eq!(display, "Goal continuation · turn 2");
     runner.goal_prompt_sent();
-    runner.observe_text("Verified tests.\n[[LOCALCODE_GOAL_COMPLETE]]");
+    runner.observe_text("Verified tests.\n[[OCTET_GOAL_COMPLETE]]");
     assert!(matches!(runner.turn_finished(&Outcome::Completed).await.unwrap(), Next::Stopped(s) if s.contains("Complete")));
 }
 
@@ -1108,7 +1108,7 @@ fn goal_output_keeps_the_last_64_kib_on_a_char_boundary() {
 
 #[tokio::test]
 async fn pause_active_reports_persistence_failure() {
-    let dir = lc_testkit::TempDir::new("lc-goal-unwritable");
+    let dir = octet_testkit::TempDir::new("octet-goal-unwritable");
     // A file where the store expects its directory makes every save fail.
     std::fs::write(dir.path(), b"not a directory").unwrap();
     let mut runner = GoalRunner::default();
@@ -1131,7 +1131,7 @@ async fn cancelling_pauses_only_a_running_goal_turn() {
 
 (`attach` on an unreadable path returns `Err` but still attaches the store, so the following save is attempted against it.)
 
-Run: `scripts/rust-env.sh cargo test -p lc-core --lib` — Expected: FAIL (`GoalRunner` not found).
+Run: `scripts/rust-env.sh cargo test -p octet-core --lib` — Expected: FAIL (`GoalRunner` not found).
 
 - [ ] **Step 2: Implement `GoalRunner`**
 
@@ -1328,23 +1328,23 @@ impl GoalRunner {
 }
 ```
 
-Add `use crate::Outcome;` (re-exported in Task 4) and `lc-testkit` to lc-core dev-dependencies (done in Task 4).
+Add `use crate::Outcome;` (re-exported in Task 4) and `octet-testkit` to octet-core dev-dependencies (done in Task 4).
 
-Run: `scripts/rust-env.sh cargo test -p lc-core --lib` — Expected: PASS.
+Run: `scripts/rust-env.sh cargo test -p octet-core --lib` — Expected: PASS.
 
 - [ ] **Step 3: Rewire the TUI**
 
 Event loop (replaces `lib.rs:224-256`):
 
 ```rust
-if let lc_core::Event::Text(text) = &event {
+if let octet_core::Event::Text(text) = &event {
     app.goals.observe_text(text);
 }
 let outcome = match &event {
-    lc_core::Event::Finished { outcome } => Some(outcome.clone()),
+    octet_core::Event::Finished { outcome } => Some(outcome.clone()),
     _ => None,
 };
-let failed = matches!(event, lc_core::Event::Error(_));
+let failed = matches!(event, octet_core::Event::Error(_));
 app.event(event);
 if failed {
     if let Err(error) = app.goals.turn_failed().await {
@@ -1374,7 +1374,7 @@ Helpers:
 
 ```rust
 /// Pauses the goal whose prompt could not be sent and says why.
-async fn goal_send_failed(app: &mut App, error: lc_core::SendError) {
+async fn goal_send_failed(app: &mut App, error: octet_core::SendError) {
     app.notice(format!("Goal paused: {error}"));
     if let Err(error) = app.goals.send_failed().await {
         app.notice(format!("Goal persistence failed: {error}"));
@@ -1425,7 +1425,7 @@ if !app.goals.is_attached() {
 
 ```rust
 "/goal" => {
-    use lc_core::goal::{Goal, GoalStep};
+    use octet_core::goal::{Goal, GoalStep};
     let idle = !app.running && app.ready && !app.stopped;
     match argument {
         "" | "status" => app.notice(
@@ -1466,7 +1466,7 @@ if !app.goals.is_attached() {
 
 `app.goal = …` → `app.goals.goal = …`; `app.goal_running = true` → `app.goals.goal_prompt_sent()`; `Action::Model(..)`/`Action::Mode(..)` → `Action::Exit(Exit::Model(..))`/`Action::Exit(Exit::Mode(..))`; `pause_active_goal(&mut app, "reconnect").await.unwrap()` → `pause_active_goal(&mut app, "reconnect").await`. `goal.finish_turn("completed", …)` → `goal.finish_turn(&Outcome::Completed, …)`.
 
-- [ ] **Step 5: Verify** — `make rust-check` (PTY goal scenarios for both providers × 4 modes, malformed goal file, pause/cancel counting). Then `grep -n 'let _ = app' crates/lc-tui/src/lib.rs` — Expected: no goal saves listed.
+- [ ] **Step 5: Verify** — `make rust-check` (PTY goal scenarios for both providers × 4 modes, malformed goal file, pause/cancel counting). Then `grep -n 'let _ = app' crates/octet-tui/src/lib.rs` — Expected: no goal saves listed.
 
 - [ ] **Step 6: Commit** — `git commit -am "Move goal turn bookkeeping into GoalRunner; report every save failure"`.
 

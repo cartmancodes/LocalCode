@@ -4,7 +4,7 @@ Status: proposed design for review; implementation and measurements have not sta
 
 ## Intent
 
-Deliver an installable Linux terminal application launched as `localcode`, with
+Deliver an installable Linux terminal application launched as `octet`, with
 interactive chat and all existing core capabilities. The user requires high
 performance without feature loss. No browser or listening HTTP server is needed.
 Assume an installed application bundle is acceptable; a single self-extracting

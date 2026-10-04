@@ -4,7 +4,7 @@
 
 **Goal:** Prove Rust can supervise and control the installed official Claude/Codex binaries without Python, including concurrent approvals, cancellation, SDK MCP tools and resume, before implementing the full replacement.
 
-**Architecture:** `lc-proc` owns framed subprocess I/O and bounded process cleanup. A cloneable transport handle writes control messages independently from reading events. `lc-engine` implements a protocol-gate binary/test driver, not the final session/TUI. No application rewrite proceeds until this evidence gate passes.
+**Architecture:** `octet-proc` owns framed subprocess I/O and bounded process cleanup. A cloneable transport handle writes control messages independently from reading events. `octet-engine` implements a protocol-gate binary/test driver, not the final session/TUI. No application rewrite proceeds until this evidence gate passes.
 
 **Tech Stack:** Rust stable, Tokio, serde_json, thiserror, libc on Unix; cargo tests and native Rust CLI probes. Build/development tools may use the existing Python tree only as a read-only specification, never as a runtime dependency.
 
@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - The user explicitly requires no Python runtime or bridge and accepts extension API and plugin compatibility breaks.
-- Vendor binaries own their login. LocalCode does not open credential stores, extract keychain entries or forward vendor tokens.
+- Vendor binaries own their login. Octet does not open credential stores, extract keychain entries or forward vendor tokens.
 - Keep separate control and bulk-data paths.
 - No application rewrite proceeds if the live protocol gate fails.
 - Existing Python/web/editor code and user session data are not removed or migrated.
@@ -30,7 +30,7 @@
 
 ### Task 1: Supervised Rust JSON-line transport
 
-**Files:** Cargo.toml, Cargo.lock, rust-toolchain.toml, crates/lc-proc/{Cargo.toml,src/lib.rs,tests/transport.rs}, crates/lc-testkit/{Cargo.toml,src/bin/protocol-child.rs}.
+**Files:** Cargo.toml, Cargo.lock, rust-toolchain.toml, crates/octet-proc/{Cargo.toml,src/lib.rs,tests/transport.rs}, crates/octet-testkit/{Cargo.toml,src/bin/protocol-child.rs}.
 **Interface:** `ProcessConfig` contains executable, argv, cwd, max_frame_bytes, queue_bytes, stderr_bytes and shutdown durations. `Process::spawn(config) -> Result<Process>` owns child and read tasks; `Process::sender() -> ProcessSender` is cloneable; `sender.send(&Value).await`; `Process::next_frame().await -> Result<Option<Value>>`; `Process::shutdown().await -> ShutdownReport` explicitly bounded. Retain an independent cancellation/kill path even when receive queues fill.
 
 - [ ] Write transport tests with a Rust test child: echo; split JSON; oversized line; continuous stderr; saturated stdout while interrupt receives ack; leader exits leaving grandchild. Example behavior:
@@ -40,13 +40,13 @@ sender.send(&json!({"op":"interrupt"})).await?;
 let report = timeout(Duration::from_secs(2), process.shutdown()).await??;
 assert!(report.reaped);
 ```
-- [ ] Run `cargo test -p lc-proc`, record RED. Implement framing with hard byte ceilings, independent writer/control path, error propagation and process-group shutdown; run GREEN tests.
+- [ ] Run `cargo test -p octet-proc`, record RED. Implement framing with hard byte ceilings, independent writer/control path, error propagation and process-group shutdown; run GREEN tests.
 - [ ] Test timeout/EOF propagation without detached tasks or stdout credentials leaking into logs. Preserve last stderr bytes only in bounded diagnostics and avoid printing unfiltered vendor data.
 
 ### Task 2: Real engine protocol gates
 
-**Files:** crates/lc-engine/{Cargo.toml,src/lib.rs,src/claude.rs,src/codex.rs,src/bin/protocol-gate.rs,tests/contracts.rs}; docs/rust/protocol-gate.md.
-**Consumes:** Task 1 transport. **Produces:** `cargo run -p lc-engine --bin protocol-gate -- --engine claude|codex --scenario <name> --output <json-file>` with explicit pass/fail/blocked per scenario and installed CLI version. CLI flags include binary override, workdir and timeout; default creates temporary workspace. Invalid scenario is an error.
+**Files:** crates/octet-engine/{Cargo.toml,src/lib.rs,src/claude.rs,src/codex.rs,src/bin/protocol-gate.rs,tests/contracts.rs}; docs/rust/protocol-gate.md.
+**Consumes:** Task 1 transport. **Produces:** `cargo run -p octet-engine --bin protocol-gate -- --engine claude|codex --scenario <name> --output <json-file>` with explicit pass/fail/blocked per scenario and installed CLI version. CLI flags include binary override, workdir and timeout; default creates temporary workspace. Invalid scenario is an error.
 
 - [ ] Build fake transcript fixtures independently from Python wire behavior; test initialize response mapping, request-id correlation, control cancellation, multiple agent messages before turn/completed, stale replies and hook/MCP traffic. Watch RED then implement minimal protocol control in Rust.
 - [ ] Claude scenarios: initialize; deterministic echo; PreToolUse hook + can_use_tool approval allow/deny; concurrent interrupt while approval pending; SDK MCP initialize/list/call; resume; fork; compact. Keep handling control requests while waiting for result; reject unsupported control requests explicitly. Force harmless `printf`/read/write only in temp workspace; prompts must not inspect other paths. Record inability to provoke a model behavior as blocked, not pass.
