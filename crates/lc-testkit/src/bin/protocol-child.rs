@@ -195,6 +195,7 @@ fn interactive_codex() {
 fn interactive_claude() {
     let argv: Vec<String> = env::args().skip(1).collect();
     let mut modes: Vec<String> = Vec::new();
+    let mut held: Vec<Value> = Vec::new();
     for line in io::stdin().lock().lines() {
         let v: Value = serde_json::from_str(&line.unwrap()).unwrap();
         if v["type"] == "control_request" && v["request"]["subtype"] == "initialize" {
@@ -226,7 +227,14 @@ fn interactive_claude() {
                     .unwrap_or("<missing>")
                     .to_owned(),
             );
-            if argv.iter().any(|a| a == "late-mode") {
+            if argv.iter().any(|a| a == "hang-mode") {
+                // Answer only when a "flush" prompt arrives.
+                held.push(v["request_id"].clone());
+            } else if argv.iter().any(|a| a == "odd-mode") {
+                emit(
+                    &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"mode":"plan"}}}),
+                );
+            } else if argv.iter().any(|a| a == "late-mode") {
                 // Confirm after the driver's 10-second mode deadline.
                 let reply = json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"mode":v["request"]["mode"]}}});
                 thread::spawn(move || {
@@ -247,6 +255,16 @@ fn interactive_claude() {
                 .pointer("/message/content/0/text")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            if text == "flush" {
+                // First held request succeeds, every later one is refused.
+                for (index, id) in held.drain(..).enumerate() {
+                    emit(&if index == 0 {
+                        json!({"type":"control_response","response":{"request_id":id,"subtype":"success","response":{"mode":modes[0]}}})
+                    } else {
+                        json!({"type":"control_response","response":{"request_id":id,"subtype":"error","error":"fixture refusal"}})
+                    });
+                }
+            }
             if text == "hold" {
                 // Stay mid-turn until the driver interrupts.
                 emit(

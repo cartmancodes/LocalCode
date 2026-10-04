@@ -453,7 +453,7 @@ async fn unconfirmed_claude_switch_times_out_then_applies_a_late_confirmation() 
     })
     .await;
     assert!(
-        matches!(&event, Event::Notice(text) if text.contains("did not confirm")),
+        matches!(&event, Event::Notice(text) if text.contains("has not confirmed") && text.contains("until it does")),
         "{event:?}"
     );
     assert!(matches!(
@@ -555,6 +555,81 @@ async fn codex_resume_carries_the_mode() {
     assert_eq!(echo["thread"]["sandbox"], "danger-full-access");
     assert_eq!(echo["thread"]["approvalPolicy"], "never");
     assert_eq!(echo["turn"]["approvalPolicy"], "never");
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn idle_switch_long_after_connect_confirms_promptly() {
+    let mut c = config();
+    c.engine = "claude".into();
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
+    // Past the 30-second connect deadline, which is stale once idle.
+    tokio::time::sleep(Duration::from_secs(31)).await;
+    let sent = tokio::time::Instant::now();
+    handle.send(Command::SetMode(Mode::Auto)).unwrap();
+    let event = wait_long(&mut events, 12, |e| {
+        matches!(e, Event::Notice(_) | Event::ModeChanged(_))
+    })
+    .await;
+    assert!(matches!(event, Event::ModeChanged(Mode::Auto)), "{event:?}");
+    assert!(
+        sent.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        sent.elapsed()
+    );
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn every_timed_out_switch_can_still_be_confirmed_late() {
+    let mut c = config();
+    c.engine = "claude".into();
+    c.model = Some("hang-mode".into());
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
+    for target in [Mode::AcceptEdits, Mode::Auto] {
+        handle.send(Command::SetMode(target)).unwrap();
+        wait_long(
+            &mut events,
+            12,
+            |e| matches!(e, Event::Notice(t) if t.contains("has not confirmed")),
+        )
+        .await;
+        assert!(matches!(
+            next(&mut events).await,
+            Event::ModeChanged(Mode::Ask)
+        ));
+    }
+    // Claude accepts the first request late and refuses the second.
+    handle.send(Command::Prompt("flush".into())).unwrap();
+    wait_for(&mut events, |e| {
+        matches!(e, Event::ModeChanged(Mode::AcceptEdits))
+    })
+    .await;
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn unmapped_switch_reply_keeps_the_target_with_a_notice() {
+    let mut c = config();
+    c.engine = "claude".into();
+    c.model = Some("odd-mode".into());
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
+    handle.send(Command::SetMode(Mode::Auto)).unwrap();
+    let event = wait_for(&mut events, |e| {
+        matches!(e, Event::Notice(_) | Event::ModeChanged(_))
+    })
+    .await;
+    assert!(
+        matches!(&event, Event::Notice(text) if text.contains("plan")),
+        "{event:?}"
+    );
+    assert!(matches!(
+        next(&mut events).await,
+        Event::ModeChanged(Mode::Auto)
+    ));
     handle.shutdown();
     task.await.unwrap();
 }

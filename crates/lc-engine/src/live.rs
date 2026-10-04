@@ -387,7 +387,7 @@ async fn vendor(
         let mut mode_request: Option<(String, Mode, Instant)> = None;
         // A request that timed out; Claude may still confirm it, and the header
         // must never show a stricter mode than the vendor is really in.
-        let mut late_mode: Option<(String, Mode)> = None;
+        let mut late_modes: Vec<(String, Mode)> = Vec::new();
         let mut mode_seq = 0u64;
         let mut turn: Option<String> = None;
         let mut request_id = 10u64;
@@ -399,7 +399,9 @@ async fn vendor(
         let mut pending: HashMap<u64, Pending> = HashMap::new();
         let mut deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let next_deadline = pending.values().map(|p| p.deadline).chain(mode_request.as_ref().map(|r| r.2)).min().unwrap_or(deadline).min(deadline);
+            // The connect/turn deadline is stale when idle; counting it then would
+            // make every idle timer fire immediately and spin.
+            let next_deadline = pending.values().map(|p| p.deadline).chain(mode_request.as_ref().map(|r| r.2)).chain((!ready || running).then_some(deadline)).min().unwrap_or(deadline);
             tokio::select! {
                 biased;
                 _ = stopping.changed() => break,
@@ -426,8 +428,8 @@ async fn vendor(
                     let expired: Vec<u64> = pending.iter().filter(|(_,p)|p.deadline <= Instant::now()).map(|(id,_)|*id).collect();
                     for id in expired { let p=pending.remove(&id).unwrap(); send(&process,answer(claude,&p.wire,false)).await?; emit(tx,Event::ApprovalClosed(id))?; emit(tx,Event::Notice("Approval timed out and was denied".into()))?; }
                     if let Some((id,target,_))=mode_request.take_if(|r| r.2<=Instant::now()) {
-                        late_mode=Some((id,target));
-                        emit(tx,Event::Notice(format!("Claude did not confirm the switch to {}; keeping {}",target.label(),mode.label())))?;
+                        late_modes.push((id,target));
+                        emit(tx,Event::Notice(format!("Claude has not confirmed the switch to {}; the header shows {} until it does",target.label(),mode.label())))?;
                         emit(tx,Event::ModeChanged(mode))?;
                     }
                 },
@@ -476,10 +478,10 @@ async fn vendor(
                     if claude {
                         let kind=v["type"].as_str().unwrap_or("");
                         let response_id=v.pointer("/response/request_id").and_then(Value::as_str);
-                        if kind=="control_response" && late_mode.as_ref().is_some_and(|(id,_)| Some(id.as_str())==response_id) {
-                            let (_,target)=late_mode.take().unwrap();
+                        if let Some(index)=late_modes.iter().position(|(id,_)| kind=="control_response" && Some(id.as_str())==response_id) {
+                            let (_,target)=late_modes.remove(index);
                             if v.pointer("/response/subtype").and_then(Value::as_str)==Some("success") {
-                                mode=v.pointer("/response/response/mode").and_then(Value::as_str).and_then(claude_reported_mode).unwrap_or(target);
+                                mode=switch_reply_mode(tx,&v,target)?;
                                 emit(tx,Event::Notice(format!("Claude confirmed the switch to {} late",mode.label())))?;
                                 emit(tx,Event::ModeChanged(mode))?;
                             }
@@ -487,7 +489,7 @@ async fn vendor(
                         }
                         if kind=="control_response" && mode_request.as_ref().is_some_and(|(id,_,_)| Some(id.as_str())==response_id) {
                             let (_,target,_)=mode_request.take().unwrap();
-                            if v.pointer("/response/subtype").and_then(Value::as_str)==Some("success") { mode=v.pointer("/response/response/mode").and_then(Value::as_str).and_then(claude_reported_mode).unwrap_or(target); }
+                            if v.pointer("/response/subtype").and_then(Value::as_str)==Some("success") { mode=switch_reply_mode(tx,&v,target)?; }
                             else { emit(tx,Event::Notice(format!("Mode change refused by Claude: {}",limited(v.pointer("/response/error").and_then(Value::as_str).unwrap_or("unknown error")))))?; }
                             emit(tx,Event::ModeChanged(mode))?;
                             continue;
@@ -659,6 +661,19 @@ fn confirm_mode(
             Ok(requested)
         }
     }
+}
+/// The mode a successful Claude switch reply confirms, reported like a
+/// connect-time mismatch; a reply without a mode confirms the target.
+fn switch_reply_mode(
+    tx: &mpsc::Sender<Event>,
+    reply: &Value,
+    target: Mode,
+) -> Result<Mode, String> {
+    let reported = reply
+        .pointer("/response/response/mode")
+        .and_then(Value::as_str)
+        .map(|raw| (claude_reported_mode(raw), limited(raw)));
+    confirm_mode(tx, "Claude", target, reported)
 }
 fn answer(claude: bool, wire: &Value, allow: bool) -> Value {
     if claude {
