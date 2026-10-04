@@ -3,7 +3,6 @@
 A native terminal application now runs against the official Codex and Claude
 CLIs. The harness uses Rust only: no browser, HTTP server or Python runtime.
 This is an interactive vertical slice, not the completed feature-parity release.
-The existing application and its sessions remain untouched.
 
 ## Run
 
@@ -221,9 +220,8 @@ export, terminal restoration, persistent goals, and an offline demo.
 Pending: pi v3 session browsing/recovery, images, steer/follow-up queues, full
 thinking/compaction controls, fleet, quota routing, resources, plugins, legacy
 session semantics, compatible print/JSON/RPC, and distributable release archives.
-The existing Python application continues to provide its existing functionality;
-this preview does not replace it. Python extensions remain the explicitly accepted
-compatibility break for the final Rust design.
+The earlier Python application was removed from the repository on 2026-10-04;
+Python extensions remain the explicitly accepted compatibility break.
 
 Claude preview launches with vendor setting sources disabled and strict MCP
 configuration. It does not yet expose the existing hook/plugin/resource surface.

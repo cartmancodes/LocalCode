@@ -36,14 +36,11 @@ mobile pairing and real tunnel reconnect behavior.
 | [`lc-engine::live`](../../crates/lc-engine/src/live.rs) | Provider-neutral text/tool/approval events; prompt and approval commands; cancellation through a separate watch channel. `Handle::send` acknowledges queueing, not the eventual command result. |
 | [`lc-store::Journal`](../../crates/lc-store/src/lib.rs) | Append-only JSONL with sequence numbers and bounded size. Sequence numbers are not exposed with live events, and no replay/snapshot reader exists here. |
 | [`lc-tui`](../../crates/lc-tui/src/lib.rs) | Slash commands, local approval UI and session/model changes. Goal continuation and goal persistence are driven from the TUI event loop. This logic needs a shared owner for consistent remote control. |
-| [`Python SessionRunner`](../../backend/app/session_runner/__init__.py) | Useful reference: connection-independent turns, multi-subscriber event bus, replay and gap recovery. Not wired to the Rust runtime. |
-| [`Python core RPC route`](../../backend/app/routes/core_rpc.py) | Creates a new core session per socket and shuts it down on disconnect. Reusing this endpoint would not attach a phone to the existing Rust session. |
-| [`React frontend`](../../frontend/src/components/ChatPane.tsx) | Existing transcript, composer, approval cards and reconnect patterns. Rust event shapes differ from both Python protocols; reuse components with an explicit Rust adapter. Mobile layout needs focused work. |
+| Python `SessionRunner`, core RPC route and React UI (removed 2026-10-04; at `54f4ecec4f42`) | Historical reference only: connection-independent turns, multi-subscriber replay and gap recovery, and a web transcript. None of it is in the tree; a phone client is new work. |
 
-The inspected Python socket routes accept clients without LocalCode user/device
-authentication. The setup script binds network interfaces by default. Publishing
-that existing app wholesale would expose a much broader API than this feature
-needs. The proposal instead serves a small authenticated surface from Rust.
+The removed Python socket routes accepted clients without LocalCode user/device
+authentication, which is why this plan serves a small authenticated surface from
+Rust instead.
 
 ## First-release user experience
 
