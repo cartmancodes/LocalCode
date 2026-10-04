@@ -171,7 +171,7 @@ the existing process supervision primitives where appropriate.
 | 1. Protocol spike | Specify envelope/command results; prove two consumers on demo plus a real phone through a development tunnel. | 1–2 |
 | 2. Shared coordinator | Extract state and goal scheduler; sequence events; snapshot/replay/history; one command/approval admission path. Existing terminal behavior remains covered. | 5–7 |
 | 3. Remote server | New transport crate; HTTP/WS routes; pairing, scoped grants, revocation, limits and lifecycle handling. | 3–4 |
-| 4. Mobile client | Adapt React rendering; phone composer, complete approval details, cancel, goal controls, reconnect and request-result handling. | 4–5 |
+| 4. Mobile client | New mobile web client (the React UI this estimate planned to adapt was removed on 2026-10-04; re-estimate before scheduling); phone composer, complete approval details, cancel, goal controls, reconnect and request-result handling. | 4–5 |
 | 5. Internet integration | Production tunnel configuration, `/remote-control` commands, QR/status UI, asset embedding and installation documentation. | 2–3 |
 | 6. Release verification | Failure/race/security tests, real iOS/Android checks, macOS/Linux packaging and local lifecycle regressions. | 5–7 |
 | **Total** | **Tunnel-based MVP** | **20–28** |
@@ -181,7 +181,7 @@ proceed concurrently after the protocol is fixed, but the estimate assumes one
 engineer. A 3–5 day prototype only exercises a subset of steps 1–4 and must not
 be shipped as though it contains all pairing, replay and lifecycle guarantees.
 
-Ship a focused mobile entry point rather than expose the entire legacy frontend.
+Ship a focused mobile entry point.
 Embed its compiled assets in release binaries, following this repository's Rust
 build/install workflow; Node is a build dependency, not a runtime prerequisite.
 Verify clean builds and asset reproducibility on the supported release targets.

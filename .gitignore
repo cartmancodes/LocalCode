@@ -9,10 +9,10 @@
 # Local leftovers from the removed Python and web stack (virtualenv, build
 # output, env file, local chat data). Nothing in the repository uses them;
 # delete them when no longer needed, then drop these lines.
-.env
-.venv/
-.run/
-.localcode/
-backend/
-frontend/
-packages/
+/.env
+/.venv/
+/.run/
+/.localcode/
+/backend/
+/frontend/
+/packages/

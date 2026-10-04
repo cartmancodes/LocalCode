@@ -5,7 +5,8 @@ application for Linux and macOS that runs the installed `codex` or `claude` CLI 
 a child process. It does not need a browser, localhost server, or Python runtime.
 The vendor CLIs handle their own login. The [usage guide](../tui.md) has the full
 key reference and installation details; the [parity matrix](parity-matrix.md)
-tracks work required before this preview replaces the existing application.
+tracks the work remaining for parity with the earlier Python harness, which was
+removed from the repository on 2026-10-04.
 
 ## What works today
 
@@ -75,14 +76,14 @@ displayed messages for reference, but the new provider starts without them.
 ## Preview boundaries
 
 - There is no browser for old journals, automatic local transcript replay after
-  reconnect, or crash recovery for an incomplete journal tail. The existing
-  application's sessions are separate.
+  reconnect, or crash recovery for an incomplete journal tail. Sessions from the
+  earlier Python application are not read.
 - Images, steer and follow-up queues, full thinking and compaction controls,
   fleet orchestration, quota routing, resources, general plugin parity, and compatible
   print/JSON/RPC modes remain to be implemented in Rust.
 - The Rust preview does not execute Python extensions. This is an accepted
-  compatibility break for the Rust design; the existing Python application
-  remains available during migration.
+  compatibility break for the Rust design; the earlier Python application was
+  removed from the repository on 2026-10-04.
 - The visible transcript is bounded to 160 blocks or 512 KiB, while the journal
   retains older events up to its 64 MiB limit. The journal stores prompts,
   model output, and tool details, so treat its path as private workspace data.
