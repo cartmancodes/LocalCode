@@ -1,11 +1,10 @@
 //! Interactive vendor driver. A single owner correlates wire events while
 //! cancellation and shutdown use independent watch channels.
-use lc_proc::{Process, ProcessConfig};
-use serde_json::{json, Value};
-use std::{collections::HashMap, ffi::OsString, path::PathBuf, time::Duration};
+use serde_json::Value;
+use std::{path::PathBuf, time::Duration};
 use tokio::{
     sync::{mpsc, watch},
-    time::{timeout, Instant},
+    time::timeout,
 };
 
 mod claude;
@@ -208,15 +207,6 @@ pub enum Command {
     Answer { id: u64, allow: bool },
     SetMode(Mode),
 }
-fn prompt_parts(command: Command) -> (String, String) {
-    match command {
-        Command::Prompt(text) => (text.clone(), text),
-        Command::PromptWithDisplay { wire, display } => (wire, display),
-        Command::Answer { .. } | Command::SetMode(_) => {
-            unreachable!("only prompt commands reach prompt_parts")
-        }
-    }
-}
 impl Command {
     /// The longest text a prompt command carries; 0 for other commands.
     fn prompt_bytes(&self) -> usize {
@@ -351,6 +341,7 @@ pub fn spawn_with_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     #[test]
     fn identifiers_are_bounded_single_line_and_non_empty() {
         assert!(valid_identifier("gpt-5.5"));

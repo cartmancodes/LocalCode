@@ -1,5 +1,7 @@
 //! Offline demo engine: no vendor process.
-use super::*;
+use super::{emit, Command, DriverError, Event, Mode, Outcome};
+use std::time::Duration;
+use tokio::sync::{mpsc, watch};
 
 pub(super) fn demo_set_mode(
     tx: &mpsc::Sender<Event>,
@@ -32,37 +34,124 @@ pub(super) async fn demo(
     emit(tx, Event::ModeChanged(mode))?;
     loop {
         tokio::select! {
-            _=stop.changed()=>break,
-            _=cancel.changed()=>{},
-            command=commands.recv()=>match command{
-                Some(command @ (Command::Prompt(_) | Command::PromptWithDisplay { .. }))=>{
-                    let (text,display)=prompt_parts(command);
-                    emit(tx,Event::User(display.clone()))?;
-                    emit(tx,Event::Started)?;
-                    let reply=if text.trim()=="/approval-demo" && mode!=Mode::Ask && mode!=Mode::AcceptEdits {
-                        emit(tx,Event::Notice(format!("Allowed without a dialog by {} mode (demo only)",mode.label())))?;
-                        "Approved automatically. In a live session, the vendor's own reviewer decides.".to_owned()
-                    } else if text.trim()=="/approval-demo" {
-                        emit(tx,Event::Approval{id:1,detail:"Demo only — no command will execute.\n\nWrite a greeting to hello.txt?".into()})?;
-                        let expiry=tokio::time::sleep(Duration::from_secs(120));
-                        tokio::pin!(expiry);
-                        // A mode switch while the dialog is open applies and keeps waiting.
-                        let allowed=loop{tokio::select!{_=stop.changed()=>return Ok(()),_=cancel.changed()=>break false,_=&mut expiry=>break false,c=commands.recv()=>match c{
-                            Some(Command::SetMode(target))=>demo_set_mode(tx,&mut mode,target)?,
-                            c=>break matches!(c,Some(Command::Answer{id:1,allow:true})),
-                        }}};
-                        emit(tx,Event::ApprovalClosed(1))?;
-                        if allowed{"Approved. In a live session, the vendor would now continue.".to_owned()}else{"Denied. No action was performed.".to_owned()}
-                    }else{format!("This is an offline demo. Your prompt was:\n\n{display}\n\nThe editor, streaming transcript, approval dialog, history, and cancellation are live. Start with --engine codex or --engine claude to work with a model.\n\nTry /approval-demo to preview a permission request.")};
-                    let mut interrupted=false;
-                    for word in reply.split_inclusive(' '){tokio::select!{_=stop.changed()=>return Ok(()),_=cancel.changed()=>{interrupted=true;break;},_=tokio::time::sleep(Duration::from_millis(18))=>{emit(tx,Event::Text(word.into()))?;}}}
-                    emit(tx,Event::Finished{outcome:if interrupted{Outcome::Interrupted}else{Outcome::Completed}})?;
-                },
-                Some(Command::SetMode(target))=>demo_set_mode(tx,&mut mode,target)?,
-                None=>break,
-                _=>{}
+            _ = stop.changed() => break,
+            _ = cancel.changed() => {}
+            command = commands.recv() => {
+                let (text, display) = match command {
+                    None => break,
+                    Some(Command::SetMode(target)) => {
+                        demo_set_mode(tx, &mut mode, target)?;
+                        continue;
+                    }
+                    Some(Command::Answer { .. }) => continue,
+                    Some(Command::Prompt(text)) => (text.clone(), text),
+                    Some(Command::PromptWithDisplay { wire, display }) => (wire, display),
+                };
+                let mut turn = DemoTurn {
+                    mode: &mut mode,
+                    commands: &mut commands,
+                    cancel: &mut cancel,
+                    stop: &mut stop,
+                    tx,
+                };
+                if turn.run(&text, display).await? == Flow::Stop {
+                    return Ok(());
+                }
             }
         }
     }
     Ok(())
+}
+
+#[derive(PartialEq, Eq)]
+enum Flow {
+    Continue,
+    Stop,
+}
+
+/// One demo turn, borrowing the loop's channels.
+struct DemoTurn<'a> {
+    mode: &'a mut Mode,
+    commands: &'a mut mpsc::Receiver<Command>,
+    cancel: &'a mut watch::Receiver<u64>,
+    stop: &'a mut watch::Receiver<bool>,
+    tx: &'a mpsc::Sender<Event>,
+}
+
+impl DemoTurn<'_> {
+    async fn run(&mut self, text: &str, display: String) -> Result<Flow, DriverError> {
+        emit(self.tx, Event::User(display.clone()))?;
+        emit(self.tx, Event::Started)?;
+        let reply = if text.trim() != "/approval-demo" {
+            format!(
+                "This is an offline demo. Your prompt was:\n\n{display}\n\nThe editor, streaming transcript, approval dialog, history, and cancellation are live. Start with --engine codex or --engine claude to work with a model.\n\nTry /approval-demo to preview a permission request."
+            )
+        } else if !matches!(*self.mode, Mode::Ask | Mode::AcceptEdits) {
+            emit(
+                self.tx,
+                Event::Notice(format!(
+                    "Allowed without a dialog by {} mode (demo only)",
+                    self.mode.label()
+                )),
+            )?;
+            "Approved automatically. In a live session, the vendor's own reviewer decides."
+                .to_owned()
+        } else {
+            match self.approval().await? {
+                None => return Ok(Flow::Stop),
+                Some(true) => {
+                    "Approved. In a live session, the vendor would now continue.".to_owned()
+                }
+                Some(false) => "Denied. No action was performed.".to_owned(),
+            }
+        };
+        let mut interrupted = false;
+        for word in reply.split_inclusive(' ') {
+            tokio::select! {
+                _ = self.stop.changed() => return Ok(Flow::Stop),
+                _ = self.cancel.changed() => {
+                    interrupted = true;
+                    break;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(18)) => {
+                    emit(self.tx, Event::Text(word.into()))?;
+                }
+            }
+        }
+        let outcome = if interrupted {
+            Outcome::Interrupted
+        } else {
+            Outcome::Completed
+        };
+        emit(self.tx, Event::Finished { outcome })?;
+        Ok(Flow::Continue)
+    }
+
+    /// Shows the demo approval. `None` means the driver is stopping.
+    async fn approval(&mut self) -> Result<Option<bool>, DriverError> {
+        emit(
+            self.tx,
+            Event::Approval {
+                id: 1,
+                detail: "Demo only — no command will execute.\n\nWrite a greeting to hello.txt?"
+                    .into(),
+            },
+        )?;
+        let expiry = tokio::time::sleep(Duration::from_secs(120));
+        tokio::pin!(expiry);
+        // A mode switch while the dialog is open applies and keeps waiting.
+        let allowed = loop {
+            tokio::select! {
+                _ = self.stop.changed() => return Ok(None),
+                _ = self.cancel.changed() => break false,
+                _ = &mut expiry => break false,
+                command = self.commands.recv() => match command {
+                    Some(Command::SetMode(target)) => demo_set_mode(self.tx, self.mode, target)?,
+                    command => break matches!(command, Some(Command::Answer { id: 1, allow: true })),
+                },
+            }
+        };
+        emit(self.tx, Event::ApprovalClosed(1))?;
+        Ok(Some(allowed))
+    }
 }

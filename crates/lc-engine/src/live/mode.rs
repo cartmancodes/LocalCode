@@ -1,5 +1,7 @@
 //! Provider-neutral permission modes and the only vendor mapping.
-use super::*;
+use super::{emit, limited, DriverError, Engine, Event};
+use serde_json::{json, Value};
+use tokio::sync::mpsc;
 
 /// Provider-neutral permission mode. The vendor mapping lives only in the
 /// functions below; `Auto` delegates to each vendor's own reviewer and
