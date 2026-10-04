@@ -12,9 +12,14 @@ code riskier to change than it needed to be:
 - Engine identity, turn outcomes and error classification were plain strings.
 
 The refactor on branch `refactor/rust-quality` addresses both. It follows
-`docs/superpowers/plans/2026-10-05-rust-quality-refactor.md`. Journals, vendor
-wire traffic and user-facing text are unchanged, with one deliberate exception
-described below.
+`docs/superpowers/plans/2026-10-05-rust-quality-refactor.md`. Journals and
+vendor wire traffic are unchanged. User-facing text changed in three
+deliberate ways, each described below:
+
+- Goal persistence failures are always reported.
+- Several error messages now name the step that failed.
+- A Codex app-server that answers its startup requests out of order is
+  stopped at once.
 
 ## Findings and changes
 
@@ -68,7 +73,9 @@ could not be written during a reconnect or model switch.
 and its bounded output. It is unit-tested without a PTY.
 
 **Deliberate behaviour change:** every goal persistence failure is now shown
-as a notice. None is dropped, and none is fatal.
+as a notice. None is dropped, and none is fatal. A failed `/goal pause` says
+"Goal paused, but saving it failed: …". A failed `/goal clear` shows only the
+failure, where it used to say "Goal cleared" as well.
 
 The TUI changed in three smaller ways:
 
@@ -95,8 +102,21 @@ The TUI changed in three smaller ways:
 - **Sanitizer.** Its state is a named enum instead of the numbers 0–4.
 - **`#[must_use]`.** Added to `Process::shutdown` and `Editor::insert`. Tests
   now assert the result of `insert` instead of ignoring it.
-- **Error context.** Journal export and goal-save errors now name the step
-  that failed.
+- **Error context.** These messages now name the step that failed:
+  - **Session start:** "Cannot write transcript journal: …" (this error stops
+    the TUI from starting, as before).
+  - **`/export`:** "Cannot read journal *path*: …", "Cannot create *path*: …"
+    and "Cannot write *path*: …".
+  - **Goal file:** "Cannot save goal: …" and "Cannot clear goal: …", inside
+    the goal persistence notices.
+- **Codex startup order.** The driver checks that initialization finished
+  before the session became ready. That check now runs after every Codex
+  frame. Previously it ran only after notifications for the session, never
+  after replies.
+  - If an app-server answers "open session" before "initialize", it now stops
+    at once with "Unexpected protocol initialization order".
+  - Previously it limped on and could open a second thread.
+  - A well-behaved vendor never reaches either path.
 
 ## Deferred, with reasons
 
@@ -118,7 +138,7 @@ The TUI changed in three smaller ways:
 - Baseline at `70b2ee3`: `make rust-check` passed 119 tests, with three opt-in
   live tests ignored.
 - After the refactor: `make rust-check` passes formatting, clippy
-  `-D warnings` and 133 tests (three opt-in tests ignored). The new tests
+  `-D warnings` and 134 tests (three opt-in tests ignored). The new tests
   cover:
   - engine parsing;
   - outcome spelling, including unknown vendor statuses;
@@ -129,6 +149,7 @@ The TUI changed in three smaller ways:
     continues until the completion marker, output is bounded on a char
     boundary, a persistence failure is reported, and cancelling pauses only a
     running goal turn;
+  - a failed `/goal pause` still saying the goal stopped;
   - private-file creation and identifier bounds;
   - the CLI rejecting an unknown engine.
 - `cargo test --release -p lc-proc --test transport` passes. The fixture is

@@ -675,7 +675,8 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                 ),
                 "pause" => match app.goals.pause().await {
                     Ok(notice) => app.notice(notice),
-                    Err(error) => app.notice(format!("Goal persistence failed: {error}")),
+                    // The goal is paused in memory even though the file is stale.
+                    Err(error) => app.notice(format!("Goal paused, but saving it failed: {error}")),
                 },
                 "clear" => match app.goals.clear().await {
                     Ok(()) => app.notice("Goal cleared. Current vendor turn may finish."),
@@ -768,6 +769,26 @@ mod model_tests {
         }
     }
 
+    #[tokio::test]
+    async fn failed_goal_pause_still_says_the_goal_stopped() {
+        let dir = lc_testkit::TempDir::new("lc-tui-goal-unwritable");
+        // A file where the store expects its directory makes every save fail.
+        std::fs::write(dir.path(), b"not a directory").unwrap();
+        let mut app = app();
+        let store = lc_core::goal::GoalStore::new(dir.path(), std::path::Path::new("/project"));
+        assert!(app.goals.attach(store).await.is_err());
+        app.goals.goal = Some(lc_core::goal::Goal::new("Ship the project").unwrap());
+        assert!(matches!(
+            command(&mut app, "/goal pause").await,
+            Action::Continue
+        ));
+        assert!(
+            app.notice.starts_with("Goal paused, but saving it failed:"),
+            "{}",
+            app.notice
+        );
+        assert!(!app.goals.is_active());
+    }
     #[tokio::test]
     async fn pausing_a_completed_goal_preserves_completion() {
         let mut app = app();
