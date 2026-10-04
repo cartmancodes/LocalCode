@@ -1,4 +1,6 @@
 //! Bounded JSON-line transport for owned vendor subprocesses.
+#[cfg(not(unix))]
+compile_error!("LocalCode supports Linux and macOS only");
 
 use serde_json::Value;
 use std::{
@@ -135,8 +137,7 @@ pub struct Process {
     shutdown_complete: bool,
     shutdown_report: Option<ShutdownReport>,
     receive_failed: bool,
-    #[cfg(unix)]
-    process_group: i32,
+    process_group: libc::pid_t,
 }
 
 impl Process {
@@ -161,7 +162,8 @@ impl Process {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         command.kill_on_drop(true);
-        #[cfg(unix)]
+        // SAFETY: pre_exec runs in the forked child before exec; setpgid is
+        // async-signal-safe and the closure allocates nothing.
         unsafe {
             // The child becomes leader of a new process group before exec.
             command.pre_exec(|| {
@@ -173,8 +175,8 @@ impl Process {
             });
         }
         let mut child = command.spawn()?;
-        #[cfg(unix)]
-        let process_group = child.id().expect("spawned child must have pid") as i32;
+        let process_group = libc::pid_t::try_from(child.id().expect("spawned child must have pid"))
+            .expect("pid fits pid_t");
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
@@ -207,7 +209,6 @@ impl Process {
             shutdown_complete: false,
             shutdown_report: None,
             receive_failed: false,
-            #[cfg(unix)]
             process_group,
         })
     }
@@ -241,6 +242,7 @@ impl Process {
         }
     }
 
+    #[must_use = "a failed cleanup is only visible in the report"]
     pub async fn shutdown(&mut self) -> ShutdownReport {
         if let Some(report) = &self.shutdown_report {
             return report.clone();
@@ -315,27 +317,18 @@ impl Process {
         }
     }
 
-    #[cfg(unix)]
     fn signal_group(&self, signal: i32) {
+        debug_assert!(self.process_group > 1, "never signal init or every process");
+        // SAFETY: killpg only sends a signal; the group is our own child's.
         unsafe {
-            libc::kill(-self.process_group, signal);
+            libc::killpg(self.process_group, signal);
         }
     }
 
-    #[cfg(not(unix))]
-    fn signal_group(&mut self, _signal: i32) {
-        let _ = self.child.start_kill();
-    }
-
-    #[cfg(unix)]
     fn group_alive(&self) -> bool {
-        (unsafe { libc::kill(-self.process_group, 0) == 0 })
+        // SAFETY: signal 0 performs only the existence and permission check.
+        (unsafe { libc::killpg(self.process_group, 0) == 0 })
             || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-    }
-
-    #[cfg(not(unix))]
-    fn group_alive(&mut self) -> bool {
-        self.child.try_wait().ok().flatten().is_none()
     }
 }
 
@@ -343,7 +336,6 @@ impl Drop for Process {
     fn drop(&mut self) {
         // Last-resort synchronous cleanup when callers forget explicit shutdown.
         if !self.shutdown_complete {
-            #[cfg(unix)]
             if self.group_alive() {
                 self.signal_group(libc::SIGKILL);
             }

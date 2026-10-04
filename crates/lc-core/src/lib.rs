@@ -16,7 +16,7 @@ impl Session {
         let mut journal = Journal::create(&directory)
             .await
             .map_err(|e| format!("Cannot create transcript journal: {e}"))?;
-        journal.append("session",json!({"engine":config.engine,"cwd":config.cwd,"resume":config.resume,"model":config.model,"mode":config.mode.label()}),true).await.map_err(|e|e.to_string())?;
+        journal.append("session",json!({"engine":config.engine,"cwd":config.cwd,"resume":config.resume,"model":config.model,"mode":config.mode.label()}),true).await.map_err(|e|format!("Cannot write transcript journal: {e}"))?;
         let path = journal.path.clone();
         let (handle, mut engine_events, mut driver) = lc_engine::live::spawn(config);
         let control = handle.clone();
@@ -119,20 +119,18 @@ pub async fn export_journal(
     target: &std::path::Path,
 ) -> Result<(), String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let input = tokio::fs::File::open(source)
+    let read = |e: std::io::Error| format!("Cannot read journal {}: {e}", source.display());
+    let input = tokio::fs::File::open(source).await.map_err(read)?;
+    let size = input.metadata().await.map_err(read)?.len();
+    let mut output = lc_store::create_private(target)
         .await
-        .map_err(|e| e.to_string())?;
-    let size = input.metadata().await.map_err(|e| e.to_string())?.len();
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut output = options.open(target).await.map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Cannot create {}: {e}", target.display()))?;
+    let write = |e: std::io::Error| format!("Cannot write {}: {e}", target.display());
     tokio::io::copy(&mut input.take(size), &mut output)
         .await
-        .map_err(|e| e.to_string())?;
-    output.flush().await.map_err(|e| e.to_string())?;
-    output.sync_data().await.map_err(|e| e.to_string())
+        .map_err(write)?;
+    output.flush().await.map_err(write)?;
+    output.sync_data().await.map_err(write)
 }
 
 pub mod goal;

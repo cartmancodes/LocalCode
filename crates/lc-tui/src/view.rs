@@ -253,10 +253,7 @@ impl App {
     fn add(&mut self, role: Role, text: String) {
         let mut text = clean(&text);
         if text.len() > BLOCK_BYTES {
-            let mut start = text.len() - BLOCK_BYTES;
-            while !text.is_char_boundary(start) {
-                start += 1;
-            }
+            let start = text.ceil_char_boundary(text.len() - BLOCK_BYTES);
             text = format!("[Earlier output is in the journal]\n{}", &text[start..]);
         }
         self.bytes += text.len();
@@ -328,10 +325,7 @@ impl App {
                 self.bytes += text.len();
                 e.width = 0;
                 if e.text.len() > BLOCK_BYTES {
-                    let mut remove = e.text.len() - BLOCK_BYTES;
-                    while !e.text.is_char_boundary(remove) {
-                        remove += 1;
-                    }
+                    let remove = e.text.ceil_char_boundary(e.text.len() - BLOCK_BYTES);
                     e.text.drain(..remove);
                     self.bytes -= remove;
                 }

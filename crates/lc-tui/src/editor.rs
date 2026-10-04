@@ -6,6 +6,7 @@ pub struct Editor {
     pub cursor: usize,
 }
 impl Editor {
+    #[must_use = "false means the text did not fit the prompt limit"]
     pub fn insert(&mut self, text: &str) -> bool {
         if self.text.len() + text.len() > lc_core::PROMPT_LIMIT {
             return false;
@@ -128,19 +129,19 @@ mod tests {
     #[test]
     fn edits_unicode_graphemes_without_splitting() {
         let mut e = Editor::default();
-        e.insert("a👩‍💻e\u{301}");
+        assert!(e.insert("a👩‍💻e\u{301}"));
         e.backspace();
         assert_eq!(e.text, "a👩‍💻");
         e.left();
         e.delete();
         assert_eq!(e.text, "a");
-        e.insert("界");
+        assert!(e.insert("界"));
         assert_eq!(e.layout(3).1, (0, 1));
     }
     #[test]
     fn preserves_pasted_newlines_and_vertical_column() {
         let mut e = Editor::default();
-        e.insert("first\n界x");
+        assert!(e.insert("first\n界x"));
         e.vertical(false);
         assert_eq!(e.cursor, 3);
         e.end();
@@ -151,7 +152,7 @@ mod tests {
     #[test]
     fn oversized_paste_does_not_destroy_draft() {
         let mut e = Editor::default();
-        e.insert("draft");
+        assert!(e.insert("draft"));
         assert!(!e.insert(&"x".repeat(lc_core::PROMPT_LIMIT)));
         assert_eq!(e.text, "draft");
     }

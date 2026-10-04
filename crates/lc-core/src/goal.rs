@@ -144,41 +144,34 @@ impl GoalStore {
     }
     pub async fn save(&self, goal: Option<&Goal>) -> Result<(), String> {
         if let Some(goal) = goal {
+            let failed = |e: std::io::Error| format!("Cannot save goal: {e}");
             tokio::fs::create_dir_all(self.path.parent().ok_or("Invalid goal path")?)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(failed)?;
             let nonce = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| e.to_string())?
+                .map_err(|e| format!("Cannot save goal: {e}"))?
                 .as_nanos();
             let temp = self
                 .path
                 .with_extension(format!("{}.{}.tmp", std::process::id(), nonce));
-            let mut options = tokio::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                options.mode(0o600);
-            }
-            let mut file = options.open(&temp).await.map_err(|e| e.to_string())?;
+            let mut file = lc_store::create_private(&temp).await.map_err(failed)?;
             let status = match goal.status {
                 Status::Active => "active",
                 Status::Paused => "paused",
                 Status::Complete => "complete",
             };
-            let bytes=serde_json::to_vec(&json!({"objective":goal.objective,"status":status,"turns":goal.turns,"evidence":goal.evidence})).map_err(|e|e.to_string())?;
+            let bytes=serde_json::to_vec(&json!({"objective":goal.objective,"status":status,"turns":goal.turns,"evidence":goal.evidence})).map_err(|e|format!("Cannot save goal: {e}"))?;
             use tokio::io::AsyncWriteExt;
-            file.write_all(&bytes).await.map_err(|e| e.to_string())?;
-            file.sync_data().await.map_err(|e| e.to_string())?;
+            file.write_all(&bytes).await.map_err(failed)?;
+            file.sync_data().await.map_err(failed)?;
             drop(file);
-            tokio::fs::rename(&temp, &self.path)
-                .await
-                .map_err(|e| e.to_string())?;
+            tokio::fs::rename(&temp, &self.path).await.map_err(failed)?;
         } else {
             match tokio::fs::remove_file(&self.path).await {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.to_string()),
+                Err(e) => return Err(format!("Cannot clear goal: {e}")),
             }
         }
         Ok(())

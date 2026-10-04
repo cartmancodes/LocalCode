@@ -105,14 +105,14 @@ fn claude_mode(mode: Mode) -> &'static str {
 }
 /// Claude refuses a live switch to bypassPermissions unless launched with this
 /// allowance, so full access is only ever applied at launch.
-pub fn claude_permission_args(mode: Mode) -> Vec<&'static str> {
+pub(crate) fn claude_permission_args(mode: Mode) -> Vec<&'static str> {
     let mut args = vec!["--permission-mode", claude_mode(mode)];
     if mode == Mode::FullAccess {
         args.push("--allow-dangerously-skip-permissions");
     }
     args
 }
-pub fn codex_thread_params(mode: Mode) -> Value {
+pub(crate) fn codex_thread_params(mode: Mode) -> Value {
     let (sandbox, policy, reviewer) = match mode {
         Mode::Ask => ("workspace-write", "untrusted", "user"),
         Mode::AcceptEdits => ("workspace-write", "on-request", "user"),
@@ -123,13 +123,13 @@ pub fn codex_thread_params(mode: Mode) -> Value {
 }
 /// The mode Claude reports (`current_permission_mode`, or a switch's reply).
 /// None means the value is not one of LocalCode's modes.
-pub fn claude_reported_mode(raw: &str) -> Option<Mode> {
+pub(crate) fn claude_reported_mode(raw: &str) -> Option<Mode> {
     Mode::ALL.into_iter().find(|mode| claude_mode(*mode) == raw)
 }
 /// The mode a Codex thread reply echoes. Outer None: the reply carries no
 /// policy (older CLI). Inner None: a policy LocalCode does not map, with the
 /// raw description for the user.
-pub fn codex_reported(result: &Value) -> Option<(Option<Mode>, String)> {
+pub(crate) fn codex_reported(result: &Value) -> Option<(Option<Mode>, String)> {
     let policy = result.get("approvalPolicy")?;
     let sandbox = match result["sandbox"]["type"]
         .as_str()
@@ -156,7 +156,7 @@ pub fn codex_reported(result: &Value) -> Option<(Option<Mode>, String)> {
 }
 /// Codex applies these on the turn and every later turn. Live modes all share
 /// the workspace-write sandbox, so no sandboxPolicy override is sent.
-pub fn codex_turn_overrides(mode: Mode) -> Value {
+pub(crate) fn codex_turn_overrides(mode: Mode) -> Value {
     let params = codex_thread_params(mode);
     json!({"approvalPolicy":params["approvalPolicy"],"approvalsReviewer":params["approvalsReviewer"]})
 }
@@ -169,6 +169,12 @@ pub struct ModelInfo {
     pub description: String,
 }
 
+/// A vendor model identifier LocalCode will pass on or display: non-empty,
+/// at most 256 bytes, no control characters.
+pub fn valid_identifier(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+}
+
 fn model_catalog(value: &Value, claude: bool) -> Vec<ModelInfo> {
     value
         .as_array()
@@ -178,15 +184,12 @@ fn model_catalog(value: &Value, claude: bool) -> Vec<ModelInfo> {
         .filter_map(|v| {
             let selection = v[if claude { "value" } else { "model" }].as_str()?;
             // Bound untrusted metadata without silently truncating model identifiers.
-            if selection.is_empty()
-                || selection.len() > 256
-                || selection.chars().any(char::is_control)
-            {
+            if !valid_identifier(selection) {
                 return None;
             }
             let id = v[if claude { "resolvedModel" } else { "model" }]
                 .as_str()
-                .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
+                .filter(|id| valid_identifier(id))
                 .map(str::to_owned);
             Some(ModelInfo {
                 selection: selection.into(),
@@ -284,10 +287,7 @@ fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), String> {
     };
     let mut remaining = text.as_str();
     while !remaining.is_empty() {
-        let mut end = remaining.len().min(EVENT_BYTES);
-        while !remaining.is_char_boundary(end) {
-            end -= 1;
-        }
+        let end = remaining.floor_char_boundary(EVENT_BYTES);
         let chunk = remaining[..end].to_owned();
         tx.try_send(Event::Text(chunk))
             .map_err(|_| "Output consumer overloaded; session stopped".to_string())?;
@@ -297,10 +297,7 @@ fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), String> {
 }
 
 fn limited(text: &str) -> String {
-    let mut end = text.len().min(EVENT_BYTES);
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = text.floor_char_boundary(EVENT_BYTES);
     if end == text.len() {
         text.to_owned()
     } else {
@@ -552,7 +549,7 @@ async fn vendor(
                         let actual = if kind=="system" && v["subtype"]=="init" {v["model"].as_str()}
                             else if kind=="assistant" {v["message"]["model"].as_str()}
                             else if kind=="stream_event" {v["event"]["message"]["model"].as_str()} else {None};
-                        if let Some(model)=actual.filter(|m| !m.is_empty() && m.len()<=256 && !m.chars().any(char::is_control)) {
+                        if let Some(model)=actual.filter(|m| valid_identifier(m)) {
                             if selected_model!=model {selected_model=model.into();emit(tx,Event::ModelSelected(selected_model.clone()))?;}
                         }
                         if kind=="control_request" {
@@ -607,7 +604,7 @@ async fn vendor(
                             session=v.pointer("/result/thread/id").and_then(Value::as_str).ok_or("Codex could not open the session")?.into();
                             ready=true; emit(tx,Event::Ready{session:session.clone()})?;
                             mode=confirm_mode(tx,"Codex",mode,codex_reported(&v["result"]))?; emit(tx,Event::ModeChanged(mode))?;
-                            if let Some(model)=v["result"]["model"].as_str().filter(|m| !m.is_empty() && m.len()<=256 && !m.chars().any(char::is_control)) { emit(tx,Event::ModelSelected(model.into()))?; }
+                            if let Some(model)=v["result"]["model"].as_str().filter(|m| valid_identifier(m)) { emit(tx,Event::ModelSelected(model.into()))?; }
                             send(&process,json!({"id":3,"method":"model/list","params":{"limit":100,"includeHidden":false}})).await?;
                         } else if method.is_empty() && v["id"]==3 {
                             catalog_pages+=1;
@@ -761,10 +758,7 @@ fn codex_tool_detail(item: &Value, phase: &str) -> String {
         let room = EVENT_BYTES.saturating_sub(text.len() + 1 + CUT.len());
         text.push('\n');
         if output.len() > room {
-            let mut start = output.len() - room;
-            while !output.is_char_boundary(start) {
-                start += 1;
-            }
+            let start = output.ceil_char_boundary(output.len() - room);
             text.push_str(CUT);
             text.push_str(&output[start..]);
         } else {
@@ -943,6 +937,15 @@ async fn demo(
 #[cfg(test)]
 mod model_tests {
     use super::*;
+    #[test]
+    fn identifiers_are_bounded_single_line_and_non_empty() {
+        assert!(valid_identifier("gpt-5.5"));
+        assert!(valid_identifier(&"x".repeat(256)));
+        for bad in ["", "a\u{1b}b", "a\nb"] {
+            assert!(!valid_identifier(bad), "{bad:?}");
+        }
+        assert!(!valid_identifier(&"x".repeat(257)));
+    }
     #[test]
     fn catalog_rejects_invalid_identifiers_and_bounds_metadata() {
         let models = model_catalog(

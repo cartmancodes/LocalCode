@@ -9,6 +9,15 @@ use tokio::{
     io::AsyncWriteExt,
 };
 const LIMIT: u64 = 64 * 1024 * 1024;
+/// Opens a new owner-only file for writing; fails if `path` exists.
+pub async fn create_private(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .await
+}
 pub struct Journal {
     file: File,
     pub path: PathBuf,
@@ -23,11 +32,7 @@ impl Journal {
             .map_err(io::Error::other)?
             .as_nanos();
         let path = directory.join(format!("session-{nonce}-{}.jsonl", std::process::id()));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let file = options.open(&path).await?;
+        let file = create_private(&path).await?;
         Ok(Self {
             file,
             path,
@@ -61,6 +66,20 @@ impl Journal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn private_files_are_new_and_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = lc_testkit::TempDir::new("lc-store-private");
+        fs::create_dir_all(dir.path()).await.unwrap();
+        let path = dir.path().join("file");
+        drop(create_private(&path).await.unwrap());
+        let mode = fs::metadata(&path).await.unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(
+            create_private(&path).await.unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+    }
     #[tokio::test]
     async fn journal_is_private_unique_and_preserves_unicode() {
         let temp = lc_testkit::TempDir::new("lc-store-test");

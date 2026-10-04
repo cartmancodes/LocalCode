@@ -1,17 +1,30 @@
 //! Stateful sanitizer: escape strings may cross streaming frame boundaries.
+#[derive(Clone, Copy, Default)]
+enum State {
+    #[default]
+    Text,
+    /// After ESC.
+    Escape,
+    /// Inside CSI, until a final byte.
+    Csi,
+    /// Inside OSC/DCS/SOS/PM/APC, until BEL or ST.
+    String,
+    /// ESC inside a string: `\` completes ST.
+    StringEscape,
+}
 #[derive(Default)]
 pub struct Sanitizer {
-    state: u8,
+    state: State,
 }
 impl Sanitizer {
     pub fn push(&mut self, text: &str) -> String {
         let mut out = String::with_capacity(text.len());
         for c in text.chars() {
             match self.state {
-                0 => match c {
-                    '\x1b' => self.state = 1,
-                    '\u{9b}' => self.state = 2,
-                    '\u{9d}' => self.state = 3,
+                State::Text => match c {
+                    '\x1b' => self.state = State::Escape,
+                    '\u{9b}' => self.state = State::Csi,
+                    '\u{9d}' => self.state = State::String,
                     '\n' => out.push(c),
                     '\t' => out.push_str("    "),
                     c if !c.is_control()
@@ -21,25 +34,25 @@ impl Sanitizer {
                     }
                     _ => {}
                 },
-                1 => match c {
-                    '[' => self.state = 2,
-                    ']' | 'P' | 'X' | '^' | '_' => self.state = 3,
-                    _ => self.state = 0,
+                State::Escape => match c {
+                    '[' => self.state = State::Csi,
+                    ']' | 'P' | 'X' | '^' | '_' => self.state = State::String,
+                    _ => self.state = State::Text,
                 },
-                2 => {
+                State::Csi => {
                     if ('@'..='~').contains(&c) {
-                        self.state = 0
+                        self.state = State::Text
                     }
                 }
-                3 => match c {
-                    '\x07' | '\u{9c}' => self.state = 0,
-                    '\x1b' => self.state = 4,
+                State::String => match c {
+                    '\x07' | '\u{9c}' => self.state = State::Text,
+                    '\x1b' => self.state = State::StringEscape,
                     _ => {}
                 },
-                _ => match c {
-                    '\\' => self.state = 0,
-                    '\x07' => self.state = 0,
-                    _ => self.state = 3,
+                State::StringEscape => match c {
+                    '\\' => self.state = State::Text,
+                    '\x07' => self.state = State::Text,
+                    _ => self.state = State::String,
                 },
             }
         }

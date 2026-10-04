@@ -91,9 +91,9 @@ impl TerminalGuard {
     }
     fn suspend(&self) -> io::Result<()> {
         Self::restore();
-        #[cfg(unix)]
+        // SAFETY: raise only delivers SIGSTOP to this process.
         unsafe {
-            libc::kill(libc::getpid(), libc::SIGSTOP);
+            libc::raise(libc::SIGSTOP);
         }
         enable_raw_mode()?;
         execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)
@@ -203,11 +203,8 @@ async fn run_session(
     let mut last_paint = Instant::now() - Duration::from_secs(1);
     let frame_time = Duration::from_millis(33);
     let mut events_open = true;
-    #[cfg(unix)]
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    #[cfg(unix)]
     let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
-    #[cfg(unix)]
     let mut suspend =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(libc::SIGTSTP))?;
     loop {
@@ -290,7 +287,6 @@ async fn run_session(
 async fn quit_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
-#[cfg(unix)]
 async fn unix_signal(signal: &mut tokio::signal::unix::Signal) {
     signal.recv().await;
 }
@@ -979,7 +975,7 @@ mod model_tests {
             .unwrap();
         let mut app = App::new(&config, session.journal.clone());
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        app.editor.insert("/nope is not a command, keep my words");
+        assert!(app.editor.insert("/nope is not a command, keep my words"));
         assert!(matches!(
             key_action(&mut app, &mut session, enter).await,
             Action::Continue
@@ -989,8 +985,9 @@ mod model_tests {
         app.editor.take();
         // A path is a prompt, not a command.
         app.ready = true;
-        app.editor
-            .insert("/usr/lib is where this breaks, please look");
+        assert!(app
+            .editor
+            .insert("/usr/lib is where this breaks, please look"));
         assert!(matches!(
             key_action(&mut app, &mut session, enter).await,
             Action::Continue
@@ -1002,7 +999,7 @@ mod model_tests {
         );
         app.running = false;
         // A prompt starting with a multi-byte character is an ordinary prompt.
-        app.editor.insert("界 means world");
+        assert!(app.editor.insert("界 means world"));
         assert!(matches!(
             key_action(&mut app, &mut session, enter).await,
             Action::Continue
@@ -1012,7 +1009,7 @@ mod model_tests {
             Some("界 means world")
         );
         app.running = false;
-        app.editor.insert("/session");
+        assert!(app.editor.insert("/session"));
         assert!(matches!(
             key_action(&mut app, &mut session, enter).await,
             Action::Continue

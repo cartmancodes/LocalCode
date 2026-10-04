@@ -25,7 +25,7 @@ impl Selection {
                 "Choose a real provider: /model codex or /model claude. Demo has no model.".into(),
             );
         }
-        if model.is_empty() || model.len() > 256 || model.chars().any(char::is_control) {
+        if !lc_engine::live::valid_identifier(model) {
             return Err("Model must be a non-empty vendor model name, at most 256 bytes".into());
         }
         Ok(Self {
