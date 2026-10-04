@@ -264,7 +264,7 @@ pub fn spawn(config: Config) -> (Handle, mpsc::Receiver<Event>, tokio::task::Joi
     };
     let task = tokio::spawn(async move {
         let result = if config.engine == "demo" {
-            demo(rx, cancel, stopping, &events).await
+            demo(config.mode, rx, cancel, stopping, &events).await
         } else {
             vendor(config, rx, cancel, stopping, &events).await
         };
@@ -299,8 +299,6 @@ async fn vendor(
             "--include-partial-messages",
             "--permission-prompt-tool",
             "stdio",
-            "--permission-mode",
-            "default",
             "--setting-sources=",
             "--strict-mcp-config",
         ]
@@ -311,6 +309,11 @@ async fn vendor(
         vec!["app-server".into()]
     };
     if claude {
+        args.extend(
+            claude_permission_args(config.mode)
+                .into_iter()
+                .map(OsString::from),
+        );
         if let Some(model) = &config.model {
             args.extend(["--model".into(), model.into()]);
         }
@@ -346,6 +349,7 @@ async fn vendor(
         let mut ready = false;
         let mut running = false;
         let mut session = String::new();
+        let mode = config.mode;
         let mut turn: Option<String> = None;
         let mut request_id = 10u64;
         let mut start_request = None;
@@ -395,6 +399,7 @@ async fn vendor(
                             request_id+=1; start_request=Some(request_id);
                             let mut params=json!({"threadId":session,"input":[{"type":"text","text":text}]});
                             if let Some(model)=&config.model { params["model"]=json!(model); }
+                            if let (Some(target),Value::Object(extra))=(params.as_object_mut(),codex_turn_overrides(mode)) { target.extend(extra); }
                             send(&process,json!({"id":request_id,"method":"turn/start","params":params})).await?;
                         }
                     },
@@ -410,7 +415,7 @@ async fn vendor(
                         let kind=v["type"].as_str().unwrap_or("");
                         if kind=="control_response" && v.pointer("/response/request_id").and_then(Value::as_str)==Some("lc-init") {
                             if v.pointer("/response/subtype").and_then(Value::as_str)!=Some("success") { return Err("Claude initialization failed".into()); }
-                            initialized=true; ready=true; emit(tx,Event::Ready{session:config.resume.clone().unwrap_or_default()})?;
+                            initialized=true; ready=true; emit(tx,Event::Ready{session:config.resume.clone().unwrap_or_default()})?; emit(tx,Event::ModeChanged(mode))?;
                             emit(tx,Event::Models(model_catalog(&v["response"]["response"]["models"],true)))?;
                         }
                         if let Some(id)=v["session_id"].as_str() { if session!=id { session=id.to_owned(); emit(tx,Event::Ready{session:session.clone()})?; } }
@@ -462,13 +467,14 @@ async fn vendor(
                             if v.get("error").is_some(){return Err("Codex initialization failed".into());}
                             initialized=true;
                             send(&process,json!({"method":"initialized","params":{}})).await?;
-                            let mut params=json!({"cwd":config.cwd,"sandbox":"workspace-write","approvalPolicy":"untrusted","approvalsReviewer":"user"});
+                            let mut params=codex_thread_params(mode);
+                            params["cwd"]=json!(config.cwd);
                             let method=if let Some(id)=&config.resume {params["threadId"]=json!(id); "thread/resume"} else {"thread/start"};
                             if let Some(model)=&config.model{params["model"]=json!(model);}
                             send(&process,json!({"id":2,"method":method,"params":params})).await?;
                         } else if method.is_empty() && v["id"]==2 {
                             session=v.pointer("/result/thread/id").and_then(Value::as_str).ok_or("Codex could not open the session")?.into();
-                            ready=true; emit(tx,Event::Ready{session:session.clone()})?;
+                            ready=true; emit(tx,Event::Ready{session:session.clone()})?; emit(tx,Event::ModeChanged(mode))?;
                             if let Some(model)=v["result"]["model"].as_str().filter(|m| !m.is_empty() && m.len()<=256 && !m.chars().any(char::is_control)) { emit(tx,Event::ModelSelected(model.into()))?; }
                             send(&process,json!({"id":3,"method":"model/list","params":{"limit":100,"includeHidden":false}})).await?;
                         } else if method.is_empty() && v["id"]==3 {
@@ -557,6 +563,7 @@ fn answer(claude: bool, wire: &Value, allow: bool) -> Value {
     }
 }
 async fn demo(
+    mode: Mode,
     mut commands: mpsc::Receiver<Command>,
     mut cancel: watch::Receiver<u64>,
     mut stop: watch::Receiver<bool>,
@@ -568,6 +575,7 @@ async fn demo(
             session: "demo · offline".into(),
         },
     )?;
+    emit(tx, Event::ModeChanged(mode))?;
     loop {
         tokio::select! {
             _=stop.changed()=>break,

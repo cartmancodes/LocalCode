@@ -1,4 +1,4 @@
-use lc_engine::live::{spawn, Command, Config, Event};
+use lc_engine::live::{spawn, Command, Config, Event, Mode};
 use std::{path::PathBuf, sync::OnceLock, time::Duration};
 use tokio::{sync::mpsc, time::timeout};
 fn config() -> Config {
@@ -228,4 +228,61 @@ async fn provider_receives_wire_prompt_while_transcript_keeps_user_facing_text()
         .await
         .unwrap()
         .unwrap();
+}
+
+async fn wait_for(events: &mut mpsc::Receiver<Event>, wanted: impl Fn(&Event) -> bool) -> Event {
+    loop {
+        let event = next(events).await;
+        if let Event::Error(error) = &event {
+            panic!("{error}");
+        }
+        if wanted(&event) {
+            return event;
+        }
+    }
+}
+async fn turn_text(events: &mut mpsc::Receiver<Event>) -> String {
+    let mut text = String::new();
+    loop {
+        match next(events).await {
+            Event::Text(t) => text.push_str(&t),
+            Event::Finished { .. } => return text,
+            Event::Error(e) => panic!("{e}"),
+            _ => {}
+        }
+    }
+}
+#[tokio::test]
+async fn codex_launches_and_turns_with_the_configured_mode() {
+    let mut c = config();
+    c.mode = Mode::Auto;
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Auto))).await;
+    handle.send(Command::Prompt("params".into())).unwrap();
+    let echo: serde_json::Value = serde_json::from_str(&turn_text(&mut events).await).unwrap();
+    assert_eq!(echo["thread"]["sandbox"], "workspace-write");
+    assert_eq!(echo["thread"]["approvalPolicy"], "on-request");
+    assert_eq!(echo["thread"]["approvalsReviewer"], "auto_review");
+    assert_eq!(echo["turn"]["approvalPolicy"], "on-request");
+    assert_eq!(echo["turn"]["approvalsReviewer"], "auto_review");
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn claude_launches_with_the_mapped_permission_flag() {
+    let mut c = config();
+    c.engine = "claude".into();
+    c.mode = Mode::AcceptEdits;
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| {
+        matches!(e, Event::ModeChanged(Mode::AcceptEdits))
+    })
+    .await;
+    handle.send(Command::Prompt("argv".into())).unwrap();
+    let argv = turn_text(&mut events).await;
+    assert!(argv.contains("--permission-mode acceptEdits"), "{argv}");
+    assert!(!argv.contains("--permission-mode default"), "{argv}");
+    assert!(!argv.contains("dangerously"), "{argv}");
+    handle.shutdown();
+    task.await.unwrap();
 }

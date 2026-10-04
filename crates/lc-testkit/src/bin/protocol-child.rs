@@ -86,6 +86,7 @@ fn main() {
 fn interactive_codex() {
     let mut turn = 0u64;
     let mut active = String::new();
+    let mut thread_params = Value::Null;
     for line in io::stdin().lock().lines() {
         let v: Value = serde_json::from_str(&line.unwrap()).unwrap();
         match v["method"].as_str() {
@@ -101,9 +102,12 @@ fn interactive_codex() {
                 }
             }
             Some("initialize") => emit(&json!({"id":v["id"],"result":{}})),
-            Some("thread/start" | "thread/resume") => emit(
-                &json!({"id":v["id"],"result":{"thread":{"id":"fixture-thread"},"model":"fixture"}}),
-            ),
+            Some("thread/start" | "thread/resume") => {
+                thread_params = v["params"].clone();
+                emit(
+                    &json!({"id":v["id"],"result":{"thread":{"id":"fixture-thread"},"model":"fixture"}}),
+                )
+            }
             Some("turn/start") => {
                 turn += 1;
                 active = format!("turn-{turn}");
@@ -121,6 +125,16 @@ fn interactive_codex() {
                 if text == "approval" {
                     emit(
                         &json!({"id":"permission","method":"item/commandExecution/requestApproval","params":{"threadId":"fixture-thread","turnId":active,"command":"echo fixture"}}),
+                    );
+                    continue;
+                }
+                if text == "params" {
+                    let echo = json!({"thread":thread_params,"turn":v["params"]}).to_string();
+                    emit(
+                        &json!({"method":"item/agentMessage/delta","params":{"threadId":"fixture-thread","turnId":active,"itemId":"params","delta":echo}}),
+                    );
+                    emit(
+                        &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"completed"}}}),
                     );
                     continue;
                 }
@@ -160,6 +174,7 @@ fn interactive_codex() {
 }
 
 fn interactive_claude() {
+    let argv: Vec<String> = env::args().skip(1).collect();
     for line in io::stdin().lock().lines() {
         let v: Value = serde_json::from_str(&line.unwrap()).unwrap();
         if v["type"] == "control_request" && v["request"]["subtype"] == "initialize" {
@@ -167,17 +182,24 @@ fn interactive_claude() {
                 &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"models":[{"value":"sonnet","resolvedModel":"claude-fixture-full-id","displayName":"Fixture Sonnet","description":"Provider description"}]}}}),
             );
         } else if v["type"] == "user" {
+            let text = v
+                .pointer("/message/content/0/text")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let reply = if text == "argv" {
+                argv.join(" ")
+            } else {
+                "Hello Claude".to_owned()
+            };
             emit(
                 &json!({"type":"system","subtype":"init","session_id":"claude-fixture","model":"claude-fixture-full-id"}),
             );
             emit(
-                &json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello Claude"}}}),
+                &json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":reply}}}),
             );
+            emit(&json!({"type":"assistant","message":{"content":[{"type":"text","text":reply}]}}));
             emit(
-                &json!({"type":"assistant","message":{"content":[{"type":"text","text":"Hello Claude"}]}}),
-            );
-            emit(
-                &json!({"type":"result","is_error":false,"result":"Hello Claude","session_id":"claude-fixture","total_cost_usd":0.0}),
+                &json!({"type":"result","is_error":false,"result":reply,"session_id":"claude-fixture","total_cost_usd":0.0}),
             );
         }
     }
