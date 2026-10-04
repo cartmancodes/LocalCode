@@ -1,6 +1,6 @@
 //! Presentation-independent session boundary. Persist events before publishing;
 //! disk and subscriber failures stop execution instead of losing output silently.
-pub use lc_engine::live::{Command, Config, Event, Handle, PROMPT_LIMIT};
+pub use lc_engine::live::{Command, Config, Event, Handle, Mode, PROMPT_LIMIT};
 use lc_store::Journal;
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
@@ -16,7 +16,7 @@ impl Session {
         let mut journal = Journal::create(&directory)
             .await
             .map_err(|e| format!("Cannot create transcript journal: {e}"))?;
-        journal.append("session",json!({"engine":config.engine,"cwd":config.cwd,"resume":config.resume,"model":config.model}),true).await.map_err(|e|e.to_string())?;
+        journal.append("session",json!({"engine":config.engine,"cwd":config.cwd,"resume":config.resume,"model":config.model,"mode":config.mode.label()}),true).await.map_err(|e|e.to_string())?;
         let path = journal.path.clone();
         let (handle, mut engine_events, mut driver) = lc_engine::live::spawn(config);
         let control = handle.clone();
@@ -81,6 +81,7 @@ fn record(event: &Event) -> (&'static str, Value) {
     match event {
         Event::Models(models) => ("models", json!(models.iter().map(|m|json!({"selection":m.selection,"id":m.id,"name":m.name,"description":m.description})).collect::<Vec<_>>())),
         Event::ModelSelected(id) => ("model_selected", json!(id)),
+        Event::ModeChanged(mode) => ("mode", json!(mode.label())),
         Event::Ready { session } => ("ready", json!(session)),
         Event::User(text) => ("user", json!(text)),
         Event::Started => ("started", Value::Null),

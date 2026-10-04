@@ -68,6 +68,7 @@ async fn run() -> Result<(), String> {
         cwd,
         model,
         resume,
+        mode: lc_core::Mode::Ask,
     };
     lc_tui::run(config, directory)
         .await

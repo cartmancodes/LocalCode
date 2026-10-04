@@ -35,6 +35,7 @@ struct Entry {
 }
 pub struct App {
     pub engine: String,
+    pub mode: lc_core::Mode,
     pub workspace: String,
     pub model: String,
     pub requested_model: Option<String>,
@@ -71,6 +72,7 @@ impl App {
     pub fn new(config: &lc_core::Config, journal: PathBuf) -> Self {
         Self {
             engine: config.engine.clone(),
+            mode: config.mode,
             workspace: clean(&config.cwd.display().to_string()),
             model: "awaiting model metadata".into(),
             requested_model: config.model.clone(),
@@ -106,6 +108,7 @@ impl App {
     }
     pub fn connection(&mut self, config: &lc_core::Config, journal: PathBuf) {
         self.engine = config.engine.clone();
+        self.mode = config.mode;
         self.model = "awaiting model metadata".into();
         self.requested_model = config.model.clone();
         self.resolved_model = None;
@@ -266,6 +269,7 @@ impl App {
                 self.resolved_model = Some(id);
                 self.refresh_model_label();
             }
+            Event::ModeChanged(mode) => self.mode = mode,
             Event::Ready { session } => {
                 self.refresh_model_label();
                 self.ready = true;
@@ -853,6 +857,7 @@ mod tests {
                 cwd: "/tmp/project".into(),
                 model: None,
                 resume: None,
+                mode: lc_core::Mode::Ask,
             };
             let mut a = App::new(&c, "journal".into());
             let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -872,6 +877,7 @@ mod tests {
             cwd: "/tmp".into(),
             model: None,
             resume: None,
+            mode: lc_core::Mode::Ask,
         };
         let mut a = App::new(&c, "journal".into());
         for _ in 0..100 {
@@ -895,6 +901,7 @@ mod model_detail_tests {
                 cwd: "/tmp".into(),
                 model: Some("sonnet".into()),
                 resume: None,
+                mode: lc_core::Mode::Ask,
             },
             "/tmp/journal".into(),
         )
@@ -928,6 +935,7 @@ mod model_detail_tests {
                 cwd: "/tmp".into(),
                 model: None,
                 resume: None,
+                mode: lc_core::Mode::Ask,
             },
             "/tmp/new".into(),
         );

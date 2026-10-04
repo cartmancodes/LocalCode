@@ -9,6 +9,7 @@ async fn demo_turn_is_journaled_and_export_never_overwrites() {
         cwd: directory.clone(),
         model: None,
         resume: None,
+        mode: lc_core::Mode::Ask,
     };
     let mut session = Session::open(config, directory.clone()).await.unwrap();
     assert!(matches!(
@@ -37,6 +38,8 @@ async fn demo_turn_is_journaled_and_export_never_overwrites() {
         .is_err());
     let text = tokio::fs::read_to_string(&exported).await.unwrap();
     assert!(text.contains("hello journal"));
+    let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(first["data"]["mode"], "ask");
     assert!(text.contains("finished"));
     session.shutdown().await;
     tokio::fs::remove_dir_all(directory).await.unwrap();

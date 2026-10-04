@@ -40,6 +40,7 @@ impl Selection {
     pub fn configure(&self, current: &Config, session: &str, binary: Option<PathBuf>) -> Config {
         let same = self.provider == current.engine;
         Config {
+            mode: current.mode,
             engine: self.provider.clone(),
             model: self.model.clone(),
             cwd: current.cwd.clone(),
@@ -72,7 +73,16 @@ mod tests {
             cwd: "/workspace".into(),
             model: Some("old".into()),
             resume: Some("old-thread".into()),
+            mode: crate::Mode::Auto,
         }
+    }
+    #[test]
+    fn configure_carries_mode() {
+        let selection = Selection::parse("claude example", "codex").unwrap();
+        assert_eq!(
+            selection.configure(&config(), "thread", None).mode,
+            crate::Mode::Auto
+        );
     }
     #[test]
     fn parses_provider_model_forms_without_restricting_vendor_names() {

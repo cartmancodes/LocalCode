@@ -485,6 +485,7 @@ mod model_tests {
             cwd: "/tmp".into(),
             model: None,
             resume: None,
+            mode: lc_core::Mode::Ask,
         };
         let mut app = App::new(&config, "journal".into());
         app.ready = true;

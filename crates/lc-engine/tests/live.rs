@@ -31,6 +31,7 @@ fn config() -> Config {
         cwd: std::env::temp_dir(),
         model: None,
         resume: None,
+        mode: Default::default(),
     }
 }
 async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
