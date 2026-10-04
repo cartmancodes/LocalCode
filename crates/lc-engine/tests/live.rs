@@ -1,15 +1,12 @@
-use lc_engine::live::{spawn, spawn_with_limits, Command, Config, Event, Limits, Mode};
+use lc_engine::live::{spawn, spawn_with_limits, Command, Config, Engine, Event, Limits, Mode};
 use std::time::Duration;
 use tokio::{sync::mpsc, time::timeout};
 fn config() -> Config {
-    Config {
-        engine: "codex".into(),
-        binary: lc_testkit::protocol_child(),
-        cwd: std::env::temp_dir(),
-        model: None,
-        resume: None,
-        mode: Default::default(),
-    }
+    Config::new(
+        Engine::Codex,
+        lc_testkit::protocol_child(),
+        std::env::temp_dir(),
+    )
 }
 async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
     timeout(Duration::from_secs(5), events.recv())
@@ -91,7 +88,7 @@ async fn approvals_and_cancel_remain_routable_during_turn() {
 #[tokio::test]
 async fn claude_stream_does_not_duplicate_final_assistant_message() {
     let mut config = config();
-    config.engine = "claude".into();
+    config.engine = Engine::Claude;
     let (handle, mut events, task) = spawn(config);
     assert!(matches!(next(&mut events).await, Event::Ready { .. }));
     for _ in 0..2 {
@@ -146,7 +143,7 @@ async fn codex_discovers_all_pages_and_uses_model_not_picker_id() {
 #[tokio::test]
 async fn claude_catalog_alias_is_distinct_from_confirmed_session_model() {
     let mut cfg = config();
-    cfg.engine = "claude".into();
+    cfg.engine = Engine::Claude;
     cfg.model = Some("sonnet".into());
     let (handle, mut events, task) = spawn(cfg);
     loop {
@@ -248,7 +245,7 @@ async fn codex_launches_and_turns_with_the_configured_mode() {
 #[tokio::test]
 async fn claude_launches_with_the_mapped_permission_flag() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     c.mode = Mode::AcceptEdits;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| {
@@ -280,7 +277,7 @@ async fn codex_live_switch_applies_to_the_next_turn() {
 #[tokio::test]
 async fn claude_live_switch_uses_set_permission_mode() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     handle.send(Command::SetMode(Mode::Auto)).unwrap();
@@ -291,7 +288,7 @@ async fn claude_live_switch_uses_set_permission_mode() {
 #[tokio::test]
 async fn claude_refusal_keeps_the_previous_mode() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     c.model = Some("reject-mode".into());
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
@@ -334,7 +331,7 @@ async fn driver_refuses_live_full_access() {
 #[tokio::test]
 async fn claude_header_follows_the_mode_claude_reports() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     c.model = Some("report-auto".into());
     let (handle, mut events, task) = spawn(c);
     let event = wait_for(&mut events, |e| {
@@ -355,7 +352,7 @@ async fn claude_header_follows_the_mode_claude_reports() {
 #[tokio::test]
 async fn unmapped_claude_mode_keeps_the_requested_mode_with_a_notice() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     c.model = Some("report-plan".into());
     let (handle, mut events, task) = spawn(c);
     let event = wait_for(&mut events, |e| {
@@ -426,7 +423,7 @@ async fn wait_long(
 #[tokio::test]
 async fn unconfirmed_claude_switch_times_out_then_applies_a_late_confirmation() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     c.model = Some("late-mode".into());
     let (handle, mut events, task) = spawn_with_limits(c, quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
@@ -464,7 +461,7 @@ async fn unconfirmed_claude_switch_times_out_then_applies_a_late_confirmation() 
 #[tokio::test]
 async fn demo_mode_switch_during_approval_keeps_the_dialog_open() {
     let mut c = config();
-    c.engine = "demo".into();
+    c.engine = Engine::Demo;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     handle
@@ -485,7 +482,7 @@ async fn demo_mode_switch_during_approval_keeps_the_dialog_open() {
 #[tokio::test]
 async fn claude_switch_sends_the_vendor_mode_name() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     for (mode, _) in [(Mode::AcceptEdits, ()), (Mode::Auto, ()), (Mode::Ask, ())] {
@@ -504,7 +501,7 @@ async fn claude_switch_sends_the_vendor_mode_name() {
 #[tokio::test]
 async fn claude_switch_applies_in_the_middle_of_a_turn() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     handle.send(Command::Prompt("hold".into())).unwrap();
@@ -547,7 +544,7 @@ async fn codex_resume_carries_the_mode() {
 #[tokio::test]
 async fn idle_switch_long_after_connect_confirms_promptly() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     let (handle, mut events, task) = spawn_with_limits(c, quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     // Past the connect deadline, which is stale once idle.
@@ -565,7 +562,7 @@ async fn idle_switch_long_after_connect_confirms_promptly() {
 #[tokio::test]
 async fn every_timed_out_switch_can_still_be_confirmed_late() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     c.model = Some("hang-mode".into());
     let (handle, mut events, task) = spawn_with_limits(c, quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
@@ -594,7 +591,7 @@ async fn every_timed_out_switch_can_still_be_confirmed_late() {
 #[tokio::test]
 async fn unmapped_switch_reply_keeps_the_target_with_a_notice() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     c.model = Some("odd-mode".into());
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
@@ -617,7 +614,7 @@ async fn unmapped_switch_reply_keeps_the_target_with_a_notice() {
 #[tokio::test]
 async fn vendor_exit_reports_its_stderr() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     c.model = Some("die-stderr".into());
     let (_handle, mut events, task) = spawn(c);
     let error = loop {
@@ -709,7 +706,7 @@ async fn turn_errors_show_the_vendor_message_not_raw_json() {
 #[tokio::test]
 async fn claude_result_errors_are_shown() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
     handle.send(Command::Prompt("errors".into())).unwrap();
@@ -727,7 +724,7 @@ async fn claude_result_errors_are_shown() {
 #[tokio::test]
 async fn claude_tool_is_announced_once_with_its_input() {
     let mut c = config();
-    c.engine = "claude".into();
+    c.engine = Engine::Claude;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
     handle.send(Command::Prompt("tool".into())).unwrap();

@@ -334,6 +334,18 @@ fn unknown_mode_flag_is_a_startup_error() {
 }
 
 #[test]
+fn unknown_engine_is_a_startup_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_localcode"))
+        .args(["--engine", "gemini"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Engine must be codex, claude or demo")
+    );
+}
+
+#[test]
 fn corrupt_goal_does_not_prevent_chat_or_explicit_recovery() {
     let directory = std::env::temp_dir().join(format!("lc-corrupt-goal-{}", std::process::id()));
     let workspace = std::env::current_dir().unwrap().canonicalize().unwrap();

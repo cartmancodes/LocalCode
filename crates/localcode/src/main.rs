@@ -44,9 +44,7 @@ async fn run() -> Result<(), String> {
             _ => return Err(format!("Unknown option {arg}. Use --help.")),
         }
     }
-    if !matches!(engine.as_str(), "claude" | "codex" | "demo") {
-        return Err("Engine must be codex, claude or demo".into());
-    }
+    let engine = lc_core::Engine::parse(&engine).ok_or("Engine must be codex, claude or demo")?;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(
             "The terminal UI requires an interactive terminal. Use --help for options.".into(),
@@ -71,7 +69,7 @@ async fn run() -> Result<(), String> {
         })
         .ok_or("Set --journal-dir or HOME to choose transcript storage")?;
     let config = Config {
-        binary: binary.unwrap_or_else(|| PathBuf::from(&engine)),
+        binary: binary.unwrap_or_else(|| PathBuf::from(engine.as_str())),
         engine,
         cwd,
         model,

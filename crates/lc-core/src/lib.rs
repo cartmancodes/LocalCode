@@ -1,6 +1,6 @@
 //! Presentation-independent session boundary. Persist events before publishing;
 //! disk and subscriber failures stop execution instead of losing output silently.
-pub use lc_engine::live::{Command, Config, Event, Handle, Mode, PROMPT_LIMIT};
+pub use lc_engine::live::{Command, Config, Engine, Event, Handle, Mode, PROMPT_LIMIT};
 use lc_store::Journal;
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
@@ -16,7 +16,7 @@ impl Session {
         let mut journal = Journal::create(&directory)
             .await
             .map_err(|e| format!("Cannot create transcript journal: {e}"))?;
-        journal.append("session",json!({"engine":config.engine,"cwd":config.cwd,"resume":config.resume,"model":config.model,"mode":config.mode.label()}),true).await.map_err(|e|format!("Cannot write transcript journal: {e}"))?;
+        journal.append("session",json!({"engine":config.engine.as_str(),"cwd":config.cwd,"resume":config.resume,"model":config.model,"mode":config.mode.label()}),true).await.map_err(|e|format!("Cannot write transcript journal: {e}"))?;
         let path = journal.path.clone();
         let (handle, mut engine_events, mut driver) = lc_engine::live::spawn(config);
         let control = handle.clone();

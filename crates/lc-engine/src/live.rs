@@ -38,14 +38,59 @@ impl Default for Limits {
     }
 }
 
+/// The backend a session drives. Journals and the CLI use `as_str()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Engine {
+    Claude,
+    Codex,
+    /// Offline preview; no vendor process.
+    Demo,
+}
+impl Engine {
+    pub const ALL: [Engine; 3] = [Engine::Codex, Engine::Claude, Engine::Demo];
+    pub fn parse(value: &str) -> Option<Engine> {
+        Self::ALL
+            .into_iter()
+            .find(|engine| engine.as_str() == value)
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Engine::Claude => "claude",
+            Engine::Codex => "codex",
+            Engine::Demo => "demo",
+        }
+    }
+    pub fn is_vendor(self) -> bool {
+        self != Engine::Demo
+    }
+}
+impl std::fmt::Display for Engine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
-    pub engine: String,
+    pub engine: Engine,
     pub binary: PathBuf,
     pub cwd: PathBuf,
     pub model: Option<String>,
     pub resume: Option<String>,
     pub mode: Mode,
+}
+impl Config {
+    /// Ask mode, the vendor's default model, a new vendor session.
+    pub fn new(engine: Engine, binary: impl Into<PathBuf>, cwd: impl Into<PathBuf>) -> Self {
+        Self {
+            engine,
+            binary: binary.into(),
+            cwd: cwd.into(),
+            model: None,
+            resume: None,
+            mode: Mode::Ask,
+        }
+    }
 }
 /// Provider-neutral permission mode. The vendor mapping lives only in the
 /// functions below; `Auto` delegates to each vendor's own reviewer and
@@ -80,18 +125,18 @@ impl Mode {
             Mode::FullAccess => Mode::FullAccess,
         }
     }
-    pub fn describe(self, engine: &str) -> &'static str {
+    pub fn describe(self, engine: Engine) -> &'static str {
         match (engine, self) {
-            ("claude", Mode::Ask) => "Claude asks before edits and commands (permission mode default)",
-            ("claude", Mode::AcceptEdits) => "File edits proceed; other actions ask (acceptEdits)",
-            ("claude", Mode::Auto) => "Claude's classifier approves or blocks each action (auto)",
-            ("claude", Mode::FullAccess) => "No permission checks at all (bypassPermissions)",
-            ("codex", Mode::Ask) => "Workspace sandbox; untrusted commands ask (untrusted)",
-            ("codex", Mode::AcceptEdits) => "Workspace sandbox; asks only to escalate (on-request). Codex has no edits-only mode",
-            ("codex", Mode::Auto) => "Workspace sandbox; Codex's auto-review agent decides escalations (auto_review)",
-            ("codex", Mode::FullAccess) => "No sandbox; never asks (danger-full-access)",
-            (_, Mode::Ask | Mode::AcceptEdits) => "Offline demo: /approval-demo shows the dialog",
-            (_, Mode::Auto | Mode::FullAccess) => "Offline demo: /approval-demo is allowed without a dialog",
+            (Engine::Claude, Mode::Ask) => "Claude asks before edits and commands (permission mode default)",
+            (Engine::Claude, Mode::AcceptEdits) => "File edits proceed; other actions ask (acceptEdits)",
+            (Engine::Claude, Mode::Auto) => "Claude's classifier approves or blocks each action (auto)",
+            (Engine::Claude, Mode::FullAccess) => "No permission checks at all (bypassPermissions)",
+            (Engine::Codex, Mode::Ask) => "Workspace sandbox; untrusted commands ask (untrusted)",
+            (Engine::Codex, Mode::AcceptEdits) => "Workspace sandbox; asks only to escalate (on-request). Codex has no edits-only mode",
+            (Engine::Codex, Mode::Auto) => "Workspace sandbox; Codex's auto-review agent decides escalations (auto_review)",
+            (Engine::Codex, Mode::FullAccess) => "No sandbox; never asks (danger-full-access)",
+            (Engine::Demo, Mode::Ask | Mode::AcceptEdits) => "Offline demo: /approval-demo shows the dialog",
+            (Engine::Demo, Mode::Auto | Mode::FullAccess) => "Offline demo: /approval-demo is allowed without a dialog",
         }
     }
 }
@@ -327,7 +372,7 @@ pub fn spawn_with_limits(
         stop,
     };
     let task = tokio::spawn(async move {
-        let result = if config.engine == "demo" {
+        let result = if config.engine == Engine::Demo {
             demo(config.mode, rx, cancel, stopping, &events).await
         } else {
             vendor(config, limits, rx, cancel, stopping, &events).await
@@ -352,7 +397,7 @@ async fn vendor(
     mut stopping: watch::Receiver<bool>,
     tx: &mpsc::Sender<Event>,
 ) -> Result<(), String> {
-    let claude = config.engine == "claude";
+    let claude = config.engine == Engine::Claude;
     let mut args: Vec<OsString> = if claude {
         [
             "--print",
@@ -677,11 +722,11 @@ async fn vendor(
     if !report.reaped || !report.descendants_stopped {
         return Err("Could not verify all vendor children stopped".into());
     }
-    result.map_err(|error| with_stderr(error, &config.engine, &report.stderr_tail))
+    result.map_err(|error| with_stderr(error, config.engine, &report.stderr_tail))
 }
 /// A failure plus what the vendor itself said on stderr, which usually names
 /// the real cause (an unknown session ID, an expired login).
-fn with_stderr(error: String, engine: &str, tail: &[u8]) -> String {
+fn with_stderr(error: String, engine: Engine, tail: &[u8]) -> String {
     // Failures the driver itself caused say nothing about the vendor.
     const LOCAL: [&str; 3] = [
         "Connection cancelled",
@@ -1024,8 +1069,17 @@ mod mode_tests {
         }
     }
     #[test]
+    fn engines_parse_their_own_spelling_only() {
+        for engine in Engine::ALL {
+            assert_eq!(Engine::parse(engine.as_str()), Some(engine));
+            assert_eq!(engine.to_string(), engine.as_str());
+        }
+        assert_eq!(Engine::parse("Claude"), None);
+        assert!(!Engine::Demo.is_vendor());
+    }
+    #[test]
     fn every_mode_is_described_for_every_engine() {
-        for engine in ["claude", "codex", "demo"] {
+        for engine in Engine::ALL {
             for mode in Mode::ALL {
                 assert!(!mode.describe(engine).is_empty());
             }
@@ -1098,11 +1152,11 @@ mod mode_tests {
     #[test]
     fn stderr_is_attached_only_to_vendor_failures_and_starts_on_a_line() {
         assert_eq!(
-            with_stderr("Vendor disconnected.".into(), "claude", b"reason\n"),
+            with_stderr("Vendor disconnected.".into(), Engine::Claude, b"reason\n"),
             "Vendor disconnected.\nclaude stderr: reason"
         );
         assert_eq!(
-            with_stderr("Vendor disconnected.".into(), "claude", b" \n"),
+            with_stderr("Vendor disconnected.".into(), Engine::Claude, b" \n"),
             "Vendor disconnected."
         );
         for local in [
@@ -1111,13 +1165,13 @@ mod mode_tests {
             "Turn item limit reached; session stopped",
         ] {
             assert_eq!(
-                with_stderr(local.into(), "codex", b"unrelated log line\n"),
+                with_stderr(local.into(), Engine::Codex, b"unrelated log line\n"),
                 local
             );
         }
         let mut long = vec![b'a'; 1500];
         long.extend_from_slice("\nlast line é\n".as_bytes());
-        let text = with_stderr("x".into(), "codex", &long);
+        let text = with_stderr("x".into(), Engine::Codex, &long);
         assert!(text.ends_with("codex stderr: last line é"), "{text}");
     }
     #[test]

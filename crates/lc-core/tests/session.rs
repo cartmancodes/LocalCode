@@ -1,17 +1,10 @@
-use lc_core::{Command, Config, Event, Session};
+use lc_core::{Command, Config, Engine, Event, Session};
 use std::time::Duration;
 #[tokio::test]
 async fn demo_turn_is_journaled_and_export_never_overwrites() {
     let temp = lc_testkit::TempDir::new("lc-core-test");
     let directory = temp.path().to_path_buf();
-    let config = Config {
-        engine: "demo".into(),
-        binary: "unused".into(),
-        cwd: directory.clone(),
-        model: None,
-        resume: None,
-        mode: lc_core::Mode::Ask,
-    };
+    let config = Config::new(Engine::Demo, "unused", directory.clone());
     let mut session = Session::open(config, directory.clone()).await.unwrap();
     assert!(matches!(
         session.events.recv().await,
@@ -48,14 +41,7 @@ async fn demo_turn_is_journaled_and_export_never_overwrites() {
 async fn repeated_mode_events_are_journaled_once_but_all_delivered() {
     let temp = lc_testkit::TempDir::new("lc-core-mode");
     let directory = temp.path().to_path_buf();
-    let config = Config {
-        engine: "demo".into(),
-        binary: "unused".into(),
-        cwd: directory.clone(),
-        model: None,
-        resume: None,
-        mode: lc_core::Mode::Ask,
-    };
+    let config = Config::new(Engine::Demo, "unused", directory.clone());
     let mut session = Session::open(config, directory.clone()).await.unwrap();
     let mut delivered = Vec::new();
     for command in [

@@ -124,8 +124,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     let guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut retained_app: Option<App> = None;
-    let mut binaries =
-        std::collections::HashMap::from([(config.engine.clone(), config.binary.clone())]);
+    let mut binaries = std::collections::HashMap::from([(config.engine, config.binary.clone())]);
     let goal_store = lc_core::goal::GoalStore::new(&directory, &config.cwd);
     loop {
         let mut session = Session::open(config.clone(), directory.clone())
@@ -162,23 +161,23 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                 let cross_provider = selection.provider != config.engine;
                 let binary = binaries.get(&selection.provider).cloned();
                 let next = selection.configure(&config, &app.session, binary);
-                binaries.insert(next.engine.clone(), next.binary.clone());
+                binaries.insert(next.engine, next.binary.clone());
                 app.notice(format!("Model → {} / {}. {} Previous journal: {}",next.engine,next.model.as_deref().unwrap_or("vendor default"),if cross_provider {"New provider context; earlier displayed messages are not sent to this provider."}else{"Resuming the same vendor context."},app.journal.display()));
                 config = next;
                 retained_app = Some(app);
             }
             Action::Mode(mode) => {
                 pause_active_goal(&mut app, "mode switch").await?;
-                app.notice(full_access_notice(mode, &config.engine, &app.session));
+                app.notice(full_access_notice(mode, config.engine, &app.session));
                 config.mode = mode;
-                if !app.session.is_empty() && config.engine != "demo" {
+                if !app.session.is_empty() && config.engine.is_vendor() {
                     config.resume = Some(app.session.clone());
                 }
                 retained_app = Some(app);
             }
             Action::New => config.resume = None,
             Action::Reconnect => {
-                if !app.session.is_empty() && config.engine != "demo" {
+                if !app.session.is_empty() && config.engine.is_vendor() {
                     config.resume = Some(app.session.clone());
                 }
                 pause_active_goal(&mut app, "reconnect").await?;
@@ -487,13 +486,13 @@ fn reconnect_notice(resumed: bool, previous: &std::path::Path) -> String {
     )
 }
 /// Says whether a full-access change resumes the vendor session or starts over.
-fn full_access_notice(mode: lc_core::Mode, engine: &str, session: &str) -> String {
+fn full_access_notice(mode: lc_core::Mode, engine: lc_core::Engine, session: &str) -> String {
     let change = if mode == lc_core::Mode::FullAccess {
         "Full access: the agent can run any command and edit any file without asking.".to_owned()
     } else {
         format!("Leaving full access for {}.", mode.label())
     };
-    let next = if engine == "demo" {
+    let next = if engine == lc_core::Engine::Demo {
         "Restarting the offline demo…"
     } else if session.is_empty() {
         "Starting a new session (no session ID yet)…"
@@ -536,7 +535,7 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
             } else if !app.ready && !app.stopped {
                 app.notice = "Wait for connection, or cancel it, before switching models".into();
             } else {
-                match lc_core::model::Selection::parse(argument, &app.engine) {
+                match lc_core::model::Selection::parse(argument, app.engine) {
                     Ok(selection) => return Some(Action::Model(selection)),
                     Err(error) => app.notice(error),
                 }
@@ -722,15 +721,9 @@ async fn command(app: &mut App, input: &str) -> Action {
 #[cfg(test)]
 mod model_tests {
     use super::*;
+    use lc_core::Engine;
     fn app() -> App {
-        let config = Config {
-            engine: "codex".into(),
-            binary: "codex".into(),
-            cwd: "/tmp".into(),
-            model: None,
-            resume: None,
-            mode: lc_core::Mode::Ask,
-        };
+        let config = Config::new(Engine::Codex, "codex", "/tmp");
         let mut app = App::new(&config, "journal".into());
         app.ready = true;
         app.session = "thread-1".into();
@@ -744,11 +737,11 @@ mod model_tests {
             command(&mut app, "/model claude example").await,
             Action::Continue
         ));
-        assert_eq!(app.engine, "codex");
+        assert_eq!(app.engine, lc_core::Engine::Codex);
         assert_eq!(app.session, "thread-1");
         app.running = false;
         assert!(
-            matches!(command(&mut app,"/model claude example").await,Action::Model(selection) if selection.provider=="claude" && selection.model.as_deref()==Some("example"))
+            matches!(command(&mut app,"/model claude example").await,Action::Model(selection) if selection.provider==lc_core::Engine::Claude && selection.model.as_deref()==Some("example"))
         );
     }
     #[tokio::test]
@@ -785,14 +778,7 @@ mod model_tests {
         app.approvals.push_back((1, "command".into()));
         let temp = lc_testkit::TempDir::new("lc-goal-cancel");
         let directory = temp.path().to_path_buf();
-        let config = Config {
-            engine: "demo".into(),
-            binary: "demo".into(),
-            cwd: directory.clone(),
-            model: None,
-            resume: None,
-            mode: lc_core::Mode::Ask,
-        };
+        let config = Config::new(Engine::Demo, "demo", directory.clone());
         let mut session = Session::open(config, directory.clone()).await.unwrap();
         key_action(
             &mut app,
@@ -945,31 +931,26 @@ mod model_tests {
     #[test]
     fn full_access_notice_says_what_the_reconnect_does() {
         use lc_core::Mode;
-        let entering = full_access_notice(Mode::FullAccess, "claude", "session-1");
+        let entering = full_access_notice(Mode::FullAccess, Engine::Claude, "session-1");
         assert!(entering.starts_with("Full access:"), "{entering}");
         assert!(
             entering.ends_with("Reconnecting to the same session…"),
             "{entering}"
         );
-        assert!(full_access_notice(Mode::FullAccess, "claude", "")
+        assert!(full_access_notice(Mode::FullAccess, Engine::Claude, "")
             .ends_with("Starting a new session (no session ID yet)…"));
-        assert!(full_access_notice(Mode::Ask, "demo", "demo · offline")
-            .ends_with("Restarting the offline demo…"));
-        assert!(full_access_notice(Mode::Ask, "codex", "thread")
+        assert!(
+            full_access_notice(Mode::Ask, Engine::Demo, "demo · offline")
+                .ends_with("Restarting the offline demo…")
+        );
+        assert!(full_access_notice(Mode::Ask, Engine::Codex, "thread")
             .starts_with("Leaving full access for ask."));
     }
     #[tokio::test]
     async fn unknown_command_keeps_the_draft() {
         let temp = lc_testkit::TempDir::new("lc-tui-draft");
         let directory = temp.path().to_path_buf();
-        let config = Config {
-            engine: "demo".into(),
-            binary: "demo".into(),
-            cwd: directory.clone(),
-            model: None,
-            resume: None,
-            mode: lc_core::Mode::Ask,
-        };
+        let config = Config::new(Engine::Demo, "demo", directory.clone());
         let mut session = Session::open(config.clone(), directory.clone())
             .await
             .unwrap();

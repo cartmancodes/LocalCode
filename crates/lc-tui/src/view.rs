@@ -37,7 +37,7 @@ struct Entry {
     cache: Vec<Line<'static>>,
 }
 pub struct App {
-    pub engine: String,
+    pub engine: lc_core::Engine,
     pub mode: lc_core::Mode,
     pub mode_pending: Option<lc_core::Mode>,
     pub workspace: String,
@@ -75,7 +75,7 @@ pub struct App {
 impl App {
     pub fn new(config: &lc_core::Config, journal: PathBuf) -> Self {
         Self {
-            engine: config.engine.clone(),
+            engine: config.engine,
             mode: config.mode,
             mode_pending: None,
             workspace: clean(&config.cwd.display().to_string()),
@@ -112,7 +112,7 @@ impl App {
         }
     }
     pub fn connection(&mut self, config: &lc_core::Config, journal: PathBuf) {
-        self.engine = config.engine.clone();
+        self.engine = config.engine;
         self.mode = config.mode;
         self.mode_pending = None;
         self.model = "awaiting model metadata".into();
@@ -146,7 +146,7 @@ impl App {
                 .find(|m| m.id.as_ref() == Some(id))
                 .map(|m| format!("{} · {}", clean(&m.name), id))
                 .unwrap_or_else(|| id.clone()),
-            None if self.engine == "demo" => "offline · no model".into(),
+            None if self.engine == lc_core::Engine::Demo => "offline · no model".into(),
             None => self
                 .catalog_selection()
                 .map(|m| {
@@ -186,7 +186,7 @@ impl App {
             text.push_str(&format!(
                 "{marker} {:<13} {}\n",
                 mode.label(),
-                mode.describe(&self.engine)
+                mode.describe(self.engine)
             ));
         }
         text.push_str("\nShift+Tab cycles ask → accept-edits → auto. /mode full-access reconnects with every check off.");
@@ -202,7 +202,7 @@ impl App {
                 .unwrap_or("provider default"),
             self.resolved_model
                 .as_deref()
-                .unwrap_or(if self.engine == "demo" {
+                .unwrap_or(if self.engine == lc_core::Engine::Demo {
                     "none (offline demo)"
                 } else {
                     "not yet reported by provider"
@@ -595,7 +595,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     .split(regions[1]);
     let transcript = columns[0];
     if app.entries.is_empty() {
-        welcome(frame, transcript, &app.engine);
+        welcome(frame, transcript, app.engine);
     } else {
         let block = card(if app.scroll > 0 {
             " Conversation · scrollback "
@@ -669,7 +669,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     frame.render_widget(
         Paragraph::new(if app.notice.is_empty() {
-            if app.engine == "demo" {
+            if app.engine == lc_core::Engine::Demo {
                 " Offline demo · no model calls   |   Ctrl+Q quit".into()
             } else {
                 " Journal saved locally   |   F1 help   |   Ctrl+Q quit".into()
@@ -700,7 +700,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ));
     }
 }
-fn welcome(frame: &mut Frame, area: Rect, engine: &str) {
+fn welcome(frame: &mut Frame, area: Rect, engine: lc_core::Engine) {
     let top = area.y + area.height.saturating_sub(14) / 2;
     let region = Rect {
         x: area.x + 3,
@@ -720,10 +720,10 @@ fn welcome(frame: &mut Frame, area: Rect, engine: &str) {
         Line::from(Span::styled(
             format!(
                 "  {} · native terminal · no browser",
-                if engine == "demo" {
+                if engine == lc_core::Engine::Demo {
                     "Offline demo"
                 } else {
-                    engine
+                    engine.as_str()
                 }
             ),
             Style::default().fg(MUTED),
@@ -892,14 +892,7 @@ mod tests {
     #[test]
     fn renders_narrow_wide_and_approval_without_panics() {
         for (w, h) in [(30, 8), (40, 12), (80, 24), (120, 36)] {
-            let c = lc_core::Config {
-                engine: "demo".into(),
-                binary: "demo".into(),
-                cwd: "/tmp/project".into(),
-                model: None,
-                resume: None,
-                mode: lc_core::Mode::Ask,
-            };
+            let c = lc_core::Config::new(lc_core::Engine::Demo, "demo", "/tmp/project");
             let mut a = App::new(&c, "journal".into());
             let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
             t.draw(|f| draw(f, &mut a)).unwrap();
@@ -912,14 +905,7 @@ mod tests {
     }
     #[test]
     fn transcript_memory_is_bounded() {
-        let c = lc_core::Config {
-            engine: "demo".into(),
-            binary: "demo".into(),
-            cwd: "/tmp".into(),
-            model: None,
-            resume: None,
-            mode: lc_core::Mode::Ask,
-        };
+        let c = lc_core::Config::new(lc_core::Engine::Demo, "demo", "/tmp");
         let mut a = App::new(&c, "journal".into());
         for _ in 0..100 {
             a.event(Event::User("x".repeat(64 * 1024)));
@@ -937,12 +923,8 @@ mod model_detail_tests {
     fn app() -> App {
         App::new(
             &lc_core::Config {
-                engine: "claude".into(),
-                binary: "claude".into(),
-                cwd: "/tmp".into(),
                 model: Some("sonnet".into()),
-                resume: None,
-                mode: lc_core::Mode::Ask,
+                ..lc_core::Config::new(lc_core::Engine::Claude, "claude", "/tmp")
             },
             "/tmp/journal".into(),
         )
@@ -970,14 +952,7 @@ mod model_detail_tests {
         assert!(details.contains("Complete Provider Model Name"));
         assert!(details.contains("Requested selection: sonnet"));
         a.connection(
-            &lc_core::Config {
-                engine: "codex".into(),
-                binary: "codex".into(),
-                cwd: "/tmp".into(),
-                model: None,
-                resume: None,
-                mode: lc_core::Mode::Ask,
-            },
+            &lc_core::Config::new(lc_core::Engine::Codex, "codex", "/tmp"),
             "/tmp/new".into(),
         );
         assert!(a.models.is_empty());
@@ -1020,14 +995,7 @@ mod model_detail_tests {
     }
     #[test]
     fn stopped_session_clears_pending_mode() {
-        let c = lc_core::Config {
-            engine: "claude".into(),
-            binary: "claude".into(),
-            cwd: "/tmp".into(),
-            model: None,
-            resume: None,
-            mode: lc_core::Mode::Ask,
-        };
+        let c = lc_core::Config::new(lc_core::Engine::Claude, "claude", "/tmp");
         let mut a = App::new(&c, "journal".into());
         a.mode_pending = Some(lc_core::Mode::Auto);
         a.event(Event::ModeChanged(lc_core::Mode::Auto));
@@ -1039,12 +1007,8 @@ mod model_detail_tests {
     #[test]
     fn header_shows_confirmed_and_pending_mode() {
         let c = lc_core::Config {
-            engine: "codex".into(),
-            binary: "codex".into(),
-            cwd: "/tmp/project".into(),
-            model: None,
-            resume: None,
             mode: lc_core::Mode::Auto,
+            ..lc_core::Config::new(lc_core::Engine::Codex, "codex", "/tmp/project")
         };
         let mut a = App::new(&c, "journal".into());
         let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 36)).unwrap();
