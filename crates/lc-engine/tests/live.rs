@@ -475,3 +475,24 @@ async fn unconfirmed_claude_switch_times_out_then_applies_a_late_confirmation() 
     handle.shutdown();
     task.await.unwrap();
 }
+#[tokio::test]
+async fn demo_mode_switch_during_approval_keeps_the_dialog_open() {
+    let mut c = config();
+    c.engine = "demo".into();
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
+    handle
+        .send(Command::Prompt("/approval-demo".into()))
+        .unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await;
+    handle.send(Command::SetMode(Mode::Auto)).unwrap();
+    let event = wait_for(&mut events, |e| {
+        matches!(e, Event::ModeChanged(_) | Event::ApprovalClosed(_))
+    })
+    .await;
+    assert!(matches!(event, Event::ModeChanged(Mode::Auto)), "{event:?}");
+    handle.send(Command::Answer { id: 1, allow: true }).unwrap();
+    assert!(turn_text(&mut events).await.starts_with("Approved."));
+    handle.shutdown();
+    task.await.unwrap();
+}

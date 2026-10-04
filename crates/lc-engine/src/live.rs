@@ -672,6 +672,17 @@ fn answer(claude: bool, wire: &Value, allow: bool) -> Value {
         json!({"id":wire["id"],"result":{"decision":if allow{"accept"}else{"decline"}}})
     }
 }
+fn demo_set_mode(tx: &mpsc::Sender<Event>, mode: &mut Mode, target: Mode) -> Result<(), String> {
+    if target == Mode::FullAccess || *mode == Mode::FullAccess {
+        emit(
+            tx,
+            Event::Notice("Full access is changed by reconnecting; use /mode".into()),
+        )?;
+    } else {
+        *mode = target;
+    }
+    emit(tx, Event::ModeChanged(*mode))
+}
 async fn demo(
     mut mode: Mode,
     mut commands: mpsc::Receiver<Command>,
@@ -700,7 +711,13 @@ async fn demo(
                         "Approved automatically. In a live session, the vendor's own reviewer decides.".to_owned()
                     } else if text.trim()=="/approval-demo" {
                         emit(tx,Event::Approval{id:1,detail:"Demo only — no command will execute.\n\nWrite a greeting to hello.txt?".into()})?;
-                        let allowed=tokio::select!{_=stop.changed()=>return Ok(()),_=cancel.changed()=>false,_=tokio::time::sleep(Duration::from_secs(120))=>false,c=commands.recv()=>matches!(c,Some(Command::Answer{id:1,allow:true}))};
+                        let expiry=tokio::time::sleep(Duration::from_secs(120));
+                        tokio::pin!(expiry);
+                        // A mode switch while the dialog is open applies and keeps waiting.
+                        let allowed=loop{tokio::select!{_=stop.changed()=>return Ok(()),_=cancel.changed()=>break false,_=&mut expiry=>break false,c=commands.recv()=>match c{
+                            Some(Command::SetMode(target))=>demo_set_mode(tx,&mut mode,target)?,
+                            c=>break matches!(c,Some(Command::Answer{id:1,allow:true})),
+                        }}};
                         emit(tx,Event::ApprovalClosed(1))?;
                         if allowed{"Approved. In a live session, the vendor would now continue.".to_owned()}else{"Denied. No action was performed.".to_owned()}
                     }else{format!("This is an offline demo. Your prompt was:\n\n{display}\n\nThe editor, streaming transcript, approval dialog, history, and cancellation are live. Start with --engine codex or --engine claude to work with a model.\n\nTry /approval-demo to preview a permission request.")};
@@ -708,11 +725,7 @@ async fn demo(
                     for word in reply.split_inclusive(' '){tokio::select!{_=stop.changed()=>return Ok(()),_=cancel.changed()=>{interrupted=true;break;},_=tokio::time::sleep(Duration::from_millis(18))=>{emit(tx,Event::Text(word.into()))?;}}}
                     emit(tx,Event::Finished{outcome:if interrupted{"interrupted"}else{"completed"}.into()})?;
                 },
-                Some(Command::SetMode(target))=>{
-                    if target==Mode::FullAccess || mode==Mode::FullAccess {emit(tx,Event::Notice("Full access is changed by reconnecting; use /mode".into()))?;}
-                    else {mode=target;}
-                    emit(tx,Event::ModeChanged(mode))?;
-                },
+                Some(Command::SetMode(target))=>demo_set_mode(tx,&mut mode,target)?,
                 None=>break,
                 _=>{}
             }
