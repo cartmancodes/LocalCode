@@ -10,13 +10,16 @@ use ratatui::{
 use std::{collections::VecDeque, path::PathBuf};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
-pub const BG: Color = Color::Rgb(17, 21, 25);
-pub const PANEL: Color = Color::Rgb(24, 29, 34);
-pub const FG: Color = Color::Rgb(218, 226, 232);
-pub const MUTED: Color = Color::Rgb(139, 153, 166);
-pub const EDGE: Color = Color::Rgb(52, 65, 75);
-pub const ACCENT: Color = Color::Rgb(136, 218, 180);
-pub const AMBER: Color = Color::Rgb(240, 193, 119);
+// Warm charcoal and burgundy surfaces with readable, muted crimson accents.
+// Amber remains reserved for warnings and permission decisions.
+pub const BG: Color = Color::Rgb(22, 17, 19);
+pub const PANEL: Color = Color::Rgb(31, 23, 26);
+pub const FG: Color = Color::Rgb(234, 224, 218);
+pub const MUTED: Color = Color::Rgb(174, 151, 154);
+pub const EDGE: Color = Color::Rgb(88, 51, 61);
+pub const ACCENT: Color = Color::Rgb(216, 124, 130);
+pub const AMBER: Color = Color::Rgb(224, 180, 119);
+const SELECTED: Color = Color::Rgb(64, 36, 44);
 const MAX_BYTES: usize = 512 * 1024;
 const BLOCK_BYTES: usize = 64 * 1024;
 #[derive(Clone, Copy, PartialEq)]
@@ -852,7 +855,7 @@ fn palette(frame: &mut Frame, area: Rect, selected: usize) {
             ),
             Style::default()
                 .fg(if index == selected { ACCENT } else { FG })
-                .bg(if index == selected { EDGE } else { PANEL }),
+                .bg(if index == selected { SELECTED } else { PANEL }),
         )));
     }
     lines.push(Line::default());
