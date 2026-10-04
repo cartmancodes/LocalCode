@@ -62,24 +62,26 @@ drains the terminal while it waits, for at most five seconds.
 
 ## Structure and quality assessment
 
-- `lc-proc` owns process groups, bounded transport, stderr retention, and cleanup.
+- `octet-proc` owns process groups, bounded transport, stderr retention, and cleanup.
   Cancellation and shutdown have independent control paths. Transport tests
   cover saturated stdout, partial frames, malformed data, cancelled writes,
   repeated shutdown, and descendant cleanup.
-- `lc-engine` translates vendor wire protocols into common events. Contract and
+- `octet-engine` translates vendor wire protocols into common events. Contract and
   driver tests cover mode confirmation/refusal, approval timeouts, streaming
   deduplication, turn correlation, late usage, and silence watchdogs.
-- `lc-core` places the journal boundary before UI publication and keeps model
+- `octet-core` places the journal boundary before UI publication and keeps model
   selection and goal state independent of rendering. Export is exclusive and
   does not overwrite an existing destination.
-- `lc-tui` bounds visible history, sanitizes streamed escape sequences, caches
+- `octet-tui` bounds visible history, sanitizes streamed escape sequences, caches
   wrapped transcript entries, and paints only when state changes. PTY tests
   exercise actual input, resize, suspend/resume, and exit restoration.
 - The main maintainability pressure is concentrated control flow:
-  `lc-engine/src/live.rs` combines both provider state machines, and
-  `lc-tui/src/lib.rs` combines terminal ownership, commands, and goal orchestration.
+  `octet-engine/src/live.rs` combines both provider state machines, and
+  `octet-tui/src/lib.rs` combines terminal ownership, commands, and goal orchestration.
   Extracting those responsibilities would be useful when extending them. A broad
   split was not needed for the reproduced defects and was not attempted here.
+  The follow-up [quality review](2026-10-05-rust-quality-review.md) made that
+  split.
 
 ## Verification evidence
 

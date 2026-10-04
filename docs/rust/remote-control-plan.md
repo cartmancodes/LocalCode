@@ -9,7 +9,7 @@ Build a mobile browser client attached to the existing Rust session, with a
 shared session coordinator and an opt-in HTTP/WebSocket server. Keep provider
 execution, workspace access, journals and vendor login on the desktop host.
 Use a configured production reverse tunnel for the first release; keep the
-transport boundary replaceable for a later LocalCode-managed relay.
+transport boundary replaceable for a later Octet-managed relay.
 
 Estimated effort for one engineer familiar with this repository:
 
@@ -17,7 +17,7 @@ Estimated effort for one engineer familiar with this repository:
 | --- | ---: | --- |
 | Technical prototype | 3–5 | Attach a phone to a demo session; stream, prompt and cancel through a development tunnel. Not a release. |
 | Reliable tunnel-based MVP, including prototype work | 20–28 | Pairing, shared control, replay, mobile UI, packaging and failure/security verification. Approximately 4–6 working weeks. |
-| LocalCode-managed relay, additional to MVP | 15–25 | Account/device identity, outbound host connection, routing, reconnect, deployment, monitoring and service abuse controls. |
+| Octet-managed relay, additional to MVP | 15–25 | Account/device identity, outbound host connection, routing, reconnect, deployment, monitoring and service abuse controls. |
 | Managed product, combined | 35–53 | Approximately 7–11 working weeks, with infrastructure available. |
 
 These are planning estimates, not measured implementation times. They assume
@@ -32,20 +32,20 @@ mobile pairing and real tunnel reconnect behavior.
 
 | Existing code | Reuse and gap |
 | --- | --- |
-| [`lc-core::Session`](../../crates/lc-core/src/lib.rs) | Owns vendor execution and writes events before delivering them. Currently exposes one `mpsc::Receiver<Event>`; it is not a multi-client session service. A stalled consumer can stop execution. |
-| [`lc-engine::live`](../../crates/lc-engine/src/live.rs) | Provider-neutral text/tool/approval events; prompt and approval commands; cancellation through a separate watch channel. `Handle::send` acknowledges queueing, not the eventual command result. |
-| [`lc-store::Journal`](../../crates/lc-store/src/lib.rs) | Append-only JSONL with sequence numbers and bounded size. Sequence numbers are not exposed with live events, and no replay/snapshot reader exists here. |
-| [`lc-tui`](../../crates/lc-tui/src/lib.rs) | Slash commands, local approval UI and session/model changes. Goal continuation and goal persistence are driven from the TUI event loop. This logic needs a shared owner for consistent remote control. |
+| [`octet-core::Session`](../../crates/octet-core/src/lib.rs) | Owns vendor execution and writes events before delivering them. Currently exposes one `mpsc::Receiver<Event>`; it is not a multi-client session service. A stalled consumer can stop execution. |
+| [`octet-engine::live`](../../crates/octet-engine/src/live.rs) | Provider-neutral text/tool/approval events; prompt and approval commands; cancellation through a separate watch channel. `Handle::send` acknowledges queueing, not the eventual command result. |
+| [`octet-store::Journal`](../../crates/octet-store/src/lib.rs) | Append-only JSONL with sequence numbers and bounded size. Sequence numbers are not exposed with live events, and no replay/snapshot reader exists here. |
+| [`octet-tui`](../../crates/octet-tui/src/lib.rs) | Slash commands, local approval UI and session/model changes. Goal continuation and goal persistence are driven from the TUI event loop. This logic needs a shared owner for consistent remote control. |
 | Python `SessionRunner`, core RPC route and React UI (removed 2026-10-04; at `54f4ecec4f42`) | Historical reference only: connection-independent turns, multi-subscriber replay and gap recovery, and a web transcript. None of it is in the tree; a phone client is new work. |
 
-The removed Python socket routes accepted clients without LocalCode user/device
+The removed Python socket routes accepted clients without Octet user/device
 authentication, which is why this plan serves a small authenticated surface from
 Rust instead.
 
 ## First-release user experience
 
 1. In an existing terminal session, enter `/remote-control`.
-2. LocalCode starts its remote server, checks the configured tunnel and displays
+2. Octet starts its remote server, checks the configured tunnel and displays
    an HTTPS URL, QR code, pairing expiry and connection status.
 3. Open the URL on a phone. Redeem a short-lived invitation and confirm the new
    device in the terminal before granting access. Pairing works while a turn runs.
@@ -62,7 +62,7 @@ does not include file browsing, direct shell RPC, new workspaces, model/provider
 switching from mobile, or historical session browsing. Prompts can still cause
 the existing agent to use its host tools under the current provider permissions.
 
-The desktop must remain awake, online and running LocalCode. Phone disconnection
+The desktop must remain awake, online and running Octet. Phone disconnection
 does not cancel a turn. Quitting the TUI still ends the session. Surviving terminal
 exit or host restart requires a separate daemon/recovery design and estimate.
 On `/new` or provider/model reconnection, close the remote grant and require fresh
@@ -82,8 +82,8 @@ flowchart LR
 
 The HTTP server serves a built mobile bundle and the narrow remote API from one
 origin, bound to loopback. The default command starts no listener until requested.
-A proposed `lc-remote` crate owns web transport, pairing and tunnel lifecycle;
-`lc-core` owns authoritative state, command admission and subscriptions.
+A proposed `octet-remote` crate owns web transport, pairing and tunnel lifecycle;
+`octet-core` owns authoritative state, command admission and subscriptions.
 
 Use a production Cloudflare Tunnel as the initial adapter, with a configured
 hostname and connector. Cloudflare documents outbound-only connections, allowing
@@ -104,7 +104,7 @@ before choosing the hosted product architecture; that is outside this estimate.
 
 ## Shared state and protocol
 
-- Introduce an opaque LocalCode session-instance ID, independent of the vendor
+- Introduce an opaque Octet session-instance ID, independent of the vendor
   session ID. Bind credentials, command IDs and approval IDs to that instance.
 - Move goal scheduling, running/ready state, pending approvals and prompt
   admission behind one coordinator. Both TUI and remote use the same command
@@ -214,7 +214,7 @@ Verify clean builds and asset reproducibility on the supported release targets.
 ## Later managed experience
 
 Replace the user-configured tunnel with an outbound authenticated host channel
-to a LocalCode relay. The hosted service supplies stable rendezvous, device/host
+to a Octet relay. The hosted service supplies stable rendezvous, device/host
 identity, routing and service limits; the host remains authoritative for session
 commands and approvals. Keep session text off relay persistence and logs.
 

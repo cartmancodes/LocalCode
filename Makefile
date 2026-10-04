@@ -9,10 +9,10 @@ rust-check: ## Check formatting, tests and lint for the Rust workspace
 	scripts/rust-env.sh cargo clippy --locked --workspace --all-targets -- -D warnings
 
 rust-build: ## Build the optimized terminal UI
-	scripts/rust-env.sh cargo build --release --locked -p localcode
+	scripts/rust-env.sh cargo build --release --locked -p octet
 
 tui: ## Open the terminal UI with Codex
-	scripts/rust-env.sh cargo run --locked -p localcode -- --engine codex
+	scripts/rust-env.sh cargo run --locked -p octet -- --engine codex
 
 tui-demo: ## Preview the terminal UI offline
-	scripts/rust-env.sh cargo run --locked -p localcode -- --engine demo
+	scripts/rust-env.sh cargo run --locked -p octet -- --engine demo

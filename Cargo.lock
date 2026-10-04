@@ -300,65 +300,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lc-core"
-version = "0.1.0"
-dependencies = [
- "lc-engine",
- "lc-store",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "lc-engine"
-version = "0.1.0"
-dependencies = [
- "lc-proc",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
-name = "lc-proc"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
-name = "lc-store"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "lc-testkit"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde_json",
-]
-
-[[package]]
-name = "lc-tui"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "lc-core",
- "libc",
- "ratatui",
- "tokio",
- "unicode-segmentation",
- "unicode-width",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -390,17 +331,6 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
-
-[[package]]
-name = "localcode"
-version = "0.1.0"
-dependencies = [
- "lc-core",
- "lc-tui",
- "libc",
- "serde_json",
- "tokio",
-]
 
 [[package]]
 name = "lock_api"
@@ -466,6 +396,81 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "octet"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "octet-core",
+ "octet-testkit",
+ "octet-tui",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "octet-core"
+version = "0.1.0"
+dependencies = [
+ "octet-engine",
+ "octet-store",
+ "octet-testkit",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "octet-engine"
+version = "0.1.0"
+dependencies = [
+ "octet-proc",
+ "octet-testkit",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "octet-proc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "octet-testkit",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "octet-store"
+version = "0.1.0"
+dependencies = [
+ "octet-testkit",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "octet-testkit"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "octet-tui"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "libc",
+ "octet-core",
+ "octet-testkit",
+ "ratatui",
+ "tokio",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

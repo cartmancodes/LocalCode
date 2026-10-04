@@ -1,4 +1,4 @@
-# Review: LocalCode Rust proposal v2
+# Review: Octet Rust proposal v2
 
 Reviewed 2026-09-30 against the pasted proposal, the current Python harness, the
 installed Claude SDK transport, and primary runtime/OS documentation. This is an
@@ -85,7 +85,7 @@ bounded retained memory and timely control handling.
 
 The proposed order differs from the existing core callback order. More seriously,
 CLI permission modes/sandboxes are independent enforcement layers, not a last
-step LocalCode can reliably run after its own decision. Some modes avoid normal
+step Octet can reliably run after its own decision. Some modes avoid normal
 approval callbacks entirely. Hook timeouts treated as "no decision" can convert
 a guardrail failure into an allowed command under default-allow.
 
@@ -103,7 +103,7 @@ engine-specific approval adapters; a line-for-line port is not a security proof.
 
 PR_SET_PDEATHSIG covers the direct child that sets it, is cleared for its children
 on fork, and tracks the creating parent thread. It does not guarantee that vendor
-grandchildren, MCP servers or shell descendants die with LocalCode. There is also
+grandchildren, MCP servers or shell descendants die with Octet. There is also
 a parent-death/setup race to handle. pidfds identify/reap processes; they do not
 turn them into a recursively supervised process tree.
 [Linux PR_SET_PDEATHSIG](https://www.man7.org/linux/man-pages/man2/PR_SET_PDEATHSIG.2const.html)
@@ -128,7 +128,7 @@ pending bytes, and which sequence a successful turn/switch/quit acknowledges.
 One write per line is not guaranteed to write the whole line. Handle short writes,
 EINTR, ENOSPC and sync failure. A torn trailing line must be repaired/quarantined
 before a subsequent append, not merely ignored during reading. Include a
-single-writer file lock and a policy for two LocalCode instances opening one file.
+single-writer file lock and a policy for two Octet instances opening one file.
 Directory sync is needed for durable creation/rename, not just fdatasync of content.
 [write(2)](https://man7.org/linux/man-pages/man2/write.2.html),
 [fsync(2)](https://man7.org/linux/man-pages/man2/fsync.2.html)
@@ -156,8 +156,8 @@ turn end, leaving reviewer unable to start. Specify separate active/running and
 resident-process limits, idle LRU eviction, cancellation of waiters, and behavior
 for nested dispatch. Include all vendor and MCP descendants in resource reports.
 
-The dependency graph also needs a decision: lc-core depends on lc-fleet, but fleet
-is described as constructing full child sessions. If those need lc-core, there
+The dependency graph also needs a decision: octet-core depends on octet-fleet, but fleet
+is described as constructing full child sessions. If those need octet-core, there
 is a crate cycle. Inject a dispatch host/session factory through a lower-level
 interface or have the composition root register fleet; do not quietly bypass
 session permissions/persistence to avoid the cycle.
@@ -173,11 +173,11 @@ used by other hooks. [Claude hooks reference](https://code.claude.com/docs/en/ho
 
 Publish a tested compatibility subset. Unsupported fields/events should produce
 an actionable error or warning, not silently lose enforcement. Explicitly prevent
-hooks running twice through both vendor configuration and the LocalCode adapter.
+hooks running twice through both vendor configuration and the Octet adapter.
 Do not claim identical behavior across engines when Codex cannot rewrite tool input.
 
 Plugin commands/MCP servers can themselves require Python or Node. "No Python in
-LocalCode's runtime" is supportable; "no Python anywhere" is not compatible with
+Octet's runtime" is supportable; "no Python anywhere" is not compatible with
 arbitrary existing plugins. Likewise, the process count must include MCP servers.
 
 ### R9 — Validate the Claude adapter before building most of the product (§6.3, §16)

@@ -1,4 +1,4 @@
-# LocalCode Rust harness — revised design v3
+# Octet Rust harness — revised design v3
 
 Status: approved for staged implementation by the user's subsequent “yes”. Supersedes the
 technical recommendations in the supplied Rust v2 proposal; its proposed feature
@@ -18,7 +18,7 @@ of existing core behaviors. No browser or listening network server is required.
 The distributable for built-in features should be a static Rust executable where
 supported by the verified dependency graph. Vendor binaries, login, git and
 explicitly supported non-Python plugin runtimes remain external dependencies.
-"One LocalCode binary" does not mean "one process".
+"One Octet binary" does not mean "one process".
 
 Retain print, JSON-event and stdio RPC modes. Stdio RPC is an automation transport,
 not a network server. Preserve its piped default and explicit flags; changing
@@ -37,7 +37,7 @@ rewritten by an upgrade without an explicit action.
 ### Extension compatibility decision — resolved
 
 The user explicitly requires no Python runtime or bridge and accepts extension
-API and plugin compatibility breaks. LocalCode therefore ships and runs its
+API and plugin compatibility breaks. Octet therefore ships and runs its
 harness entirely in Rust. Python `def setup(api)` extensions, extension-registered
 Python engines, and Python-dependent plugins are unsupported. There is no optional
 Python compatibility process and no fallback that installs or invokes Python to
@@ -68,14 +68,14 @@ npm as their source; npm itself is an optional external installation dependency.
 Use the proposed eight crates, with composition at the binary boundary:
 
 ```text
-localcode (composition root)
-  ├── lc-tui ──────────> lc-core ──> lc-engine ──> lc-proc
-  │                         └────> lc-store
-  └── lc-fleet ─────────> lc-core / lc-engine
-lc-testkit supplies deterministic drivers, recordings and fault injection.
+octet (composition root)
+  ├── octet-tui ──────────> octet-core ──> octet-engine ──> octet-proc
+  │                         └────> octet-store
+  └── octet-fleet ─────────> octet-core / octet-engine
+octet-testkit supplies deterministic drivers, recordings and fault injection.
 ```
 
-`lc-core` does not depend on `lc-fleet`. The binary registers fleet as a custom
+`octet-core` does not depend on `octet-fleet`. The binary registers fleet as a custom
 tool/command through core interfaces. Fleet receives a session factory and policy
 context so child sessions pass through the same lifecycle, permission and quota
 contracts. This avoids a core/fleet crate cycle and avoids a second, weaker
@@ -167,7 +167,7 @@ complete result. Partial output and error metadata survive where storage permits
 
 ## 5. Permissions, trust and authentication
 
-Vendor binaries own their login. LocalCode does not open credential stores,
+Vendor binaries own their login. Octet does not open credential stores,
 extract keychain entries or forward vendor tokens. Avoid direct vendor API clients.
 Static source/dependency scans are regression guards, not proof of sandboxing.
 Test relevant process arguments, emitted frames and logs as well as source text.
@@ -178,7 +178,7 @@ Define a decision table per engine and mode:
 2. Supported input rewrites, followed by validation of the effective input.
 3. Plugin enforcement vetoes and explicit error policy.
 4. Session permission policy and user approval where required.
-5. Independent vendor sandbox/mode enforcement; LocalCode cannot grant access the
+5. Independent vendor sandbox/mode enforcement; Octet cannot grant access the
    vendor denies, nor assume every vendor mode emits an approval callback.
 
 A later allow cannot override a hard denial. Observational hook failure produces
@@ -210,7 +210,7 @@ grandchildren, MCP servers, setsid escape, parent death during spawn, and PID re
 Do not claim zero orphans under supervisor SIGKILL on every Linux installation.
 
 Count resident processes and memory across foreground sessions, fleet children,
-MCP servers, hooks and shell commands. Report LocalCode-only and whole-tree metrics.
+MCP servers, hooks and shell commands. Report Octet-only and whole-tree metrics.
 
 ## 7. Storage, recovery and compatibility
 
@@ -339,7 +339,7 @@ MCP is a custom-tool transport, not a substitute for every extension capability.
 Declare per-engine support and dispatch ownership. Supported plugins may have
 explicit non-Python runtime dependencies (for example Node or a native executable);
 Python-dependent plugins and the old Python extension API are excluded by the
-user-approved decision in §1. Keep those requirements separate from LocalCode's
+user-approved decision in §1. Keep those requirements separate from Octet's
 built-in installation requirements. Install/update must not execute lifecycle
 scripts implicitly; trust, source pinning and execution are separately visible.
 
