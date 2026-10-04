@@ -63,9 +63,10 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn journal_is_private_unique_and_preserves_unicode() {
-        let dir = std::env::temp_dir().join(format!("lc-store-test-{}", std::process::id()));
-        let mut first = Journal::create(&dir).await.unwrap();
-        let second = Journal::create(&dir).await.unwrap();
+        let temp = lc_testkit::TempDir::new("lc-store-test");
+        let dir = temp.path();
+        let mut first = Journal::create(dir).await.unwrap();
+        let second = Journal::create(dir).await.unwrap();
         assert_ne!(first.path, second.path);
         first
             .append("text", serde_json::json!("hello 世界\n"), true)
@@ -89,6 +90,5 @@ mod tests {
         }
         drop(first);
         drop(second);
-        fs::remove_dir_all(dir).await.unwrap();
     }
 }

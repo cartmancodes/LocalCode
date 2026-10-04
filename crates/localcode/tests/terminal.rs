@@ -364,30 +364,7 @@ fn corrupt_goal_does_not_prevent_chat_or_explicit_recovery() {
 }
 
 fn provider_fixture() -> PathBuf {
-    static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    BINARY
-        .get_or_init(|| {
-            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-            assert!(Command::new("cargo")
-                .args([
-                    "build",
-                    "--quiet",
-                    "--locked",
-                    "-p",
-                    "lc-testkit",
-                    "--bin",
-                    "protocol-child"
-                ])
-                .current_dir(&root)
-                .status()
-                .unwrap()
-                .success());
-            std::env::var_os("CARGO_TARGET_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| root.join("target"))
-                .join("debug/protocol-child")
-        })
-        .clone()
+    lc_testkit::protocol_child()
 }
 
 #[test]

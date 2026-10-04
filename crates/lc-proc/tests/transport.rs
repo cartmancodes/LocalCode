@@ -1,32 +1,10 @@
 use lc_proc::{Process, ProcessConfig, ProcessError, ShutdownStage};
 use serde_json::json;
-use std::{path::PathBuf, process::Command, sync::OnceLock, time::Duration};
+use std::{path::PathBuf, time::Duration};
 use tokio::time::timeout;
 
 fn child_binary() -> PathBuf {
-    static CHILD: OnceLock<PathBuf> = OnceLock::new();
-    CHILD
-        .get_or_init(|| {
-            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-            let status = Command::new("cargo")
-                .args([
-                    "build",
-                    "--quiet",
-                    "-p",
-                    "lc-testkit",
-                    "--bin",
-                    "protocol-child",
-                ])
-                .current_dir(&root)
-                .status()
-                .expect("build Rust test child");
-            assert!(status.success());
-            let target = std::env::var_os("CARGO_TARGET_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| root.join("target"));
-            target.join("debug/protocol-child")
-        })
-        .clone()
+    lc_testkit::protocol_child()
 }
 
 fn config(mode: &str) -> ProcessConfig {

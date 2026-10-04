@@ -1,33 +1,10 @@
 use lc_engine::live::{spawn, spawn_with_limits, Command, Config, Event, Limits, Mode};
-use std::{path::PathBuf, sync::OnceLock, time::Duration};
+use std::time::Duration;
 use tokio::{sync::mpsc, time::timeout};
 fn config() -> Config {
-    static CHILD: OnceLock<PathBuf> = OnceLock::new();
-    let binary = CHILD
-        .get_or_init(|| {
-            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-            assert!(std::process::Command::new("cargo")
-                .args([
-                    "build",
-                    "--quiet",
-                    "-p",
-                    "lc-testkit",
-                    "--bin",
-                    "protocol-child"
-                ])
-                .current_dir(&root)
-                .status()
-                .unwrap()
-                .success());
-            std::env::var_os("CARGO_TARGET_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| root.join("target"))
-                .join("debug/protocol-child")
-        })
-        .clone();
     Config {
         engine: "codex".into(),
-        binary,
+        binary: lc_testkit::protocol_child(),
         cwd: std::env::temp_dir(),
         model: None,
         resume: None,

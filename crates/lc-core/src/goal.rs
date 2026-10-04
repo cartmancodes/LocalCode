@@ -226,8 +226,9 @@ mod tests {
     }
     #[tokio::test]
     async fn maximum_unicode_goal_and_completion_evidence_survive_restart() {
-        let dir = std::env::temp_dir().join(format!("lc-goal-unicode-{}", std::process::id()));
-        let store = GoalStore::new(&dir, Path::new("/project"));
+        let temp = lc_testkit::TempDir::new("lc-goal-unicode");
+        let dir = temp.path();
+        let store = GoalStore::new(dir, Path::new("/project"));
         let mut goal = Goal::new(&"🦀".repeat(2048)).unwrap();
         let evidence = "🦀".repeat(4096);
         assert!(!goal.finish_turn("completed", &format!("{evidence}\n{COMPLETION_MARKER}")));
@@ -236,19 +237,12 @@ mod tests {
         assert_eq!(restored.status, Status::Complete);
         assert_eq!(restored.objective, goal.objective);
         assert_eq!(restored.evidence, evidence);
-        tokio::fs::remove_dir_all(dir).await.unwrap();
     }
     #[tokio::test]
     async fn state_survives_restart_but_requires_explicit_resume() {
-        let dir = std::env::temp_dir().join(format!(
-            "lc-goal-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store = GoalStore::new(&dir, Path::new("/project"));
+        let temp = lc_testkit::TempDir::new("lc-goal");
+        let dir = temp.path();
+        let store = GoalStore::new(dir, Path::new("/project"));
         let goal = Goal::new("Ship the app").unwrap();
         store.save(Some(&goal)).await.unwrap();
         #[cfg(unix)]
@@ -267,6 +261,5 @@ mod tests {
         assert_eq!(store.load().await.unwrap().unwrap().status, Status::Paused);
         store.save(None).await.unwrap();
         assert!(store.load().await.unwrap().is_none());
-        tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 }

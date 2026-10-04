@@ -8,3 +8,6 @@ lc-engine = { path = "../lc-engine" }
 lc-store = { path = "../lc-store" }
 tokio.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+lc-testkit = { path = "../lc-testkit" }

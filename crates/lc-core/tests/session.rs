@@ -2,7 +2,8 @@ use lc_core::{Command, Config, Event, Session};
 use std::time::Duration;
 #[tokio::test]
 async fn demo_turn_is_journaled_and_export_never_overwrites() {
-    let directory = std::env::temp_dir().join(format!("lc-core-test-{}", std::process::id()));
+    let temp = lc_testkit::TempDir::new("lc-core-test");
+    let directory = temp.path().to_path_buf();
     let config = Config {
         engine: "demo".into(),
         binary: "unused".into(),
@@ -42,11 +43,11 @@ async fn demo_turn_is_journaled_and_export_never_overwrites() {
     assert_eq!(first["data"]["mode"], "ask");
     assert!(text.contains("finished"));
     session.shutdown().await;
-    tokio::fs::remove_dir_all(directory).await.unwrap();
 }
 #[tokio::test]
 async fn repeated_mode_events_are_journaled_once_but_all_delivered() {
-    let directory = std::env::temp_dir().join(format!("lc-core-mode-{}", std::process::id()));
+    let temp = lc_testkit::TempDir::new("lc-core-mode");
+    let directory = temp.path().to_path_buf();
     let config = Config {
         engine: "demo".into(),
         binary: "unused".into(),
@@ -86,5 +87,4 @@ async fn repeated_mode_events_are_journaled_once_but_all_delivered() {
         .collect();
     assert_eq!(journaled, ["ask", "auto"]);
     session.shutdown().await;
-    tokio::fs::remove_dir_all(directory).await.unwrap();
 }

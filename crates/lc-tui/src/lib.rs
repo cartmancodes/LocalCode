@@ -787,7 +787,8 @@ mod model_tests {
         app.goal_running = true;
         app.running = true;
         app.approvals.push_back((1, "command".into()));
-        let directory = std::env::temp_dir().join(format!("lc-goal-cancel-{}", std::process::id()));
+        let temp = lc_testkit::TempDir::new("lc-goal-cancel");
+        let directory = temp.path().to_path_buf();
         let config = Config {
             engine: "demo".into(),
             binary: "demo".into(),
@@ -804,7 +805,6 @@ mod model_tests {
         )
         .await;
         session.shutdown().await;
-        tokio::fs::remove_dir_all(directory).await.unwrap();
         assert_eq!(
             app.goal.as_ref().unwrap().status,
             lc_core::goal::Status::Paused
@@ -964,7 +964,8 @@ mod model_tests {
     }
     #[tokio::test]
     async fn unknown_command_keeps_the_draft() {
-        let directory = std::env::temp_dir().join(format!("lc-tui-draft-{}", std::process::id()));
+        let temp = lc_testkit::TempDir::new("lc-tui-draft");
+        let directory = temp.path().to_path_buf();
         let config = Config {
             engine: "demo".into(),
             binary: "demo".into(),
@@ -1018,7 +1019,6 @@ mod model_tests {
         ));
         assert!(app.editor.text.is_empty());
         session.shutdown().await;
-        tokio::fs::remove_dir_all(directory).await.unwrap();
     }
     #[tokio::test]
     async fn reconnect_pauses_an_active_goal_and_names_the_previous_journal() {

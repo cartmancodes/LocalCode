@@ -305,6 +305,7 @@ version = "0.1.0"
 dependencies = [
  "lc-engine",
  "lc-store",
+ "lc-testkit",
  "serde_json",
  "tokio",
 ]
@@ -314,6 +315,7 @@ name = "lc-engine"
 version = "0.1.0"
 dependencies = [
  "lc-proc",
+ "lc-testkit",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
@@ -323,6 +325,7 @@ dependencies = [
 name = "lc-proc"
 version = "0.1.0"
 dependencies = [
+ "lc-testkit",
  "libc",
  "serde_json",
  "thiserror 2.0.21",
@@ -333,6 +336,7 @@ dependencies = [
 name = "lc-store"
 version = "0.1.0"
 dependencies = [
+ "lc-testkit",
  "serde_json",
  "tokio",
 ]
@@ -341,7 +345,6 @@ dependencies = [
 name = "lc-testkit"
 version = "0.1.0"
 dependencies = [
- "libc",
  "serde_json",
 ]
 
@@ -351,6 +354,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "lc-core",
+ "lc-testkit",
  "libc",
  "ratatui",
  "tokio",
@@ -396,6 +400,7 @@ name = "localcode"
 version = "0.1.0"
 dependencies = [
  "lc-core",
+ "lc-testkit",
  "lc-tui",
  "libc",
  "serde_json",
