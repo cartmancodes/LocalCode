@@ -33,7 +33,10 @@ automatically.
 If a saved goal cannot be read or parsed, the TUI shows a recovery notice and
 still allows ordinary chat. Inspecting `/goal status` leaves the saved file
 unchanged. Use `/goal clear` to remove it or set a new objective to replace it.
-Failed active-goal turns count toward the turn guard before the goal pauses.
+Every goal turn counts toward the turn guard when it ends, including failed
+turns and turns that finish after `/goal pause` or Esc/Ctrl+C. A turn that
+finishes after a pause can still record completion evidence, but never starts
+another turn.
 
 ## Completion and limits
 

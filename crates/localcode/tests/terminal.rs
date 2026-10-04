@@ -213,7 +213,13 @@ fn flags(file: &File) -> libc::tcflag_t {
 impl Drop for Pty {
     fn drop(&mut self) {
         let _ = self.child.kill();
-        let _ = self.child.wait();
+        // A killed child cannot finish exiting until its terminal output is
+        // read, so a failed assertion would otherwise hang here.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while matches!(self.child.try_wait(), Ok(None)) && Instant::now() < deadline {
+            self.drain();
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let _ = fs::remove_dir_all(&self.directory);
     }
 }
@@ -445,6 +451,11 @@ fn goals_pause_cancel_resume_audit_and_stop_on_failure_for_both_providers() {
         p.send(b"\x03");
         p.wait(|p| p.count("finished") == 2 && p.shows("● interrupted"));
         assert_eq!(p.goal().unwrap()["status"], "paused");
+        assert_eq!(
+            p.goal().unwrap()["turns"],
+            2,
+            "paused and cancelled {engine} turns must be counted"
+        );
         p.send(b"/goal fixture-fail\r");
         p.wait(|p| p.count("finished") == 3 && p.shows("● failed"));
         assert_eq!(p.goal().unwrap()["status"], "paused");

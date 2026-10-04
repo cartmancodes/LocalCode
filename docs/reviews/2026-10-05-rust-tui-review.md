@@ -44,6 +44,22 @@ query after startup recovery. Only actual pause/clear mutations now use that
 shared save path; start/resume/audit retain their existing explicit persistence.
 The malformed-file PTY test covers preservation during a status query.
 
+### Follow-up: paused and cancelled goal turns were also omitted
+
+Re-evaluating the first fix found the same omission on another path.
+`/goal pause` and Esc/Ctrl+C set the goal to paused while its turn was still
+running, and `Goal::finish_turn` returned early for any non-active goal. Those
+turns were never counted. A turn that finished after `/goal pause` also lost
+any completion evidence it reported. `finish_turn` now counts every goal turn
+that ends, records completion when the marker and evidence are present, and
+continues only while the goal is still active. A new unit test and a turn-count
+assertion in the pause/cancel PTY scenario both failed before the change.
+
+The PTY test helper's `Drop` waited for the killed child without reading the
+terminal. On macOS the child cannot finish exiting until its pending output is
+read, so any failed PTY assertion hung the suite instead of failing. `Drop` now
+drains the terminal while it waits, for at most five seconds.
+
 ## Structure and quality assessment
 
 - `lc-proc` owns process groups, bounded transport, stderr retention, and cleanup.
@@ -67,7 +83,7 @@ The malformed-file PTY test covers preservation during a status query.
 
 ## Verification evidence
 
-- `make rust-check`: 118 passed, zero failed, three opt-in tests ignored;
+- `make rust-check`: 119 passed after the follow-up, zero failed, three opt-in tests ignored;
   rustfmt and Clippy with warnings denied passed.
 - The offline terminal suite covers both providers in ask, accept-edits, auto,
   and full-access modes using scripted vendor processes. Goal cases include

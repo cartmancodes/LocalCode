@@ -46,8 +46,10 @@ impl Goal {
         format!("LocalCode active goal: {}\n\n{}\nIf and only if the entire objective is achieved, explain the evidence and put {} alone on the final line. Otherwise describe progress and what remains. Do not claim completion without verification.", self.objective, direction, COMPLETION_MARKER)
     }
     /// Count one completed vendor turn and decide whether another turn is needed.
+    /// A turn that ends after a pause still counts and may record completion,
+    /// but never continues.
     pub fn finish_turn(&mut self, outcome: &str, assistant: &str) -> bool {
-        if self.status != Status::Active {
+        if self.status == Status::Complete {
             return false;
         }
         self.turns = self.turns.saturating_add(1);
@@ -71,7 +73,7 @@ impl Goal {
             self.status = Status::Paused;
             return false;
         }
-        true
+        self.status == Status::Active
     }
     pub fn summary(&self) -> String {
         format!(
@@ -210,6 +212,17 @@ mod tests {
         let mut failed = Goal::new("Ship the app").unwrap();
         assert!(!failed.finish_turn("failed", "Error"));
         assert_eq!(failed.status, Status::Paused);
+    }
+    #[test]
+    fn turns_ending_after_a_pause_are_counted_without_continuing() {
+        let mut goal = Goal::new("Ship the app").unwrap();
+        goal.status = Status::Paused;
+        assert!(!goal.finish_turn("interrupted", ""));
+        assert_eq!((goal.turns, &goal.status), (1, &Status::Paused));
+        assert!(!goal.finish_turn("completed", "Still working"));
+        assert_eq!((goal.turns, &goal.status), (2, &Status::Paused));
+        assert!(!goal.finish_turn("completed", "Verified tests.\n[[LOCALCODE_GOAL_COMPLETE]]"));
+        assert_eq!((goal.turns, &goal.status), (3, &Status::Complete));
     }
     #[tokio::test]
     async fn maximum_unicode_goal_and_completion_evidence_survive_restart() {
