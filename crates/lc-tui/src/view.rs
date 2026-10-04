@@ -36,6 +36,7 @@ struct Entry {
 pub struct App {
     pub engine: String,
     pub mode: lc_core::Mode,
+    pub mode_pending: Option<lc_core::Mode>,
     pub workspace: String,
     pub model: String,
     pub requested_model: Option<String>,
@@ -73,6 +74,7 @@ impl App {
         Self {
             engine: config.engine.clone(),
             mode: config.mode,
+            mode_pending: None,
             workspace: clean(&config.cwd.display().to_string()),
             model: "awaiting model metadata".into(),
             requested_model: config.model.clone(),
@@ -109,6 +111,7 @@ impl App {
     pub fn connection(&mut self, config: &lc_core::Config, journal: PathBuf) {
         self.engine = config.engine.clone();
         self.mode = config.mode;
+        self.mode_pending = None;
         self.model = "awaiting model metadata".into();
         self.requested_model = config.model.clone();
         self.resolved_model = None;
@@ -168,6 +171,23 @@ impl App {
                 .iter()
                 .find(|m| m.selection == self.requested_model.as_deref().unwrap_or("default"))
         }
+    }
+    pub fn mode_details(&self) -> String {
+        let mut text = format!("Permission mode: {}", self.mode.label());
+        if let Some(pending) = self.mode_pending {
+            text.push_str(&format!(" (switching to {})", pending.label()));
+        }
+        text.push_str(&format!("\n\n{} mapping:\n", self.engine));
+        for mode in lc_core::Mode::ALL {
+            let marker = if mode == self.mode { "●" } else { " " };
+            text.push_str(&format!(
+                "{marker} {:<13} {}\n",
+                mode.label(),
+                mode.describe(&self.engine)
+            ));
+        }
+        text.push_str("\nShift+Tab cycles ask → accept-edits → auto. /mode full-access reconnects with every check off.");
+        text
     }
     pub fn model_details(&self) -> String {
         let selected = self.catalog_selection();
@@ -269,7 +289,10 @@ impl App {
                 self.resolved_model = Some(id);
                 self.refresh_model_label();
             }
-            Event::ModeChanged(mode) => self.mode = mode,
+            Event::ModeChanged(mode) => {
+                self.mode = mode;
+                self.mode_pending = None;
+            }
             Event::Ready { session } => {
                 self.refresh_model_label();
                 self.ready = true;
@@ -331,6 +354,7 @@ impl App {
                 self.status = "error".into();
             }
             Event::Stopped => {
+                self.mode_pending = None;
                 self.stopped = true;
                 self.running = false;
                 self.ready = false;
@@ -976,5 +1000,23 @@ mod model_detail_tests {
         let count = a.entries.len();
         a.show_models(usize::MAX);
         assert_eq!(a.entries.len(), count + 1);
+    }
+    #[test]
+    fn stopped_session_clears_pending_mode() {
+        let c = lc_core::Config {
+            engine: "claude".into(),
+            binary: "claude".into(),
+            cwd: "/tmp".into(),
+            model: None,
+            resume: None,
+            mode: lc_core::Mode::Ask,
+        };
+        let mut a = App::new(&c, "journal".into());
+        a.mode_pending = Some(lc_core::Mode::Auto);
+        a.event(Event::ModeChanged(lc_core::Mode::Auto));
+        assert_eq!((a.mode, a.mode_pending), (lc_core::Mode::Auto, None));
+        a.mode_pending = Some(lc_core::Mode::Ask);
+        a.event(Event::Stopped);
+        assert_eq!((a.mode, a.mode_pending), (lc_core::Mode::Auto, None));
     }
 }

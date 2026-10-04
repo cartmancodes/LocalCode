@@ -1,6 +1,6 @@
 use lc_core::Config;
 use std::{io::IsTerminal, path::PathBuf};
-const HELP:&str="LocalCode — terminal coding workspace (Rust preview)\n\nUsage: localcode [--engine codex|claude|demo] [--cwd PATH]\n                 [--model MODEL] [--resume VENDOR_SESSION_ID]\n                 [--binary PATH] [--journal-dir PATH]\n\nDefaults: Codex, current directory. Vendor CLI installation and login required.\nUse --engine demo for an offline interactive preview.\n\nKeys: Enter send · Alt+Enter / Ctrl+J newline · Esc cancel · Ctrl+Q quit\n      PageUp/PageDown scroll · Ctrl+P commands · F1 help\n\nCommands: /model, /goal, /session, /new, /reconnect, /export\nThis preview writes separate JSONL journals; it does not modify legacy sessions.\nFleet, full plugin/hook parity, v3 browsing and legacy RPC compatibility remain pending.\n";
+const HELP:&str="LocalCode — terminal coding workspace (Rust preview)\n\nUsage: localcode [--engine codex|claude|demo] [--cwd PATH]\n                 [--model MODEL] [--mode MODE] [--resume VENDOR_SESSION_ID]\n                 [--binary PATH] [--journal-dir PATH]\n\nDefaults: Codex, current directory. Vendor CLI installation and login required.\nModes: ask (default) · accept-edits · auto (vendor auto-review) · full-access\nUse --engine demo for an offline interactive preview.\n\nKeys: Enter send · Alt+Enter / Ctrl+J newline · Esc cancel · Ctrl+Q quit\n      PageUp/PageDown scroll · Ctrl+P commands · F1 help · Shift+Tab mode\n\nCommands: /model, /mode, /goal, /session, /new, /reconnect, /export\nThis preview writes separate JSONL journals; it does not modify legacy sessions.\nFleet, full plugin/hook parity, v3 browsing and legacy RPC compatibility remain pending.\n";
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
@@ -16,6 +16,7 @@ async fn run() -> Result<(), String> {
     let mut resume = None;
     let mut cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let mut directory = None;
+    let mut mode = lc_core::Mode::Ask;
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
             print!("{HELP}");
@@ -35,6 +36,11 @@ async fn run() -> Result<(), String> {
             "--model" => model = Some(value),
             "--resume" => resume = Some(value),
             "--journal-dir" => directory = Some(PathBuf::from(value)),
+            "--mode" => {
+                mode = lc_core::Mode::parse(&value).ok_or_else(|| {
+                    format!("Unknown mode {value}. Use ask, accept-edits, auto or full-access.")
+                })?
+            }
             _ => return Err(format!("Unknown option {arg}. Use --help.")),
         }
     }
@@ -68,7 +74,7 @@ async fn run() -> Result<(), String> {
         cwd,
         model,
         resume,
-        mode: lc_core::Mode::Ask,
+        mode,
     };
     lc_tui::run(config, directory)
         .await

@@ -111,6 +111,8 @@ enum Action {
     Reconnect,
     Suspend,
     Model(lc_core::model::Selection),
+    SetMode(lc_core::Mode),
+    Mode(lc_core::Mode),
     GoalPrompt(String),
 }
 pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
@@ -162,6 +164,25 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                 binaries.insert(next.engine.clone(), next.binary.clone());
                 app.notice(format!("Model → {} / {}. {} Previous journal: {}",next.engine,next.model.as_deref().unwrap_or("vendor default"),if cross_provider {"New provider context; earlier displayed messages are not sent to this provider."}else{"Resuming the same vendor context."},app.journal.display()));
                 config = next;
+                retained_app = Some(app);
+            }
+            Action::Mode(mode) => {
+                if let Some(goal) = &mut app.goal {
+                    if goal.status == lc_core::goal::Status::Active {
+                        goal.status = lc_core::goal::Status::Paused;
+                        app.save_goal().await.map_err(io::Error::other)?;
+                        app.notice("Goal paused for mode switch. Use /goal resume to continue.");
+                    }
+                }
+                app.notice(if mode == lc_core::Mode::FullAccess {
+                    "Full access: the agent can run any command and edit any file without asking. Reconnecting…".to_owned()
+                } else {
+                    format!("Leaving full access for {}. Reconnecting…", mode.label())
+                });
+                config.mode = mode;
+                if !app.session.is_empty() && config.engine != "demo" {
+                    config.resume = Some(app.session.clone());
+                }
                 retained_app = Some(app);
             }
             Action::New => config.resume = None,
@@ -257,6 +278,10 @@ async fn run_session(
                         Err(e)=>{if let Some(goal)=&mut app.goal {goal.status=lc_core::goal::Status::Paused;}let _=app.save_goal().await;app.notice(format!("Goal paused: {e}"));}
                     },
                     Action::Suspend=>{guard.suspend()?;terminal.resize(terminal.size()?.into())?;},
+                    Action::SetMode(mode)=>match session.handle.send(Command::SetMode(mode)) {
+                        Ok(())=>app.mode_pending=Some(mode),
+                        Err(e)=>app.notice(e),
+                    },
                     other=>return Ok(other)
                 }
                 dirty=true;
@@ -329,6 +354,7 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
     }
     match key.code {
         KeyCode::F(1) => app.help = true,
+        KeyCode::BackTab => return cycle_mode(app),
         KeyCode::Char('p') if ctrl => app.palette = true,
         KeyCode::Char('u') if ctrl => {
             app.editor.take();
@@ -426,6 +452,16 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
     }
     Action::Continue
 }
+fn cycle_mode(app: &mut App) -> Action {
+    if app.mode == lc_core::Mode::FullAccess {
+        app.notice = "Use /mode to leave full access".into();
+    } else if app.mode_pending.is_some() {
+        app.notice = "Mode change pending; wait for the vendor to confirm".into();
+    } else {
+        return Action::SetMode(app.mode.cycle());
+    }
+    Action::Continue
+}
 async fn command(app: &mut App, input: &str) -> Action {
     let (name, argument) = input.split_once(' ').unwrap_or((input, ""));
     let argument = argument.trim();
@@ -440,6 +476,21 @@ async fn command(app: &mut App, input: &str) -> Action {
             else if app.running||!app.approvals.is_empty(){app.notice="Cancel or finish the current turn before switching models".into();}
             else if !app.ready&&!app.stopped{app.notice="Wait for connection, or cancel it, before switching models".into();}
             else {match lc_core::model::Selection::parse(argument,&app.engine){Ok(selection)=>return Action::Model(selection),Err(error)=>app.notice(error)}}
+        },
+        "/mode"=>{
+            use lc_core::Mode;
+            if argument.is_empty(){app.notice(app.mode_details());}
+            else if app.mode_pending.is_some(){app.notice("Mode change pending; wait for the vendor to confirm");}
+            else {match Mode::parse(argument){
+                None=>app.notice(format!("Unknown mode {argument}. Use ask, accept-edits, auto or full-access.")),
+                Some(target) if target==app.mode && target==Mode::FullAccess=>app.notice("Already in full-access mode"),
+                Some(target) if target==Mode::FullAccess || app.mode==Mode::FullAccess=>{
+                    if app.running||!app.approvals.is_empty(){app.notice="Cancel or finish the current turn before changing full access".into();}
+                    else if !app.ready{app.notice="Wait for a ready session before changing full access".into();}
+                    else {return Action::Mode(target);}
+                },
+                Some(target)=>return Action::SetMode(target),
+            }}
         },
         "/new"|"/reconnect"=>{if app.running{app.notice="Cancel the active turn before changing sessions".into();}else{return if name=="/new"{Action::New}else{Action::Reconnect};}},
         "/session"=>app.notice(format!("{}\nSession: {}\nJournal: {}\nWorkspace: {}",app.model_details(),if app.session.is_empty(){"not assigned"}else{&app.session},app.journal.display(),app.workspace)),
@@ -552,5 +603,88 @@ mod model_tests {
             Action::Continue
         ));
         assert!(app.goal.is_none());
+    }
+    #[tokio::test]
+    async fn mode_command_switches_live_modes_and_rejects_unknown() {
+        let mut app = app();
+        assert!(matches!(
+            command(&mut app, "/mode auto").await,
+            Action::SetMode(lc_core::Mode::Auto)
+        ));
+        app.running = true;
+        assert!(matches!(
+            command(&mut app, "/mode accept-edits").await,
+            Action::SetMode(lc_core::Mode::AcceptEdits)
+        ));
+        assert!(matches!(
+            command(&mut app, "/mode yolo").await,
+            Action::Continue
+        ));
+        assert!(app.notice.contains("Unknown mode"));
+        assert!(matches!(command(&mut app, "/mode").await, Action::Continue));
+        assert!(app.notice.contains("auto_review"));
+    }
+    #[tokio::test]
+    async fn full_access_requires_idle_ready_session() {
+        let mut app = app();
+        app.running = true;
+        assert!(matches!(
+            command(&mut app, "/mode full-access").await,
+            Action::Continue
+        ));
+        app.running = false;
+        app.approvals.push_back((1, "x".into()));
+        assert!(matches!(
+            command(&mut app, "/mode full-access").await,
+            Action::Continue
+        ));
+        app.approvals.clear();
+        app.ready = false;
+        assert!(matches!(
+            command(&mut app, "/mode full-access").await,
+            Action::Continue
+        ));
+        app.ready = true;
+        assert!(matches!(
+            command(&mut app, "/mode full-access").await,
+            Action::Mode(lc_core::Mode::FullAccess)
+        ));
+        app.mode = lc_core::Mode::FullAccess;
+        assert!(matches!(
+            command(&mut app, "/mode auto").await,
+            Action::Mode(lc_core::Mode::Auto)
+        ));
+        assert!(matches!(
+            command(&mut app, "/mode full-access").await,
+            Action::Continue
+        ));
+    }
+    #[test]
+    fn cycle_follows_order_and_never_reaches_full_access() {
+        let mut app = app();
+        assert!(matches!(
+            cycle_mode(&mut app),
+            Action::SetMode(lc_core::Mode::AcceptEdits)
+        ));
+        app.mode = lc_core::Mode::Auto;
+        assert!(matches!(
+            cycle_mode(&mut app),
+            Action::SetMode(lc_core::Mode::Ask)
+        ));
+        app.mode = lc_core::Mode::FullAccess;
+        assert!(matches!(cycle_mode(&mut app), Action::Continue));
+        assert!(app.notice.contains("/mode"));
+    }
+    #[tokio::test]
+    async fn cycle_is_ignored_while_a_switch_is_pending() {
+        let mut app = app();
+        app.mode_pending = Some(lc_core::Mode::AcceptEdits);
+        assert!(matches!(cycle_mode(&mut app), Action::Continue));
+        assert!(app.notice.contains("pending"));
+        assert!(matches!(
+            command(&mut app, "/mode auto").await,
+            Action::Continue
+        ));
+        assert!(app.notice.contains("pending"));
     }
 }

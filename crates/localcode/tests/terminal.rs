@@ -265,3 +265,13 @@ fn terminal_idle_diagnostic() {
     p.send(b"\x11");
     p.finish();
 }
+
+#[test]
+fn unknown_mode_flag_is_a_startup_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_localcode"))
+        .args(["--engine", "demo", "--mode", "bogus"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown mode bogus"));
+}
