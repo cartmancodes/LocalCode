@@ -24,8 +24,8 @@ The prior baseline remains 863 passed, 2 deselected. Rust review and revised des
 
 ## Superseded by the Rust preview (2026-10-04)
 
-The partial Python TUI is preserved as non-executable archival material under
-`docs/archive/python-tui/`. Active implementation is the Rust workspace in
+The partial Python TUI was archived under `docs/archive/python-tui/` and removed
+from the tree on 2026-10-04; it remains in git history. Active implementation is the Rust workspace in
 `crates/`, with a working terminal preview and live provider model discovery.
 See [the current guide](../../tui.md) and
 [remaining parity requirements](../../rust/parity-matrix.md). Earlier sections

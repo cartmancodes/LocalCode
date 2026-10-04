@@ -1,5 +1,6 @@
-//! Minimal, fixture-scoped vendor protocol proof. The production engine
-//! remains gated on live contract evidence.
+//! Vendor engines. `live` is the interactive driver the TUI runs. The rest of
+//! this file is the protocol gate: `GateProcess` and the fixture replies used
+//! by the `protocol-gate` binary to collect live contract evidence.
 
 use lc_proc::{Process, ProcessConfig, ProcessError, ProcessSender, ShutdownReport};
 use serde_json::{json, Value};

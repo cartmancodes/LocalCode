@@ -85,16 +85,3 @@ export const IconLayers = (p: IconProps) => (
 export const IconStop = (p: IconProps) => (
   <Icon {...p}><rect x="5" y="5" width="14" height="14" rx="1.5"/></Icon>
 );
-
-export const IconLogo = ({ size = 20 }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <rect x="2" y="4" width="20" height="16" rx="4" fill="currentColor" opacity=".12"/>
-    <path
-      d="M8 9 5 12l3 3M16 9l3 3-3 3M13.5 8l-3 8"
-      stroke="currentColor"
-      strokeWidth="1.75"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
-);

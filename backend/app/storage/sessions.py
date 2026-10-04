@@ -75,7 +75,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import shutil
 import time
 import uuid
@@ -243,18 +242,6 @@ def _write_json(path: Path, payload: Any, *, fsync: bool = True) -> None:
     _atomic_write_text(
         path, json.dumps(_to_jsonable(payload), ensure_ascii=False), fsync=fsync
     )
-
-
-def _project_key(cwd: str | None) -> str:
-    """A filesystem-safe identifier for the cwd. Used in the user-global
-    index for grouping; the actual session dir lives under the cwd directly,
-    not under a project-key subdir.
-
-    Modelled after Claude Code's ``-Users-shubhojeet-Projects-LocalCode``
-    encoding (path with ``/`` → ``-``)."""
-    if not cwd:
-        return "_global"
-    return re.sub(r"[^a-zA-Z0-9]+", "-", str(cwd)).strip("-") or "_global"
 
 
 def _session_dir(session_id: str, cwd: str | None) -> Path:
