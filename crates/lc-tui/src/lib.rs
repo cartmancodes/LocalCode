@@ -324,6 +324,14 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         } else if key.code == KeyCode::PageUp {
             app.approval_scroll = app.approval_scroll.saturating_sub(8);
         } else if ctrl && key.code == KeyCode::Char('c') {
+            if app.goal_running {
+                if let Some(goal) = &mut app.goal {
+                    goal.status = lc_core::goal::Status::Paused;
+                }
+                if let Err(error) = app.save_goal().await {
+                    app.notice(format!("Goal persistence failed: {error}"));
+                }
+            }
             session.handle.interrupt();
         }
         return Action::Continue;
@@ -597,7 +605,13 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                         .unwrap_or_else(|| "No goal set. Use /goal <objective>.".into()),
                 ),
                 "pause" => {
-                    if let Some(goal) = &mut app.goal {
+                    if app
+                        .goal
+                        .as_ref()
+                        .is_some_and(|goal| goal.status == Status::Complete)
+                    {
+                        app.notice("Goal is already complete; set a new goal to continue.");
+                    } else if let Some(goal) = &mut app.goal {
                         goal.status = Status::Paused;
                         app.notice(
                             "Goal paused. Current vendor turn may finish; no next turn will start.",
@@ -740,6 +754,52 @@ mod model_tests {
         }
     }
 
+    #[tokio::test]
+    async fn pausing_a_completed_goal_preserves_completion() {
+        let mut app = app();
+        let mut goal = lc_core::goal::Goal::new("Ship the project").unwrap();
+        goal.finish_turn("completed", "Verified tests.\n[[LOCALCODE_GOAL_COMPLETE]]");
+        app.goal = Some(goal);
+        command(&mut app, "/goal pause").await;
+        assert_eq!(
+            app.goal.as_ref().unwrap().status,
+            lc_core::goal::Status::Complete
+        );
+        assert!(matches!(
+            command(&mut app, "/goal resume").await,
+            Action::Continue
+        ));
+    }
+    #[tokio::test]
+    async fn ctrl_c_in_approval_dialog_pauses_the_active_goal() {
+        let mut app = app();
+        app.goal = Some(lc_core::goal::Goal::new("Ship the project").unwrap());
+        app.goal_running = true;
+        app.running = true;
+        app.approvals.push_back((1, "command".into()));
+        let directory = std::env::temp_dir().join(format!("lc-goal-cancel-{}", std::process::id()));
+        let config = Config {
+            engine: "demo".into(),
+            binary: "demo".into(),
+            cwd: directory.clone(),
+            model: None,
+            resume: None,
+            mode: lc_core::Mode::Ask,
+        };
+        let mut session = Session::open(config, directory.clone()).await.unwrap();
+        key_action(
+            &mut app,
+            &mut session,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        )
+        .await;
+        session.shutdown().await;
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+        assert_eq!(
+            app.goal.as_ref().unwrap().status,
+            lc_core::goal::Status::Paused
+        );
+    }
     #[tokio::test]
     async fn goal_commands_start_pause_resume_and_clear_without_a_vendor_turn() {
         let mut app = app();

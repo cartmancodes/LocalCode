@@ -931,6 +931,7 @@ button.primary:disabled { opacity: .4; cursor: not-allowed; }
     -45deg, var(--muted-2) 0 3px, transparent 3px 6px
   );
   opacity: .55;
+}
 /* ─────────────────────────────────────────────────────────────────────────
    Core pane — the surface on /api/core/rpc.
 

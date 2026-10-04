@@ -249,7 +249,12 @@ async def test_two_hundred_turns_stay_inside_every_cost_budget(
         f"{tasks_after - tasks_before} tasks outlived the soak "
         f"({tasks_before} -> {tasks_after}) — a turn is leaking one"
     )
-    assert max(fd_samples) - min(fd_samples) <= FD_GROWTH_MAX, (
+    # Descriptors from earlier tests may be released during this run. Measure
+    # increases from an earlier low-water mark, never a later decrease as a leak.
+    fd_growth = max(
+        sample - min(fd_samples[: index + 1]) for index, sample in enumerate(fd_samples)
+    )
+    assert fd_growth <= FD_GROWTH_MAX, (
         f"open descriptors moved between {min(fd_samples)} and "
         f"{max(fd_samples)} across the soak: {fd_samples}"
     )

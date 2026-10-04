@@ -98,7 +98,10 @@ impl Pty {
         }
     }
     fn wait(&mut self, condition: impl Fn(&Self) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(8);
+        self.wait_for(Duration::from_secs(8), condition);
+    }
+    fn wait_for(&mut self, duration: Duration, condition: impl Fn(&Self) -> bool) {
+        let deadline = Instant::now() + duration;
         loop {
             self.drain();
             if condition(self) {
@@ -133,6 +136,50 @@ impl Pty {
     }
     fn count(&self, kind: &str) -> usize {
         self.records().iter().filter(|v| v["type"] == kind).count()
+    }
+    fn shows(&self, text: &str) -> bool {
+        // Ratatui reuses unchanged cells, so a status can be split across many
+        // cursor-positioned writes. Reconstruct the ASCII/status header row.
+        let output = String::from_utf8_lossy(&self.output);
+        let mut chars = output.chars().peekable();
+        let (mut row, mut column) = (1usize, 1usize);
+        let mut header = vec![' '; 120];
+        while let Some(ch) = chars.next() {
+            if ch == '\u{1b}' && chars.next() == Some('[') {
+                let mut parameters = String::new();
+                for ch in chars.by_ref() {
+                    if ('@'..='~').contains(&ch) {
+                        if ch == 'H' || ch == 'f' {
+                            let mut values = parameters.split(';');
+                            row = values.next().and_then(|v| v.parse().ok()).unwrap_or(1);
+                            column = values.next().and_then(|v| v.parse().ok()).unwrap_or(1);
+                        } else if ch == 'J' && parameters == "2" {
+                            header.fill(' ');
+                        }
+                        break;
+                    }
+                    parameters.push(ch);
+                }
+            } else if ch == '\r' {
+                column = 1;
+            } else if ch == '\n' {
+                row += 1;
+            } else if !ch.is_control() {
+                if row == 2 && column > 0 && column <= header.len() {
+                    header[column - 1] = ch;
+                }
+                column += 1;
+            }
+        }
+        header.into_iter().collect::<String>().contains(text)
+    }
+    fn goal(&self) -> Option<serde_json::Value> {
+        fs::read_dir(&self.directory)
+            .ok()?
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().starts_with("goal-"))
+            .and_then(|entry| fs::read(entry.path()).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
     }
     fn finish(&mut self) {
         self.wait(|p| flags(&p.master) == p.original);
@@ -278,6 +325,182 @@ fn unknown_mode_flag_is_a_startup_error() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown mode bogus"));
+}
+
+fn provider_fixture() -> PathBuf {
+    static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BINARY
+        .get_or_init(|| {
+            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+            assert!(Command::new("cargo")
+                .args([
+                    "build",
+                    "--quiet",
+                    "--locked",
+                    "-p",
+                    "lc-testkit",
+                    "--bin",
+                    "protocol-child"
+                ])
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success());
+            std::env::var_os("CARGO_TARGET_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| root.join("target"))
+                .join("debug/protocol-child")
+        })
+        .clone()
+}
+
+#[test]
+fn goals_continue_complete_and_reload_for_both_providers_in_every_mode() {
+    let binary = provider_fixture();
+    for engine in ["codex", "claude"] {
+        for mode in ["ask", "accept-edits", "auto", "full-access"] {
+            let args = [
+                "--engine",
+                engine,
+                "--binary",
+                binary.to_str().unwrap(),
+                "--mode",
+                mode,
+            ];
+            let mut p = Pty::spawn_with(&args);
+            p.wait(|p| p.count("ready") == 1);
+            p.send(b"/goal fixture-goal\r");
+            p.wait(|p| p.goal().is_some_and(|g| g["status"] == "complete"));
+            assert_eq!(p.count("finished"), 2, "{engine}/{mode}");
+            assert_eq!(p.goal().unwrap()["turns"], 2);
+            assert_eq!(
+                p.goal().unwrap()["evidence"],
+                "Verified both steps and their tests."
+            );
+            // A new session loads durable completion without starting inference.
+            let ready = p.count("ready");
+            p.send(b"/new\r");
+            p.wait(|p| p.count("ready") > ready);
+            assert_eq!(p.count("user"), 2);
+            p.send(b"/goal status\r");
+            p.send(b"/goal clear\r");
+            p.wait(|p| p.goal().is_none());
+            p.send(b"\x11");
+            p.finish();
+        }
+    }
+}
+
+#[test]
+fn goals_pause_cancel_resume_audit_and_stop_on_failure_for_both_providers() {
+    let binary = provider_fixture();
+    for engine in ["codex", "claude"] {
+        let mut p = Pty::spawn_with(&[
+            "--engine",
+            engine,
+            "--binary",
+            binary.to_str().unwrap(),
+            "--mode",
+            "auto",
+        ]);
+        p.wait(|p| p.count("ready") == 1);
+        p.send(b"/goal fixture-hold\r");
+        p.wait(|p| p.count("started") == 1 && p.shows("● working"));
+        p.send(b"/goal pause\r");
+        p.wait(|p| p.goal().is_some_and(|g| g["status"] == "paused"));
+        p.send(b"\x03");
+        p.wait(|p| p.count("finished") == 1 && p.shows("● interrupted"));
+        p.send(b"/goal resume\r");
+        p.wait(|p| p.count("started") == 2 && p.shows("● working"));
+        p.send(b"\x03");
+        p.wait(|p| p.count("finished") == 2 && p.shows("● interrupted"));
+        assert_eq!(p.goal().unwrap()["status"], "paused");
+        p.send(b"/goal fixture-fail\r");
+        p.wait(|p| p.count("finished") == 3 && p.shows("● failed"));
+        assert_eq!(p.goal().unwrap()["status"], "paused");
+        p.send(b"/goal fixture-goal\r");
+        p.wait(|p| p.goal().is_some_and(|g| g["status"] == "complete"));
+        p.send(b"/goal clear\r");
+        p.wait(|p| p.goal().is_none());
+        // Seed a paused objective to test the audit path independently of continuation.
+        let workspace = std::env::current_dir().unwrap();
+        let store = lc_core::goal::GoalStore::new(&p.directory, &workspace);
+        let mut goal = lc_core::goal::Goal::new("fixture-goal").unwrap();
+        goal.status = lc_core::goal::Status::Paused;
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(store.save(Some(&goal)))
+            .unwrap();
+        let ready = p.count("ready");
+        p.send(b"/new\r");
+        p.wait(|p| p.count("ready") > ready && p.shows("● ready"));
+        let turns = p.count("started");
+        assert_eq!(turns, 5);
+        p.send(b"/goal complete\r");
+        p.wait(|p| p.goal().is_some_and(|g| g["status"] == "complete"));
+        assert_eq!(p.count("started"), turns + 1);
+        p.send(b"\x11");
+        p.finish();
+    }
+}
+
+#[test]
+#[ignore = "uses installed vendor CLIs and their subscriptions"]
+fn installed_providers_complete_a_goal_in_auto_mode() {
+    let engines = std::env::var("LOCALCODE_LIVE_ENGINE").ok();
+    for engine in ["codex", "claude"]
+        .into_iter()
+        .filter(|engine| engines.as_deref().is_none_or(|chosen| chosen == *engine))
+    {
+        let workspace =
+            std::env::temp_dir().join(format!("lc-live-goal-{}-{engine}", std::process::id()));
+        fs::create_dir_all(&workspace).unwrap();
+        let mut args = vec![
+            "--engine",
+            engine,
+            "--binary",
+            engine,
+            "--mode",
+            "auto",
+            "--cwd",
+            workspace.to_str().unwrap(),
+        ];
+        let model = std::env::var(format!("LOCALCODE_LIVE_{}_MODEL", engine.to_uppercase())).ok();
+        if let Some(model) = &model {
+            args.extend(["--model", model.as_str()]);
+        }
+        let mut p = Pty::spawn_with(&args);
+        p.wait_for(Duration::from_secs(45), |p| {
+            p.count("ready") == 1 || p.count("error") > 0
+        });
+        assert_eq!(p.count("error"), 0, "{engine}: {:?}", p.records());
+        assert!(
+            p.records()
+                .iter()
+                .any(|v| v["type"] == "mode" && v["data"] == "auto"),
+            "{engine}: {:?}",
+            p.records()
+        );
+        p.send(b"/goal In this disposable workspace create smoke.txt containing exactly LOCALCODE_OK followed by a newline. Read it back and verify its contents. Keep the task limited to this file.\r");
+        p.wait_for(Duration::from_secs(180), |p| {
+            p.goal().is_some_and(|g| g["status"] != "active") || p.count("error") > 0
+        });
+        let goal = p.goal();
+        p.send(b"\x11");
+        p.finish();
+        assert_eq!(p.count("error"), 0, "{engine}: {:?}", p.records());
+        assert_eq!(
+            goal.unwrap()["status"],
+            "complete",
+            "{engine}: {:?}",
+            p.records()
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join("smoke.txt")).unwrap(),
+            "LOCALCODE_OK\n"
+        );
+        fs::remove_dir_all(workspace).unwrap();
+    }
 }
 #[test]
 fn auto_mode_skips_the_demo_dialog_and_shift_tab_cycles() {

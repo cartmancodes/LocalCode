@@ -14,6 +14,17 @@ fn emit(value: &Value) {
     stdout.flush().unwrap();
 }
 
+fn goal_reply(text: &str) -> Option<&'static str> {
+    if !text.starts_with("LocalCode active goal: fixture-goal\n") {
+        return None;
+    }
+    Some(if text.contains("Begin the objective.") {
+        "First step verified; the final audit remains."
+    } else {
+        "Verified both steps and their tests.\n[[LOCALCODE_GOAL_COMPLETE]]"
+    })
+}
+
 fn main() {
     let mode = env::args().nth(1).expect("mode");
     match mode.as_str() {
@@ -149,7 +160,7 @@ fn interactive_codex() {
                     .pointer("/params/input/0/text")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                if text == "hold" {
+                if text == "hold" || text.starts_with("LocalCode active goal: fixture-hold\n") {
                     continue;
                 }
                 if text == "approval" {
@@ -179,7 +190,7 @@ fn interactive_codex() {
                     }
                     continue;
                 }
-                if text == "fail" {
+                if text == "fail" || text.starts_with("LocalCode active goal: fixture-fail\n") {
                     emit(
                         &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"failed","error":{"additionalDetails":null,"codexErrorInfo":"usageLimitExceeded","message":"You've hit your usage limit."}}}}),
                     );
@@ -217,11 +228,12 @@ fn interactive_codex() {
                 emit(
                     &json!({"method":"item/agentMessage/delta","params":{"threadId":"other-thread","turnId":active,"itemId":"wrong","delta":"MUST NOT DISPLAY"}}),
                 );
+                let reply = goal_reply(text).unwrap_or("Hello fixture");
                 emit(
-                    &json!({"method":"item/agentMessage/delta","params":{"threadId":"fixture-thread","turnId":active,"itemId":"msg","delta":"Hello fixture"}}),
+                    &json!({"method":"item/agentMessage/delta","params":{"threadId":"fixture-thread","turnId":active,"itemId":"msg","delta":reply}}),
                 );
                 emit(
-                    &json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":active,"item":{"id":"msg","type":"agentMessage","text":"Hello fixture"}}}),
+                    &json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":active,"item":{"id":"msg","type":"agentMessage","text":reply}}}),
                 );
                 emit(
                     &json!({"method":"thread/tokenUsage/updated","params":{"threadId":"fixture-thread","tokenUsage":{"total":{"totalTokens":42}}}}),
@@ -344,13 +356,13 @@ fn interactive_claude() {
                 );
                 continue;
             }
-            if text == "errors" {
+            if text == "errors" || text.starts_with("LocalCode active goal: fixture-fail\n") {
                 emit(
                     &json!({"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Fixture failure detail"],"session_id":"claude-fixture","total_cost_usd":0.0}),
                 );
                 continue;
             }
-            if text == "hold" {
+            if text == "hold" || text.starts_with("LocalCode active goal: fixture-hold\n") {
                 // Stay mid-turn until the driver interrupts.
                 emit(
                     &json!({"type":"system","subtype":"init","session_id":"claude-fixture","model":"claude-fixture-full-id"}),
@@ -361,6 +373,8 @@ fn interactive_claude() {
                 argv.join(" ")
             } else if text == "modes" {
                 modes.join(",")
+            } else if let Some(reply) = goal_reply(text) {
+                reply.to_owned()
             } else {
                 "Hello Claude".to_owned()
             };

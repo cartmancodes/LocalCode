@@ -113,8 +113,10 @@ impl GoalStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(format!("Cannot read goal: {e}")),
         };
-        if bytes.len() > 16 * 1024 {
-            return Err("Goal file exceeds 16 KiB".into());
+        // An 8 KiB objective plus 4096 evidence characters can exceed 16 KiB;
+        // JSON escaping can expand the evidence to six bytes per character.
+        if bytes.len() > 48 * 1024 {
+            return Err("Goal file exceeds 48 KiB".into());
         }
         let v: Value =
             serde_json::from_slice(&bytes).map_err(|e| format!("Invalid goal file: {e}"))?;
@@ -208,6 +210,20 @@ mod tests {
         let mut failed = Goal::new("Ship the app").unwrap();
         assert!(!failed.finish_turn("failed", "Error"));
         assert_eq!(failed.status, Status::Paused);
+    }
+    #[tokio::test]
+    async fn maximum_unicode_goal_and_completion_evidence_survive_restart() {
+        let dir = std::env::temp_dir().join(format!("lc-goal-unicode-{}", std::process::id()));
+        let store = GoalStore::new(&dir, Path::new("/project"));
+        let mut goal = Goal::new(&"🦀".repeat(2048)).unwrap();
+        let evidence = "🦀".repeat(4096);
+        assert!(!goal.finish_turn("completed", &format!("{evidence}\n{COMPLETION_MARKER}")));
+        store.save(Some(&goal)).await.unwrap();
+        let restored = store.load().await.unwrap().unwrap();
+        assert_eq!(restored.status, Status::Complete);
+        assert_eq!(restored.objective, goal.objective);
+        assert_eq!(restored.evidence, evidence);
+        tokio::fs::remove_dir_all(dir).await.unwrap();
     }
     #[tokio::test]
     async fn state_survives_restart_but_requires_explicit_resume() {

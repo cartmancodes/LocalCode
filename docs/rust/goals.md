@@ -47,3 +47,28 @@ do not expose a comparable, reliable per-turn token count.
 Goal output retained for completion detection is bounded to 64 KiB. Continuation
 uses the existing provider process and event loop, without an additional polling
 loop or subprocess.
+
+## Verification
+
+`scripts/rust-env.sh cargo test --locked --workspace` includes real-terminal
+tests of goals through both provider adapters in ask, accept-edits, auto, and
+full-access modes. Scripted vendor processes make continuation, completion,
+restart, pause, cancellation, resume, failure, audit, and clear deterministic.
+
+The opt-in live test uses installed, authenticated vendor CLIs and subscription
+usage. Each provider creates and reads back one file in a disposable workspace:
+
+```sh
+LOCALCODE_LIVE_ENGINE=codex LOCALCODE_LIVE_CODEX_MODEL=gpt-5.5 \
+  scripts/rust-env.sh cargo test --locked -p localcode \
+  installed_providers_complete_a_goal_in_auto_mode -- --ignored --nocapture
+LOCALCODE_LIVE_ENGINE=claude \
+  scripts/rust-env.sh cargo test --locked -p localcode \
+  installed_providers_complete_a_goal_in_auto_mode -- --ignored --nocapture
+```
+
+Choose a model supported by your account. `LOCALCODE_LIVE_CLAUDE_MODEL` also
+overrides the Claude model; without an override, the vendor default is used.
+Both live auto-mode checks passed on macOS with Codex 0.154.0 (`gpt-5.5`) and
+Claude Code 2.1.270. The configured Codex default `gpt-6.1-sol` was rejected by
+the host account, so launching with `--model gpt-5.5` was required for that check.
