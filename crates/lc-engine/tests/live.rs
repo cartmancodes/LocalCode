@@ -286,3 +286,71 @@ async fn claude_launches_with_the_mapped_permission_flag() {
     handle.shutdown();
     task.await.unwrap();
 }
+#[tokio::test]
+async fn codex_live_switch_applies_to_the_next_turn() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
+    handle.send(Command::SetMode(Mode::Auto)).unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Auto))).await;
+    handle.send(Command::Prompt("params".into())).unwrap();
+    let echo: serde_json::Value = serde_json::from_str(&turn_text(&mut events).await).unwrap();
+    assert_eq!(echo["thread"]["approvalsReviewer"], "user");
+    assert_eq!(echo["turn"]["approvalPolicy"], "on-request");
+    assert_eq!(echo["turn"]["approvalsReviewer"], "auto_review");
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn claude_live_switch_uses_set_permission_mode() {
+    let mut c = config();
+    c.engine = "claude".into();
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
+    handle.send(Command::SetMode(Mode::Auto)).unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Auto))).await;
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn claude_refusal_keeps_the_previous_mode() {
+    let mut c = config();
+    c.engine = "claude".into();
+    c.model = Some("reject-mode".into());
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
+    handle.send(Command::SetMode(Mode::Auto)).unwrap();
+    let notice = wait_for(&mut events, |e| {
+        matches!(e, Event::Notice(_) | Event::ModeChanged(_))
+    })
+    .await;
+    assert!(
+        matches!(&notice, Event::Notice(text) if text.contains("refused")),
+        "{notice:?}"
+    );
+    assert!(matches!(
+        next(&mut events).await,
+        Event::ModeChanged(Mode::Ask)
+    ));
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn driver_refuses_live_full_access() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
+    handle.send(Command::SetMode(Mode::FullAccess)).unwrap();
+    let event = wait_for(&mut events, |e| {
+        matches!(e, Event::Notice(_) | Event::ModeChanged(_))
+    })
+    .await;
+    assert!(
+        matches!(&event, Event::Notice(text) if text.contains("/mode")),
+        "{event:?}"
+    );
+    assert!(matches!(
+        next(&mut events).await,
+        Event::ModeChanged(Mode::Ask)
+    ));
+    handle.shutdown();
+    task.await.unwrap();
+}

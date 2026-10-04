@@ -349,7 +349,9 @@ async fn vendor(
         let mut ready = false;
         let mut running = false;
         let mut session = String::new();
-        let mode = config.mode;
+        let mut mode = config.mode;
+        let mut mode_request: Option<(String, Mode)> = None;
+        let mut mode_seq = 0u64;
         let mut turn: Option<String> = None;
         let mut request_id = 10u64;
         let mut start_request = None;
@@ -407,12 +409,36 @@ async fn vendor(
                         if let Some(p)=pending.remove(&id) { send(&process,answer(claude,&p.wire,allow)).await?; emit(tx,Event::ApprovalClosed(id))?; }
                         else { emit(tx,Event::Notice("That approval is no longer active".into()))?; }
                     }
-                    Some(Command::SetMode(_)) => { emit(tx,Event::Notice("Mode switching is not available yet".into()))?; }
+                    Some(Command::SetMode(target)) => {
+                        // Refusals re-emit the current mode so the TUI clears its pending indicator.
+                        if target==Mode::FullAccess || mode==Mode::FullAccess { emit(tx,Event::Notice("Full access is changed by reconnecting; use /mode".into()))?; emit(tx,Event::ModeChanged(mode))?; }
+                        else if !ready { emit(tx,Event::Notice("Wait for the connection before changing modes".into()))?; emit(tx,Event::ModeChanged(mode))?; }
+                        else if mode_request.is_some() { emit(tx,Event::Notice("A mode change is already pending".into()))?; }
+                        else if target==mode { emit(tx,Event::ModeChanged(mode))?; }
+                        else if claude {
+                            mode_seq+=1;
+                            let id=format!("lc-mode-{mode_seq}");
+                            send(&process,json!({"type":"control_request","request_id":id,"request":{"subtype":"set_permission_mode","mode":claude_mode(target)}})).await?;
+                            mode_request=Some((id,target));
+                        } else {
+                            mode=target;
+                            emit(tx,Event::ModeChanged(mode))?;
+                            if running { emit(tx,Event::Notice("Mode applies from the next turn".into()))?; }
+                        }
+                    }
                 },
                 frame=process.next_frame() => {
                     let v=frame.map_err(|e|e.to_string())?.ok_or("Vendor disconnected. Check its login and installation.")?;
                     if claude {
                         let kind=v["type"].as_str().unwrap_or("");
+                        let response_id=v.pointer("/response/request_id").and_then(Value::as_str);
+                        if kind=="control_response" && mode_request.as_ref().is_some_and(|(id,_)| Some(id.as_str())==response_id) {
+                            let (_,target)=mode_request.take().unwrap();
+                            if v.pointer("/response/subtype").and_then(Value::as_str)==Some("success") { mode=target; }
+                            else { emit(tx,Event::Notice(format!("Mode change refused by Claude: {}",limited(v.pointer("/response/error").and_then(Value::as_str).unwrap_or("unknown error")))))?; }
+                            emit(tx,Event::ModeChanged(mode))?;
+                            continue;
+                        }
                         if kind=="control_response" && v.pointer("/response/request_id").and_then(Value::as_str)==Some("lc-init") {
                             if v.pointer("/response/subtype").and_then(Value::as_str)!=Some("success") { return Err("Claude initialization failed".into()); }
                             initialized=true; ready=true; emit(tx,Event::Ready{session:config.resume.clone().unwrap_or_default()})?; emit(tx,Event::ModeChanged(mode))?;
@@ -563,7 +589,7 @@ fn answer(claude: bool, wire: &Value, allow: bool) -> Value {
     }
 }
 async fn demo(
-    mode: Mode,
+    mut mode: Mode,
     mut commands: mpsc::Receiver<Command>,
     mut cancel: watch::Receiver<u64>,
     mut stop: watch::Receiver<bool>,
@@ -585,7 +611,10 @@ async fn demo(
                     let (text,display)=prompt_parts(command);
                     emit(tx,Event::User(display.clone()))?;
                     emit(tx,Event::Started)?;
-                    let reply=if text.trim()=="/approval-demo" {
+                    let reply=if text.trim()=="/approval-demo" && mode!=Mode::Ask && mode!=Mode::AcceptEdits {
+                        emit(tx,Event::Notice(format!("Allowed without a dialog by {} mode (demo only)",mode.label())))?;
+                        "Approved automatically. In a live session, the vendor's own reviewer decides.".to_owned()
+                    } else if text.trim()=="/approval-demo" {
                         emit(tx,Event::Approval{id:1,detail:"Demo only — no command will execute.\n\nWrite a greeting to hello.txt?".into()})?;
                         let allowed=tokio::select!{_=stop.changed()=>return Ok(()),_=cancel.changed()=>false,_=tokio::time::sleep(Duration::from_secs(120))=>false,c=commands.recv()=>matches!(c,Some(Command::Answer{id:1,allow:true}))};
                         emit(tx,Event::ApprovalClosed(1))?;
@@ -594,6 +623,11 @@ async fn demo(
                     let mut interrupted=false;
                     for word in reply.split_inclusive(' '){tokio::select!{_=stop.changed()=>return Ok(()),_=cancel.changed()=>{interrupted=true;break;},_=tokio::time::sleep(Duration::from_millis(18))=>{emit(tx,Event::Text(word.into()))?;}}}
                     emit(tx,Event::Finished{outcome:if interrupted{"interrupted"}else{"completed"}.into()})?;
+                },
+                Some(Command::SetMode(target))=>{
+                    if target==Mode::FullAccess || mode==Mode::FullAccess {emit(tx,Event::Notice("Full access is changed by reconnecting; use /mode".into()))?;}
+                    else {mode=target;}
+                    emit(tx,Event::ModeChanged(mode))?;
                 },
                 None=>break,
                 _=>{}

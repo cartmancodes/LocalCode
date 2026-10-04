@@ -181,6 +181,17 @@ fn interactive_claude() {
             emit(
                 &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"models":[{"value":"sonnet","resolvedModel":"claude-fixture-full-id","displayName":"Fixture Sonnet","description":"Provider description"}]}}}),
             );
+        } else if v["type"] == "control_request" && v["request"]["subtype"] == "set_permission_mode"
+        {
+            if argv.iter().any(|a| a == "reject-mode") {
+                emit(
+                    &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"error","error":"Cannot set permission mode: fixture refusal"}}),
+                );
+            } else {
+                emit(
+                    &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"mode":v["request"]["mode"]}}}),
+                );
+            }
         } else if v["type"] == "user" {
             let text = v
                 .pointer("/message/content/0/text")
