@@ -65,7 +65,8 @@ mode below; this is not a promise that every vendor action raises a dialog.
 Commands: `/help`, `/model`, `/mode`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/quit`.
 The preview also supports persistent multi-turn goals through `/goal`.
 Changing sessions or exporting requires an idle turn. `/approval-demo` exercises
-the dialog in offline demo mode. Unknown preview commands return a visible error.
+the dialog in offline demo mode. Unknown preview commands return a visible error and leave the draft in place.
+`/reconnect` keeps the visible conversation and prompt history; `/new` clears them.
 
 ## Permission modes
 

@@ -186,8 +186,14 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
             Action::New => config.resume = None,
             Action::Reconnect => {
                 if !app.session.is_empty() && config.engine != "demo" {
-                    config.resume = Some(app.session);
+                    config.resume = Some(app.session.clone());
                 }
+                app.notice(if config.resume.is_some() {
+                    "Reconnecting to the same vendor session. Earlier messages stay visible."
+                } else {
+                    "Reconnecting. No vendor session ID yet, so the vendor starts fresh; earlier messages stay visible."
+                });
+                retained_app = Some(app);
             }
             _ => break,
         }
@@ -404,9 +410,13 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
                 return Action::Continue;
             }
             if draft.starts_with('/') && draft != "/approval-demo" {
-                let result = command(app, &draft).await;
-                app.editor.take();
-                return result;
+                return match try_command(app, &draft).await {
+                    Some(action) => {
+                        app.editor.take();
+                        action
+                    }
+                    None => Action::Continue,
+                };
             }
             if !app.ready || app.running || app.stopped {
                 app.notice = "Wait for the current turn, press Esc to cancel, or /reconnect".into();
@@ -476,69 +486,200 @@ fn cycle_mode(app: &mut App) -> Action {
     }
     Action::Continue
 }
-async fn command(app: &mut App, input: &str) -> Action {
+/// Runs a slash command. `None` means the name is not a command, so the caller
+/// keeps the draft: it may be a prompt that merely starts with a slash.
+async fn try_command(app: &mut App, input: &str) -> Option<Action> {
     let (name, argument) = input.split_once(' ').unwrap_or((input, ""));
     let argument = argument.trim();
-    match name{
-        "/quit"|"/exit"=>return Action::Quit,
-        "/help"=>app.help=true,
-        "/model"=>{
-            if argument.trim().is_empty(){app.show_models(1);}
-            else if argument=="list" || argument.starts_with("list ") {
-                match argument.strip_prefix("list").unwrap_or("").trim() { ""=>app.show_models(1), page=>match page.parse::<usize>() {Ok(page)=>app.show_models(page),Err(_)=>app.notice("Use /model list <page number>")} }
-            }
-            else if app.running||!app.approvals.is_empty(){app.notice="Cancel or finish the current turn before switching models".into();}
-            else if !app.ready&&!app.stopped{app.notice="Wait for connection, or cancel it, before switching models".into();}
-            else {match lc_core::model::Selection::parse(argument,&app.engine){Ok(selection)=>return Action::Model(selection),Err(error)=>app.notice(error)}}
-        },
-        "/mode"=>{
-            use lc_core::Mode;
-            if argument.is_empty(){app.notice(app.mode_details());}
-            else if app.mode_pending.is_some(){app.notice("Mode change pending; wait for the vendor to confirm");}
-            else {match Mode::parse(argument){
-                None=>app.notice(format!("Unknown mode {argument}. Use ask, accept-edits, auto or full-access.")),
-                Some(target) if target==app.mode && target==Mode::FullAccess=>app.notice("Already in full-access mode"),
-                Some(target) if target==Mode::FullAccess || app.mode==Mode::FullAccess=>{
-                    if app.running||!app.approvals.is_empty(){app.notice="Cancel or finish the current turn before changing full access".into();}
-                    // Tightening out of full access is always allowed once the vendor has stopped.
-                    else if !app.ready && !(app.stopped && target!=Mode::FullAccess){app.notice="Wait for a ready session before changing full access".into();}
-                    else {return Action::Mode(target);}
-                },
-                Some(target)=>return Action::SetMode(target),
-            }}
-        },
-        "/new"|"/reconnect"=>{if app.running{app.notice="Cancel the active turn before changing sessions".into();}else{return if name=="/new"{Action::New}else{Action::Reconnect};}},
-        "/session"=>app.notice(format!("{}\nSession: {}\nJournal: {}\nWorkspace: {}",app.model_details(),if app.session.is_empty(){"not assigned"}else{&app.session},app.journal.display(),app.workspace)),
-        "/goal"=>{
-            use lc_core::goal::{Goal,Status};
-            match argument {
-                ""|"status"=>app.notice(app.goal.as_ref().map(Goal::summary).unwrap_or_else(||"No goal set. Use /goal <objective>.".into())),
-                "pause"=>{if let Some(goal)=&mut app.goal {goal.status=Status::Paused;app.notice("Goal paused. Current vendor turn may finish; no next turn will start.");}else{app.notice("No goal set");}},
-                "clear"=>{app.goal=None;app.goal_running=false;app.notice("Goal cleared. Current vendor turn may finish.");},
-                "resume"|"complete"=>{
-                    if app.running||!app.ready||app.stopped {app.notice("Wait for a ready, idle session before resuming or auditing a goal");}
-                    else if let Some(goal)=&mut app.goal {
-                        if goal.status==Status::Complete {app.notice("Goal is already complete; set a new goal to continue.");}
-                        else if goal.turns>=lc_core::goal::MAX_GOAL_TURNS {app.notice("Goal reached the 200-turn guard. Set a new goal to continue.");}
-                        else {goal.status=Status::Active;let prompt=goal.prompt(false,argument=="complete");if let Err(e)=app.save_goal().await {if let Some(goal)=&mut app.goal {goal.status=Status::Paused;}app.notice(format!("Goal persistence failed; paused: {e}"));return Action::Continue;}else{return Action::GoalPrompt(prompt);}}
-                    }else{app.notice("No goal set");}
-                },
-                objective=>{
-                    if app.running||!app.ready||app.stopped {app.notice("Wait for a ready, idle session before starting a goal");}
-                    else if app.goal.as_ref().is_some_and(|g|g.status==Status::Active) {app.notice("Pause or clear the active goal before replacing it");}
-                    else {match Goal::new(objective){Ok(goal)=>{let prompt=goal.prompt(true,false);app.goal=Some(goal);if let Err(e)=app.save_goal().await {app.goal=None;app.notice(format!("Goal persistence failed: {e}"));return Action::Continue;}else{return Action::GoalPrompt(prompt);}},Err(e)=>app.notice(e)}}
+    match name {
+        "/quit" | "/exit" => return Some(Action::Quit),
+        "/help" => app.help = true,
+        "/model" => {
+            if argument.trim().is_empty() {
+                app.show_models(1);
+            } else if argument == "list" || argument.starts_with("list ") {
+                match argument.strip_prefix("list").unwrap_or("").trim() {
+                    "" => app.show_models(1),
+                    page => match page.parse::<usize>() {
+                        Ok(page) => app.show_models(page),
+                        Err(_) => app.notice("Use /model list <page number>"),
+                    },
+                }
+            } else if app.running || !app.approvals.is_empty() {
+                app.notice = "Cancel or finish the current turn before switching models".into();
+            } else if !app.ready && !app.stopped {
+                app.notice = "Wait for connection, or cancel it, before switching models".into();
+            } else {
+                match lc_core::model::Selection::parse(argument, &app.engine) {
+                    Ok(selection) => return Some(Action::Model(selection)),
+                    Err(error) => app.notice(error),
                 }
             }
-            if let Err(e)=app.save_goal().await {app.notice(format!("Goal persistence failed: {e}"));}
-        },
-        "/export"=>{
-            if app.running{app.notice="Wait for completion or cancel before exporting".into();return Action::Continue;}
-            let path=if argument.trim().is_empty(){std::env::current_dir().unwrap_or_default().join(app.journal.file_name().unwrap_or_default())}else{PathBuf::from(argument.trim())};
-            match lc_core::export_journal(&app.journal,&path).await{Ok(())=>app.notice(format!("Exported journal to {}",path.display())),Err(error)=>app.notice(format!("Export failed: {error}"))}
-        },
-        _=>app.notice(format!("Unknown command {name}. Use /help. The preview does not implement every legacy command yet."))
+        }
+        "/mode" => {
+            use lc_core::Mode;
+            if argument.is_empty() {
+                app.notice(app.mode_details());
+            } else if app.mode_pending.is_some() {
+                app.notice("Mode change pending; wait for the vendor to confirm");
+            } else {
+                match Mode::parse(argument) {
+                    None => app.notice(format!(
+                        "Unknown mode {argument}. Use ask, accept-edits, auto or full-access."
+                    )),
+                    Some(target) if target == app.mode && target == Mode::FullAccess => {
+                        app.notice("Already in full-access mode")
+                    }
+                    Some(target) if target == Mode::FullAccess || app.mode == Mode::FullAccess => {
+                        if app.running || !app.approvals.is_empty() {
+                            app.notice =
+                                "Cancel or finish the current turn before changing full access"
+                                    .into();
+                        }
+                        // Tightening out of full access is always allowed once the vendor has stopped.
+                        else if !app.ready && !(app.stopped && target != Mode::FullAccess) {
+                            app.notice =
+                                "Wait for a ready session before changing full access".into();
+                        } else {
+                            return Some(Action::Mode(target));
+                        }
+                    }
+                    Some(target) => return Some(Action::SetMode(target)),
+                }
+            }
+        }
+        "/new" | "/reconnect" => {
+            if app.running {
+                app.notice = "Cancel the active turn before changing sessions".into();
+            } else {
+                return Some(if name == "/new" {
+                    Action::New
+                } else {
+                    Action::Reconnect
+                });
+            }
+        }
+        "/session" => app.notice(format!(
+            "{}\nSession: {}\nJournal: {}\nWorkspace: {}",
+            app.model_details(),
+            if app.session.is_empty() {
+                "not assigned"
+            } else {
+                &app.session
+            },
+            app.journal.display(),
+            app.workspace
+        )),
+        "/goal" => {
+            use lc_core::goal::{Goal, Status};
+            match argument {
+                "" | "status" => app.notice(
+                    app.goal
+                        .as_ref()
+                        .map(Goal::summary)
+                        .unwrap_or_else(|| "No goal set. Use /goal <objective>.".into()),
+                ),
+                "pause" => {
+                    if let Some(goal) = &mut app.goal {
+                        goal.status = Status::Paused;
+                        app.notice(
+                            "Goal paused. Current vendor turn may finish; no next turn will start.",
+                        );
+                    } else {
+                        app.notice("No goal set");
+                    }
+                }
+                "clear" => {
+                    app.goal = None;
+                    app.goal_running = false;
+                    app.notice("Goal cleared. Current vendor turn may finish.");
+                }
+                "resume" | "complete" => {
+                    if app.running || !app.ready || app.stopped {
+                        app.notice(
+                            "Wait for a ready, idle session before resuming or auditing a goal",
+                        );
+                    } else if let Some(goal) = &mut app.goal {
+                        if goal.status == Status::Complete {
+                            app.notice("Goal is already complete; set a new goal to continue.");
+                        } else if goal.turns >= lc_core::goal::MAX_GOAL_TURNS {
+                            app.notice(
+                                "Goal reached the 200-turn guard. Set a new goal to continue.",
+                            );
+                        } else {
+                            goal.status = Status::Active;
+                            let prompt = goal.prompt(false, argument == "complete");
+                            if let Err(e) = app.save_goal().await {
+                                if let Some(goal) = &mut app.goal {
+                                    goal.status = Status::Paused;
+                                }
+                                app.notice(format!("Goal persistence failed; paused: {e}"));
+                                return Some(Action::Continue);
+                            } else {
+                                return Some(Action::GoalPrompt(prompt));
+                            }
+                        }
+                    } else {
+                        app.notice("No goal set");
+                    }
+                }
+                objective => {
+                    if app.running || !app.ready || app.stopped {
+                        app.notice("Wait for a ready, idle session before starting a goal");
+                    } else if app
+                        .goal
+                        .as_ref()
+                        .is_some_and(|g| g.status == Status::Active)
+                    {
+                        app.notice("Pause or clear the active goal before replacing it");
+                    } else {
+                        match Goal::new(objective) {
+                            Ok(goal) => {
+                                let prompt = goal.prompt(true, false);
+                                app.goal = Some(goal);
+                                if let Err(e) = app.save_goal().await {
+                                    app.goal = None;
+                                    app.notice(format!("Goal persistence failed: {e}"));
+                                    return Some(Action::Continue);
+                                } else {
+                                    return Some(Action::GoalPrompt(prompt));
+                                }
+                            }
+                            Err(e) => app.notice(e),
+                        }
+                    }
+                }
+            }
+            if let Err(e) = app.save_goal().await {
+                app.notice(format!("Goal persistence failed: {e}"));
+            }
+        }
+        "/export" => {
+            if app.running {
+                app.notice = "Wait for completion or cancel before exporting".into();
+                return Some(Action::Continue);
+            }
+            let path = if argument.trim().is_empty() {
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .join(app.journal.file_name().unwrap_or_default())
+            } else {
+                PathBuf::from(argument.trim())
+            };
+            match lc_core::export_journal(&app.journal, &path).await {
+                Ok(()) => app.notice(format!("Exported journal to {}", path.display())),
+                Err(error) => app.notice(format!("Export failed: {error}")),
+            }
+        }
+        _ => {
+            app.notice(format!("Unknown command {name}. Use /help, or edit the draft: a prompt cannot start with a slash."));
+            return None;
+        }
     }
-    Action::Continue
+    Some(Action::Continue)
+}
+async fn command(app: &mut App, input: &str) -> Action {
+    try_command(app, input).await.unwrap_or(Action::Continue)
 }
 
 #[cfg(test)]
@@ -733,5 +874,42 @@ mod model_tests {
             .ends_with("Restarting the offline demo…"));
         assert!(full_access_notice(Mode::Ask, "codex", "thread")
             .starts_with("Leaving full access for ask."));
+    }
+    #[tokio::test]
+    async fn unknown_command_keeps_the_draft() {
+        let directory = std::env::temp_dir().join(format!("lc-tui-draft-{}", std::process::id()));
+        let config = Config {
+            engine: "demo".into(),
+            binary: "demo".into(),
+            cwd: directory.clone(),
+            model: None,
+            resume: None,
+            mode: lc_core::Mode::Ask,
+        };
+        let mut session = Session::open(config.clone(), directory.clone())
+            .await
+            .unwrap();
+        let mut app = App::new(&config, session.journal.clone());
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.editor
+            .insert("/usr/lib is where this breaks, please look");
+        assert!(matches!(
+            key_action(&mut app, &mut session, enter).await,
+            Action::Continue
+        ));
+        assert_eq!(
+            app.editor.text,
+            "/usr/lib is where this breaks, please look"
+        );
+        assert!(app.notice.contains("Unknown command"));
+        app.editor.take();
+        app.editor.insert("/session");
+        assert!(matches!(
+            key_action(&mut app, &mut session, enter).await,
+            Action::Continue
+        ));
+        assert!(app.editor.text.is_empty());
+        session.shutdown().await;
+        tokio::fs::remove_dir_all(directory).await.unwrap();
     }
 }

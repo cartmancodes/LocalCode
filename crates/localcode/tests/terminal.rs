@@ -327,3 +327,39 @@ fn live_mode_change_survives_a_new_session() {
     p.send(b"\x11");
     p.finish();
 }
+#[test]
+fn reconnect_keeps_the_visible_conversation() {
+    let mut p = Pty::spawn();
+    p.wait(|p| p.count("ready") == 1);
+    p.send(b"remember-this-prompt\r");
+    p.wait(|p| p.count("finished") == 1);
+    // The journal is written before the TUI sees the event; wait for the screen.
+    p.wait(|p| p.output.windows(9).any(|w| w == b"completed"));
+    p.send(b"/reconnect\r");
+    p.wait(|p| p.count("ready") == 2);
+    // A resize repaints every cell, so the retained transcript must reappear.
+    for _ in 0..20 {
+        p.drain();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mark = p.output.len();
+    let size = libc::winsize {
+        ws_row: 30,
+        ws_col: 100,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    unsafe {
+        assert_eq!(
+            libc::ioctl(p.master.as_raw_fd(), libc::TIOCSWINSZ as _, &size),
+            0
+        );
+    }
+    p.wait(|p| {
+        p.output[mark..]
+            .windows(20)
+            .any(|w| w == b"remember-this-prompt")
+    });
+    p.send(b"\x11");
+    p.finish();
+}
