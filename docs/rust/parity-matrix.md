@@ -4,14 +4,17 @@ This matrix freezes the scope accepted in the v3 design. Existing Python tests a
 behavioral references, not dependencies of the Rust build. Every retained row
 needs Rust acceptance tests before release; none is satisfied by crate scaffolding.
 A Rust TUI vertical slice is now available (2026-10-03); see [its scope](../tui.md).
-The preview does not satisfy the full release matrix. Claude catalog discovery and terminal rendering passed live checks on 2026-10-04.
-Claude inference was not revalidated after the earlier expired-authentication
-failure; full parity remains pending.
+The preview does not satisfy the full release matrix. On 2026-10-04 the release
+binary passed scripted live terminal checks against Claude Code 2.1.270 and Codex
+CLI 0.154 (model `gpt-5.5`): streaming,
+tool approval (allow and deny), interrupt, the four permission modes, model switch,
+resume after reconnect, `/goal`, `/export` and clean shutdown. Full parity remains
+pending.
 
 | Contract | Existing reference | Rust acceptance requirement | Status |
 | --- | --- | --- | --- |
-| Claude streaming, tools, hooks, approval, interrupt, resume/fork | `test_engine_claude.py`, `test_claude_client_reuse.py`, replay fixtures | Live versioned protocol evidence and deterministic cancellation races | Preview driver tested offline; live revalidation blocked by authentication |
-| Codex streaming, approval, interrupt, resume/fork/compact | `test_engine_codex.py`, `test_codex_jsonrpc.py`, real trace fixture | Correlated requests; terminal turn completion; live controls | Preview multi-turn/control tests and live TUI chat passed; full gate pending |
+| Claude streaming, tools, hooks, approval, interrupt, resume/fork | `test_engine_claude.py`, `test_claude_client_reuse.py`, replay fixtures | Live versioned protocol evidence and deterministic cancellation races | Preview driver tested offline and live in the TUI on 2026-10-04 (streaming, tools, approval, interrupt, resume); hooks, fork and the full gate pending |
+| Codex streaming, approval, interrupt, resume/fork/compact | `test_engine_codex.py`, `test_codex_jsonrpc.py`, real trace fixture | Correlated requests; terminal turn completion; live controls | Preview multi-turn/control tests passed offline and live in the TUI on 2026-10-04 (streaming, approval, interrupt, resume); fork, compact and the full gate pending |
 | Official authentication ownership | `test_auth_invariant.py`, `test_home_isolation.py` | No reading/extraction of credentials; use vendor login | Pending |
 | Session prompt/images, steer/follow-up, queues, model/thinking, compact, shell controls | `test_agent_session.py`, `test_session_manager.py` | Typed commands accessible from TUI, print, JSON and RPC | Preview has prompts, model switching and persistent `/goal`; remaining controls pending |
 | New/open/list/rename/trash, branch/fork/clone/navigation/labels | `test_session_manager.py`, `test_agent_session.py` | Stable session and turn IDs; stale messages cannot cross sessions | Pending |
