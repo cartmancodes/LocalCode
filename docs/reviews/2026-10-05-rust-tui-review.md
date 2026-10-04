@@ -80,6 +80,8 @@ drains the terminal while it waits, for at most five seconds.
   `lc-tui/src/lib.rs` combines terminal ownership, commands, and goal orchestration.
   Extracting those responsibilities would be useful when extending them. A broad
   split was not needed for the reproduced defects and was not attempted here.
+  The follow-up [quality review](2026-10-05-rust-quality-review.md) made that
+  split.
 
 ## Verification evidence
 
