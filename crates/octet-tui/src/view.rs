@@ -1,5 +1,6 @@
 use crate::{
     editor::Editor,
+    mascot::{self, State},
     text::{clean, Sanitizer},
 };
 use octet_core::Event;
@@ -53,6 +54,8 @@ pub struct App {
     pub stopped: bool,
     pub status: String,
     pub usage: String,
+    activity: State,
+    monochrome: bool,
     entries: VecDeque<Entry>,
     bytes: usize,
     sanitizer: Sanitizer,
@@ -88,6 +91,8 @@ impl App {
             stopped: false,
             status: "connecting".into(),
             usage: String::new(),
+            activity: State::Thinking,
+            monochrome: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
             entries: VecDeque::new(),
             bytes: 0,
             sanitizer: Sanitizer::default(),
@@ -120,6 +125,7 @@ impl App {
         self.running = false;
         self.stopped = false;
         self.status = "connecting".into();
+        self.activity = State::Thinking;
         self.usage.clear();
         self.approvals.clear();
         self.approval_scroll = 0;
@@ -294,6 +300,7 @@ impl App {
                 self.session = clean(&session);
                 if !self.running {
                     self.status = "ready".into();
+                    self.activity = State::Idle;
                 }
             }
             Event::User(text) => {
@@ -302,11 +309,13 @@ impl App {
             }
             Event::Started => {
                 self.running = true;
+                self.activity = State::Thinking;
                 self.status = "working".into();
                 self.notice.clear();
                 self.sanitizer = Sanitizer::default();
             }
             Event::Text(text) => {
+                self.activity = State::Thinking;
                 let text = self.sanitizer.push(&text);
                 if self
                     .entries
@@ -326,7 +335,10 @@ impl App {
                 }
                 self.trim();
             }
-            Event::Tool(text) => self.add(Role::Tool, text),
+            Event::Tool(text) => {
+                self.activity = State::tool(&text);
+                self.add(Role::Tool, text);
+            }
             Event::Approval { id, detail } => {
                 self.approvals.push_back((id, clean(&detail)));
                 self.approval_scroll = 0;
@@ -339,13 +351,22 @@ impl App {
             Event::Finished { outcome } => {
                 self.running = false;
                 self.status = clean(outcome.as_str());
+                self.activity = match outcome {
+                    octet_core::Outcome::Completed => State::Success,
+                    octet_core::Outcome::Interrupted => State::Sleeping,
+                    _ => State::Error,
+                };
             }
             Event::Notice(text) => self.notice(text),
             Event::Error(text) => {
                 self.add(Role::Error, text);
                 self.status = "error".into();
+                self.activity = State::Error;
             }
             Event::Stopped => {
+                if self.activity != State::Error {
+                    self.activity = State::Sleeping;
+                }
                 self.mode_pending = None;
                 self.stopped = true;
                 self.running = false;
@@ -353,6 +374,13 @@ impl App {
                 self.approvals.clear();
                 self.status = "disconnected".into();
             }
+        }
+    }
+    fn mascot_state(&self) -> State {
+        if self.approvals.is_empty() {
+            self.activity
+        } else {
+            State::Approval
         }
     }
     pub fn recall(&mut self, older: bool) {
@@ -527,32 +555,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .margin(1)
     .split(area);
-    let header = Layout::horizontal([
-        Constraint::Length(16),
-        Constraint::Min(6),
-        Constraint::Length(22),
-    ])
-    .split(regions[0]);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(" ◇ OCTET", Style::default().fg(ACCENT).bold())),
-            Line::from(Span::styled("   RUST PREVIEW", Style::default().fg(MUTED))),
-        ]),
-        header[0],
+    let status = format!(
+        "● {}",
+        if app.approvals.is_empty() {
+            app.status.as_str()
+        } else {
+            "approval needed"
+        }
     );
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(app.workspace.clone()),
-            Line::from(vec![
-                Span::styled(
-                    format!("{}  /  {}  ·  ", app.engine, app.model),
-                    Style::default().fg(MUTED),
-                ),
-                mode_chip(app),
-            ]),
-        ]),
-        header[1],
-    );
+    // Status and usage keep the right edge, sized to their text so a narrow
+    // terminal never cuts them; the banner takes the rest.
+    let status_width = (status.width().max(app.usage.width()) as u16).clamp(12, 22);
+    let header = Layout::horizontal([Constraint::Min(6), Constraint::Length(status_width)])
+        .spacing(1)
+        .split(regions[0]);
+    banner(frame, header[0], app);
     let status_color = if !app.approvals.is_empty() {
         AMBER
     } else if app.stopped {
@@ -562,21 +579,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     };
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(Span::styled(
-                format!(
-                    "● {}",
-                    if app.approvals.is_empty() {
-                        app.status.as_str()
-                    } else {
-                        "approval needed"
-                    }
-                ),
-                Style::default().fg(status_color),
-            )),
+            Line::from(Span::styled(status, Style::default().fg(status_color))),
             Line::from(Span::styled(app.usage.clone(), Style::default().fg(MUTED))),
         ])
         .alignment(Alignment::Right),
-        header[2],
+        header[1],
     );
     let columns = Layout::horizontal(if area.width >= 112 {
         vec![Constraint::Min(40), Constraint::Length(29)]
@@ -586,9 +593,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     .spacing(2)
     .split(regions[1]);
     let transcript = columns[0];
-    if app.entries.is_empty() {
-        welcome(frame, transcript, app.engine);
-    } else {
+    // Before the first message the conversation area stays blank, reserved
+    // for what the conversation will fill.
+    if !app.entries.is_empty() {
         let block = card(if app.scroll > 0 {
             " Conversation · scrollback "
         } else {
@@ -692,48 +699,49 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ));
     }
 }
-fn welcome(frame: &mut Frame, area: Rect, engine: octet_core::Engine) {
-    let top = area.y + area.height.saturating_sub(14) / 2;
-    let region = Rect {
-        x: area.x + 3,
-        y: top,
-        width: area.width.saturating_sub(6),
-        height: area.height.min(16),
-    };
+/// The top-left banner, after Claude Code's: the mini Octet (or a text mark
+/// without colour) beside three lines. The permission mode leads its line so
+/// a long model name can never push it off a narrow screen.
+fn banner(frame: &mut Frame, area: Rect, app: &App) {
     let lines = vec![
-        Line::from(Span::styled("  ╭──╮", Style::default().fg(ACCENT))),
-        Line::from(Span::styled(
-            "  │ ◇│  Your workspace. One conversation.",
-            Style::default().fg(FG).bold(),
-        )),
-        Line::from(Span::styled("  ╰──╯", Style::default().fg(ACCENT))),
-        Line::default(),
-        Line::from("  Read code, work through a change, and review the result."),
-        Line::from(Span::styled(
-            format!(
-                "  {} · native terminal · no browser",
-                if engine == octet_core::Engine::Demo {
-                    "Offline demo"
-                } else {
-                    engine.as_str()
-                }
+        Line::from(vec![
+            Span::styled("Octet", Style::default().fg(ACCENT).bold()),
+            Span::styled(
+                format!(" v{} · Rust preview", env!("CARGO_PKG_VERSION")),
+                Style::default().fg(MUTED),
             ),
-            Style::default().fg(MUTED),
-        )),
-        Line::default(),
-        Line::from(Span::styled(
-            "  START WITH A QUESTION",
-            Style::default().fg(MUTED),
-        )),
-        Line::from("  Explain the structure of this project"),
-        Line::from("  Find a bug and suggest a focused fix"),
-        Line::default(),
-        Line::from(Span::styled(
-            "  /help  shortcuts      Ctrl+P  commands",
-            Style::default().fg(ACCENT),
-        )),
+        ]),
+        Line::from(vec![
+            mode_chip(app),
+            Span::styled(
+                format!("  ·  {}  /  {}", app.engine, app.model),
+                Style::default().fg(MUTED),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(app.mascot_state().label(), Style::default().fg(ACCENT)),
+            Span::styled(
+                format!("  ·  {}", app.workspace),
+                Style::default().fg(MUTED),
+            ),
+        ]),
     ];
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), region);
+    let (mark_width, mark) = if app.monochrome {
+        (
+            1,
+            vec![Line::from(Span::styled("◇", Style::default().fg(ACCENT)))],
+        )
+    } else {
+        (9, mascot::mini(app.mascot_state(), BG))
+    };
+    let [mark_area, _, text] = Layout::horizontal([
+        Constraint::Length(mark_width),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+    frame.render_widget(Paragraph::new(mark), mark_area);
+    frame.render_widget(Paragraph::new(lines), text);
 }
 fn sidebar(frame: &mut Frame, area: Rect, app: &App) {
     let block = card(" Workspace ");
@@ -881,6 +889,171 @@ fn approval(frame: &mut Frame, area: Rect, id: u64, detail: &str, scroll: u16, c
 mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+    fn screen(width: u16, height: u16, app: &mut App) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+    #[test]
+    fn empty_conversation_leaves_the_centre_blank() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        for (width, height) in [(80, 24), (60, 20)] {
+            let mut app = App::new(&config, "journal".into());
+            app.monochrome = false;
+            app.event(Event::Ready {
+                session: "demo".into(),
+            });
+            let rows = screen(width, height, &mut app);
+            // Rows between the 3-row banner (after the margin) and the 7-row
+            // composer, its status line and the bottom margin.
+            for row in &rows[4..rows.len() - 9] {
+                let inside: String = row.chars().skip(1).take(width as usize - 2).collect();
+                assert!(inside.trim().is_empty(), "{width}×{height}: {row:?}");
+            }
+        }
+    }
+    #[test]
+    fn header_banner_shows_mini_version_mode_activity_and_workspace() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        for (width, height) in [(160, 42), (80, 24), (60, 20), (40, 12)] {
+            let mut app = App::new(&config, "journal".into());
+            app.monochrome = false;
+            for event in [
+                Event::Ready {
+                    session: "demo".into(),
+                },
+                Event::User("fix the failing test".into()),
+                Event::Started,
+                Event::Tool("Bash\n{}".into()),
+            ] {
+                app.event(event);
+            }
+            let rows = screen(width, height, &mut app);
+            // The header starts inside the one-cell margin.
+            for row in &rows[1..4] {
+                let mini: String = row.chars().skip(1).take(9).collect();
+                assert_eq!(mini, "▀".repeat(9), "{width}×{height}: {row}");
+            }
+            let at = |row: usize| format!("{width}×{height}: {}", rows[row]);
+            let version = format!("Octet v{}", env!("CARGO_PKG_VERSION"));
+            assert!(rows[1].contains(&version), "{}", at(1));
+            assert!(rows[1].contains("working"), "{}", at(1));
+            assert!(rows[2].contains("ask"), "{}", at(2));
+            assert!(
+                rows[3].contains("CODING") && rows[3].contains("/tmp"),
+                "{}",
+                at(3)
+            );
+        }
+    }
+    #[test]
+    fn permission_mode_stays_visible_on_narrow_headers() {
+        let config = octet_core::Config {
+            model: Some("gpt-5.5-codex-max-preview-long-name".into()),
+            mode: octet_core::Mode::FullAccess,
+            ..octet_core::Config::new(octet_core::Engine::Codex, "codex", "/tmp")
+        };
+        for width in [80, 60, 40, 38] {
+            let mut app = App::new(&config, "journal".into());
+            app.monochrome = false;
+            let rows = screen(width, 24, &mut app);
+            assert!(
+                rows[2].contains("full-access"),
+                "{width} columns: {}",
+                rows[2]
+            );
+        }
+    }
+    #[test]
+    fn status_shows_in_full_on_narrow_terminals() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        for width in [59, 50, 40] {
+            let mut app = App::new(&config, "journal".into());
+            app.monochrome = false;
+            for event in [
+                Event::Ready {
+                    session: "demo".into(),
+                },
+                Event::Started,
+                Event::Finished {
+                    outcome: octet_core::Outcome::Interrupted,
+                },
+            ] {
+                app.event(event);
+            }
+            let rows = screen(width, 12, &mut app);
+            assert!(rows[1].contains("● interrupted"), "{width}: {}", rows[1]);
+        }
+    }
+    #[test]
+    fn no_color_keeps_the_text_header() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.monochrome = true;
+        let rows = screen(80, 24, &mut app);
+        let mark = format!("◇ Octet v{}", env!("CARGO_PKG_VERSION"));
+        assert!(rows[1].contains(&mark), "{}", rows[1]);
+        assert!(!rows[1..4].iter().any(|row| row.contains('▀')));
+    }
+    #[test]
+    fn mascot_tracks_activity_and_keeps_errors_visible_after_disconnect() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        for (event, expected) in [
+            (
+                Event::Ready {
+                    session: "demo".into(),
+                },
+                "IDLE",
+            ),
+            (Event::Started, "THINKING"),
+            (
+                Event::Tool("Read\n{\"file_path\":\"src/main.rs\"}".into()),
+                "SEARCHING",
+            ),
+            (
+                Event::Tool("Bash\n{\"command\":\"cargo check\"}".into()),
+                "CODING",
+            ),
+            (Event::Tool("dispatch_subagent\n{}".into()), "DELEGATING"),
+            (
+                Event::Approval {
+                    id: 1,
+                    detail: "Write src/main.rs".into(),
+                },
+                "APPROVAL",
+            ),
+            (Event::ApprovalClosed(1), "DELEGATING"),
+            (
+                Event::Finished {
+                    outcome: octet_core::Outcome::Completed,
+                },
+                "SUCCESS",
+            ),
+            (
+                Event::Finished {
+                    outcome: octet_core::Outcome::Interrupted,
+                },
+                "SLEEPING",
+            ),
+            (Event::Error("provider disconnected".into()), "ERROR"),
+            (Event::Stopped, "ERROR"),
+        ] {
+            app.event(event);
+            // The banner's third row starts with the activity name; the
+            // transcript's own ERROR label must not satisfy this check.
+            let rows = screen(160, 42, &mut app);
+            let activity = rows[3].chars().skip(11).collect::<String>();
+            assert!(
+                activity.trim_start().starts_with(expected),
+                "mascot should show {expected}: {}",
+                rows[3]
+            );
+        }
+    }
     #[test]
     fn renders_narrow_wide_and_approval_without_panics() {
         for (w, h) in [(30, 8), (40, 12), (80, 24), (120, 36)] {

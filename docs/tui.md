@@ -260,3 +260,32 @@ docs describe newer Opus/Sonnet defaults than this installed CLI advertises;
 Octet faithfully displays the installed CLI's metadata rather than claiming
 that a documentation example is available to the current account. No model
 inference request was made for these discovery checks.
+
+### Octet mascot
+
+Octet, the crimson octopus mascot, sits at the top left of the screen at every
+size, in a banner modelled on Claude Code's. The banner is three rows tall:
+the 9 × 3-cell mini Octet, drawn with coloured Unicode half blocks, sits beside
+three lines:
+
+- `Octet vX.Y.Z · Rust preview`;
+- the permission mode, then the engine and model. The mode leads its line so
+  a long model name cannot push it off a narrow screen;
+- the activity name, then the workspace path.
+
+Status and usage stay at the right edge, sized to their text so a narrow
+terminal never cuts them. Below the banner, the conversation
+area stays empty until the first message; the composer's placeholder says
+what to type.
+
+Octet's pose follows the shared provider events: idle, thinking, coding,
+searching, delegating, approval, success, error and sleeping. Tool names
+choose the activity pose, an open approval overrides it, and an error stays
+visible after a provider disconnects. In the mini only the eyes and a small
+accent change, so the activity name beside it carries the exact mode. Poses change on events only; there is no animation timer.
+
+`NO_COLOR=1` replaces the mini with a `◇` text mark.
+
+The full pixel-art reference for all nine poses is kept in
+`docs/design/octet-agent-modes/` as design material; the app draws only the
+mini, from the grids in `crates/octet-tui/src/mascot/art.rs`.

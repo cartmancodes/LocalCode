@@ -1,4 +1,5 @@
 mod editor;
+mod mascot;
 mod text;
 mod view;
 use crossterm::{

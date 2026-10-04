@@ -167,7 +167,7 @@ fn config() -> Config {
 
 - [ ] **Step 3: Use `TempDir` in tests**
 
-Replace each `let dir = std::env::temp_dir().join(format!("lc-…-{}", std::process::id()));` + trailing `remove_dir_all(dir)` with `let dir = octet_testkit::TempDir::new("lc-…");` and `dir.path()`; delete the explicit `remove_dir_all` (the guard does it). In `octet-tui/src/lib.rs` tests the same applies to `octet-goal-cancel` and `octet-tui-draft`.
+Replace each `let dir = std::env::temp_dir().join(format!("octet-…-{}", std::process::id()));` + trailing `remove_dir_all(dir)` with `let dir = octet_testkit::TempDir::new("octet-…");` and `dir.path()`; delete the explicit `remove_dir_all` (the guard does it). In `octet-tui/src/lib.rs` tests the same applies to `octet-goal-cancel` and `octet-tui-draft`.
 
 - [ ] **Step 4: Verify, including the release profile**
 
