@@ -93,7 +93,8 @@ Notes:
   - Claude: send `control_request {request_id: "lc-mode-N", request: {subtype:
     "set_permission_mode", mode}}`; remember it as pending. On a `success`
     `control_response` for that id emit `ModeChanged(target)`; on `error` emit
-    `Notice("Mode change refused by Claude: <message>")` and keep the old mode.
+    `Notice("Mode change refused by Claude: <message>")`, keep the old mode and
+    re-emit `ModeChanged(old)` so the TUI clears its pending indicator.
     Works while a turn is running.
   - Codex: set the current mode and emit `ModeChanged(target)` immediately. Every
     `turn/start` includes `codex_turn_overrides(mode)` (`approvalPolicy`,
@@ -117,8 +118,8 @@ Notes:
 - `/mode`: with no argument, shows the current mode and the mapping table for
   the active provider. With `ask|accept-edits|auto` (and current mode not
   full-access): sends `SetMode`; allowed mid-turn. With `full-access`, or any
-  mode while in full-access: requires an idle, ready session, shows an amber
-  notice ("Full access: the agent can run any command and edit any file without
+  mode while in full-access: requires an idle, ready session, shows a
+  notice (the header chip, not the notice, carries the amber warning) ("Full access: the agent can run any command and edit any file without
   asking. Reconnecting…" when entering), and returns `Action::Mode(mode)`, which
   `run` handles like a same-provider `Action::Model` reconnect with
   `config.mode` updated and `config.resume` set.
@@ -140,7 +141,7 @@ Notes:
      "auto_review"` and `approvalPolicy: "on-request"`.
    - Claude: argv carries the mapped `--permission-mode`; `SetMode(Auto)` sends
      `set_permission_mode` and yields `ModeChanged(Auto)` on success, a `Notice`
-     and no `ModeChanged` on error.
+     followed by `ModeChanged(<old mode>)` on error.
    - `SetMode(FullAccess)` is refused by the driver.
 3. `lc-tui` unit tests (existing `command()` style): `/mode` parsing and errors,
    full-access idle gate and `Action::Mode`, BackTab cycle and full-access
