@@ -418,3 +418,60 @@ async fn codex_header_follows_a_stricter_reported_policy() {
     handle.shutdown();
     task.await.unwrap();
 }
+async fn wait_long(
+    events: &mut mpsc::Receiver<Event>,
+    seconds: u64,
+    wanted: impl Fn(&Event) -> bool,
+) -> Event {
+    timeout(Duration::from_secs(seconds), async {
+        loop {
+            let event = events.recv().await.expect("driver stopped");
+            if let Event::Error(error) = &event {
+                panic!("{error}");
+            }
+            if wanted(&event) {
+                return event;
+            }
+        }
+    })
+    .await
+    .expect("event did not arrive in time")
+}
+#[tokio::test]
+async fn unconfirmed_claude_switch_times_out_then_applies_a_late_confirmation() {
+    let mut c = config();
+    c.engine = "claude".into();
+    c.model = Some("late-mode".into());
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
+    // Idle past the 30-second connect deadline: the mode timer firing later
+    // must not be mistaken for an expired turn.
+    tokio::time::sleep(Duration::from_secs(21)).await;
+    handle.send(Command::SetMode(Mode::Auto)).unwrap();
+    let event = wait_long(&mut events, 12, |e| {
+        matches!(e, Event::Notice(_) | Event::ModeChanged(_))
+    })
+    .await;
+    assert!(
+        matches!(&event, Event::Notice(text) if text.contains("did not confirm")),
+        "{event:?}"
+    );
+    assert!(matches!(
+        next(&mut events).await,
+        Event::ModeChanged(Mode::Ask)
+    ));
+    let event = wait_long(&mut events, 5, |e| {
+        matches!(e, Event::Notice(_) | Event::ModeChanged(_))
+    })
+    .await;
+    assert!(
+        matches!(&event, Event::Notice(text) if text.contains("late")),
+        "{event:?}"
+    );
+    assert!(matches!(
+        next(&mut events).await,
+        Event::ModeChanged(Mode::Auto)
+    ));
+    handle.shutdown();
+    task.await.unwrap();
+}

@@ -214,7 +214,14 @@ fn interactive_claude() {
             );
         } else if v["type"] == "control_request" && v["request"]["subtype"] == "set_permission_mode"
         {
-            if argv.iter().any(|a| a == "reject-mode") {
+            if argv.iter().any(|a| a == "late-mode") {
+                // Confirm after the driver's 10-second mode deadline.
+                let reply = json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"mode":v["request"]["mode"]}}});
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_secs(11));
+                    emit(&reply);
+                });
+            } else if argv.iter().any(|a| a == "reject-mode") {
                 emit(
                     &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"error","error":"Cannot set permission mode: fixture refusal"}}),
                 );

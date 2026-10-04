@@ -11,6 +11,7 @@ use tokio::{
 pub const PROMPT_LIMIT: usize = 64 * 1024;
 const EVENT_CAPACITY: usize = 128;
 const EVENT_BYTES: usize = 32 * 1024;
+const MODE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -383,7 +384,10 @@ async fn vendor(
         let mut running = false;
         let mut session = String::new();
         let mut mode = config.mode;
-        let mut mode_request: Option<(String, Mode)> = None;
+        let mut mode_request: Option<(String, Mode, Instant)> = None;
+        // A request that timed out; Claude may still confirm it, and the header
+        // must never show a stricter mode than the vendor is really in.
+        let mut late_mode: Option<(String, Mode)> = None;
         let mut mode_seq = 0u64;
         let mut turn: Option<String> = None;
         let mut request_id = 10u64;
@@ -395,7 +399,7 @@ async fn vendor(
         let mut pending: HashMap<u64, Pending> = HashMap::new();
         let mut deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let next_deadline = pending.values().map(|p| p.deadline).min().unwrap_or(deadline).min(deadline);
+            let next_deadline = pending.values().map(|p| p.deadline).chain(mode_request.as_ref().map(|r| r.2)).min().unwrap_or(deadline).min(deadline);
             tokio::select! {
                 biased;
                 _ = stopping.changed() => break,
@@ -415,10 +419,17 @@ async fn vendor(
                         for (id,p) in pending.drain() { send(&process, answer(claude,&p.wire,false)).await?; emit(tx,Event::ApprovalClosed(id))?; }
                     }
                 },
-                _ = tokio::time::sleep_until(next_deadline), if !ready || running || !pending.is_empty() => {
-                    if Instant::now() >= deadline { return Err("Vendor deadline exceeded; session stopped. Resume using the session ID.".into()); }
+                _ = tokio::time::sleep_until(next_deadline), if !ready || running || !pending.is_empty() || mode_request.is_some() => {
+                    // The connect/turn deadline only applies while connecting or in a turn;
+                    // when idle it is stale and other timers can wake this branch.
+                    if (!ready || running) && Instant::now() >= deadline { return Err("Vendor deadline exceeded; session stopped. Resume using the session ID.".into()); }
                     let expired: Vec<u64> = pending.iter().filter(|(_,p)|p.deadline <= Instant::now()).map(|(id,_)|*id).collect();
                     for id in expired { let p=pending.remove(&id).unwrap(); send(&process,answer(claude,&p.wire,false)).await?; emit(tx,Event::ApprovalClosed(id))?; emit(tx,Event::Notice("Approval timed out and was denied".into()))?; }
+                    if let Some((id,target,_))=mode_request.take_if(|r| r.2<=Instant::now()) {
+                        late_mode=Some((id,target));
+                        emit(tx,Event::Notice(format!("Claude did not confirm the switch to {}; keeping {}",target.label(),mode.label())))?;
+                        emit(tx,Event::ModeChanged(mode))?;
+                    }
                 },
                 command = commands.recv() => match command {
                     None => break,
@@ -452,7 +463,7 @@ async fn vendor(
                             mode_seq+=1;
                             let id=format!("lc-mode-{mode_seq}");
                             send(&process,json!({"type":"control_request","request_id":id,"request":{"subtype":"set_permission_mode","mode":claude_mode(target)}})).await?;
-                            mode_request=Some((id,target));
+                            mode_request=Some((id,target,Instant::now()+MODE_CONFIRM_TIMEOUT));
                         } else {
                             mode=target;
                             emit(tx,Event::ModeChanged(mode))?;
@@ -465,8 +476,17 @@ async fn vendor(
                     if claude {
                         let kind=v["type"].as_str().unwrap_or("");
                         let response_id=v.pointer("/response/request_id").and_then(Value::as_str);
-                        if kind=="control_response" && mode_request.as_ref().is_some_and(|(id,_)| Some(id.as_str())==response_id) {
-                            let (_,target)=mode_request.take().unwrap();
+                        if kind=="control_response" && late_mode.as_ref().is_some_and(|(id,_)| Some(id.as_str())==response_id) {
+                            let (_,target)=late_mode.take().unwrap();
+                            if v.pointer("/response/subtype").and_then(Value::as_str)==Some("success") {
+                                mode=v.pointer("/response/response/mode").and_then(Value::as_str).and_then(claude_reported_mode).unwrap_or(target);
+                                emit(tx,Event::Notice(format!("Claude confirmed the switch to {} late",mode.label())))?;
+                                emit(tx,Event::ModeChanged(mode))?;
+                            }
+                            continue;
+                        }
+                        if kind=="control_response" && mode_request.as_ref().is_some_and(|(id,_,_)| Some(id.as_str())==response_id) {
+                            let (_,target,_)=mode_request.take().unwrap();
                             if v.pointer("/response/subtype").and_then(Value::as_str)==Some("success") { mode=v.pointer("/response/response/mode").and_then(Value::as_str).and_then(claude_reported_mode).unwrap_or(target); }
                             else { emit(tx,Event::Notice(format!("Mode change refused by Claude: {}",limited(v.pointer("/response/error").and_then(Value::as_str).unwrap_or("unknown error")))))?; }
                             emit(tx,Event::ModeChanged(mode))?;
