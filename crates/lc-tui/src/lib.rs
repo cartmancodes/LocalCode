@@ -9,6 +9,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use lc_core::goal::Next;
 use lc_core::{Command, Config, Session};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{
@@ -104,16 +105,21 @@ impl Drop for TerminalGuard {
         Self::restore();
     }
 }
+/// What a key or command asks the session loop to do.
 enum Action {
     Continue,
+    Suspend,
+    SetMode(lc_core::Mode),
+    GoalPrompt(String),
+    Exit(Exit),
+}
+/// Why a session ended; `run` decides whether to reconnect.
+enum Exit {
     Quit,
     New,
     Reconnect,
-    Suspend,
     Model(lc_core::model::Selection),
-    SetMode(lc_core::Mode),
     Mode(lc_core::Mode),
-    GoalPrompt(String),
 }
 pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     let old = std::panic::take_hook();
@@ -133,22 +139,8 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         let mut app = retained_app
             .take()
             .unwrap_or_else(|| App::new(&config, session.journal.clone()));
-        if app.goal_store.is_none() {
-            app.goal_store = Some(goal_store.clone());
-            match goal_store.load().await {
-                Ok(goal) => app.goal = goal,
-                Err(error) => app.notice(format!(
-                    "Stored goal could not be loaded: {error}. Chat is available. Use /goal clear to remove the saved goal, or /goal <objective> to replace it."
-                )),
-            }
-            if app
-                .goal
-                .as_ref()
-                .is_some_and(|g| g.status == lc_core::goal::Status::Paused)
-            {
-                app.save_goal().await.map_err(io::Error::other)?;
-                app.notice("Stored goal loaded in paused state. Use /goal resume to continue.");
-            }
+        if !app.goals.is_attached() {
+            attach_goal_store(&mut app, goal_store.clone()).await;
         }
         app.connection(&config, session.journal.clone());
         let result = run_session(&mut terminal, &guard, &mut app, &mut session).await;
@@ -156,18 +148,28 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         // Carry the last vendor-confirmed mode, never an unconfirmed pending one.
         config.mode = app.mode;
         match result? {
-            Action::Model(selection) => {
-                pause_active_goal(&mut app, "model switch").await?;
+            Exit::Model(selection) => {
+                pause_active_goal(&mut app, "model switch").await;
                 let cross_provider = selection.provider != config.engine;
                 let binary = binaries.get(&selection.provider).cloned();
                 let next = selection.configure(&config, &app.session, binary);
                 binaries.insert(next.engine, next.binary.clone());
-                app.notice(format!("Model → {} / {}. {} Previous journal: {}",next.engine,next.model.as_deref().unwrap_or("vendor default"),if cross_provider {"New provider context; earlier displayed messages are not sent to this provider."}else{"Resuming the same vendor context."},app.journal.display()));
+                app.notice(format!(
+                    "Model → {} / {}. {} Previous journal: {}",
+                    next.engine,
+                    next.model.as_deref().unwrap_or("vendor default"),
+                    if cross_provider {
+                        "New provider context; earlier displayed messages are not sent to this provider."
+                    } else {
+                        "Resuming the same vendor context."
+                    },
+                    app.journal.display()
+                ));
                 config = next;
                 retained_app = Some(app);
             }
-            Action::Mode(mode) => {
-                pause_active_goal(&mut app, "mode switch").await?;
+            Exit::Mode(mode) => {
+                pause_active_goal(&mut app, "mode switch").await;
                 app.notice(full_access_notice(mode, config.engine, &app.session));
                 config.mode = mode;
                 if !app.session.is_empty() && config.engine.is_vendor() {
@@ -175,28 +177,51 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                 }
                 retained_app = Some(app);
             }
-            Action::New => config.resume = None,
-            Action::Reconnect => {
+            Exit::New => config.resume = None,
+            Exit::Reconnect => {
                 if !app.session.is_empty() && config.engine.is_vendor() {
                     config.resume = Some(app.session.clone());
                 }
-                pause_active_goal(&mut app, "reconnect").await?;
+                pause_active_goal(&mut app, "reconnect").await;
                 app.notice(reconnect_notice(config.resume.is_some(), &app.journal));
                 retained_app = Some(app);
             }
-            _ => break,
+            Exit::Quit => break,
         }
     }
     drop(terminal);
     drop(guard);
     Ok(())
 }
+/// Loads the stored goal on the first connection. A load failure leaves chat
+/// usable and the file in place.
+async fn attach_goal_store(app: &mut App, store: lc_core::goal::GoalStore) {
+    match app.goals.attach(store).await {
+        Err(error) => app.notice(format!(
+            "Stored goal could not be loaded: {error}. Chat is available. Use /goal clear to remove the saved goal, or /goal <objective> to replace it."
+        )),
+        Ok(())
+            if app
+                .goals
+                .goal
+                .as_ref()
+                .is_some_and(|goal| goal.status == lc_core::goal::Status::Paused) =>
+        {
+            // Rewrites a stored "active" as "paused".
+            if let Err(error) = app.goals.save().await {
+                app.notice(format!("Goal persistence failed: {error}"));
+            }
+            app.notice("Stored goal loaded in paused state. Use /goal resume to continue.");
+        }
+        Ok(()) => {}
+    }
+}
 async fn run_session(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     guard: &TerminalGuard,
     app: &mut App,
     session: &mut Session,
-) -> io::Result<Action> {
+) -> io::Result<Exit> {
     let mut input = InputReader::new();
     let mut dirty = true;
     let mut last_paint = Instant::now() - Duration::from_secs(1);
@@ -213,74 +238,134 @@ async fn run_session(
             dirty = false;
         }
         tokio::select! {
-            _=tokio::time::sleep_until(last_paint+frame_time),if dirty=>{},
-            event=session.events.recv(),if events_open=>{
-                if let Some(event)=event{
-                    if matches!(event,lc_core::Event::Finished{..}|lc_core::Event::Error(_)){last_paint=Instant::now()-frame_time;}
-                    if app.goal_running {
-                        if let lc_core::Event::Text(text)=&event {
-                            app.goal_output.push_str(text);
-                            if app.goal_output.len()>64*1024 {
-                                let mut start=app.goal_output.len()-64*1024;
-                                while !app.goal_output.is_char_boundary(start) {start+=1;}
-                                app.goal_output.drain(..start);
-                            }
+            _ = tokio::time::sleep_until(last_paint + frame_time), if dirty => {}
+            event = session.events.recv(), if events_open => {
+                match event {
+                    Some(event) => {
+                        // Turn ends paint at once rather than waiting for the frame timer.
+                        if matches!(event, lc_core::Event::Finished { .. } | lc_core::Event::Error(_)) {
+                            last_paint = Instant::now() - frame_time;
                         }
+                        session_event(app, session, event).await;
                     }
-                    let outcome=if let lc_core::Event::Finished{outcome}=&event {Some(outcome.clone())} else {None};
-                    let failed=matches!(&event,lc_core::Event::Error(_));
-                    app.event(event);
-                    if failed && app.goal_running {
-                        if let Some(goal)=&mut app.goal {goal.finish_turn(&lc_core::Outcome::Failed, &app.goal_output);}
-                        app.goal_running=false;
-                        if let Err(e)=app.save_goal().await {if let Some(goal)=&mut app.goal {goal.status=lc_core::goal::Status::Paused;}app.notice(format!("Goal persistence failed; paused: {e}"));}
-                    }
-                    if let Some(outcome)=outcome.filter(|_|app.goal_running) {
-                        app.goal_running=false;
-                        let continue_goal=app.goal.as_mut().is_some_and(|g|g.finish_turn(&outcome,&app.goal_output));
-                        if let Err(e)=app.save_goal().await {if let Some(goal)=&mut app.goal {goal.status=lc_core::goal::Status::Paused;}app.notice(format!("Goal persistence failed; paused: {e}"));}
-                        else if continue_goal {
-                            if let Some(goal)=&app.goal {
-                                let prompt=goal.prompt(lc_core::goal::GoalStep::Continue);
-                                let display=format!("Goal continuation · turn {}",goal.turns+1);
-                                match session.handle.send(Command::PromptWithDisplay{wire:prompt,display}) {
-                                    Ok(())=>{app.goal_running=true;app.goal_output.clear();app.running=true;app.status="continuing goal".into();}
-                                    Err(e)=>{if let Some(g)=&mut app.goal {g.status=lc_core::goal::Status::Paused;}let _=app.save_goal().await;app.notice(format!("Goal paused: {e}"));}
-                                }
-                            }
-                        } else if let Some(goal)=&app.goal {app.notice(goal.summary());}
+                    None => {
+                        events_open = false;
+                        app.event(lc_core::Event::Stopped);
                     }
                 }
-                else{events_open=false;app.event(lc_core::Event::Stopped);}
-                dirty=true;
-            },
-            event=input.events.recv()=>{
-                let action=match event{
-                    Some(Ok(Input::Key(key))) if key.kind!=KeyEventKind::Release=>key_action(app,session,key).await,
-                    Some(Ok(Input::Paste(value)))=>{if app.approvals.is_empty()&&!app.help&&!app.palette&&!app.editor.insert(&text::clean(&value)){app.notice="Paste exceeds the 64 KiB prompt limit; draft preserved".into();}Action::Continue},
-                    Some(Ok(Input::Resize(_,_)))=>{terminal.resize(terminal.size()?.into())?;Action::Continue},
-                    Some(Err(e))=>return Err(e),None=>return Ok(Action::Quit),_=>Action::Continue
+                dirty = true;
+            }
+            event = input.events.recv() => {
+                let action = match event {
+                    Some(Ok(Input::Key(key))) if key.kind != KeyEventKind::Release => {
+                        key_action(app, session, key).await
+                    }
+                    Some(Ok(Input::Paste(value))) => {
+                        paste(app, &value);
+                        Action::Continue
+                    }
+                    Some(Ok(Input::Resize(_, _))) => {
+                        terminal.resize(terminal.size()?.into())?;
+                        Action::Continue
+                    }
+                    Some(Err(e)) => return Err(e),
+                    None => return Ok(Exit::Quit),
+                    _ => Action::Continue,
                 };
-                match action{
-                    Action::Continue=>{},
-                    Action::GoalPrompt(prompt)=>match session.handle.send(Command::PromptWithDisplay{wire:prompt,display:app.goal.as_ref().map(|g|format!("Goal: {}",g.objective)).unwrap_or_else(||"Goal audit".into())}) {
-                        Ok(())=>{app.goal_running=true;app.goal_output.clear();app.running=true;app.status="working on goal".into();},
-                        Err(e)=>{if let Some(goal)=&mut app.goal {goal.status=lc_core::goal::Status::Paused;}let _=app.save_goal().await;app.notice(format!("Goal paused: {e}"));}
+                match action {
+                    Action::Continue => {}
+                    Action::GoalPrompt(prompt) => send_goal_prompt(app, session, prompt).await,
+                    Action::Suspend => {
+                        guard.suspend()?;
+                        terminal.resize(terminal.size()?.into())?;
+                    }
+                    Action::SetMode(mode) => match session.handle.send(Command::SetMode(mode)) {
+                        Ok(()) => app.mode_pending = Some(mode),
+                        Err(e) => app.notice(e.to_string()),
                     },
-                    Action::Suspend=>{guard.suspend()?;terminal.resize(terminal.size()?.into())?;},
-                    Action::SetMode(mode)=>match session.handle.send(Command::SetMode(mode)) {
-                        Ok(())=>app.mode_pending=Some(mode),
-                        Err(e)=>app.notice(e.to_string()),
-                    },
-                    other=>return Ok(other)
+                    Action::Exit(exit) => return Ok(exit),
                 }
-                dirty=true;
-            },
-            _=quit_signal()=>return Ok(Action::Quit),
-            _=unix_signal(&mut term)=>return Ok(Action::Quit),
-            _=unix_signal(&mut hup)=>return Ok(Action::Quit),
-            _=unix_signal(&mut suspend)=>{guard.suspend()?;terminal.resize(terminal.size()?.into())?;dirty=true;}
+                dirty = true;
+            }
+            _ = quit_signal() => return Ok(Exit::Quit),
+            _ = unix_signal(&mut term) => return Ok(Exit::Quit),
+            _ = unix_signal(&mut hup) => return Ok(Exit::Quit),
+            _ = unix_signal(&mut suspend) => {
+                guard.suspend()?;
+                terminal.resize(terminal.size()?.into())?;
+                dirty = true;
+            }
         }
+    }
+}
+/// Applies a vendor event, then advances a goal whose turn just ended.
+async fn session_event(app: &mut App, session: &Session, event: lc_core::Event) {
+    if let lc_core::Event::Text(text) = &event {
+        app.goals.observe_text(text);
+    }
+    let outcome = match &event {
+        lc_core::Event::Finished { outcome } => Some(outcome.clone()),
+        _ => None,
+    };
+    let failed = matches!(event, lc_core::Event::Error(_));
+    app.event(event);
+    if failed {
+        if let Err(error) = app.goals.turn_failed().await {
+            app.notice(format!("Goal persistence failed; paused: {error}"));
+        }
+    }
+    let Some(outcome) = outcome else {
+        return;
+    };
+    match app.goals.turn_finished(&outcome).await {
+        Ok(Next::Idle) => {}
+        Ok(Next::Stopped(summary)) => app.notice(summary),
+        Ok(Next::Continue { prompt, display }) => {
+            let command = Command::PromptWithDisplay {
+                wire: prompt,
+                display,
+            };
+            match session.handle.send(command) {
+                Ok(()) => {
+                    app.goals.goal_prompt_sent();
+                    app.running = true;
+                    app.status = "continuing goal".into();
+                }
+                Err(error) => goal_send_failed(app, error).await,
+            }
+        }
+        Err(error) => app.notice(format!("Goal persistence failed; paused: {error}")),
+    }
+}
+async fn send_goal_prompt(app: &mut App, session: &Session, prompt: String) {
+    let command = Command::PromptWithDisplay {
+        wire: prompt,
+        display: app.goals.prompt_display(),
+    };
+    match session.handle.send(command) {
+        Ok(()) => {
+            app.goals.goal_prompt_sent();
+            app.running = true;
+            app.status = "working on goal".into();
+        }
+        Err(error) => goal_send_failed(app, error).await,
+    }
+}
+/// Pauses the goal whose prompt could not be sent and says why.
+async fn goal_send_failed(app: &mut App, error: lc_core::SendError) {
+    app.notice(format!("Goal paused: {error}"));
+    if let Err(error) = app.goals.send_failed().await {
+        app.notice(format!("Goal persistence failed: {error}"));
+    }
+}
+/// Pasted text goes into the draft unless a dialog has focus.
+fn paste(app: &mut App, value: &str) {
+    if app.approvals.is_empty()
+        && !app.help
+        && !app.palette
+        && !app.editor.insert(&text::clean(value))
+    {
+        app.notice = "Paste exceeds the 64 KiB prompt limit; draft preserved".into();
     }
 }
 async fn quit_signal() {
@@ -293,7 +378,7 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     if ctrl && key.code == KeyCode::Char('q') {
-        return Action::Quit;
+        return Action::Exit(Exit::Quit);
     }
     if ctrl && key.code == KeyCode::Char('z') {
         return Action::Suspend;
@@ -324,15 +409,7 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         } else if key.code == KeyCode::PageUp {
             app.approval_scroll = app.approval_scroll.saturating_sub(8);
         } else if ctrl && key.code == KeyCode::Char('c') {
-            if app.goal_running {
-                if let Some(goal) = &mut app.goal {
-                    goal.status = lc_core::goal::Status::Paused;
-                }
-                if let Err(error) = app.save_goal().await {
-                    app.notice(format!("Goal persistence failed: {error}"));
-                }
-            }
-            session.handle.interrupt();
+            cancel_turn(app, session).await;
         }
         return Action::Continue;
     }
@@ -357,28 +434,16 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
             app.editor.take();
         }
         KeyCode::Char('c') if ctrl => {
-            if app.running || !app.ready && !app.stopped {
-                if app.goal_running {
-                    if let Some(goal) = &mut app.goal {
-                        goal.status = lc_core::goal::Status::Paused;
-                    }
-                    let _ = app.save_goal().await;
-                }
-                session.handle.interrupt();
+            if app.is_busy() {
+                cancel_turn(app, session).await;
                 app.notice = "Cancelling…".into();
             } else {
                 app.editor.take();
             }
         }
         KeyCode::Esc => {
-            if app.running || !app.ready && !app.stopped {
-                if app.goal_running {
-                    if let Some(goal) = &mut app.goal {
-                        goal.status = lc_core::goal::Status::Paused;
-                    }
-                    let _ = app.save_goal().await;
-                }
-                session.handle.interrupt();
+            if app.is_busy() {
+                cancel_turn(app, session).await;
                 app.notice = "Cancelling…".into();
             } else {
                 app.scroll = 0;
@@ -423,11 +488,7 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
             }
             match session.handle.send(Command::Prompt(draft.clone())) {
                 Ok(()) => {
-                    app.goal_running = app
-                        .goal
-                        .as_ref()
-                        .is_some_and(|goal| goal.status == lc_core::goal::Status::Active);
-                    app.goal_output.clear();
+                    app.goals.user_prompt_sent();
                     app.editor.take();
                     app.running = true;
                     app.status = "sending".into();
@@ -459,18 +520,24 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
     }
     Action::Continue
 }
-/// A new connection must never continue an autonomous goal by itself.
-async fn pause_active_goal(app: &mut App, why: &str) -> io::Result<()> {
-    if let Some(goal) = &mut app.goal {
-        if goal.status == lc_core::goal::Status::Active {
-            goal.status = lc_core::goal::Status::Paused;
-            app.save_goal().await.map_err(io::Error::other)?;
-            app.notice(format!(
-                "Goal paused for {why}. Use /goal resume to continue."
-            ));
-        }
+/// Interrupts the turn; a goal working on it is paused first.
+async fn cancel_turn(app: &mut App, session: &Session) {
+    if let Err(error) = app.goals.pause_running_turn().await {
+        app.notice(format!("Goal persistence failed: {error}"));
     }
-    Ok(())
+    session.handle.interrupt();
+}
+/// A new connection must never continue an autonomous goal by itself.
+async fn pause_active_goal(app: &mut App, why: &str) {
+    match app.goals.pause_active().await {
+        Ok(true) => app.notice(format!(
+            "Goal paused for {why}. Use /goal resume to continue."
+        )),
+        Ok(false) => {}
+        Err(error) => app.notice(format!(
+            "Goal paused for {why}, but saving it failed: {error}"
+        )),
+    }
 }
 /// The retained screen spans two journals after a reconnect; say where the
 /// earlier part is, because /export and /session cover only the new one.
@@ -517,7 +584,7 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
     let (name, argument) = input.split_once(' ').unwrap_or((input, ""));
     let argument = argument.trim();
     match name {
-        "/quit" | "/exit" => return Some(Action::Quit),
+        "/quit" | "/exit" => return Some(Action::Exit(Exit::Quit)),
         "/help" => app.help = true,
         "/model" => {
             if argument.trim().is_empty() {
@@ -532,11 +599,11 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                 }
             } else if app.running || !app.approvals.is_empty() {
                 app.notice = "Cancel or finish the current turn before switching models".into();
-            } else if !app.ready && !app.stopped {
+            } else if app.is_connecting() {
                 app.notice = "Wait for connection, or cancel it, before switching models".into();
             } else {
                 match lc_core::model::Selection::parse(argument, app.engine) {
-                    Ok(selection) => return Some(Action::Model(selection)),
+                    Ok(selection) => return Some(Action::Exit(Exit::Model(selection))),
                     Err(error) => app.notice(error),
                 }
             }
@@ -566,7 +633,7 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                             app.notice =
                                 "Wait for a ready session before changing full access".into();
                         } else {
-                            return Some(Action::Mode(target));
+                            return Some(Action::Exit(Exit::Mode(target)));
                         }
                     }
                     Some(target) => return Some(Action::SetMode(target)),
@@ -578,9 +645,9 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                 app.notice = "Cancel the active turn before changing sessions".into();
             } else {
                 return Some(if name == "/new" {
-                    Action::New
+                    Action::Exit(Exit::New)
                 } else {
-                    Action::Reconnect
+                    Action::Exit(Exit::Reconnect)
                 });
             }
         }
@@ -596,102 +663,43 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
             app.workspace
         )),
         "/goal" => {
-            use lc_core::goal::{Goal, GoalStep, Status};
-            let mut changed = false;
+            use lc_core::goal::{Goal, GoalStep};
+            let idle = !app.running && app.ready && !app.stopped;
             match argument {
                 "" | "status" => app.notice(
-                    app.goal
+                    app.goals
+                        .goal
                         .as_ref()
                         .map(Goal::summary)
                         .unwrap_or_else(|| "No goal set. Use /goal <objective>.".into()),
                 ),
-                "pause" => {
-                    if app
-                        .goal
-                        .as_ref()
-                        .is_some_and(|goal| goal.status == Status::Complete)
-                    {
-                        app.notice("Goal is already complete; set a new goal to continue.");
-                    } else if let Some(goal) = &mut app.goal {
-                        goal.status = Status::Paused;
-                        changed = true;
-                        app.notice(
-                            "Goal paused. Current vendor turn may finish; no next turn will start.",
-                        );
-                    } else {
-                        app.notice("No goal set");
-                    }
-                }
-                "clear" => {
-                    app.goal = None;
-                    app.goal_running = false;
-                    changed = true;
-                    app.notice("Goal cleared. Current vendor turn may finish.");
+                "pause" => match app.goals.pause().await {
+                    Ok(notice) => app.notice(notice),
+                    Err(error) => app.notice(format!("Goal persistence failed: {error}")),
+                },
+                "clear" => match app.goals.clear().await {
+                    Ok(()) => app.notice("Goal cleared. Current vendor turn may finish."),
+                    Err(error) => app.notice(format!("Goal persistence failed: {error}")),
+                },
+                "resume" | "complete" if !idle => {
+                    app.notice("Wait for a ready, idle session before resuming or auditing a goal")
                 }
                 "resume" | "complete" => {
-                    if app.running || !app.ready || app.stopped {
-                        app.notice(
-                            "Wait for a ready, idle session before resuming or auditing a goal",
-                        );
-                    } else if let Some(goal) = &mut app.goal {
-                        if goal.status == Status::Complete {
-                            app.notice("Goal is already complete; set a new goal to continue.");
-                        } else if goal.turns >= lc_core::goal::MAX_GOAL_TURNS {
-                            app.notice(
-                                "Goal reached the 200-turn guard. Set a new goal to continue.",
-                            );
-                        } else {
-                            goal.status = Status::Active;
-                            let prompt = goal.prompt(if argument == "complete" {
-                                GoalStep::Audit
-                            } else {
-                                GoalStep::Continue
-                            });
-                            if let Err(e) = app.save_goal().await {
-                                if let Some(goal) = &mut app.goal {
-                                    goal.status = Status::Paused;
-                                }
-                                app.notice(format!("Goal persistence failed; paused: {e}"));
-                                return Some(Action::Continue);
-                            } else {
-                                return Some(Action::GoalPrompt(prompt));
-                            }
-                        }
+                    let step = if argument == "complete" {
+                        GoalStep::Audit
                     } else {
-                        app.notice("No goal set");
+                        GoalStep::Continue
+                    };
+                    match app.goals.resume(step).await {
+                        Ok(prompt) => return Some(Action::GoalPrompt(prompt)),
+                        Err(error) => app.notice(error),
                     }
                 }
-                objective => {
-                    if app.running || !app.ready || app.stopped {
-                        app.notice("Wait for a ready, idle session before starting a goal");
-                    } else if app
-                        .goal
-                        .as_ref()
-                        .is_some_and(|g| g.status == Status::Active)
-                    {
-                        app.notice("Pause or clear the active goal before replacing it");
-                    } else {
-                        match Goal::new(objective) {
-                            Ok(goal) => {
-                                let prompt = goal.prompt(GoalStep::Begin);
-                                app.goal = Some(goal);
-                                if let Err(e) = app.save_goal().await {
-                                    app.goal = None;
-                                    app.notice(format!("Goal persistence failed: {e}"));
-                                    return Some(Action::Continue);
-                                } else {
-                                    return Some(Action::GoalPrompt(prompt));
-                                }
-                            }
-                            Err(e) => app.notice(e),
-                        }
-                    }
-                }
-            }
-            if changed {
-                if let Err(e) = app.save_goal().await {
-                    app.notice(format!("Goal persistence failed: {e}"));
-                }
+                _ if !idle => app.notice("Wait for a ready, idle session before starting a goal"),
+                objective => match app.goals.start(objective).await {
+                    Ok(prompt) => return Some(Action::GoalPrompt(prompt)),
+                    Err(error) => app.notice(error),
+                },
             }
         }
         "/export" => {
@@ -744,9 +752,12 @@ mod model_tests {
         assert_eq!(app.engine, lc_core::Engine::Codex);
         assert_eq!(app.session, "thread-1");
         app.running = false;
-        assert!(
-            matches!(command(&mut app,"/model claude example").await,Action::Model(selection) if selection.provider==lc_core::Engine::Claude && selection.model.as_deref()==Some("example"))
-        );
+        let Action::Exit(Exit::Model(selection)) = command(&mut app, "/model claude example").await
+        else {
+            panic!("expected a model switch");
+        };
+        assert_eq!(selection.provider, lc_core::Engine::Claude);
+        assert_eq!(selection.model.as_deref(), Some("example"));
     }
     #[tokio::test]
     async fn model_help_and_invalid_syntax_never_restart_a_session() {
@@ -765,10 +776,10 @@ mod model_tests {
             &lc_core::Outcome::Completed,
             "Verified tests.\n[[LOCALCODE_GOAL_COMPLETE]]",
         );
-        app.goal = Some(goal);
+        app.goals.goal = Some(goal);
         command(&mut app, "/goal pause").await;
         assert_eq!(
-            app.goal.as_ref().unwrap().status,
+            app.goals.goal.as_ref().unwrap().status,
             lc_core::goal::Status::Complete
         );
         assert!(matches!(
@@ -779,8 +790,8 @@ mod model_tests {
     #[tokio::test]
     async fn ctrl_c_in_approval_dialog_pauses_the_active_goal() {
         let mut app = app();
-        app.goal = Some(lc_core::goal::Goal::new("Ship the project").unwrap());
-        app.goal_running = true;
+        app.goals.goal = Some(lc_core::goal::Goal::new("Ship the project").unwrap());
+        app.goals.goal_prompt_sent();
         app.running = true;
         app.approvals.push_back((1, "command".into()));
         let temp = lc_testkit::TempDir::new("lc-goal-cancel");
@@ -795,7 +806,7 @@ mod model_tests {
         .await;
         session.shutdown().await;
         assert_eq!(
-            app.goal.as_ref().unwrap().status,
+            app.goals.goal.as_ref().unwrap().status,
             lc_core::goal::Status::Paused
         );
     }
@@ -806,20 +817,23 @@ mod model_tests {
             command(&mut app, "/goal Ship the project").await,
             Action::GoalPrompt(_)
         ));
-        assert_eq!(app.goal.as_ref().unwrap().objective, "Ship the project");
+        assert_eq!(
+            app.goals.goal.as_ref().unwrap().objective,
+            "Ship the project"
+        );
         assert!(matches!(
             command(&mut app, "/goal pause").await,
             Action::Continue
         ));
         assert_eq!(
-            app.goal.as_ref().unwrap().status,
+            app.goals.goal.as_ref().unwrap().status,
             lc_core::goal::Status::Paused
         );
         assert!(matches!(
             command(&mut app, "/goal resume").await,
             Action::GoalPrompt(_)
         ));
-        let goal = app.goal.as_mut().unwrap();
+        let goal = app.goals.goal.as_mut().unwrap();
         goal.status = lc_core::goal::Status::Paused;
         goal.turns = lc_core::goal::MAX_GOAL_TURNS;
         assert!(matches!(
@@ -827,14 +841,14 @@ mod model_tests {
             Action::Continue
         ));
         assert_eq!(
-            app.goal.as_ref().unwrap().status,
+            app.goals.goal.as_ref().unwrap().status,
             lc_core::goal::Status::Paused
         );
         assert!(matches!(
             command(&mut app, "/goal clear").await,
             Action::Continue
         ));
-        assert!(app.goal.is_none());
+        assert!(app.goals.goal.is_none());
     }
     #[tokio::test]
     async fn mode_command_switches_live_modes_and_rejects_unknown() {
@@ -879,12 +893,12 @@ mod model_tests {
         app.ready = true;
         assert!(matches!(
             command(&mut app, "/mode full-access").await,
-            Action::Mode(lc_core::Mode::FullAccess)
+            Action::Exit(Exit::Mode(lc_core::Mode::FullAccess))
         ));
         app.mode = lc_core::Mode::FullAccess;
         assert!(matches!(
             command(&mut app, "/mode auto").await,
-            Action::Mode(lc_core::Mode::Auto)
+            Action::Exit(Exit::Mode(lc_core::Mode::Auto))
         ));
         assert!(matches!(
             command(&mut app, "/mode full-access").await,
@@ -927,7 +941,7 @@ mod model_tests {
         app.stopped = true;
         assert!(matches!(
             command(&mut app, "/mode ask").await,
-            Action::Mode(lc_core::Mode::Ask)
+            Action::Exit(Exit::Mode(lc_core::Mode::Ask))
         ));
         app.mode = lc_core::Mode::Ask;
         assert!(matches!(
@@ -1008,10 +1022,10 @@ mod model_tests {
     #[tokio::test]
     async fn reconnect_pauses_an_active_goal_and_names_the_previous_journal() {
         let mut app = app();
-        app.goal = Some(lc_core::goal::Goal::new("Ship it").unwrap());
-        pause_active_goal(&mut app, "reconnect").await.unwrap();
+        app.goals.goal = Some(lc_core::goal::Goal::new("Ship it").unwrap());
+        pause_active_goal(&mut app, "reconnect").await;
         assert_eq!(
-            app.goal.as_ref().unwrap().status,
+            app.goals.goal.as_ref().unwrap().status,
             lc_core::goal::Status::Paused
         );
         assert!(app.notice.contains("Goal paused for reconnect"));

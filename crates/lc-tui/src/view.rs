@@ -67,10 +67,7 @@ pub struct App {
     pub history_index: Option<usize>,
     pub saved_draft: String,
     pub notice: String,
-    pub goal: Option<lc_core::goal::Goal>,
-    pub goal_store: Option<lc_core::goal::GoalStore>,
-    pub goal_running: bool,
-    pub goal_output: String,
+    pub goals: lc_core::goal::GoalRunner,
 }
 impl App {
     pub fn new(config: &lc_core::Config, journal: PathBuf) -> Self {
@@ -105,10 +102,7 @@ impl App {
             history_index: None,
             saved_draft: String::new(),
             notice: String::new(),
-            goal: None,
-            goal_store: None,
-            goal_running: false,
-            goal_output: String::new(),
+            goals: lc_core::goal::GoalRunner::default(),
         }
     }
     pub fn connection(&mut self, config: &lc_core::Config, journal: PathBuf) {
@@ -129,17 +123,15 @@ impl App {
         self.usage.clear();
         self.approvals.clear();
         self.approval_scroll = 0;
-        self.goal_running = false;
-        self.goal_output.clear();
+        self.goals.reset_turn();
     }
-    pub async fn save_goal(&self) -> Result<(), String> {
-        match &self.goal_store {
-            Some(store) => match &self.goal {
-                Some(goal) => store.save(goal).await,
-                None => store.clear().await,
-            },
-            None => Ok(()),
-        }
+    /// Neither connected nor stopped: the vendor is still starting.
+    pub fn is_connecting(&self) -> bool {
+        !self.ready && !self.stopped
+    }
+    /// A turn is running or the connection is still being made; Esc cancels.
+    pub fn is_busy(&self) -> bool {
+        self.running || self.is_connecting()
     }
     fn refresh_model_label(&mut self) {
         self.model = match &self.resolved_model {
@@ -768,7 +760,7 @@ fn sidebar(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(format!(" {id}")),
         Line::default(),
         Line::from(Span::styled(" GOAL", Style::default().fg(MUTED))),
-        Line::from(match &app.goal {
+        Line::from(match &app.goals.goal {
             Some(goal) => format!(
                 " {} · {}/{} turns",
                 goal.status,
