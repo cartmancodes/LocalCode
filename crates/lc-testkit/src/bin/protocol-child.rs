@@ -104,6 +104,7 @@ fn interactive_codex() {
             Some("initialize") => emit(&json!({"id":v["id"],"result":{}})),
             Some("thread/start" | "thread/resume") => {
                 thread_params = v["params"].clone();
+                thread_params["method"] = v["method"].clone();
                 // Echo the policy like Codex does; "report-stricter" simulates a
                 // managed requirement that overrides what the client asked for.
                 let p = &v["params"];
@@ -193,6 +194,7 @@ fn interactive_codex() {
 
 fn interactive_claude() {
     let argv: Vec<String> = env::args().skip(1).collect();
+    let mut modes: Vec<String> = Vec::new();
     for line in io::stdin().lock().lines() {
         let v: Value = serde_json::from_str(&line.unwrap()).unwrap();
         if v["type"] == "control_request" && v["request"]["subtype"] == "initialize" {
@@ -212,8 +214,18 @@ fn interactive_claude() {
             emit(
                 &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"current_permission_mode":reported,"models":[{"value":"sonnet","resolvedModel":"claude-fixture-full-id","displayName":"Fixture Sonnet","description":"Provider description"}]}}}),
             );
+        } else if v["type"] == "control_request" && v["request"]["subtype"] == "interrupt" {
+            emit(
+                &json!({"type":"result","is_error":false,"result":"","session_id":"claude-fixture","total_cost_usd":0.0}),
+            );
         } else if v["type"] == "control_request" && v["request"]["subtype"] == "set_permission_mode"
         {
+            modes.push(
+                v["request"]["mode"]
+                    .as_str()
+                    .unwrap_or("<missing>")
+                    .to_owned(),
+            );
             if argv.iter().any(|a| a == "late-mode") {
                 // Confirm after the driver's 10-second mode deadline.
                 let reply = json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"mode":v["request"]["mode"]}}});
@@ -235,8 +247,17 @@ fn interactive_claude() {
                 .pointer("/message/content/0/text")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            if text == "hold" {
+                // Stay mid-turn until the driver interrupts.
+                emit(
+                    &json!({"type":"system","subtype":"init","session_id":"claude-fixture","model":"claude-fixture-full-id"}),
+                );
+                continue;
+            }
             let reply = if text == "argv" {
                 argv.join(" ")
+            } else if text == "modes" {
+                modes.join(",")
             } else {
                 "Hello Claude".to_owned()
             };

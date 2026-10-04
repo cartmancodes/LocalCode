@@ -496,3 +496,65 @@ async fn demo_mode_switch_during_approval_keeps_the_dialog_open() {
     handle.shutdown();
     task.await.unwrap();
 }
+#[tokio::test]
+async fn claude_switch_sends_the_vendor_mode_name() {
+    let mut c = config();
+    c.engine = "claude".into();
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
+    for (mode, _) in [(Mode::AcceptEdits, ()), (Mode::Auto, ()), (Mode::Ask, ())] {
+        handle.send(Command::SetMode(mode)).unwrap();
+        wait_for(
+            &mut events,
+            |e| matches!(e, Event::ModeChanged(m) if *m == mode),
+        )
+        .await;
+    }
+    handle.send(Command::Prompt("modes".into())).unwrap();
+    assert_eq!(turn_text(&mut events).await, "acceptEdits,auto,default");
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn claude_switch_applies_in_the_middle_of_a_turn() {
+    let mut c = config();
+    c.engine = "claude".into();
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
+    handle.send(Command::Prompt("hold".into())).unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::Started)).await;
+    handle.send(Command::SetMode(Mode::Auto)).unwrap();
+    let event = wait_for(&mut events, |e| {
+        matches!(
+            e,
+            Event::ModeChanged(_) | Event::Finished { .. } | Event::Notice(_)
+        )
+    })
+    .await;
+    assert!(matches!(event, Event::ModeChanged(Mode::Auto)), "{event:?}");
+    handle.interrupt();
+    let event = wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
+    assert!(matches!(event, Event::Finished { outcome } if outcome == "interrupted"));
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn codex_resume_carries_the_mode() {
+    let mut c = config();
+    c.resume = Some("fixture-thread".into());
+    c.mode = Mode::FullAccess;
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| {
+        matches!(e, Event::ModeChanged(Mode::FullAccess))
+    })
+    .await;
+    handle.send(Command::Prompt("params".into())).unwrap();
+    let echo: serde_json::Value = serde_json::from_str(&turn_text(&mut events).await).unwrap();
+    assert_eq!(echo["thread"]["method"], "thread/resume");
+    assert_eq!(echo["thread"]["threadId"], "fixture-thread");
+    assert_eq!(echo["thread"]["sandbox"], "danger-full-access");
+    assert_eq!(echo["thread"]["approvalPolicy"], "never");
+    assert_eq!(echo["turn"]["approvalPolicy"], "never");
+    handle.shutdown();
+    task.await.unwrap();
+}
