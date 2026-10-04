@@ -354,3 +354,67 @@ async fn driver_refuses_live_full_access() {
     handle.shutdown();
     task.await.unwrap();
 }
+#[tokio::test]
+async fn claude_header_follows_the_mode_claude_reports() {
+    let mut c = config();
+    c.engine = "claude".into();
+    c.model = Some("report-auto".into());
+    let (handle, mut events, task) = spawn(c);
+    let event = wait_for(&mut events, |e| {
+        matches!(e, Event::Notice(_) | Event::ModeChanged(_))
+    })
+    .await;
+    assert!(
+        matches!(&event, Event::Notice(text) if text.contains("reports auto")),
+        "{event:?}"
+    );
+    assert!(matches!(
+        next(&mut events).await,
+        Event::ModeChanged(Mode::Auto)
+    ));
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn unmapped_claude_mode_keeps_the_requested_mode_with_a_notice() {
+    let mut c = config();
+    c.engine = "claude".into();
+    c.model = Some("report-plan".into());
+    let (handle, mut events, task) = spawn(c);
+    let event = wait_for(&mut events, |e| {
+        matches!(e, Event::Notice(_) | Event::ModeChanged(_))
+    })
+    .await;
+    assert!(
+        matches!(&event, Event::Notice(text) if text.contains("plan")),
+        "{event:?}"
+    );
+    assert!(matches!(
+        next(&mut events).await,
+        Event::ModeChanged(Mode::Ask)
+    ));
+    handle.shutdown();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn codex_header_follows_a_stricter_reported_policy() {
+    let mut c = config();
+    c.mode = Mode::Auto;
+    c.model = Some("report-stricter".into());
+    let (handle, mut events, task) = spawn(c);
+    let event = wait_for(&mut events, |e| {
+        matches!(e, Event::Notice(text) if text.contains("reports"))
+            || matches!(e, Event::ModeChanged(_))
+    })
+    .await;
+    assert!(
+        matches!(&event, Event::Notice(text) if text.contains("reports ask")),
+        "{event:?}"
+    );
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
+    handle.send(Command::Prompt("params".into())).unwrap();
+    let echo: serde_json::Value = serde_json::from_str(&turn_text(&mut events).await).unwrap();
+    assert_eq!(echo["turn"]["approvalPolicy"], "untrusted");
+    handle.shutdown();
+    task.await.unwrap();
+}

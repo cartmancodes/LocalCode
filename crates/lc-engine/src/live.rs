@@ -95,6 +95,39 @@ pub fn codex_thread_params(mode: Mode) -> Value {
     };
     json!({"sandbox":sandbox,"approvalPolicy":policy,"approvalsReviewer":reviewer})
 }
+/// The mode Claude reports (`current_permission_mode`, or a switch's reply).
+/// None means the value is not one of LocalCode's modes.
+pub fn claude_reported_mode(raw: &str) -> Option<Mode> {
+    Mode::ALL.into_iter().find(|mode| claude_mode(*mode) == raw)
+}
+/// The mode a Codex thread reply echoes. Outer None: the reply carries no
+/// policy (older CLI). Inner None: a policy LocalCode does not map, with the
+/// raw description for the user.
+pub fn codex_reported(result: &Value) -> Option<(Option<Mode>, String)> {
+    let policy = result.get("approvalPolicy")?;
+    let sandbox = match result["sandbox"]["type"]
+        .as_str()
+        .or(result["sandbox"].as_str())
+    {
+        Some("workspaceWrite" | "workspace-write") => json!("workspace-write"),
+        Some("dangerFullAccess" | "danger-full-access") => json!("danger-full-access"),
+        _ => result["sandbox"].clone(),
+    };
+    let reviewer = match result["approvalsReviewer"].as_str() {
+        Some("guardian_subagent") => json!("auto_review"),
+        Some(reviewer) => json!(reviewer),
+        None => json!("user"),
+    };
+    let echo = json!({"sandbox":sandbox,"approvalPolicy":policy,"approvalsReviewer":reviewer});
+    let mode = Mode::ALL
+        .into_iter()
+        .find(|mode| codex_thread_params(*mode) == echo);
+    let raw = format!(
+        "sandbox {}, approval {}, reviewer {}",
+        result["sandbox"], policy, result["approvalsReviewer"]
+    );
+    Some((mode, limited(&raw)))
+}
 /// Codex applies these on the turn and every later turn. Live modes all share
 /// the workspace-write sandbox, so no sandboxPolicy override is sent.
 pub fn codex_turn_overrides(mode: Mode) -> Value {
@@ -434,14 +467,16 @@ async fn vendor(
                         let response_id=v.pointer("/response/request_id").and_then(Value::as_str);
                         if kind=="control_response" && mode_request.as_ref().is_some_and(|(id,_)| Some(id.as_str())==response_id) {
                             let (_,target)=mode_request.take().unwrap();
-                            if v.pointer("/response/subtype").and_then(Value::as_str)==Some("success") { mode=target; }
+                            if v.pointer("/response/subtype").and_then(Value::as_str)==Some("success") { mode=v.pointer("/response/response/mode").and_then(Value::as_str).and_then(claude_reported_mode).unwrap_or(target); }
                             else { emit(tx,Event::Notice(format!("Mode change refused by Claude: {}",limited(v.pointer("/response/error").and_then(Value::as_str).unwrap_or("unknown error")))))?; }
                             emit(tx,Event::ModeChanged(mode))?;
                             continue;
                         }
                         if kind=="control_response" && v.pointer("/response/request_id").and_then(Value::as_str)==Some("lc-init") {
                             if v.pointer("/response/subtype").and_then(Value::as_str)!=Some("success") { return Err("Claude initialization failed".into()); }
-                            initialized=true; ready=true; emit(tx,Event::Ready{session:config.resume.clone().unwrap_or_default()})?; emit(tx,Event::ModeChanged(mode))?;
+                            initialized=true; ready=true; emit(tx,Event::Ready{session:config.resume.clone().unwrap_or_default()})?;
+                            let reported=v.pointer("/response/response/current_permission_mode").and_then(Value::as_str).map(|raw|(claude_reported_mode(raw),limited(raw)));
+                            mode=confirm_mode(tx,"Claude",mode,reported)?; emit(tx,Event::ModeChanged(mode))?;
                             emit(tx,Event::Models(model_catalog(&v["response"]["response"]["models"],true)))?;
                         }
                         if let Some(id)=v["session_id"].as_str() { if session!=id { session=id.to_owned(); emit(tx,Event::Ready{session:session.clone()})?; } }
@@ -500,7 +535,8 @@ async fn vendor(
                             send(&process,json!({"id":2,"method":method,"params":params})).await?;
                         } else if method.is_empty() && v["id"]==2 {
                             session=v.pointer("/result/thread/id").and_then(Value::as_str).ok_or("Codex could not open the session")?.into();
-                            ready=true; emit(tx,Event::Ready{session:session.clone()})?; emit(tx,Event::ModeChanged(mode))?;
+                            ready=true; emit(tx,Event::Ready{session:session.clone()})?;
+                            mode=confirm_mode(tx,"Codex",mode,codex_reported(&v["result"]))?; emit(tx,Event::ModeChanged(mode))?;
                             if let Some(model)=v["result"]["model"].as_str().filter(|m| !m.is_empty() && m.len()<=256 && !m.chars().any(char::is_control)) { emit(tx,Event::ModelSelected(model.into()))?; }
                             send(&process,json!({"id":3,"method":"model/list","params":{"limit":100,"includeHidden":false}})).await?;
                         } else if method.is_empty() && v["id"]==3 {
@@ -575,6 +611,34 @@ async fn vendor(
         return Err("Could not verify all vendor children stopped".into());
     }
     result
+}
+/// Adopt the mode the vendor confirmed. An unmapped report keeps the requested
+/// mode and says what the vendor actually uses; LocalCode never guesses.
+fn confirm_mode(
+    tx: &mpsc::Sender<Event>,
+    vendor: &str,
+    requested: Mode,
+    reported: Option<(Option<Mode>, String)>,
+) -> Result<Mode, String> {
+    match reported {
+        None => Ok(requested),
+        Some((Some(actual), _)) if actual == requested => Ok(requested),
+        Some((Some(actual), _)) => {
+            emit(
+                tx,
+                Event::Notice(format!(
+                    "{vendor} reports {}; you asked for {}",
+                    actual.label(),
+                    requested.label()
+                )),
+            )?;
+            Ok(actual)
+        }
+        Some((None, raw)) => {
+            emit(tx, Event::Notice(format!("{vendor} reports a permission setting LocalCode does not map ({raw}); showing the requested {}", requested.label())))?;
+            Ok(requested)
+        }
+    }
 }
 fn answer(claude: bool, wire: &Value, allow: bool) -> Value {
     if claude {
@@ -724,5 +788,25 @@ mod mode_tests {
                 assert!(!mode.describe(engine).is_empty());
             }
         }
+    }
+    #[test]
+    fn reported_modes_map_back_or_stay_unmapped() {
+        for mode in Mode::ALL {
+            assert_eq!(claude_reported_mode(claude_mode(mode)), Some(mode));
+            let mut echo = codex_thread_params(mode);
+            echo["sandbox"] = match mode {
+                Mode::FullAccess => json!({"type":"dangerFullAccess"}),
+                _ => json!({"type":"workspaceWrite"}),
+            };
+            assert_eq!(codex_reported(&echo).map(|r| r.0), Some(Some(mode)));
+        }
+        assert_eq!(claude_reported_mode("plan"), None);
+        let legacy = json!({"sandbox":{"type":"workspaceWrite"},"approvalPolicy":"on-request","approvalsReviewer":"guardian_subagent"});
+        assert_eq!(codex_reported(&legacy).map(|r| r.0), Some(Some(Mode::Auto)));
+        let read_only = json!({"sandbox":{"type":"readOnly"},"approvalPolicy":"on-request","approvalsReviewer":"user"});
+        let (mode, raw) = codex_reported(&read_only).unwrap();
+        assert_eq!(mode, None);
+        assert!(raw.contains("readOnly"), "{raw}");
+        assert_eq!(codex_reported(&json!({"thread":{}})), None);
     }
 }

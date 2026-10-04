@@ -104,8 +104,26 @@ fn interactive_codex() {
             Some("initialize") => emit(&json!({"id":v["id"],"result":{}})),
             Some("thread/start" | "thread/resume") => {
                 thread_params = v["params"].clone();
+                // Echo the policy like Codex does; "report-stricter" simulates a
+                // managed requirement that overrides what the client asked for.
+                let p = &v["params"];
+                let (sandbox, policy, reviewer) = if p["model"] == "report-stricter" {
+                    (json!("workspace-write"), json!("untrusted"), json!("user"))
+                } else {
+                    (
+                        p["sandbox"].clone(),
+                        p["approvalPolicy"].clone(),
+                        p["approvalsReviewer"].clone(),
+                    )
+                };
+                let sandbox = match sandbox.as_str() {
+                    Some("workspace-write") => json!({"type":"workspaceWrite"}),
+                    Some("danger-full-access") => json!({"type":"dangerFullAccess"}),
+                    Some("read-only") => json!({"type":"readOnly"}),
+                    _ => sandbox,
+                };
                 emit(
-                    &json!({"id":v["id"],"result":{"thread":{"id":"fixture-thread"},"model":"fixture"}}),
+                    &json!({"id":v["id"],"result":{"thread":{"id":"fixture-thread"},"model":"fixture","sandbox":sandbox,"approvalPolicy":policy,"approvalsReviewer":reviewer}}),
                 )
             }
             Some("turn/start") => {
@@ -178,8 +196,21 @@ fn interactive_claude() {
     for line in io::stdin().lock().lines() {
         let v: Value = serde_json::from_str(&line.unwrap()).unwrap();
         if v["type"] == "control_request" && v["request"]["subtype"] == "initialize" {
+            let requested = argv
+                .iter()
+                .position(|a| a == "--permission-mode")
+                .and_then(|i| argv.get(i + 1))
+                .map(String::as_str)
+                .unwrap_or("default");
+            let reported = if argv.iter().any(|a| a == "report-auto") {
+                "auto"
+            } else if argv.iter().any(|a| a == "report-plan") {
+                "plan"
+            } else {
+                requested
+            };
             emit(
-                &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"models":[{"value":"sonnet","resolvedModel":"claude-fixture-full-id","displayName":"Fixture Sonnet","description":"Provider description"}]}}}),
+                &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"current_permission_mode":reported,"models":[{"value":"sonnet","resolvedModel":"claude-fixture-full-id","displayName":"Fixture Sonnet","description":"Provider description"}]}}}),
             );
         } else if v["type"] == "control_request" && v["request"]["subtype"] == "set_permission_mode"
         {
