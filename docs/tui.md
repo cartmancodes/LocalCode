@@ -89,7 +89,10 @@ workspace-write, and the model asks only to escalate.
 `ask`, `accept-edits` and `auto` switch live. Claude applies the change
 immediately, even mid-turn; Codex applies it from the next turn. A change Claude
 refuses (for example, auto mode unavailable for the account) leaves the previous
-mode in place with a notice. `full-access` is never reached by Shift+Tab: type
+mode in place with a notice; one Claude does not confirm within 10 seconds is
+reported as unconfirmed, and a late confirmation is still applied. At connect
+the header shows the mode the vendor reports, with a notice if it differs from
+the one requested. `full-access` is never reached by Shift+Tab: type
 `/mode full-access` on an idle session, which reconnects to the same vendor
 session with all checks off. Leaving it reconnects again.
 
