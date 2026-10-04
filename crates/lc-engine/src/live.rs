@@ -321,6 +321,47 @@ fn prompt_parts(command: Command) -> (String, String) {
         }
     }
 }
+impl Command {
+    /// The longest text a prompt command carries; 0 for other commands.
+    fn prompt_bytes(&self) -> usize {
+        match self {
+            Command::Prompt(text) => text.len(),
+            Command::PromptWithDisplay { wire, display } => wire.len().max(display.len()),
+            Command::Answer { .. } | Command::SetMode(_) => 0,
+        }
+    }
+}
+/// Why a command was not queued.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SendError {
+    #[error("Prompt exceeds the 64 KiB limit")]
+    PromptTooLong,
+    #[error("Session is busy or closed; try again")]
+    Busy,
+}
+/// Why the driver stopped. Only `Vendor` failures get the vendor's stderr
+/// attached; the others are LocalCode's own and stderr would mislead.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DriverError {
+    #[error("Connection cancelled")]
+    Cancelled,
+    #[error("Output consumer overloaded; session stopped")]
+    ConsumerOverloaded,
+    #[error("Turn item limit reached; session stopped")]
+    TurnItemLimit,
+    #[error("{0}")]
+    Vendor(String),
+}
+impl From<String> for DriverError {
+    fn from(message: String) -> Self {
+        DriverError::Vendor(message)
+    }
+}
+impl From<&str> for DriverError {
+    fn from(message: &str) -> Self {
+        DriverError::Vendor(message.to_owned())
+    }
+}
 #[derive(Clone)]
 pub struct Handle {
     commands: mpsc::Sender<Command>,
@@ -328,15 +369,11 @@ pub struct Handle {
     stop: watch::Sender<bool>,
 }
 impl Handle {
-    pub fn send(&self, command: Command) -> Result<(), String> {
-        if matches!(&command, Command::Prompt(text) if text.len() > PROMPT_LIMIT)
-            || matches!(&command, Command::PromptWithDisplay { wire, display } if wire.len()>PROMPT_LIMIT || display.len()>PROMPT_LIMIT)
-        {
-            return Err("Prompt exceeds the 64 KiB limit".into());
+    pub fn send(&self, command: Command) -> Result<(), SendError> {
+        if command.prompt_bytes() > PROMPT_LIMIT {
+            return Err(SendError::PromptTooLong);
         }
-        self.commands
-            .try_send(command)
-            .map_err(|_| "Session is busy or closed; try again".into())
+        self.commands.try_send(command).map_err(|_| SendError::Busy)
     }
     pub fn interrupt(&self) {
         self.interrupt.send_modify(|n| *n = n.wrapping_add(1));
@@ -347,7 +384,7 @@ impl Handle {
 }
 // Output is split before enqueueing. A stalled consumer fails the session rather
 // than blocking the control path or silently dropping semantic output.
-fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), String> {
+fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), DriverError> {
     let text = match event {
         Event::Text(text) => text,
         // Tool detail is a preview: megabytes of command output must not flood
@@ -355,12 +392,12 @@ fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), String> {
         Event::Tool(text) => {
             return tx
                 .try_send(Event::Tool(limited(&text)))
-                .map_err(|_| "Output consumer overloaded; session stopped".into())
+                .map_err(|_| DriverError::ConsumerOverloaded)
         }
         event => {
             return tx
                 .try_send(event)
-                .map_err(|_| "Output consumer overloaded; session stopped".into())
+                .map_err(|_| DriverError::ConsumerOverloaded)
         }
     };
     let mut remaining = text.as_str();
@@ -368,7 +405,7 @@ fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), String> {
         let end = remaining.floor_char_boundary(EVENT_BYTES);
         let chunk = remaining[..end].to_owned();
         tx.try_send(Event::Text(chunk))
-            .map_err(|_| "Output consumer overloaded; session stopped".to_string())?;
+            .map_err(|_| DriverError::ConsumerOverloaded)?;
         remaining = &remaining[end..];
     }
     Ok(())
@@ -382,11 +419,11 @@ fn limited(text: &str) -> String {
         format!("{}\n[detail exceeds preview limit]", &text[..end])
     }
 }
-async fn send(process: &Process, value: Value) -> Result<(), String> {
+async fn send(process: &Process, value: Value) -> Result<(), DriverError> {
     timeout(Duration::from_secs(3), process.sender().send(&value))
         .await
-        .map_err(|_| "Vendor stdin is unresponsive".to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|_| DriverError::from("Vendor stdin is unresponsive"))?
+        .map_err(|e| DriverError::from(e.to_string()))
 }
 pub fn spawn(config: Config) -> (Handle, mpsc::Receiver<Event>, tokio::task::JoinHandle<()>) {
     spawn_with_limits(config, Limits::default())
@@ -406,7 +443,9 @@ pub fn spawn_with_limits(
     };
     let task = tokio::spawn(async move {
         let result = if config.engine == Engine::Demo {
-            demo(config.mode, rx, cancel, stopping, &events).await
+            demo(config.mode, rx, cancel, stopping, &events)
+                .await
+                .map_err(|error| error.to_string())
         } else {
             vendor(config, limits, rx, cancel, stopping, &events).await
         };
@@ -481,7 +520,7 @@ async fn vendor(
             config.engine
         )
     })?;
-    let result = async {
+    let result: Result<(), DriverError> = async {
         if claude { send(&process, json!({"type":"control_request","request_id":"lc-init","request":{"subtype":"initialize"}})).await?; }
         else { send(&process, json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"localcode","version":"0.1.0"},"capabilities":{"experimentalApi":true}}})).await?; }
         let mut catalog = Vec::new();
@@ -517,7 +556,7 @@ async fn vendor(
                 _ = stopping.changed() => break,
                 changed = cancel.changed() => {
                     if changed.is_err() { break; }
-                    if !ready { return Err("Connection cancelled".into()); }
+                    if !ready { return Err(DriverError::Cancelled); }
                     if running {
                         interrupt_pending = true;
                         if claude {
@@ -537,7 +576,7 @@ async fn vendor(
                     if (!ready || running) && pending.is_empty() && Instant::now() >= deadline {
                         return Err(if !ready { format!("Vendor did not finish connecting within {}; session stopped.",seconds(limits.connect)) }
                             else if interrupt_pending { format!("Vendor did not stop within {} of the interrupt; session stopped. Resume using the session ID.",seconds(limits.interrupt)) }
-                            else { format!("Vendor sent nothing for {}; session stopped. Resume using the session ID.",seconds(limits.turn_idle)) });
+                            else { format!("Vendor sent nothing for {}; session stopped. Resume using the session ID.",seconds(limits.turn_idle)) }.into());
                     }
                     let expired: Vec<u64> = pending.iter().filter(|(_,p)|p.deadline <= Instant::now()).map(|(id,_)|*id).collect();
                     for id in expired { let p=pending.remove(&id).unwrap(); send(&process,answer(claude,&p.wire,false)).await?; emit(tx,Event::ApprovalClosed(id))?; emit(tx,Event::Notice("Approval timed out and was denied".into()))?; if pending.is_empty() && running && !interrupt_pending { deadline=Instant::now()+limits.turn_idle; } }
@@ -678,7 +717,7 @@ async fn vendor(
                             if let Some(model)=&config.model{params["model"]=json!(model);}
                             send(&process,json!({"id":2,"method":method,"params":params})).await?;
                         } else if method.is_empty() && v["id"]==2 {
-                            if let Some(error)=v.get("error") { return Err(format!("Codex could not open the session: {}",error_text(error))); }
+                            if let Some(error)=v.get("error") { return Err(format!("Codex could not open the session: {}",error_text(error)).into()); }
                             session=v.pointer("/result/thread/id").and_then(Value::as_str).ok_or("Codex could not open the session")?.into();
                             ready=true; emit(tx,Event::Ready{session:session.clone()})?;
                             mode=confirm_mode(tx,"Codex",mode,codex_reported(&v["result"]))?; emit(tx,Event::ModeChanged(mode))?;
@@ -725,7 +764,7 @@ async fn vendor(
                         if !running {continue;}
                         if let Some(event_turn)=v.pointer("/params/turnId").and_then(Value::as_str){if Some(event_turn)!=turn.as_deref(){continue;}}
                         match method {
-                            "item/agentMessage/delta" => {if let Some(text)=v.pointer("/params/delta").and_then(Value::as_str){if let Some(id)=v.pointer("/params/itemId").and_then(Value::as_str){if text_items.len()>=4096{return Err("Turn item limit reached; session stopped".into());}text_items.insert(id.to_owned());} emit(tx,Event::Text(text.into()))?;}},
+                            "item/agentMessage/delta" => {if let Some(text)=v.pointer("/params/delta").and_then(Value::as_str){if let Some(id)=v.pointer("/params/itemId").and_then(Value::as_str){if text_items.len()>=4096{return Err(DriverError::TurnItemLimit);}text_items.insert(id.to_owned());} emit(tx,Event::Text(text.into()))?;}},
                             "item/started" | "item/completed" => {
                                 let item=&v["params"]["item"];
                                 match item["type"].as_str().unwrap_or("") {
@@ -759,16 +798,11 @@ async fn vendor(
 }
 /// A failure plus what the vendor itself said on stderr, which usually names
 /// the real cause (an unknown session ID, an expired login).
-fn with_stderr(error: String, engine: Engine, tail: &[u8]) -> String {
+fn with_stderr(error: DriverError, engine: Engine, tail: &[u8]) -> String {
     // Failures the driver itself caused say nothing about the vendor.
-    const LOCAL: [&str; 3] = [
-        "Connection cancelled",
-        "Output consumer overloaded",
-        "Turn item limit reached",
-    ];
-    if LOCAL.iter().any(|prefix| error.starts_with(prefix)) {
-        return error;
-    }
+    let DriverError::Vendor(error) = error else {
+        return error.to_string();
+    };
     let mut end = &tail[tail.len().saturating_sub(1024)..];
     if end.len() < tail.len() {
         // Cut mid-stream: start at the next whole line.
@@ -852,7 +886,7 @@ fn confirm_mode(
     vendor: &str,
     requested: Mode,
     reported: Option<(Option<Mode>, String)>,
-) -> Result<Mode, String> {
+) -> Result<Mode, DriverError> {
     match reported {
         None => Ok(requested),
         Some((Some(actual), _)) if actual == requested => Ok(requested),
@@ -879,7 +913,7 @@ fn switch_reply_mode(
     tx: &mpsc::Sender<Event>,
     reply: &Value,
     target: Mode,
-) -> Result<Mode, String> {
+) -> Result<Mode, DriverError> {
     let reported = reply
         .pointer("/response/response/mode")
         .and_then(Value::as_str)
@@ -950,7 +984,11 @@ fn answer(claude: bool, wire: &Value, allow: bool) -> Value {
         json!({"id":wire["id"],"result":{"decision":if allow{"accept"}else{"decline"}}})
     }
 }
-fn demo_set_mode(tx: &mpsc::Sender<Event>, mode: &mut Mode, target: Mode) -> Result<(), String> {
+fn demo_set_mode(
+    tx: &mpsc::Sender<Event>,
+    mode: &mut Mode,
+    target: Mode,
+) -> Result<(), DriverError> {
     if target == Mode::FullAccess || *mode == Mode::FullAccess {
         emit(
             tx,
@@ -967,7 +1005,7 @@ async fn demo(
     mut cancel: watch::Receiver<u64>,
     mut stop: watch::Receiver<bool>,
     tx: &mpsc::Sender<Event>,
-) -> Result<(), String> {
+) -> Result<(), DriverError> {
     emit(
         tx,
         Event::Ready {
@@ -1194,28 +1232,46 @@ mod mode_tests {
     }
     #[test]
     fn stderr_is_attached_only_to_vendor_failures_and_starts_on_a_line() {
+        let vendor = || DriverError::from("Vendor disconnected.");
         assert_eq!(
-            with_stderr("Vendor disconnected.".into(), Engine::Claude, b"reason\n"),
+            with_stderr(vendor(), Engine::Claude, b"reason\n"),
             "Vendor disconnected.\nclaude stderr: reason"
         );
         assert_eq!(
-            with_stderr("Vendor disconnected.".into(), Engine::Claude, b" \n"),
+            with_stderr(vendor(), Engine::Claude, b" \n"),
             "Vendor disconnected."
         );
-        for local in [
-            "Connection cancelled",
-            "Output consumer overloaded; session stopped",
-            "Turn item limit reached; session stopped",
+        for (local, text) in [
+            (DriverError::Cancelled, "Connection cancelled"),
+            (
+                DriverError::ConsumerOverloaded,
+                "Output consumer overloaded; session stopped",
+            ),
+            (
+                DriverError::TurnItemLimit,
+                "Turn item limit reached; session stopped",
+            ),
         ] {
             assert_eq!(
-                with_stderr(local.into(), Engine::Codex, b"unrelated log line\n"),
-                local
+                with_stderr(local, Engine::Codex, b"unrelated log line\n"),
+                text
             );
         }
         let mut long = vec![b'a'; 1500];
         long.extend_from_slice("\nlast line é\n".as_bytes());
         let text = with_stderr("x".into(), Engine::Codex, &long);
         assert!(text.ends_with("codex stderr: last line é"), "{text}");
+    }
+    #[test]
+    fn send_errors_keep_their_wording() {
+        assert_eq!(
+            SendError::PromptTooLong.to_string(),
+            "Prompt exceeds the 64 KiB limit"
+        );
+        assert_eq!(
+            SendError::Busy.to_string(),
+            "Session is busy or closed; try again"
+        );
     }
     #[test]
     fn error_text_keeps_structured_kinds_and_names_missing_errors() {

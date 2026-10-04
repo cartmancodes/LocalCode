@@ -1,6 +1,8 @@
 //! Presentation-independent session boundary. Persist events before publishing;
 //! disk and subscriber failures stop execution instead of losing output silently.
-pub use lc_engine::live::{Command, Config, Engine, Event, Handle, Mode, Outcome, PROMPT_LIMIT};
+pub use lc_engine::live::{
+    Command, Config, Engine, Event, Handle, Mode, Outcome, SendError, PROMPT_LIMIT,
+};
 use lc_store::Journal;
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};

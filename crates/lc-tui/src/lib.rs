@@ -270,7 +270,7 @@ async fn run_session(
                     Action::Suspend=>{guard.suspend()?;terminal.resize(terminal.size()?.into())?;},
                     Action::SetMode(mode)=>match session.handle.send(Command::SetMode(mode)) {
                         Ok(())=>app.mode_pending=Some(mode),
-                        Err(e)=>app.notice(e),
+                        Err(e)=>app.notice(e.to_string()),
                     },
                     other=>return Ok(other)
                 }
@@ -317,7 +317,7 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
                     app.approvals.pop_front();
                     app.approval_scroll = 0;
                 }
-                Err(error) => app.notice = error,
+                Err(error) => app.notice = error.to_string(),
             }
         } else if key.code == KeyCode::PageDown {
             app.approval_scroll = app.approval_scroll.saturating_add(8);
@@ -439,7 +439,7 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
                         }
                     }
                 }
-                Err(error) => app.notice = error,
+                Err(error) => app.notice = error.to_string(),
             }
         }
         KeyCode::Up if app.editor.text.contains('\n') => app.editor.vertical(false),
