@@ -44,6 +44,12 @@ fn main() {
             emit(&json!({"ready":true}));
             thread::sleep(Duration::from_secs(5));
         }
+        "stderr-exit" => {
+            // Explain on stderr and exit at once, like a CLI rejecting its arguments.
+            let mut stderr = io::stderr().lock();
+            stderr.write_all(&vec![b'z'; 300_000]).unwrap();
+            stderr.write_all(b"FINAL-REASON\n").unwrap();
+        }
         "grandchild" => {
             // This fixture intentionally exits before reaping its child so the
             // supervisor must clean up a process group whose leader is gone.
@@ -156,11 +162,21 @@ fn interactive_codex() {
                     // One completed command whose output is far larger than the event queue.
                     let output = "x".repeat(6 * 1024 * 1024);
                     emit(
-                        &json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":active,"item":{"id":"cmd","type":"commandExecution","command":"cat big","aggregatedOutput":output}}}),
+                        &json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":active,"item":{"id":"cmd","type":"commandExecution","command":"cat big","status":"completed","exitCode":0,"aggregatedOutput":output}}}),
                     );
                     emit(
                         &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"completed"}}}),
                     );
+                    continue;
+                }
+                if text == "chatter" {
+                    // The turn goes silent while another thread keeps talking.
+                    for _ in 0..8 {
+                        thread::sleep(Duration::from_millis(300));
+                        emit(
+                            &json!({"method":"item/agentMessage/delta","params":{"threadId":"other-thread","turnId":"other","itemId":"x","delta":"."}}),
+                        );
+                    }
                     continue;
                 }
                 if text == "fail" {

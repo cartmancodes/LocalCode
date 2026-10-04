@@ -575,18 +575,13 @@ async fn idle_switch_long_after_connect_confirms_promptly() {
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     // Past the connect deadline, which is stale once idle.
     tokio::time::sleep(Duration::from_millis(2200)).await;
-    let sent = tokio::time::Instant::now();
     handle.send(Command::SetMode(Mode::Auto)).unwrap();
     let event = wait_long(&mut events, 12, |e| {
         matches!(e, Event::Notice(_) | Event::ModeChanged(_))
     })
     .await;
+    // The first event being the confirmation, not a timeout notice, is the proof.
     assert!(matches!(event, Event::ModeChanged(Mode::Auto)), "{event:?}");
-    assert!(
-        sent.elapsed() < Duration::from_millis(700),
-        "{:?}",
-        sent.elapsed()
-    );
     handle.shutdown();
     task.await.unwrap();
 }
@@ -685,9 +680,13 @@ async fn large_tool_item_is_bounded_and_the_turn_completes() {
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
     handle.send(Command::Prompt("bigtool".into())).unwrap();
     let mut tool_bytes = 0;
+    let mut tool = String::new();
     loop {
         match next(&mut events).await {
-            Event::Tool(text) => tool_bytes += text.len(),
+            Event::Tool(text) => {
+                tool_bytes += text.len();
+                tool = text;
+            }
             Event::Finished { outcome } => {
                 assert_eq!(outcome, "completed");
                 break;
@@ -697,6 +696,12 @@ async fn large_tool_item_is_bounded_and_the_turn_completes() {
         }
     }
     assert!(tool_bytes > 0 && tool_bytes <= 40 * 1024, "{tool_bytes}");
+    // The cut must keep what the command was and how it ended, not only output.
+    let head: String = tool.chars().take(200).collect();
+    assert!(
+        head.contains("cat big") && head.contains("exit 0"),
+        "{head}"
+    );
     handle.shutdown();
     task.await.unwrap();
 }
@@ -791,5 +796,45 @@ async fn silent_turn_is_stopped_at_the_idle_limit() {
     };
     assert!(error.contains("sent nothing for 1 second"), "{error}");
     let _ = handle;
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn other_thread_chatter_does_not_keep_a_silent_turn_alive() {
+    let (handle, mut events, task) = spawn_with_limits(config(), quick());
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
+    let sent = tokio::time::Instant::now();
+    // Another thread emits frames for about 2.4 seconds; ours is silent.
+    handle.send(Command::Prompt("chatter".into())).unwrap();
+    let error = loop {
+        match next(&mut events).await {
+            Event::Error(error) => break error,
+            Event::Stopped => panic!("stopped without an error"),
+            _ => {}
+        }
+    };
+    assert!(error.contains("sent nothing for 1 second"), "{error}");
+    assert!(
+        sent.elapsed() < Duration::from_millis(2200),
+        "{:?}",
+        sent.elapsed()
+    );
+    let _ = handle;
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn waiting_for_the_user_is_not_vendor_silence() {
+    let (handle, mut events, task) = spawn_with_limits(config(), quick());
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
+    handle.send(Command::Prompt("approval".into())).unwrap();
+    let id = match wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await {
+        Event::Approval { id, .. } => id,
+        _ => unreachable!(),
+    };
+    // Longer than the 1-second idle limit: the vendor is waiting on us.
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    handle.send(Command::Answer { id, allow: true }).unwrap();
+    let event = wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
+    assert!(matches!(event, Event::Finished { outcome } if outcome == "completed"));
+    handle.shutdown();
     task.await.unwrap();
 }

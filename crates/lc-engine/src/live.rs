@@ -434,8 +434,9 @@ async fn vendor(
         let mut deadline = Instant::now() + limits.connect;
         loop {
             // The connect/turn deadline is stale when idle; counting it then would
-            // make every idle timer fire immediately and spin.
-            let next_deadline = pending.values().map(|p| p.deadline).chain(mode_request.as_ref().map(|r| r.2)).chain((!ready || running).then_some(deadline)).min().unwrap_or(deadline);
+            // make every idle timer fire immediately and spin. It is also paused
+            // while an approval waits: the vendor is then silent because of us.
+            let next_deadline = pending.values().map(|p| p.deadline).chain(mode_request.as_ref().map(|r| r.2)).chain(((!ready || running) && pending.is_empty()).then_some(deadline)).min().unwrap_or(deadline);
             tokio::select! {
                 biased;
                 _ = stopping.changed() => break,
@@ -458,13 +459,13 @@ async fn vendor(
                 _ = tokio::time::sleep_until(next_deadline), if !ready || running || !pending.is_empty() || mode_request.is_some() => {
                     // The connect/turn deadline only applies while connecting or in a turn;
                     // when idle it is stale and other timers can wake this branch.
-                    if (!ready || running) && Instant::now() >= deadline {
+                    if (!ready || running) && pending.is_empty() && Instant::now() >= deadline {
                         return Err(if !ready { format!("Vendor did not finish connecting within {}; session stopped.",seconds(limits.connect)) }
                             else if interrupt_pending { format!("Vendor did not stop within {} of the interrupt; session stopped. Resume using the session ID.",seconds(limits.interrupt)) }
                             else { format!("Vendor sent nothing for {}; session stopped. Resume using the session ID.",seconds(limits.turn_idle)) });
                     }
                     let expired: Vec<u64> = pending.iter().filter(|(_,p)|p.deadline <= Instant::now()).map(|(id,_)|*id).collect();
-                    for id in expired { let p=pending.remove(&id).unwrap(); send(&process,answer(claude,&p.wire,false)).await?; emit(tx,Event::ApprovalClosed(id))?; emit(tx,Event::Notice("Approval timed out and was denied".into()))?; }
+                    for id in expired { let p=pending.remove(&id).unwrap(); send(&process,answer(claude,&p.wire,false)).await?; emit(tx,Event::ApprovalClosed(id))?; emit(tx,Event::Notice("Approval timed out and was denied".into()))?; if pending.is_empty() && running && !interrupt_pending { deadline=Instant::now()+limits.turn_idle; } }
                     if let Some((id,target,_))=mode_request.take_if(|r| r.2<=Instant::now()) {
                         late_modes.push((id,target));
                         emit(tx,Event::Notice(format!("Claude has not confirmed the switch to {}; the header shows {} until it does",target.label(),mode.label())))?;
@@ -490,7 +491,11 @@ async fn vendor(
                         }
                     },
                     Some(Command::Answer{id,allow}) => {
-                        if let Some(p)=pending.remove(&id) { send(&process,answer(claude,&p.wire,allow)).await?; emit(tx,Event::ApprovalClosed(id))?; }
+                        if let Some(p)=pending.remove(&id) {
+                            send(&process,answer(claude,&p.wire,allow)).await?; emit(tx,Event::ApprovalClosed(id))?;
+                            // The silence watchdog was paused while the user decided.
+                            if pending.is_empty() && running && !interrupt_pending { deadline=Instant::now()+limits.turn_idle; }
+                        }
                         else { emit(tx,Event::Notice("That approval is no longer active".into()))?; }
                     }
                     Some(Command::SetMode(target)) => {
@@ -514,7 +519,9 @@ async fn vendor(
                 frame=process.next_frame() => {
                     let v=frame.map_err(|e|e.to_string())?.ok_or("Vendor disconnected. Check its login and installation.")?;
                     // The turn limit is a silence watchdog, not a cap on turn length.
-                    if running && !interrupt_pending { deadline=Instant::now()+limits.turn_idle; }
+                    // Only frames for this session count: another thread's chatter is not progress.
+                    let ours=claude || v.pointer("/params/threadId").and_then(Value::as_str).is_none_or(|id| id==session);
+                    if running && !interrupt_pending && ours { deadline=Instant::now()+limits.turn_idle; }
                     if claude {
                         let kind=v["type"].as_str().unwrap_or("");
                         let response_id=v.pointer("/response/request_id").and_then(Value::as_str);
@@ -562,6 +569,7 @@ async fn vendor(
                         if kind=="control_cancel_request" {
                             let ids:Vec<_>=pending.iter().filter(|(_,p)|p.wire["request_id"]==v["request_id"]).map(|(id,_)|*id).collect();
                             for id in ids { pending.remove(&id); emit(tx,Event::ApprovalClosed(id))?; }
+                            if pending.is_empty() && running && !interrupt_pending { deadline=Instant::now()+limits.turn_idle; }
                         }
                         if !running { continue; }
                         if kind=="stream_event" {
@@ -647,7 +655,7 @@ async fn vendor(
                                 let item=&v["params"]["item"];
                                 match item["type"].as_str().unwrap_or("") {
                                     "agentMessage" if method=="item/completed" => {if !text_items.contains(item["id"].as_str().unwrap_or("")){if let Some(text)=item["text"].as_str(){emit(tx,Event::Text(text.into()))?;}}},
-                                    "commandExecution" | "fileChange" | "mcpToolCall" => {emit(tx,Event::Tool(format!("{} · {}\n{}",item["type"].as_str().unwrap_or("tool"),if method=="item/started"{"running"}else{"finished"},item)))?;},
+                                    "commandExecution" | "fileChange" | "mcpToolCall" => {emit(tx,Event::Tool(codex_tool_detail(item,if method=="item/started"{"running"}else{"finished"})))?;},
                                     _=>{}
                                 }
                             },
@@ -677,8 +685,23 @@ async fn vendor(
 /// A failure plus what the vendor itself said on stderr, which usually names
 /// the real cause (an unknown session ID, an expired login).
 fn with_stderr(error: String, engine: &str, tail: &[u8]) -> String {
-    let start = tail.len().saturating_sub(1024);
-    let text = String::from_utf8_lossy(&tail[start..]);
+    // Failures the driver itself caused say nothing about the vendor.
+    const LOCAL: [&str; 3] = [
+        "Connection cancelled",
+        "Output consumer overloaded",
+        "Turn item limit reached",
+    ];
+    if LOCAL.iter().any(|prefix| error.starts_with(prefix)) {
+        return error;
+    }
+    let mut end = &tail[tail.len().saturating_sub(1024)..];
+    if end.len() < tail.len() {
+        // Cut mid-stream: start at the next whole line.
+        if let Some(newline) = end.iter().position(|byte| *byte == b'\n') {
+            end = &end[newline + 1..];
+        }
+    }
+    let text = String::from_utf8_lossy(end);
     let text = text.trim();
     if text.is_empty() {
         error
@@ -688,6 +711,7 @@ fn with_stderr(error: String, engine: &str, tail: &[u8]) -> String {
 }
 fn seconds(limit: Duration) -> String {
     match limit.as_secs() {
+        0 => format!("{} ms", limit.as_millis()),
         1 => "1 second".into(),
         n => format!("{n} seconds"),
     }
@@ -705,8 +729,49 @@ fn claude_result_error(result: &Value) -> String {
     match result["result"].as_str().filter(|text| !text.is_empty()) {
         Some(text) => limited(text),
         None if !errors.is_empty() => limited(&errors),
-        None => "Claude returned an error".into(),
+        None => match result["subtype"].as_str() {
+            Some(subtype) => limited(&format!("Claude returned an error ({subtype})")),
+            None => "Claude returned an error".into(),
+        },
     }
+}
+/// A Codex item as a transcript preview. A command leads with what ran and how
+/// it ended; long output keeps its end, where failures are reported.
+fn codex_tool_detail(item: &Value, phase: &str) -> String {
+    let kind = item["type"].as_str().unwrap_or("tool");
+    let mut text = format!("{kind} · {phase}");
+    if kind != "commandExecution" {
+        text.push('\n');
+        text.push_str(&item.to_string());
+        return limited(&text);
+    }
+    match &item["command"] {
+        Value::Null => {}
+        Value::String(command) => text.push_str(&format!("\n$ {command}")),
+        other => text.push_str(&format!("\n$ {other}")),
+    }
+    match (item["status"].as_str(), item["exitCode"].as_i64()) {
+        (Some(status), Some(code)) => text.push_str(&format!("\n{status} · exit {code}")),
+        (Some(status), None) => text.push_str(&format!("\n{status}")),
+        (None, Some(code)) => text.push_str(&format!("\nexit {code}")),
+        (None, None) => {}
+    }
+    if let Some(output) = item["aggregatedOutput"].as_str().filter(|o| !o.is_empty()) {
+        const CUT: &str = "[earlier output cut]\n";
+        let room = EVENT_BYTES.saturating_sub(text.len() + 1 + CUT.len());
+        text.push('\n');
+        if output.len() > room {
+            let mut start = output.len() - room;
+            while !output.is_char_boundary(start) {
+                start += 1;
+            }
+            text.push_str(CUT);
+            text.push_str(&output[start..]);
+        } else {
+            text.push_str(output);
+        }
+    }
+    limited(&text)
 }
 /// Adopt the mode the vendor confirmed. An unmapped report keeps the requested
 /// mode and says what the vendor actually uses; LocalCode never guesses.
@@ -759,7 +824,7 @@ fn claude_stray_reply(value: &Value) -> Option<Value> {
     let id = value.get("request_id")?;
     Some(
         if value.pointer("/request/subtype")?.as_str()? == "can_use_tool" {
-            json!({"type":"control_response","response":{"subtype":"success","request_id":id,"response":{"behavior":"deny","message":"Denied by LocalCode: the turn was cancelled or too many approvals are waiting"}}})
+            json!({"type":"control_response","response":{"subtype":"success","request_id":id,"response":{"behavior":"deny","message":"Denied by LocalCode: no turn is waiting for this request"}}})
         } else {
             json!({"type":"control_response","response":{"subtype":"error","request_id":id,"error":"LocalCode does not support this control request"}})
         },
@@ -783,6 +848,9 @@ fn codex_stray_reply(value: &Value) -> Option<Value> {
 /// A vendor error as a person should read it: the message, including one
 /// nested as JSON text, with Codex's error kind when it says more than "other".
 fn error_text(error: &Value) -> String {
+    if error.is_null() {
+        return "The vendor reported an error without details".into();
+    }
     let Some(message) = error.as_str().or(error["message"].as_str()) else {
         return limited(&error.to_string());
     };
@@ -792,8 +860,9 @@ fn error_text(error: &Value) -> String {
             .map(str::to_owned)
     });
     let text = inner.unwrap_or_else(|| message.to_owned());
-    match error["codexErrorInfo"].as_str() {
-        Some(kind) if kind != "other" => limited(&format!("{text} ({kind})")),
+    match &error["codexErrorInfo"] {
+        Value::String(kind) if kind != "other" => limited(&format!("{text} ({kind})")),
+        kind @ Value::Object(_) => limited(&format!("{text} ({kind})")),
         _ => limited(&text),
     }
 }
@@ -1022,5 +1091,81 @@ mod mode_tests {
         );
         assert_eq!(error_text(&json!({"code":-1})), "{\"code\":-1}");
         assert_eq!(error_text(&json!("text")), "text");
+    }
+    #[test]
+    fn stderr_is_attached_only_to_vendor_failures_and_starts_on_a_line() {
+        assert_eq!(
+            with_stderr("Vendor disconnected.".into(), "claude", b"reason\n"),
+            "Vendor disconnected.\nclaude stderr: reason"
+        );
+        assert_eq!(
+            with_stderr("Vendor disconnected.".into(), "claude", b" \n"),
+            "Vendor disconnected."
+        );
+        for local in [
+            "Connection cancelled",
+            "Output consumer overloaded; session stopped",
+            "Turn item limit reached; session stopped",
+        ] {
+            assert_eq!(
+                with_stderr(local.into(), "codex", b"unrelated log line\n"),
+                local
+            );
+        }
+        let mut long = vec![b'a'; 1500];
+        long.extend_from_slice("\nlast line é\n".as_bytes());
+        let text = with_stderr("x".into(), "codex", &long);
+        assert!(text.ends_with("codex stderr: last line é"), "{text}");
+    }
+    #[test]
+    fn error_text_keeps_structured_kinds_and_names_missing_errors() {
+        assert_eq!(
+            error_text(&json!({"message":"bad","codexErrorInfo":{"httpStatus":429}})),
+            "bad ({\"httpStatus\":429})"
+        );
+        assert_eq!(
+            error_text(&Value::Null),
+            "The vendor reported an error without details"
+        );
+        assert_eq!(
+            claude_result_error(&json!({"is_error":true,"subtype":"error_max_turns"})),
+            "Claude returned an error (error_max_turns)"
+        );
+        assert_eq!(seconds(Duration::from_millis(400)), "400 ms");
+        assert_eq!(seconds(Duration::from_secs(600)), "600 seconds");
+    }
+    #[test]
+    fn stray_permission_denial_says_why() {
+        let permission = json!({"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{}}});
+        let message = claude_stray_reply(&permission).unwrap()["response"]["response"]["message"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(message.contains("no turn is waiting"), "{message}");
+    }
+    #[test]
+    fn command_preview_leads_with_the_command_and_its_outcome() {
+        let item = json!({"type":"commandExecution","command":"cargo test","status":"failed","exitCode":101,"aggregatedOutput":"line 1\nline 2"});
+        assert_eq!(
+            codex_tool_detail(&item, "finished"),
+            "commandExecution · finished\n$ cargo test\nfailed · exit 101\nline 1\nline 2"
+        );
+        let running = json!({"type":"commandExecution","command":"cargo test"});
+        assert_eq!(
+            codex_tool_detail(&running, "running"),
+            "commandExecution · running\n$ cargo test"
+        );
+        let other = json!({"type":"fileChange","changes":[]});
+        assert!(codex_tool_detail(&other, "finished").starts_with("fileChange · finished\n{"));
+        // Long output keeps its end, where failures are reported.
+        let long = json!({"type":"commandExecution","command":"x","aggregatedOutput":format!("{}END", "y".repeat(EVENT_BYTES * 2))});
+        let detail = codex_tool_detail(&long, "finished");
+        assert!(
+            detail.len() <= EVENT_BYTES
+                && detail.ends_with("END")
+                && detail.contains("[earlier output cut]"),
+            "{}",
+            detail.len()
+        );
     }
 }

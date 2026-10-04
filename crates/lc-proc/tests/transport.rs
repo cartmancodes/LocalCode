@@ -310,3 +310,25 @@ async fn transport_roundtrip_benchmark() {
     );
     assert!(process.shutdown().await.reaped);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stderr_of_a_child_that_exits_at_once_is_complete() {
+    for _ in 0..40 {
+        let mut cfg = config("stderr-exit");
+        cfg.stderr_bytes = 64;
+        let mut process = Process::spawn(cfg).await.unwrap();
+        assert_eq!(
+            timeout(Duration::from_secs(2), process.next_frame())
+                .await
+                .unwrap()
+                .unwrap(),
+            None
+        );
+        let report = process.shutdown().await;
+        assert!(
+            report.stderr_tail.ends_with(b"FINAL-REASON\n"),
+            "{:?}",
+            String::from_utf8_lossy(&report.stderr_tail)
+        );
+    }
+}

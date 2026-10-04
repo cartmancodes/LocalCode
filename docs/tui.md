@@ -65,7 +65,8 @@ mode below; this is not a promise that every vendor action raises a dialog.
 Commands: `/help`, `/model`, `/mode`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/quit`.
 The preview also supports persistent multi-turn goals through `/goal`.
 Changing sessions or exporting requires an idle turn. `/approval-demo` exercises
-the dialog in offline demo mode. Unknown preview commands return a visible error and leave the draft in place.
+the dialog in offline demo mode. Unknown preview commands return a visible error and leave the draft in place. A
+prompt may start with a path such as `/usr/lib`; it is sent, not treated as a command.
 `/reconnect` keeps the visible conversation and prompt history; `/new` clears them.
 
 ## Permission modes
@@ -194,12 +195,14 @@ earlier content remains in the journal. Wrapping is cached by block and width.
 Rendering is dirty-triggered and capped near 30 Hz, with no idle animation timer.
 Prompts are limited to 64 KiB, stdout frames to 8 MiB, queued raw frames to 16 MiB,
 and each session journal to 64 MiB. Tool activity is a preview: each tool entry is
-cut at 32 KiB, in the journal as well, and the vendor keeps the full output. Bounded
+cut at 32 KiB, in the journal as well, and the vendor keeps the full output. A Codex
+command shows what ran, its status and exit code, then the end of its output. Bounded
 event queues stop an overloaded session with an error; they do not silently discard
 a completed response.
 
 A turn may run for any length of time. The session is stopped only if the vendor
-sends nothing at all for 10 minutes inside a turn, does not finish connecting
+sends nothing for this session for 10 minutes inside a turn (time spent waiting on
+your answer to an approval does not count), does not finish connecting
 within 30 seconds, or does not end the turn within 10 seconds of an interrupt.
 When a vendor fails or exits, the error shows the vendor's own message and the end
 of its stderr, which usually names the cause (an unknown session ID, an expired

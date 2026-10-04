@@ -153,13 +153,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         config.mode = app.mode;
         match result? {
             Action::Model(selection) => {
-                if let Some(goal) = &mut app.goal {
-                    if goal.status == lc_core::goal::Status::Active {
-                        goal.status = lc_core::goal::Status::Paused;
-                        app.save_goal().await.map_err(io::Error::other)?;
-                        app.notice("Goal paused for model switch. Use /goal resume to continue.");
-                    }
-                }
+                pause_active_goal(&mut app, "model switch").await?;
                 let cross_provider = selection.provider != config.engine;
                 let binary = binaries.get(&selection.provider).cloned();
                 let next = selection.configure(&config, &app.session, binary);
@@ -169,13 +163,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                 retained_app = Some(app);
             }
             Action::Mode(mode) => {
-                if let Some(goal) = &mut app.goal {
-                    if goal.status == lc_core::goal::Status::Active {
-                        goal.status = lc_core::goal::Status::Paused;
-                        app.save_goal().await.map_err(io::Error::other)?;
-                        app.notice("Goal paused for mode switch. Use /goal resume to continue.");
-                    }
-                }
+                pause_active_goal(&mut app, "mode switch").await?;
                 app.notice(full_access_notice(mode, &config.engine, &app.session));
                 config.mode = mode;
                 if !app.session.is_empty() && config.engine != "demo" {
@@ -188,11 +176,8 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                 if !app.session.is_empty() && config.engine != "demo" {
                     config.resume = Some(app.session.clone());
                 }
-                app.notice(if config.resume.is_some() {
-                    "Reconnecting to the same vendor session. Earlier messages stay visible."
-                } else {
-                    "Reconnecting. No vendor session ID yet, so the vendor starts fresh; earlier messages stay visible."
-                });
+                pause_active_goal(&mut app, "reconnect").await?;
+                app.notice(reconnect_notice(config.resume.is_some(), &app.journal));
                 retained_app = Some(app);
             }
             _ => break,
@@ -409,7 +394,13 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
             if draft.is_empty() {
                 return Action::Continue;
             }
-            if draft.starts_with('/') && draft != "/approval-demo" {
+            // "/usr/lib is broken" is a prompt: no command name contains a slash.
+            let path_like = draft
+                .split_whitespace()
+                .next()
+                .and_then(|first| first.strip_prefix('/'))
+                .is_some_and(|name| name.contains('/'));
+            if draft.starts_with('/') && draft != "/approval-demo" && !path_like {
                 return match try_command(app, &draft).await {
                     Some(action) => {
                         app.editor.take();
@@ -459,6 +450,32 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         _ => {}
     }
     Action::Continue
+}
+/// A new connection must never continue an autonomous goal by itself.
+async fn pause_active_goal(app: &mut App, why: &str) -> io::Result<()> {
+    if let Some(goal) = &mut app.goal {
+        if goal.status == lc_core::goal::Status::Active {
+            goal.status = lc_core::goal::Status::Paused;
+            app.save_goal().await.map_err(io::Error::other)?;
+            app.notice(format!(
+                "Goal paused for {why}. Use /goal resume to continue."
+            ));
+        }
+    }
+    Ok(())
+}
+/// The retained screen spans two journals after a reconnect; say where the
+/// earlier part is, because /export and /session cover only the new one.
+fn reconnect_notice(resumed: bool, previous: &std::path::Path) -> String {
+    format!(
+        "{} Earlier messages stay visible. Previous journal: {}",
+        if resumed {
+            "Reconnecting to the same vendor session."
+        } else {
+            "Reconnecting. No vendor session ID yet, so the vendor starts fresh."
+        },
+        previous.display()
+    )
 }
 /// Says whether a full-access change resumes the vendor session or starts over.
 fn full_access_notice(mode: lc_core::Mode, engine: &str, session: &str) -> String {
@@ -672,7 +689,7 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
             }
         }
         _ => {
-            app.notice(format!("Unknown command {name}. Use /help, or edit the draft: a prompt cannot start with a slash."));
+            app.notice(format!("Unknown command {name}. Use /help, or edit the draft: only a path such as /usr/lib can start a prompt with a slash."));
             return None;
         }
     }
@@ -891,18 +908,39 @@ mod model_tests {
             .unwrap();
         let mut app = App::new(&config, session.journal.clone());
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.editor.insert("/nope is not a command, keep my words");
+        assert!(matches!(
+            key_action(&mut app, &mut session, enter).await,
+            Action::Continue
+        ));
+        assert_eq!(app.editor.text, "/nope is not a command, keep my words");
+        assert!(app.notice.contains("Unknown command"));
+        app.editor.take();
+        // A path is a prompt, not a command.
+        app.ready = true;
         app.editor
             .insert("/usr/lib is where this breaks, please look");
         assert!(matches!(
             key_action(&mut app, &mut session, enter).await,
             Action::Continue
         ));
+        assert!(app.editor.text.is_empty() && app.running, "{}", app.notice);
         assert_eq!(
-            app.editor.text,
-            "/usr/lib is where this breaks, please look"
+            app.history.back().map(String::as_str),
+            Some("/usr/lib is where this breaks, please look")
         );
-        assert!(app.notice.contains("Unknown command"));
-        app.editor.take();
+        app.running = false;
+        // A prompt starting with a multi-byte character is an ordinary prompt.
+        app.editor.insert("界 means world");
+        assert!(matches!(
+            key_action(&mut app, &mut session, enter).await,
+            Action::Continue
+        ));
+        assert_eq!(
+            app.history.back().map(String::as_str),
+            Some("界 means world")
+        );
+        app.running = false;
         app.editor.insert("/session");
         assert!(matches!(
             key_action(&mut app, &mut session, enter).await,
@@ -911,5 +949,29 @@ mod model_tests {
         assert!(app.editor.text.is_empty());
         session.shutdown().await;
         tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+    #[tokio::test]
+    async fn reconnect_pauses_an_active_goal_and_names_the_previous_journal() {
+        let mut app = app();
+        app.goal = Some(lc_core::goal::Goal::new("Ship it").unwrap());
+        pause_active_goal(&mut app, "reconnect").await.unwrap();
+        assert_eq!(
+            app.goal.as_ref().unwrap().status,
+            lc_core::goal::Status::Paused
+        );
+        assert!(app.notice.contains("Goal paused for reconnect"));
+        let previous = std::path::Path::new("/data/session-1.jsonl");
+        let resumed = reconnect_notice(true, previous);
+        assert!(
+            resumed.contains("same vendor session")
+                && resumed.ends_with("Previous journal: /data/session-1.jsonl"),
+            "{resumed}"
+        );
+        let fresh = reconnect_notice(false, previous);
+        assert!(
+            fresh.contains("starts fresh")
+                && fresh.contains("Previous journal: /data/session-1.jsonl"),
+            "{fresh}"
+        );
     }
 }
