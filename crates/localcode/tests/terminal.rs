@@ -353,7 +353,7 @@ fn corrupt_goal_does_not_prevent_chat_or_explicit_recovery() {
     let goal = lc_core::goal::Goal::new("recover this goal").unwrap();
     tokio::runtime::Runtime::new()
         .unwrap()
-        .block_on(store.save(Some(&goal)))
+        .block_on(store.save(&goal))
         .unwrap();
     let path = fs::read_dir(&directory)
         .unwrap()
@@ -464,7 +464,7 @@ fn goals_pause_cancel_resume_audit_and_stop_on_failure_for_both_providers() {
         goal.status = lc_core::goal::Status::Paused;
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(store.save(Some(&goal)))
+            .block_on(store.save(&goal))
             .unwrap();
         let ready = p.count("ready");
         p.send(b"/new\r");

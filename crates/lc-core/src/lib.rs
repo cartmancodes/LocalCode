@@ -1,6 +1,6 @@
 //! Presentation-independent session boundary. Persist events before publishing;
 //! disk and subscriber failures stop execution instead of losing output silently.
-pub use lc_engine::live::{Command, Config, Engine, Event, Handle, Mode, PROMPT_LIMIT};
+pub use lc_engine::live::{Command, Config, Engine, Event, Handle, Mode, Outcome, PROMPT_LIMIT};
 use lc_store::Journal;
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
@@ -106,7 +106,7 @@ fn record(event: &Event) -> (&'static str, Value) {
         Event::Approval { id, detail } => ("approval", json!({"id":id,"detail":detail})),
         Event::ApprovalClosed(id) => ("approval_closed", json!(id)),
         Event::Usage(text) => ("usage", json!(text)),
-        Event::Finished { outcome } => ("finished", json!(outcome)),
+        Event::Finished { outcome } => ("finished", json!(outcome.as_str())),
         Event::Notice(text) => ("notice", json!(text)),
         Event::Error(text) => ("error", json!(text)),
         Event::Stopped => ("stopped", Value::Null),

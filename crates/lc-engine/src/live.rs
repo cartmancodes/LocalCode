@@ -254,6 +254,39 @@ fn model_catalog(value: &Value, claude: bool) -> Vec<ModelInfo> {
         .collect()
 }
 
+/// How a turn ended. Journals and the status line use `as_str()`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Completed,
+    Interrupted,
+    Failed,
+    /// A status LocalCode does not map, exactly as the vendor sent it.
+    Other(String),
+}
+impl Outcome {
+    pub fn from_vendor(status: &str) -> Outcome {
+        match status {
+            "completed" => Outcome::Completed,
+            "interrupted" => Outcome::Interrupted,
+            "failed" => Outcome::Failed,
+            other => Outcome::Other(other.to_owned()),
+        }
+    }
+    pub fn as_str(&self) -> &str {
+        match self {
+            Outcome::Completed => "completed",
+            Outcome::Interrupted => "interrupted",
+            Outcome::Failed => "failed",
+            Outcome::Other(status) => status,
+        }
+    }
+}
+impl std::fmt::Display for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
     Ready { session: String },
@@ -267,7 +300,7 @@ pub enum Event {
     Approval { id: u64, detail: String },
     ApprovalClosed(u64),
     Usage(String),
-    Finished { outcome: String },
+    Finished { outcome: Outcome },
     Notice(String),
     Error(String),
     Stopped,
@@ -631,7 +664,7 @@ async fn vendor(
                             if let Some(cost)=v["total_cost_usd"].as_f64() { emit(tx,Event::Usage(format!("${cost:.4} session cost")))?; }
                             running=false;
                             for (id,_) in pending.drain(){emit(tx,Event::ApprovalClosed(id))?;}
-                            emit(tx,Event::Finished{outcome:if interrupt_pending {"interrupted"} else if v["is_error"]==true {"failed"} else {"completed"}.into()})?;
+                            emit(tx,Event::Finished{outcome:if interrupt_pending {Outcome::Interrupted} else if v["is_error"]==true {Outcome::Failed} else {Outcome::Completed}})?;
                         }
                     } else {
                         let method=v["method"].as_str().unwrap_or("");
@@ -668,7 +701,7 @@ async fn vendor(
                             }
                         } else if method.is_empty() && v["id"].as_u64()==start_request && start_request.is_some() {
                             start_request=None;
-                            if v.get("error").is_some(){ running=false; emit(tx,Event::Error(error_text(&v["error"])))?; emit(tx,Event::Finished{outcome:"failed".into()})?; }
+                            if v.get("error").is_some(){ running=false; emit(tx,Event::Error(error_text(&v["error"])))?; emit(tx,Event::Finished{outcome:Outcome::Failed})?; }
                         } else if method.is_empty() && v["id"].as_u64()==interrupt_request && interrupt_request.is_some() {
                             interrupt_request=None;
                             if v.get("error").is_some(){emit(tx,Event::Notice("Interrupt was rejected; waiting for terminal outcome".into()))?;}
@@ -707,7 +740,7 @@ async fn vendor(
                                 for (id,_) in pending.drain(){emit(tx,Event::ApprovalClosed(id))?;}
                                 let status=v.pointer("/params/turn/status").and_then(Value::as_str).unwrap_or("unknown");
                                 if status=="failed"{emit(tx,Event::Error(error_text(&v["params"]["turn"]["error"])))?;}
-                                emit(tx,Event::Finished{outcome:status.into()})?;
+                                emit(tx,Event::Finished{outcome:Outcome::from_vendor(status)})?;
                             },
                             _=>{}
                         }
@@ -968,7 +1001,7 @@ async fn demo(
                     }else{format!("This is an offline demo. Your prompt was:\n\n{display}\n\nThe editor, streaming transcript, approval dialog, history, and cancellation are live. Start with --engine codex or --engine claude to work with a model.\n\nTry /approval-demo to preview a permission request.")};
                     let mut interrupted=false;
                     for word in reply.split_inclusive(' '){tokio::select!{_=stop.changed()=>return Ok(()),_=cancel.changed()=>{interrupted=true;break;},_=tokio::time::sleep(Duration::from_millis(18))=>{emit(tx,Event::Text(word.into()))?;}}}
-                    emit(tx,Event::Finished{outcome:if interrupted{"interrupted"}else{"completed"}.into()})?;
+                    emit(tx,Event::Finished{outcome:if interrupted{Outcome::Interrupted}else{Outcome::Completed}})?;
                 },
                 Some(Command::SetMode(target))=>demo_set_mode(tx,&mut mode,target)?,
                 None=>break,
@@ -1067,6 +1100,16 @@ mod mode_tests {
                 json!({"approvalPolicy":policy,"approvalsReviewer":reviewer})
             );
         }
+    }
+    #[test]
+    fn unknown_vendor_status_is_kept_verbatim() {
+        for known in ["completed", "interrupted", "failed"] {
+            assert_eq!(Outcome::from_vendor(known).as_str(), known);
+        }
+        assert_eq!(Outcome::from_vendor("completed"), Outcome::Completed);
+        let other = Outcome::from_vendor("inProgress");
+        assert_eq!(other, Outcome::Other("inProgress".into()));
+        assert_eq!(other.to_string(), "inProgress");
     }
     #[test]
     fn engines_parse_their_own_spelling_only() {

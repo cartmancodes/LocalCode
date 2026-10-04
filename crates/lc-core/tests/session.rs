@@ -74,3 +74,31 @@ async fn repeated_mode_events_are_journaled_once_but_all_delivered() {
     assert_eq!(journaled, ["ask", "auto"]);
     session.shutdown().await;
 }
+#[tokio::test]
+async fn journal_keeps_engine_and_outcome_spelling() {
+    let temp = lc_testkit::TempDir::new("lc-journal-spelling");
+    let config = Config::new(Engine::Demo, "demo", temp.path());
+    let mut session = Session::open(config, temp.path().to_path_buf())
+        .await
+        .unwrap();
+    session.handle.send(Command::Prompt("hi".into())).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = session.events.recv().await {
+            if matches!(event, Event::Finished { .. }) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    session.shutdown().await;
+    let journal = std::fs::read_to_string(&session.journal).unwrap();
+    let records: Vec<serde_json::Value> = journal
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records[0]["data"]["engine"], "demo");
+    assert!(records
+        .iter()
+        .any(|record| record["type"] == "finished" && record["data"] == "completed"));
+}

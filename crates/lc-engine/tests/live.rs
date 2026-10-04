@@ -1,4 +1,6 @@
-use lc_engine::live::{spawn, spawn_with_limits, Command, Config, Engine, Event, Limits, Mode};
+use lc_engine::live::{
+    spawn, spawn_with_limits, Command, Config, Engine, Event, Limits, Mode, Outcome,
+};
 use std::time::Duration;
 use tokio::{sync::mpsc, time::timeout};
 fn config() -> Config {
@@ -27,7 +29,7 @@ async fn live_driver_keeps_turns_separate_and_waits_for_terminal_after_usage() {
                 Event::Text(t) => text.push_str(&t),
                 Event::Usage(_) => usage = true,
                 Event::Finished { outcome } => {
-                    assert_eq!(outcome, "completed");
+                    assert_eq!(outcome, Outcome::Completed);
                     break;
                 }
                 Event::Error(e) => panic!("{e}"),
@@ -69,7 +71,7 @@ async fn approvals_and_cancel_remain_routable_during_turn() {
     loop {
         match next(&mut events).await {
             Event::Finished { outcome } => {
-                assert_eq!(outcome, "interrupted");
+                assert_eq!(outcome, Outcome::Interrupted);
                 break;
             }
             Event::Error(e) => panic!("{e}"),
@@ -98,7 +100,7 @@ async fn claude_stream_does_not_duplicate_final_assistant_message() {
             match next(&mut events).await {
                 Event::Text(t) => text.push_str(&t),
                 Event::Finished { outcome } => {
-                    assert_eq!(outcome, "completed");
+                    assert_eq!(outcome, Outcome::Completed);
                     break;
                 }
                 Event::Error(e) => panic!("{e}"),
@@ -189,7 +191,7 @@ async fn provider_receives_wire_prompt_while_transcript_keeps_user_facing_text()
                 handle.interrupt();
             }
             Event::Finished { outcome } => {
-                assert_eq!(outcome, "interrupted");
+                assert_eq!(outcome, Outcome::Interrupted);
                 break;
             }
             Event::Error(e) => panic!("{e}"),
@@ -517,7 +519,7 @@ async fn claude_switch_applies_in_the_middle_of_a_turn() {
     assert!(matches!(event, Event::ModeChanged(Mode::Auto)), "{event:?}");
     handle.interrupt();
     let event = wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
-    assert!(matches!(event, Event::Finished { outcome } if outcome == "interrupted"));
+    assert!(matches!(event, Event::Finished { outcome } if outcome == Outcome::Interrupted));
     handle.shutdown();
     task.await.unwrap();
 }
@@ -662,7 +664,7 @@ async fn large_tool_item_is_bounded_and_the_turn_completes() {
                 tool = text;
             }
             Event::Finished { outcome } => {
-                assert_eq!(outcome, "completed");
+                assert_eq!(outcome, Outcome::Completed);
                 break;
             }
             Event::Error(error) => panic!("{error}"),
@@ -697,7 +699,7 @@ async fn turn_errors_show_the_vendor_message_not_raw_json() {
         };
         assert_eq!(error, expected);
         assert!(
-            matches!(next(&mut events).await, Event::Finished { outcome } if outcome == "failed")
+            matches!(next(&mut events).await, Event::Finished { outcome } if outcome == Outcome::Failed)
         );
     }
     handle.shutdown();
@@ -752,7 +754,7 @@ async fn active_turn_outlives_the_idle_limit() {
     // The fixture streams for about 2.4 seconds; the idle limit is 1 second.
     handle.send(Command::Prompt("slow".into())).unwrap();
     let event = wait_long(&mut events, 6, |e| matches!(e, Event::Finished { .. })).await;
-    assert!(matches!(event, Event::Finished { outcome } if outcome == "completed"));
+    assert!(matches!(event, Event::Finished { outcome } if outcome == Outcome::Completed));
     handle.shutdown();
     task.await.unwrap();
 }
@@ -808,7 +810,7 @@ async fn waiting_for_the_user_is_not_vendor_silence() {
     tokio::time::sleep(Duration::from_millis(1600)).await;
     handle.send(Command::Answer { id, allow: true }).unwrap();
     let event = wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
-    assert!(matches!(event, Event::Finished { outcome } if outcome == "completed"));
+    assert!(matches!(event, Event::Finished { outcome } if outcome == Outcome::Completed));
     handle.shutdown();
     task.await.unwrap();
 }

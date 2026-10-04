@@ -231,7 +231,7 @@ async fn run_session(
                     let failed=matches!(&event,lc_core::Event::Error(_));
                     app.event(event);
                     if failed && app.goal_running {
-                        if let Some(goal)=&mut app.goal {goal.finish_turn("failed", &app.goal_output);}
+                        if let Some(goal)=&mut app.goal {goal.finish_turn(&lc_core::Outcome::Failed, &app.goal_output);}
                         app.goal_running=false;
                         if let Err(e)=app.save_goal().await {if let Some(goal)=&mut app.goal {goal.status=lc_core::goal::Status::Paused;}app.notice(format!("Goal persistence failed; paused: {e}"));}
                     }
@@ -241,7 +241,7 @@ async fn run_session(
                         if let Err(e)=app.save_goal().await {if let Some(goal)=&mut app.goal {goal.status=lc_core::goal::Status::Paused;}app.notice(format!("Goal persistence failed; paused: {e}"));}
                         else if continue_goal {
                             if let Some(goal)=&app.goal {
-                                let prompt=goal.prompt(false,false);
+                                let prompt=goal.prompt(lc_core::goal::GoalStep::Continue);
                                 let display=format!("Goal continuation · turn {}",goal.turns+1);
                                 match session.handle.send(Command::PromptWithDisplay{wire:prompt,display}) {
                                     Ok(())=>{app.goal_running=true;app.goal_output.clear();app.running=true;app.status="continuing goal".into();}
@@ -596,7 +596,7 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
             app.workspace
         )),
         "/goal" => {
-            use lc_core::goal::{Goal, Status};
+            use lc_core::goal::{Goal, GoalStep, Status};
             let mut changed = false;
             match argument {
                 "" | "status" => app.notice(
@@ -642,7 +642,11 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                             );
                         } else {
                             goal.status = Status::Active;
-                            let prompt = goal.prompt(false, argument == "complete");
+                            let prompt = goal.prompt(if argument == "complete" {
+                                GoalStep::Audit
+                            } else {
+                                GoalStep::Continue
+                            });
                             if let Err(e) = app.save_goal().await {
                                 if let Some(goal) = &mut app.goal {
                                     goal.status = Status::Paused;
@@ -669,7 +673,7 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                     } else {
                         match Goal::new(objective) {
                             Ok(goal) => {
-                                let prompt = goal.prompt(true, false);
+                                let prompt = goal.prompt(GoalStep::Begin);
                                 app.goal = Some(goal);
                                 if let Err(e) = app.save_goal().await {
                                     app.goal = None;
@@ -757,7 +761,10 @@ mod model_tests {
     async fn pausing_a_completed_goal_preserves_completion() {
         let mut app = app();
         let mut goal = lc_core::goal::Goal::new("Ship the project").unwrap();
-        goal.finish_turn("completed", "Verified tests.\n[[LOCALCODE_GOAL_COMPLETE]]");
+        goal.finish_turn(
+            &lc_core::Outcome::Completed,
+            "Verified tests.\n[[LOCALCODE_GOAL_COMPLETE]]",
+        );
         app.goal = Some(goal);
         command(&mut app, "/goal pause").await;
         assert_eq!(

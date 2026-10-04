@@ -134,7 +134,10 @@ impl App {
     }
     pub async fn save_goal(&self) -> Result<(), String> {
         match &self.goal_store {
-            Some(store) => store.save(self.goal.as_ref()).await,
+            Some(store) => match &self.goal {
+                Some(goal) => store.save(goal).await,
+                None => store.clear().await,
+            },
             None => Ok(()),
         }
     }
@@ -343,7 +346,7 @@ impl App {
             Event::Usage(text) => self.usage = clean(&text),
             Event::Finished { outcome } => {
                 self.running = false;
-                self.status = clean(&outcome);
+                self.status = clean(outcome.as_str());
             }
             Event::Notice(text) => self.notice(text),
             Event::Error(text) => {
@@ -767,7 +770,7 @@ fn sidebar(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled(" GOAL", Style::default().fg(MUTED))),
         Line::from(match &app.goal {
             Some(goal) => format!(
-                " {:?} · {}/{} turns",
+                " {} · {}/{} turns",
                 goal.status,
                 goal.turns,
                 lc_core::goal::MAX_GOAL_TURNS

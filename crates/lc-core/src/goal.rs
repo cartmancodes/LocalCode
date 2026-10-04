@@ -1,16 +1,45 @@
 //! Durable, provider-neutral goal state. A vendor turn is never resumed merely
 //! because a goal file exists; the user explicitly resumes after restart.
+use crate::Outcome;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 pub const MAX_GOAL_TURNS: u32 = 200;
 pub const COMPLETION_MARKER: &str = "[[LOCALCODE_GOAL_COMPLETE]]";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Active,
     Paused,
     Complete,
+}
+impl Status {
+    /// The goal file's spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Active => "active",
+            Status::Paused => "paused",
+            Status::Complete => "complete",
+        }
+    }
+}
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Status::Active => "Active",
+            Status::Paused => "Paused",
+            Status::Complete => "Complete",
+        })
+    }
+}
+
+/// Which instruction a goal prompt carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GoalStep {
+    Begin,
+    Continue,
+    /// Re-check the whole objective before claiming completion.
+    Audit,
 }
 
 #[derive(Clone, Debug)]
@@ -35,25 +64,23 @@ impl Goal {
             evidence: String::new(),
         })
     }
-    pub fn prompt(&self, first: bool, audit: bool) -> String {
-        let direction = if first {
-            "Begin the objective."
-        } else if audit {
-            "Audit the entire objective against the work and tests. Fix remaining gaps before claiming completion."
-        } else {
-            "Continue the objective from the existing vendor conversation. Make concrete progress and verify it."
+    pub fn prompt(&self, step: GoalStep) -> String {
+        let direction = match step {
+            GoalStep::Begin => "Begin the objective.",
+            GoalStep::Audit => "Audit the entire objective against the work and tests. Fix remaining gaps before claiming completion.",
+            GoalStep::Continue => "Continue the objective from the existing vendor conversation. Make concrete progress and verify it.",
         };
         format!("LocalCode active goal: {}\n\n{}\nIf and only if the entire objective is achieved, explain the evidence and put {} alone on the final line. Otherwise describe progress and what remains. Do not claim completion without verification.", self.objective, direction, COMPLETION_MARKER)
     }
     /// Count one completed vendor turn and decide whether another turn is needed.
     /// A turn that ends after a pause still counts and may record completion,
     /// but never continues.
-    pub fn finish_turn(&mut self, outcome: &str, assistant: &str) -> bool {
+    pub fn finish_turn(&mut self, outcome: &Outcome, assistant: &str) -> bool {
         if self.status == Status::Complete {
             return false;
         }
         self.turns = self.turns.saturating_add(1);
-        if outcome != "completed" {
+        if *outcome != Outcome::Completed {
             self.status = Status::Paused;
             return false;
         }
@@ -77,7 +104,7 @@ impl Goal {
     }
     pub fn summary(&self) -> String {
         format!(
-            "Goal: {}\nStatus: {:?} · turns: {}/{}{}",
+            "Goal: {}\nStatus: {} · turns: {}/{}{}",
             self.objective,
             self.status,
             self.turns,
@@ -125,8 +152,7 @@ impl GoalStore {
         let objective = v["objective"].as_str().ok_or("Goal objective missing")?;
         let mut goal = Goal::new(objective)?;
         goal.status = match v["status"].as_str() {
-            Some("active") => Status::Paused,
-            Some("paused") => Status::Paused,
+            Some("active" | "paused") => Status::Paused,
             Some("complete") => Status::Complete,
             _ => return Err("Invalid goal status".into()),
         };
@@ -142,39 +168,39 @@ impl GoalStore {
             .collect();
         Ok(Some(goal))
     }
-    pub async fn save(&self, goal: Option<&Goal>) -> Result<(), String> {
-        if let Some(goal) = goal {
-            let failed = |e: std::io::Error| format!("Cannot save goal: {e}");
-            tokio::fs::create_dir_all(self.path.parent().ok_or("Invalid goal path")?)
-                .await
-                .map_err(failed)?;
-            let nonce = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| format!("Cannot save goal: {e}"))?
-                .as_nanos();
-            let temp = self
-                .path
-                .with_extension(format!("{}.{}.tmp", std::process::id(), nonce));
-            let mut file = lc_store::create_private(&temp).await.map_err(failed)?;
-            let status = match goal.status {
-                Status::Active => "active",
-                Status::Paused => "paused",
-                Status::Complete => "complete",
-            };
-            let bytes=serde_json::to_vec(&json!({"objective":goal.objective,"status":status,"turns":goal.turns,"evidence":goal.evidence})).map_err(|e|format!("Cannot save goal: {e}"))?;
-            use tokio::io::AsyncWriteExt;
-            file.write_all(&bytes).await.map_err(failed)?;
-            file.sync_data().await.map_err(failed)?;
-            drop(file);
-            tokio::fs::rename(&temp, &self.path).await.map_err(failed)?;
-        } else {
-            match tokio::fs::remove_file(&self.path).await {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(format!("Cannot clear goal: {e}")),
-            }
+    pub async fn save(&self, goal: &Goal) -> Result<(), String> {
+        let failed = |e: std::io::Error| format!("Cannot save goal: {e}");
+        tokio::fs::create_dir_all(self.path.parent().ok_or("Invalid goal path")?)
+            .await
+            .map_err(failed)?;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| format!("Cannot save goal: {e}"))?
+            .as_nanos();
+        let temp = self
+            .path
+            .with_extension(format!("{}.{}.tmp", std::process::id(), nonce));
+        let mut file = lc_store::create_private(&temp).await.map_err(failed)?;
+        let bytes = serde_json::to_vec(&json!({
+            "objective": goal.objective,
+            "status": goal.status.as_str(),
+            "turns": goal.turns,
+            "evidence": goal.evidence,
+        }))
+        .map_err(|e| format!("Cannot save goal: {e}"))?;
+        use tokio::io::AsyncWriteExt;
+        file.write_all(&bytes).await.map_err(failed)?;
+        file.sync_data().await.map_err(failed)?;
+        drop(file);
+        tokio::fs::rename(&temp, &self.path).await.map_err(failed)
+    }
+    /// Removes the stored goal; a missing file is already cleared.
+    pub async fn clear(&self) -> Result<(), String> {
+        match tokio::fs::remove_file(&self.path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("Cannot clear goal: {e}")),
         }
-        Ok(())
     }
 }
 
@@ -182,15 +208,29 @@ impl GoalStore {
 mod tests {
     use super::*;
     #[test]
+    fn prompts_name_their_step() {
+        let goal = Goal::new("Ship the app").unwrap();
+        assert!(goal
+            .prompt(GoalStep::Begin)
+            .contains("Begin the objective."));
+        assert!(goal
+            .prompt(GoalStep::Continue)
+            .contains("Continue the objective"));
+        assert!(goal
+            .prompt(GoalStep::Audit)
+            .contains("Audit the entire objective"));
+        assert!(goal.summary().contains("Status: Active"));
+    }
+    #[test]
     fn completion_requires_final_marker_and_evidence() {
         let mut goal = Goal::new("Ship the app").unwrap();
         assert!(goal.finish_turn(
-            "completed",
+            &Outcome::Completed,
             "progress [[LOCALCODE_GOAL_COMPLETE]] quoted here"
         ));
-        assert!(goal.finish_turn("completed", "Progress [[LOCALCODE_GOAL_COMPLETE]]"));
+        assert!(goal.finish_turn(&Outcome::Completed, "Progress [[LOCALCODE_GOAL_COMPLETE]]"));
         assert!(!goal.finish_turn(
-            "completed",
+            &Outcome::Completed,
             "Verified build and tests.\n[[LOCALCODE_GOAL_COMPLETE]]"
         ));
         assert_eq!(goal.status, Status::Complete);
@@ -200,21 +240,24 @@ mod tests {
     fn turn_guard_and_failures_pause_without_continuing() {
         let mut goal = Goal::new("Ship the app").unwrap();
         goal.turns = MAX_GOAL_TURNS - 1;
-        assert!(!goal.finish_turn("completed", "Still working"));
+        assert!(!goal.finish_turn(&Outcome::Completed, "Still working"));
         assert_eq!(goal.status, Status::Paused);
         let mut failed = Goal::new("Ship the app").unwrap();
-        assert!(!failed.finish_turn("failed", "Error"));
+        assert!(!failed.finish_turn(&Outcome::Failed, "Error"));
         assert_eq!(failed.status, Status::Paused);
     }
     #[test]
     fn turns_ending_after_a_pause_are_counted_without_continuing() {
         let mut goal = Goal::new("Ship the app").unwrap();
         goal.status = Status::Paused;
-        assert!(!goal.finish_turn("interrupted", ""));
+        assert!(!goal.finish_turn(&Outcome::Interrupted, ""));
         assert_eq!((goal.turns, &goal.status), (1, &Status::Paused));
-        assert!(!goal.finish_turn("completed", "Still working"));
+        assert!(!goal.finish_turn(&Outcome::Completed, "Still working"));
         assert_eq!((goal.turns, &goal.status), (2, &Status::Paused));
-        assert!(!goal.finish_turn("completed", "Verified tests.\n[[LOCALCODE_GOAL_COMPLETE]]"));
+        assert!(!goal.finish_turn(
+            &Outcome::Completed,
+            "Verified tests.\n[[LOCALCODE_GOAL_COMPLETE]]"
+        ));
         assert_eq!((goal.turns, &goal.status), (3, &Status::Complete));
     }
     #[tokio::test]
@@ -224,8 +267,11 @@ mod tests {
         let store = GoalStore::new(dir, Path::new("/project"));
         let mut goal = Goal::new(&"🦀".repeat(2048)).unwrap();
         let evidence = "🦀".repeat(4096);
-        assert!(!goal.finish_turn("completed", &format!("{evidence}\n{COMPLETION_MARKER}")));
-        store.save(Some(&goal)).await.unwrap();
+        assert!(!goal.finish_turn(
+            &Outcome::Completed,
+            &format!("{evidence}\n{COMPLETION_MARKER}")
+        ));
+        store.save(&goal).await.unwrap();
         let restored = store.load().await.unwrap().unwrap();
         assert_eq!(restored.status, Status::Complete);
         assert_eq!(restored.objective, goal.objective);
@@ -237,7 +283,7 @@ mod tests {
         let dir = temp.path();
         let store = GoalStore::new(dir, Path::new("/project"));
         let goal = Goal::new("Ship the app").unwrap();
-        store.save(Some(&goal)).await.unwrap();
+        store.save(&goal).await.unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -252,7 +298,7 @@ mod tests {
             );
         }
         assert_eq!(store.load().await.unwrap().unwrap().status, Status::Paused);
-        store.save(None).await.unwrap();
+        store.clear().await.unwrap();
         assert!(store.load().await.unwrap().is_none());
     }
 }
