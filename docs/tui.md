@@ -49,6 +49,7 @@ is respected. The minimum usable size is 38 columns by 12 rows.
 | Ctrl+End | Follow the latest output |
 | Esc / Ctrl+C | Cancel the active operation |
 | Ctrl+P | Command palette |
+| Shift+Tab | Cycle permission mode: ask → accept-edits → auto |
 | F1 | Help |
 | Ctrl+Q | Stop vendor children, finish journal writes, exit |
 | Ctrl+Z | Restore terminal and suspend; use the shell's `fg` to return |
@@ -58,13 +59,39 @@ Bracketed paste preserves newlines without submitting them. A rejected oversized
 paste leaves the draft intact. Approval requests are never answered by pasted
 text. Approval expiration (120 seconds), cancellation and unknown request types
 fail closed; requests too large to display completely are denied explicitly.
-Vendor sandbox policy still applies. Codex uses workspace-write plus untrusted
-approval policy; this is not a promise that every vendor action raises a dialog.
+Vendor sandbox policy still applies. The vendor policy depends on the permission
+mode below; this is not a promise that every vendor action raises a dialog.
 
-Commands: `/help`, `/model`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/quit`.
+Commands: `/help`, `/model`, `/mode`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/quit`.
 The preview also supports persistent multi-turn goals through `/goal`.
 Changing sessions or exporting requires an idle turn. `/approval-demo` exercises
 the dialog in offline demo mode. Unknown preview commands return a visible error.
+
+## Permission modes
+
+`--mode MODE` at launch, `/mode MODE` at runtime, Shift+Tab to cycle. The default
+is `ask`; the mode is not remembered between launches but is kept across
+`/model`, `/new` and `/reconnect`. `/mode` alone shows the table for the current
+provider. The header shows the mode the vendor confirmed.
+
+| Mode | Claude | Codex (sandbox · approval · reviewer) |
+| --- | --- | --- |
+| `ask` | `default` | workspace-write · untrusted · user |
+| `accept-edits` | `acceptEdits` | workspace-write · on-request · user |
+| `auto` | `auto` (Claude's classifier) | workspace-write · on-request · `auto_review` |
+| `full-access` | `bypassPermissions` | danger-full-access · never · user |
+
+`auto` hands approval decisions to the vendor's own reviewer; LocalCode never
+answers a vendor approval by itself. Codex has no edits-only mode, so
+`accept-edits` is its closest analogue: in-workspace edits already proceed under
+workspace-write, and the model asks only to escalate.
+
+`ask`, `accept-edits` and `auto` switch live. Claude applies the change
+immediately, even mid-turn; Codex applies it from the next turn. A change Claude
+refuses (for example, auto mode unavailable for the account) leaves the previous
+mode in place with a notice. `full-access` is never reached by Shift+Tab: type
+`/mode full-access` on an idle session, which reconnects to the same vendor
+session with all checks off. Leaving it reconnects again.
 
 ## Switch models and providers
 

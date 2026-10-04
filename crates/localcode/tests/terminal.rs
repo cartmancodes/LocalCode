@@ -22,6 +22,9 @@ struct Pty {
 }
 impl Pty {
     fn spawn() -> Self {
+        Self::spawn_with(&[])
+    }
+    fn spawn_with(args: &[&str]) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
             "lc-pty-{}-{}",
@@ -61,6 +64,7 @@ impl Pty {
         command
             .args(["--engine", "demo", "--journal-dir"])
             .arg(&directory)
+            .args(args)
             .env("TERM", "xterm-256color")
             .env_remove("NO_COLOR")
             .stdin(Stdio::from(slave.try_clone().unwrap()))
@@ -274,4 +278,25 @@ fn unknown_mode_flag_is_a_startup_error() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown mode bogus"));
+}
+#[test]
+fn auto_mode_skips_the_demo_dialog_and_shift_tab_cycles() {
+    let mut p = Pty::spawn_with(&["--mode", "auto"]);
+    p.wait(|p| p.count("ready") == 1);
+    p.wait(|p| {
+        p.records()
+            .iter()
+            .any(|v| v["type"] == "mode" && v["data"] == "auto")
+    });
+    p.send(b"/approval-demo\r");
+    p.wait(|p| p.count("finished") == 1);
+    assert_eq!(p.count("approval"), 0);
+    p.send(b"\x1b[Z");
+    p.wait(|p| {
+        p.records()
+            .iter()
+            .any(|v| v["type"] == "mode" && v["data"] == "ask")
+    });
+    p.send(b"\x11");
+    p.finish();
 }

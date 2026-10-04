@@ -502,6 +502,18 @@ fn card(title: &str) -> Block<'_> {
         .border_style(Style::default().fg(EDGE))
         .title(Span::styled(title, Style::default().fg(MUTED)))
 }
+fn mode_chip(app: &App) -> Span<'static> {
+    let color = match app.mode {
+        lc_core::Mode::Ask => MUTED,
+        lc_core::Mode::AcceptEdits | lc_core::Mode::Auto => ACCENT,
+        lc_core::Mode::FullAccess => AMBER,
+    };
+    let text = match app.mode_pending {
+        Some(pending) => format!("{}…", pending.label()),
+        None => app.mode.label().to_owned(),
+    };
+    Span::styled(text, Style::default().fg(color).bold())
+}
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
@@ -542,10 +554,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(app.workspace.clone()),
-            Line::from(Span::styled(
-                format!("{}  /  {}", app.engine, app.model),
-                Style::default().fg(MUTED),
-            )),
+            Line::from(vec![
+                Span::styled(
+                    format!("{}  /  {}  ·  ", app.engine, app.model),
+                    Style::default().fg(MUTED),
+                ),
+                mode_chip(app),
+            ]),
         ]),
         header[1],
     );
@@ -765,6 +780,7 @@ fn sidebar(frame: &mut Frame, area: Rect, app: &App) {
         Line::default(),
         Line::from(Span::styled(" QUICK COMMANDS", Style::default().fg(MUTED))),
         Line::from(" /model      Model / provider"),
+        Line::from(" /mode       Permission mode"),
         Line::from(" /new        Fresh context"),
         Line::from(" /session    Session details"),
         Line::from(" /export     Save journal"),
@@ -799,7 +815,7 @@ fn modal(area: Rect, width: u16, height: u16) -> Rect {
 fn help(frame: &mut Frame, area: Rect) {
     let area = modal(area, 76, 24);
     frame.render_widget(Clear, area);
-    let text="LocalCode terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+Q quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
+    let text="LocalCode terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+Q quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
     frame.render_widget(
         Paragraph::new(text)
             .block(card(" Help "))
@@ -808,9 +824,13 @@ fn help(frame: &mut Frame, area: Rect) {
         area,
     );
 }
-pub const COMMANDS: [(&str, &str); 8] = [
+pub const COMMANDS: [(&str, &str); 9] = [
     ("/help", "Keyboard shortcuts"),
     ("/model", "Switch model or provider"),
+    (
+        "/mode",
+        "Permission mode: ask, accept-edits, auto, full-access",
+    ),
     ("/goal", "Inspect or manage an autonomous goal"),
     ("/session", "Session ID and journal path"),
     ("/export", "Export journal to a new file"),
@@ -1018,5 +1038,35 @@ mod model_detail_tests {
         a.mode_pending = Some(lc_core::Mode::Ask);
         a.event(Event::Stopped);
         assert_eq!((a.mode, a.mode_pending), (lc_core::Mode::Auto, None));
+    }
+    #[test]
+    fn header_shows_confirmed_and_pending_mode() {
+        let c = lc_core::Config {
+            engine: "codex".into(),
+            binary: "codex".into(),
+            cwd: "/tmp/project".into(),
+            model: None,
+            resume: None,
+            mode: lc_core::Mode::Auto,
+        };
+        let mut a = App::new(&c, "journal".into());
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 36)).unwrap();
+        let screen = |t: &ratatui::Terminal<ratatui::backend::TestBackend>| {
+            t.backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+        };
+        t.draw(|f| draw(f, &mut a)).unwrap();
+        assert!(screen(&t).contains("auto"));
+        assert_eq!(mode_chip(&a).style.fg, Some(ACCENT));
+        a.mode_pending = Some(lc_core::Mode::Ask);
+        t.draw(|f| draw(f, &mut a)).unwrap();
+        assert!(screen(&t).contains("ask…"));
+        a.event(Event::ModeChanged(lc_core::Mode::FullAccess));
+        assert_eq!(mode_chip(&a).style.fg, Some(AMBER));
+        assert!(COMMANDS.iter().any(|(name, _)| *name == "/mode"));
     }
 }
