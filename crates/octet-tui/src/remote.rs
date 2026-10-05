@@ -1,6 +1,7 @@
 //! `/remote-control`: read-only checks for reaching this session from a
 //! phone over tmux, Tailscale SSH and mosh. Nothing here changes system,
-//! tmux or tailnet settings. Guide: docs/rust/remote-control-ssh.md.
+//! tmux or tailnet settings. Setup guide: docs/remote-control.md; the
+//! evaluation behind it: docs/rust/remote-control-ssh.md.
 use std::{process::Stdio, time::Duration};
 use tokio::{
     net::TcpStream,
@@ -291,7 +292,7 @@ pub fn report(checks: &Checks) -> String {
             tailnet.name, checks.user
         ));
     }
-    lines.push("Guide: docs/rust/remote-control-ssh.md".into());
+    lines.push("Setup guide: docs/remote-control.md".into());
     lines.join("\n")
 }
 
@@ -321,6 +322,10 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Termius"), "{text}");
+        assert!(
+            text.ends_with("Setup guide: docs/remote-control.md"),
+            "{text}"
+        );
     }
     #[test]
     fn each_missing_piece_says_how_to_fix_it() {

@@ -70,7 +70,7 @@ four or more lines, leaving the rest of the screen to the conversation.
 Commands: `/help`, `/model`, `/mode`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/remote-control`, `/quit`.
 `/remote-control` checks, without changing anything, whether this session can be
 reached from a phone over tmux, Tailscale SSH and mosh, and prints the phone
-command; see [phone access](rust/remote-control-ssh.md).
+command. Setup steps: [Use Octet from your phone](remote-control.md).
 The preview also supports persistent multi-turn goals through `/goal`.
 Changing sessions or exporting requires an idle turn. `/approval-demo` exercises
 the dialog in offline demo mode. Unknown preview commands return a visible error and leave the draft in place. A

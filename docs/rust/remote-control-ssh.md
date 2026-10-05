@@ -2,7 +2,8 @@
 
 Evaluation date: 2026-10-05. Status: the `/remote-control` helper and the
 three phone fixes below are implemented; testing on real phones is still
-pending. Companion to the [web-client plan](remote-control-plan.md).
+pending. Step-by-step setup: [Use Octet from your phone](../remote-control.md).
+Companion to the [web-client plan](remote-control-plan.md).
 
 ## Question and answer
 
