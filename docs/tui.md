@@ -47,7 +47,7 @@ is respected. The minimum usable size is 38 columns by 12 rows.
 | PageUp/PageDown | Scroll the conversation or approval details |
 | Ctrl+End | Follow the latest output |
 | Esc / Ctrl+C | Cancel the active operation. Ctrl+C also closes help or the palette, and clears a draft when idle |
-| Ctrl+P | Command palette |
+| Ctrl+P | Command palette (also offers Ctrl+G, `@` and `!`) |
 | `@` | Mention a workspace file; a popup suggests paths as you type (Enter or Tab inserts, Esc closes) |
 | Tab | Complete a path, or a `/command` at the start of the prompt |
 | Ctrl+G | Write the prompt in `$VISUAL` or `$EDITOR` (default `vi`) |
@@ -89,7 +89,18 @@ ignored) or, outside git, a walk that skips hidden folders, `target` and
 keeps receiving the vendor's output and repaints when you return; an
 approval that arrives meanwhile rings the bell and its timer keeps running.
 
-`/copy` uses the OSC 52 escape. Inside tmux it needs
+A `!` command's output is kept as a terminal would show it: a carriage
+return starts a line over, so a progress counter keeps only its last state.
+Attached output keeps its tabs. Commands run in their own session, without
+access to Octet's terminal, so a credential prompt (git, ssh, sudo) fails at
+once rather than drawing over the screen.
+
+Tab fills the longest common start of several matches and lists them in the
+popup. It waits at most half a second for a folder listing, so a slow
+network mount cannot freeze the screen.
+
+`/copy` takes the turn's whole reply as the vendor sent it, tabs included.
+It uses the OSC 52 escape. Inside tmux it needs
 `set -g set-clipboard on`; mosh 1.4 and later pass it on; terminal and
 phone apps vary in whether they accept it.
 
