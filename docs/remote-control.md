@@ -49,6 +49,8 @@ set -g default-terminal "tmux-256color"
 set -as terminal-features ",xterm-256color:RGB"
 set -g monitor-bell on
 set -g bell-action any
+# Let /copy reach the phone's clipboard.
+set -g set-clipboard on
 ```
 
 If tmux is already running, reload it with `tmux source-file ~/.tmux.conf`.

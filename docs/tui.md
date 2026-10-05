@@ -47,7 +47,11 @@ is respected. The minimum usable size is 38 columns by 12 rows.
 | PageUp/PageDown | Scroll the conversation or approval details |
 | Ctrl+End | Follow the latest output |
 | Esc / Ctrl+C | Cancel the active operation. Ctrl+C also closes help or the palette, and clears a draft when idle |
-| Ctrl+P | Command palette |
+| Ctrl+P | Command palette (also offers Ctrl+G, `@` and `!`) |
+| `@` | Mention a workspace file; a popup suggests paths as you type (Enter or Tab inserts, Esc closes) |
+| Tab | Complete a path, or a `/command` at the start of the prompt |
+| Ctrl+G | Write the prompt in `$VISUAL` or `$EDITOR` (default `vi`) |
+| Ctrl+X | Copy the last reply to the clipboard (same as `/copy`) |
 | Shift+Tab | Cycle permission mode: ask → accept-edits → auto |
 | F1 | Help |
 | Ctrl+C twice | Quit, as in Claude Code: on an idle, empty prompt the first press shows "Press Ctrl+C again to quit", and a second within 1.5 seconds stops vendor children, finishes journal writes and exits |
@@ -67,7 +71,40 @@ the notification reaches only a desktop terminal connected directly.
 The prompt box grows with the draft: 4 rows when empty, up to 7 for a draft of
 four or more lines, leaving the rest of the screen to the conversation.
 
-Commands: `/help`, `/model`, `/mode`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/remote-control`, `/quit`.
+A prompt starting with `!` runs the rest as a shell command in the workspace:
+`!git status` shows the output in the conversation as a `SHELL` entry and
+attaches it to your next prompt (the prompt box title shows
+`+ git status (exit 0)`); `!!git status` shows it without attaching. The
+vendor receives the output as a fenced block after your text; the
+conversation and the journal show `[+ git status]`. Commands run with your
+shell and your permissions, without an approval, with stdin closed. Each
+keeps its last 32 KiB of output and stops after 10 minutes; Esc stops it
+sooner. Attachments wait up to 32 KiB in total; Esc on an empty prompt
+removes them. `cd` and `export` do not carry over between commands.
+
+`@` inserts the path only; the vendor reads the file with its own tools.
+The file list comes from `git ls-files` (tracked and untracked, not
+ignored) or, outside git, a walk that skips hidden folders, `target` and
+`node_modules`, up to 50,000 files. While Ctrl+G's editor is open, Octet
+keeps receiving the vendor's output and repaints when you return; an
+approval that arrives meanwhile rings the bell and its timer keeps running.
+
+A `!` command's output is kept as a terminal would show it: a carriage
+return starts a line over, so a progress counter keeps only its last state.
+Attached output keeps its tabs. Commands run in their own session, without
+access to Octet's terminal, so a credential prompt (git, ssh, sudo) fails at
+once rather than drawing over the screen.
+
+Tab fills the longest common start of several matches and lists them in the
+popup. It waits at most half a second for a folder listing, so a slow
+network mount cannot freeze the screen.
+
+`/copy` takes the turn's whole reply as the vendor sent it, tabs included.
+It uses the OSC 52 escape. Inside tmux it needs
+`set -g set-clipboard on`; mosh 1.4 and later pass it on; terminal and
+phone apps vary in whether they accept it.
+
+Commands: `/help`, `/model`, `/mode`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/copy`, `/remote-control`, `/quit`.
 `/remote-control` checks, without changing anything, whether this session can be
 reached from a phone over tmux, Tailscale SSH and mosh, and prints the phone
 command. Setup steps: [Use Octet from your phone](remote-control.md).
@@ -226,7 +263,9 @@ per-request command/file approval with a configurable window and an alert,
 four permission modes with live switching, cancellation, vendor context resume,
 model selection and in-session switching, multiline editing, history,
 scrollback, new sessions, journal export, terminal restoration, persistent
-goals, phone-access checks (`/remote-control`), and an offline demo.
+goals, phone-access checks (`/remote-control`), `@` file mentions, Tab
+completion, `!` shell commands with attachments, an external editor (Ctrl+G),
+`/copy`, and an offline demo.
 
 Pending: pi v3 session browsing/recovery, images, steer/follow-up queues, full
 thinking/compaction controls, fleet, quota routing, resources, plugins, legacy

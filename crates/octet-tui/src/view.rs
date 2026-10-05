@@ -1,7 +1,7 @@
 use crate::{
     editor::Editor,
     mascot::{self, State},
-    text::{clean, Sanitizer},
+    text::{clean, strip, Sanitizer},
 };
 use octet_core::Event;
 use ratatui::{
@@ -30,6 +30,8 @@ pub enum Role {
     Tool,
     Notice,
     Error,
+    Shell,
+    ShellFailed,
 }
 struct Entry {
     role: Role,
@@ -74,6 +76,21 @@ pub struct App {
     /// empty prompt.
     pub quit_armed: Option<tokio::time::Instant>,
     pub goals: octet_core::goal::GoalRunner,
+    /// The workspace, where `!` commands run and `@` looks for files.
+    pub root: PathBuf,
+    /// `!` outputs waiting to go with the next prompt.
+    pub attachments: Vec<crate::shell::Ran>,
+    /// A `!` command is running.
+    pub shell_running: bool,
+    /// The suggestion popup, when open.
+    pub completion: Option<crate::composer::Completion>,
+    /// The workspace file index for `@`.
+    pub files: crate::files::Files,
+    /// The current turn's reply as sent, tabs and all, for `/copy`.
+    reply: String,
+    reply_sanitizer: Sanitizer,
+    /// A tool ran since the last text; the next text starts a new paragraph.
+    reply_break: bool,
 }
 impl App {
     pub fn new(config: &octet_core::Config, journal: PathBuf) -> Self {
@@ -112,9 +129,25 @@ impl App {
             notice: String::new(),
             quit_armed: None,
             goals: octet_core::goal::GoalRunner::default(),
+            root: config.cwd.clone(),
+            attachments: Vec::new(),
+            shell_running: false,
+            completion: None,
+            files: crate::files::Files::Unbuilt,
+            reply: String::new(),
+            reply_sanitizer: Sanitizer::keeping_tabs(),
+            reply_break: false,
         }
     }
     pub fn connection(&mut self, config: &octet_core::Config, journal: PathBuf) {
+        // Rebuilt per connection, so a build abandoned with the old session
+        // never leaves the index stuck at Building.
+        self.files = crate::files::Files::Unbuilt;
+        self.completion = None;
+        // The old session's `!` command was dropped, and killed, with it.
+        if std::mem::take(&mut self.shell_running) {
+            self.notice("The running command stopped when the session changed");
+        }
         self.engine = config.engine;
         self.mode = config.mode;
         self.mode_pending = None;
@@ -279,6 +312,16 @@ impl App {
             }
         }
     }
+    /// Something that failed, as an `ERROR` entry and on the status line.
+    pub fn error(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.notice = clean(&text);
+        self.add(Role::Error, text);
+    }
+    #[cfg(test)]
+    pub fn last_role(&self) -> Option<Role> {
+        self.entries.back().map(|entry| entry.role)
+    }
     pub fn notice(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.notice = clean(&text);
@@ -317,9 +360,13 @@ impl App {
                 self.status = "working".into();
                 self.notice.clear();
                 self.sanitizer = Sanitizer::default();
+                self.reply.clear();
+                self.reply_sanitizer = Sanitizer::keeping_tabs();
+                self.reply_break = false;
             }
             Event::Text(text) => {
                 self.activity = State::Thinking;
+                self.keep_reply(&text);
                 let text = self.sanitizer.push(&text);
                 if self
                     .entries
@@ -340,6 +387,7 @@ impl App {
                 self.trim();
             }
             Event::Tool(text) => {
+                self.reply_break = true;
                 self.activity = State::tool(&text);
                 self.add(Role::Tool, text);
             }
@@ -385,6 +433,60 @@ impl App {
             self.activity
         } else {
             State::Approval
+        }
+    }
+    /// A finished `!` command in the transcript.
+    pub fn shell_output(&mut self, ran: &crate::shell::Ran) {
+        let output = clean(&ran.output);
+        let newline = if output.is_empty() || output.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        let role = if ran.ok() {
+            Role::Shell
+        } else {
+            Role::ShellFailed
+        };
+        self.add(
+            role,
+            format!("$ {}\n{output}{newline}{}", ran.command, ran.summary()),
+        );
+    }
+    /// Keeps `ran` for the next prompt, dropping the oldest attachments
+    /// beyond 32 KiB of output.
+    pub fn attach(&mut self, mut ran: crate::shell::Ran) {
+        ran.output = strip(&ran.output);
+        self.attachments.push(ran);
+        let total = |all: &[crate::shell::Ran]| all.iter().map(|a| a.output.len()).sum::<usize>();
+        let mut dropped = false;
+        while self.attachments.len() > 1 && total(&self.attachments) > crate::shell::OUTPUT_LIMIT {
+            self.attachments.remove(0);
+            dropped = true;
+        }
+        if dropped {
+            self.notice = "Dropped the oldest attachment to stay within 32 KiB".into();
+        }
+    }
+    /// The most recent reply as the vendor sent it, every segment of the
+    /// turn, for `/copy`.
+    pub fn last_reply(&self) -> Option<&str> {
+        (!self.reply.is_empty()).then_some(self.reply.as_str())
+    }
+    /// Adds streamed text to the reply `/copy` takes, up to just over the
+    /// clipboard limit so a cut can still be reported.
+    fn keep_reply(&mut self, text: &str) {
+        let text = self.reply_sanitizer.push(text);
+        if text.is_empty() || self.reply.len() > crate::clipboard::LIMIT {
+            return;
+        }
+        if std::mem::take(&mut self.reply_break) && !self.reply.is_empty() {
+            self.reply.push_str("\n\n");
+        }
+        self.reply.push_str(&text);
+        if self.reply.len() > crate::clipboard::LIMIT + 1 {
+            let end = self.reply.floor_char_boundary(crate::clipboard::LIMIT + 1);
+            self.reply.truncate(end);
         }
     }
     #[cfg(test)]
@@ -469,6 +571,8 @@ fn entry_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
         Role::Tool => ("TOOL", MUTED),
         Role::Notice => ("NOTE", MUTED),
         Role::Error => ("ERROR", AMBER),
+        Role::Shell => ("SHELL", MUTED),
+        Role::ShellFailed => ("SHELL", AMBER),
     };
     let mut result = vec![
         Line::default(),
@@ -631,12 +735,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if columns.len() > 1 {
         sidebar(frame, columns[1], app);
     }
-    let composer = card(if app.running {
+    let base = if app.running {
         " Compose next prompt · wait or Esc to cancel "
     } else {
         " Prompt "
-    })
-    .border_style(Style::default().fg(if app.running { EDGE } else { ACCENT }));
+    };
+    let title = match crate::composer::chip(&app.attachments) {
+        Some(chip) => format!("{} · {chip} ", base.trim_end()),
+        None => base.to_owned(),
+    };
+    let composer =
+        card(&title).border_style(Style::default().fg(if app.running { EDGE } else { ACCENT }));
     let inner = composer.inner(regions[2]);
     frame.render_widget(composer, regions[2]);
     let input = Rect {
@@ -681,6 +790,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .style(Style::default().fg(MUTED)),
         hints,
     );
+    completion_popup(frame, regions[2], app);
     frame.render_widget(
         Paragraph::new(if app.notice.is_empty() {
             if app.engine == octet_core::Engine::Demo {
@@ -713,6 +823,71 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             input.y + ((row - offset) as u16).min(input.height.saturating_sub(1)),
         ));
     }
+}
+/// The `@`, path or command suggestions, just above the prompt box.
+fn completion_popup(frame: &mut Frame, composer: Rect, app: &App) {
+    let Some(completion) = &app.completion else {
+        return;
+    };
+    let mut lines: Vec<Line> = completion
+        .items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let chosen = index == completion.selected;
+            Line::from(Span::styled(
+                format!(" {} {item}", if chosen { "›" } else { " " }),
+                Style::default()
+                    .fg(if chosen { ACCENT } else { FG })
+                    .bg(if chosen { SELECTED } else { PANEL }),
+            ))
+        })
+        .collect();
+    if lines.is_empty() {
+        let message = match (&completion.kind, &app.files) {
+            (crate::composer::Kind::File, crate::files::Files::Ready(_)) => " No matching files",
+            (crate::composer::Kind::File, _) => " Indexing files…",
+            _ => " No matches",
+        };
+        lines.push(Line::from(Span::styled(
+            message,
+            Style::default().fg(MUTED),
+        )));
+    }
+    if let crate::files::Files::Ready(index) = &app.files {
+        if index.capped && completion.kind == crate::composer::Kind::File {
+            lines.push(Line::from(Span::styled(
+                " Indexed the first 50,000 files",
+                Style::default().fg(MUTED),
+            )));
+        }
+    }
+    let title = match completion.kind {
+        crate::composer::Kind::File => " Files · Enter choose · Esc close ",
+        crate::composer::Kind::Path => " Paths ",
+        crate::composer::Kind::Command => " Commands ",
+    };
+    // On a short screen the popup is clipped; scroll so the selected row
+    // stays in sight.
+    let room = composer.y.saturating_sub(2) as usize;
+    if completion.items.len() > room && room > 0 {
+        let skip = completion.selected.saturating_sub(room - 1);
+        lines = lines.into_iter().skip(skip).take(room).collect();
+    }
+    let height = lines.len() as u16 + 2;
+    let area = Rect {
+        x: composer.x,
+        y: composer.y.saturating_sub(height),
+        width: composer.width.min(64),
+        height: height.min(composer.y),
+    };
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(card(title))
+            .style(Style::default().bg(PANEL)),
+        area,
+    );
 }
 /// The width the draft wraps at: margin, border and padding take three
 /// columns on each side.
@@ -835,9 +1010,9 @@ fn modal(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 fn help(frame: &mut Frame, area: Rect) {
-    let area = modal(area, 76, 24);
+    let area = modal(area, 76, 28);
     frame.render_widget(Clear, area);
-    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/remote-control: check phone access setup\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
+    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/copy or Ctrl+X: copy the last reply to the clipboard\n!cmd run and attach output · !!cmd run only · Esc stops\n@ mention a file · Tab completes paths and /commands\nCtrl+G write the prompt in $EDITOR\n/remote-control: check phone access setup\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
     frame.render_widget(
         Paragraph::new(text)
             .block(card(" Help "))
@@ -846,7 +1021,13 @@ fn help(frame: &mut Frame, area: Rect) {
         area,
     );
 }
-pub const COMMANDS: [(&str, &str); 10] = [
+/// Keys the palette also offers, after the commands.
+pub const PALETTE_KEYS: [(&str, &str); 3] = [
+    ("Ctrl+G", "Write the prompt in $EDITOR"),
+    ("@", "Mention a file"),
+    ("!", "Run a shell command"),
+];
+pub const COMMANDS: [(&str, &str); 11] = [
     ("/help", "Keyboard shortcuts"),
     ("/model", "Switch model or provider"),
     (
@@ -856,6 +1037,7 @@ pub const COMMANDS: [(&str, &str); 10] = [
     ("/goal", "Inspect or manage an autonomous goal"),
     ("/session", "Session ID and journal path"),
     ("/export", "Export journal to a new file"),
+    ("/copy", "Copy the last reply (also Ctrl+X)"),
     ("/new", "Start a fresh conversation"),
     ("/reconnect", "Reconnect to the vendor session"),
     (
@@ -864,14 +1046,16 @@ pub const COMMANDS: [(&str, &str); 10] = [
     ),
     ("/quit", "Save and exit"),
 ];
+/// The palette's rows: every command, then the keys it also offers.
+pub fn palette_entries() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    COMMANDS.iter().chain(PALETTE_KEYS.iter())
+}
 fn palette(frame: &mut Frame, area: Rect, selected: usize) {
-    let name_width = COMMANDS
-        .iter()
+    let name_width = palette_entries()
         .map(|(name, _)| name.len())
         .max()
         .unwrap_or(0);
-    let description_width = COMMANDS
-        .iter()
+    let description_width = palette_entries()
         .map(|(_, description)| description.width())
         .max()
         .unwrap_or(0);
@@ -880,11 +1064,11 @@ fn palette(frame: &mut Frame, area: Rect, selected: usize) {
     let area = modal(
         area,
         (name_width + description_width + 7) as u16,
-        COMMANDS.len() as u16 + 5,
+        palette_entries().count() as u16 + 5,
     );
     frame.render_widget(Clear, area);
     let mut lines = vec![Line::default()];
-    for (index, (command, description)) in COMMANDS.iter().enumerate() {
+    for (index, (command, description)) in palette_entries().enumerate() {
         lines.push(Line::from(Span::styled(
             format!(
                 " {} {:<name_width$} {}",
@@ -941,6 +1125,113 @@ mod tests {
         (0..height)
             .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
             .collect()
+    }
+    #[test]
+    fn copy_takes_the_whole_reply_with_its_tabs() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.event(Event::Started);
+        app.event(Event::Text("one".into()));
+        app.event(Event::Tool("Read\nsrc/main.rs".into()));
+        app.event(Event::Text("two\tcolumns".into()));
+        assert_eq!(app.last_reply(), Some("one\n\ntwo\tcolumns"));
+        app.attach(crate::shell::Ran {
+            command: "cat Makefile".into(),
+            status: crate::shell::Status::Exited(0),
+            output: "all:\n\tcargo build\n".into(),
+        });
+        assert_eq!(app.attachments[0].output, "all:\n\tcargo build\n");
+    }
+    #[test]
+    fn a_new_connection_settles_the_old_sessions_command_and_popup() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.shell_running = true;
+        app.completion = Some(crate::composer::Completion {
+            kind: crate::composer::Kind::File,
+            items: Vec::new(),
+            selected: 0,
+            start: 0,
+        });
+        app.connection(&config, "journal-2".into());
+        assert!(!app.shell_running, "the old session's command is gone");
+        assert!(app.completion.is_none());
+        assert!(
+            app.entries_text()
+                .contains("The running command stopped when the session changed"),
+            "{}",
+            app.entries_text()
+        );
+    }
+    #[test]
+    fn the_popup_keeps_the_selected_row_in_sight_on_a_short_screen() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.completion = Some(crate::composer::Completion {
+            kind: crate::composer::Kind::File,
+            items: (0..8).map(|i| format!("file{i}.rs")).collect(),
+            selected: 7,
+            start: 0,
+        });
+        let rows = screen(80, 14, &mut app);
+        assert!(
+            rows.iter().any(|row| row.contains(" › file7.rs")),
+            "{}",
+            rows.join("\n")
+        );
+    }
+    #[test]
+    fn a_shell_that_cannot_start_is_an_error_entry() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.error("Cannot run /no/such/shell: No such file or directory");
+        assert!(app.last_role() == Some(Role::Error));
+        assert!(app.notice.starts_with("Cannot run"));
+    }
+    #[test]
+    fn the_popup_lists_suggestions_above_the_prompt() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.completion = Some(crate::composer::Completion {
+            kind: crate::composer::Kind::File,
+            items: vec!["src/main.rs".into(), "src/model.rs".into()],
+            selected: 1,
+            start: 0,
+        });
+        let rows = screen(100, 30, &mut app);
+        assert!(rows.iter().any(|row| row.contains("   src/main.rs")));
+        assert!(rows.iter().any(|row| row.contains(" › src/model.rs")));
+        app.completion.as_mut().unwrap().items.clear();
+        let rows = screen(100, 30, &mut app);
+        assert!(rows.iter().any(|row| row.contains("Indexing files…")));
+    }
+    #[test]
+    fn shell_output_is_cleaned_and_attachments_stay_bounded() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        let ran = crate::shell::Ran {
+            command: "ls -G".into(),
+            status: crate::shell::Status::Exited(1),
+            output: "\x1b[31mred\x1b[0m\r\nplain\n".into(),
+        };
+        app.shell_output(&ran);
+        let text = app.entries_text();
+        assert!(text.contains("$ ls -G\nred\nplain\nexit 1"), "{text:?}");
+        assert!(!text.contains('\x1b'));
+        app.attach(ran);
+        assert!(!app.attachments[0].output.contains('\x1b'));
+        let big = crate::shell::Ran {
+            command: "big".into(),
+            status: crate::shell::Status::Exited(0),
+            output: "x".repeat(crate::shell::OUTPUT_LIMIT),
+        };
+        app.attach(big);
+        assert_eq!(app.attachments.len(), 1, "the oldest attachment is dropped");
+        assert_eq!(app.attachments[0].command, "big");
+        assert_eq!(
+            app.notice,
+            "Dropped the oldest attachment to stay within 32 KiB"
+        );
     }
     #[test]
     fn sidebar_lines_fit_the_panel_without_wrapping() {
@@ -1013,7 +1304,7 @@ mod tests {
         app.palette = true;
         let rows = screen(80, 24, &mut app);
         let mut columns = Vec::new();
-        for (name, description) in COMMANDS {
+        for (name, description) in COMMANDS.iter().chain(PALETTE_KEYS.iter()) {
             // " /mode " must not match the "/model" row.
             let row = rows
                 .iter()
@@ -1137,6 +1428,7 @@ mod tests {
     fn mascot_tracks_activity_and_keeps_errors_visible_after_disconnect() {
         let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
         let mut app = App::new(&config, "journal".into());
+        app.monochrome = false;
         for (event, expected) in [
             (
                 Event::Ready {

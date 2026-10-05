@@ -1,6 +1,11 @@
+mod clipboard;
+mod composer;
 mod editor;
+mod external;
+mod files;
 mod mascot;
 mod remote;
+mod shell;
 mod text;
 mod view;
 use crossterm::{
@@ -92,14 +97,17 @@ impl TerminalGuard {
         );
         let _ = disable_raw_mode();
     }
+    fn resume(&self) -> io::Result<()> {
+        enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)
+    }
     fn suspend(&self) -> io::Result<()> {
         Self::restore();
         // SAFETY: raise only delivers SIGSTOP to this process.
         unsafe {
             libc::raise(libc::SIGSTOP);
         }
-        enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)
+        self.resume()
     }
 }
 impl Drop for TerminalGuard {
@@ -118,8 +126,17 @@ enum Action {
     Suspend,
     SetMode(octet_core::Mode),
     GoalPrompt(String),
+    /// Run a `!` line; `attach` keeps its output for the next prompt.
+    RunShell {
+        command: String,
+        attach: bool,
+    },
+    /// Stop the running `!` command.
+    CancelShell,
     /// Run the `/remote-control` checks off the event loop.
     RemoteControl,
+    /// Hand the terminal to the user's editor for the draft.
+    ExternalEditor,
     Exit(Exit),
 }
 /// Why a session ended; `run` decides whether to reconnect.
@@ -225,13 +242,19 @@ async fn attach_goal_store(app: &mut App, store: octet_core::goal::GoalStore) {
         Ok(()) => {}
     }
 }
+/// A `!` command running in the background.
+struct ShellTask {
+    task: tokio::task::JoinHandle<Result<shell::Ran, String>>,
+    cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    attach: bool,
+}
 async fn run_session(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     guard: &TerminalGuard,
     app: &mut App,
     session: &mut Session,
 ) -> io::Result<Exit> {
-    let mut input = InputReader::new();
+    let mut input = Some(InputReader::new());
     let mut dirty = true;
     let mut last_paint = Instant::now() - Duration::from_secs(1);
     let frame_time = Duration::from_millis(33);
@@ -242,15 +265,21 @@ async fn run_session(
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(libc::SIGTSTP))?;
     // The `/remote-control` checks, running while the screen stays live.
     let mut remote_check: Option<tokio::task::JoinHandle<remote::Checks>> = None;
+    // The running `!` command, if any.
+    let mut shell_task: Option<ShellTask> = None;
+    // The workspace file index being built for `@`.
+    let mut index_task: Option<tokio::task::JoinHandle<files::Index>> = None;
+    // The external editor, while it has the terminal.
+    let mut editing: Option<(tokio::process::Child, external::Edit)> = None;
     loop {
-        if dirty && last_paint.elapsed() >= frame_time {
+        if dirty && editing.is_none() && last_paint.elapsed() >= frame_time {
             terminal.draw(|f| view::draw(f, app))?;
             last_paint = Instant::now();
             dirty = false;
         }
         let quit_deadline = app.quit_armed;
         tokio::select! {
-            _ = tokio::time::sleep_until(last_paint + frame_time), if dirty => {}
+            _ = tokio::time::sleep_until(last_paint + frame_time), if dirty && editing.is_none() => {}
             // The only timer outside painting: the quit hint expires.
             _ = tokio::time::sleep_until(quit_deadline.unwrap_or(last_paint)), if quit_deadline.is_some() => {
                 app.quit_armed = None;
@@ -288,7 +317,57 @@ async fn run_session(
                 }
                 dirty = true;
             }
-            event = input.events.recv() => {
+            index = async {
+                match index_task.as_mut() {
+                    Some(task) => task.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                index_task = None;
+                app.files = match index {
+                    Ok(index) => files::Files::Ready(index),
+                    Err(_) => files::Files::Unbuilt,
+                };
+                refresh_completion(app);
+                dirty = true;
+            }
+            result = async {
+                match shell_task.as_mut() {
+                    Some(running) => (&mut running.task).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let attach = shell_task.take().is_some_and(|running| running.attach);
+                let result = result.unwrap_or_else(|error| Err(format!("The command failed: {error}")));
+                shell_finished(app, result, attach);
+                dirty = true;
+            }
+            status = async {
+                match editing.as_mut() {
+                    Some((child, _)) => child.wait().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Some((_, edit)) = editing.take() {
+                    // The editor may have changed the terminal behind
+                    // crossterm's record of it; clear the record first.
+                    let _ = disable_raw_mode();
+                    guard.resume()?;
+                    terminal.resize(terminal.size()?.into())?;
+                    input = Some(InputReader::new());
+                    match edit.finish(status.is_ok_and(|status| status.success())) {
+                        Ok(text) => app.editor.set(text),
+                        Err(error) => app.notice(error),
+                    }
+                }
+                dirty = true;
+            }
+            event = async {
+                match input.as_mut() {
+                    Some(reader) => reader.events.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 let action = match event {
                     Some(Ok(Input::Key(key))) if key.kind != KeyEventKind::Release => {
                         key_action(app, session, key).await
@@ -309,6 +388,53 @@ async fn run_session(
                     Action::Continue => {}
                     Action::GoalPrompt(prompt) => send_goal_prompt(app, session, prompt).await,
                     Action::RemoteControl => start_remote_check(app, &mut remote_check),
+                    Action::ExternalEditor => {
+                        match external::prepare(&app.editor.text, external::editor_command()) {
+                            Err(error) => app.notice(error),
+                            Ok(edit) => {
+                                // Stop reading keys so the editor gets them all.
+                                input = None;
+                                TerminalGuard::restore();
+                                match tokio::process::Command::new(&edit.program)
+                                    .args(&edit.args)
+                                    .arg(&edit.path)
+                                    .kill_on_drop(true)
+                                    .spawn()
+                                {
+                                    Ok(child) => editing = Some((child, edit)),
+                                    Err(error) => {
+                                        guard.resume()?;
+                                        terminal.resize(terminal.size()?.into())?;
+                                        input = Some(InputReader::new());
+                                        app.notice(format!(
+                                            "Cannot start {}: {error}",
+                                            edit.program
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Action::RunShell { command, attach } => {
+                        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+                        let root = app.root.clone();
+                        app.shell_running = true;
+                        app.notice = format!("Running {command} · Esc to stop");
+                        shell_task = Some(ShellTask {
+                            task: tokio::spawn(async move {
+                                shell::run(&command, &root, cancelled).await
+                            }),
+                            cancel: Some(cancel),
+                            attach,
+                        });
+                    }
+                    Action::CancelShell => {
+                        if let Some(cancel) =
+                            shell_task.as_mut().and_then(|running| running.cancel.take())
+                        {
+                            let _ = cancel.send(());
+                        }
+                    }
                     Action::Suspend => {
                         guard.suspend()?;
                         terminal.resize(terminal.size()?.into())?;
@@ -319,15 +445,42 @@ async fn run_session(
                     },
                     Action::Exit(exit) => return Ok(exit),
                 }
+                if matches!(app.files, files::Files::Wanted) {
+                    let root = app.root.clone();
+                    index_task = Some(tokio::task::spawn_blocking(move || {
+                        files::Index::build(&root)
+                    }));
+                    app.files = files::Files::Building;
+                }
                 dirty = true;
             }
-            _ = quit_signal() => return Ok(Exit::Quit),
-            _ = unix_signal(&mut term) => return Ok(Exit::Quit),
-            _ = unix_signal(&mut hup) => return Ok(Exit::Quit),
+            // While an editor waits in cooked mode, Ctrl+C is meant for it.
+            _ = quit_signal() => {
+                if editing.is_none() {
+                    return Ok(Exit::Quit);
+                }
+            }
+            _ = unix_signal(&mut term) => {
+                stop_editor(&mut editing).await;
+                return Ok(Exit::Quit);
+            }
+            _ = unix_signal(&mut hup) => {
+                stop_editor(&mut editing).await;
+                return Ok(Exit::Quit);
+            }
             _ = unix_signal(&mut suspend) => {
-                guard.suspend()?;
-                terminal.resize(terminal.size()?.into())?;
-                dirty = true;
+                if editing.is_some() {
+                    // The editor owns the terminal and restores it on fg;
+                    // Octet only stops alongside it.
+                    // SAFETY: raise only delivers SIGSTOP to this process.
+                    unsafe {
+                        libc::raise(libc::SIGSTOP);
+                    }
+                } else {
+                    guard.suspend()?;
+                    terminal.resize(terminal.size()?.into())?;
+                    dirty = true;
+                }
             }
         }
     }
@@ -374,6 +527,136 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
         Err(error) => app.notice(format!("Goal persistence failed; paused: {error}")),
     }
 }
+/// How long Tab waits for a folder listing.
+const TAB_WAIT: Duration = Duration::from_millis(500);
+/// Runs blocking `work` on its own thread, waiting at most `limit`. A plain
+/// thread, not spawn_blocking, so work stuck on a dead mount cannot hold up
+/// the runtime's shutdown.
+async fn off_loop<T: Send + 'static>(
+    limit: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (done, result) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(work());
+    });
+    tokio::time::timeout(limit, result).await.ok()?.ok()
+}
+/// Asks a running editor to quit, so it can put the terminal back, and
+/// kills it if it has not within a second.
+async fn stop_editor(editing: &mut Option<(tokio::process::Child, external::Edit)>) {
+    let Some((child, _)) = editing.as_mut() else {
+        return;
+    };
+    if let Some(pid) = child.id().and_then(|pid| libc::pid_t::try_from(pid).ok()) {
+        // SAFETY: signals only the editor this session started.
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+    }
+    if tokio::time::timeout(Duration::from_secs(1), child.wait())
+        .await
+        .is_err()
+    {
+        let _ = child.kill().await;
+    }
+}
+/// A `!` command's result: in the transcript, on the status line in place
+/// of "Running …", and attached when asked.
+fn shell_finished(app: &mut App, result: Result<shell::Ran, String>, attach: bool) {
+    app.shell_running = false;
+    match result {
+        Ok(ran) => {
+            app.shell_output(&ran);
+            app.notice = format!("$ {} · {}", ran.command, ran.summary());
+            if attach {
+                app.attach(ran);
+            }
+        }
+        Err(error) => app.error(error),
+    }
+}
+/// A key chosen from the palette.
+fn palette_key(app: &mut App, key: &str) -> Action {
+    match key {
+        "Ctrl+G" => {
+            app.completion = None;
+            return Action::ExternalEditor;
+        }
+        "@" => {
+            let after_word = app.editor.text[..app.editor.cursor]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !c.is_whitespace());
+            let mention = if after_word { " @" } else { "@" };
+            if !app.editor.insert(mention) {
+                app.notice = "Prompt limit reached".into();
+            } else if let Some((start, _)) =
+                composer::mention_at(&app.editor.text, app.editor.cursor)
+            {
+                open_mentions(app, start);
+            }
+        }
+        _ if app.editor.text.is_empty() => app.editor.set("!".into()),
+        _ => app.notice = "Clear the prompt to start a ! command".into(),
+    }
+    Action::Continue
+}
+/// Opens the `@` popup for the mention starting at `start`, asking for the
+/// index on first use.
+fn open_mentions(app: &mut App, start: usize) {
+    if matches!(app.files, files::Files::Unbuilt) {
+        app.files = files::Files::Wanted;
+    }
+    app.completion = Some(composer::Completion {
+        kind: composer::Kind::File,
+        items: Vec::new(),
+        selected: 0,
+        start,
+    });
+    refresh_completion(app);
+}
+/// Re-ranks the `@` popup for the current draft, closing it when the cursor
+/// has left the mention.
+fn refresh_completion(app: &mut App) {
+    let Some(completion) = app.completion.as_mut() else {
+        return;
+    };
+    if completion.kind != composer::Kind::File {
+        return;
+    }
+    match composer::mention_at(&app.editor.text, app.editor.cursor) {
+        Some((start, query)) if start == completion.start => {
+            completion.items = match &app.files {
+                files::Files::Ready(index) => {
+                    index.rank(query).into_iter().map(str::to_owned).collect()
+                }
+                _ => Vec::new(),
+            };
+            completion.selected = completion
+                .selected
+                .min(completion.items.len().saturating_sub(1));
+        }
+        _ => app.completion = None,
+    }
+}
+/// Puts the selected suggestion into the draft and closes the popup.
+fn accept_completion(app: &mut App) {
+    let Some(completion) = app.completion.take() else {
+        return;
+    };
+    let Some(item) = completion.items.get(completion.selected) else {
+        return;
+    };
+    let text = match completion.kind {
+        composer::Kind::File => composer::mention(item),
+        composer::Kind::Path => item.clone(),
+        composer::Kind::Command => format!("{item} "),
+    };
+    if !app.editor.replace(completion.start, &text) {
+        app.notice = "Prompt limit reached".into();
+    }
+}
 /// Starts the `/remote-control` checks in the background. They take up to
 /// about 2.5 seconds, and the loop must keep draining vendor events meanwhile.
 fn start_remote_check(app: &mut App, check: &mut Option<tokio::task::JoinHandle<remote::Checks>>) {
@@ -402,9 +685,36 @@ fn should_alert(app: &App, event: &octet_core::Event) -> bool {
 /// are ignored: the alert is a courtesy, never a reason to stop.
 const ALERT: &[u8] = b"\x07\x1b]9;Octet: approval needed\x07";
 fn alert() {
+    write_terminal(ALERT);
+}
+/// Writes control bytes straight to the terminal, outside a frame. Errors are
+/// ignored: these are courtesies, never a reason to stop.
+fn write_terminal(bytes: &[u8]) {
     use std::io::Write;
     let mut stdout = io::stdout();
-    let _ = stdout.write_all(ALERT).and_then(|()| stdout.flush());
+    let _ = stdout.write_all(bytes).and_then(|()| stdout.flush());
+}
+/// `/copy` and Ctrl+X: the last reply to the clipboard.
+fn copy_reply(app: &mut App) {
+    let Some((bytes, cut, size)) = app.last_reply().and_then(|text| {
+        clipboard::osc52(text).map(|(bytes, cut)| (bytes, cut, text.len().min(clipboard::LIMIT)))
+    }) else {
+        app.notice = "Nothing to copy yet".into();
+        return;
+    };
+    write_terminal(&bytes);
+    app.notice = if cut {
+        "Copied the first 100 KB to the clipboard".into()
+    } else {
+        format!("Copied {} to the clipboard", size_label(size))
+    };
+}
+fn size_label(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    }
 }
 async fn send_goal_prompt(app: &mut App, session: &Session, prompt: String) {
     let command = Command::PromptWithDisplay {
@@ -436,6 +746,15 @@ fn paste(app: &mut App, value: &str) {
     {
         app.notice = "Paste exceeds the 64 KiB prompt limit; draft preserved".into();
     }
+    // The file popup follows the pasted text; path and command popups close.
+    if app
+        .completion
+        .as_ref()
+        .is_some_and(|completion| completion.kind != composer::Kind::File)
+    {
+        app.completion = None;
+    }
+    refresh_completion(app);
 }
 async fn quit_signal() {
     let _ = tokio::signal::ctrl_c().await;
@@ -490,26 +809,64 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
             _ if ctrl_c => app.palette = false,
             KeyCode::Esc => app.palette = false,
             KeyCode::Up => app.selection = app.selection.saturating_sub(1),
-            KeyCode::Down => app.selection = (app.selection + 1).min(COMMANDS.len() - 1),
+            KeyCode::Down => {
+                app.selection = (app.selection + 1).min(view::palette_entries().count() - 1)
+            }
             KeyCode::Enter => {
                 app.palette = false;
-                return command(app, COMMANDS[app.selection].0).await;
+                if let Some((name, _)) = COMMANDS.get(app.selection) {
+                    return command(app, name).await;
+                }
+                return palette_key(app, view::PALETTE_KEYS[app.selection - COMMANDS.len()].0);
             }
             _ => {}
         }
         return Action::Continue;
     }
+    if let Some(completion) = app.completion.as_mut() {
+        match key.code {
+            KeyCode::Up => {
+                completion.selected = completion.selected.saturating_sub(1);
+                return Action::Continue;
+            }
+            KeyCode::Down => {
+                completion.selected =
+                    (completion.selected + 1).min(completion.items.len().saturating_sub(1));
+                return Action::Continue;
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                accept_completion(app);
+                return Action::Continue;
+            }
+            KeyCode::Esc => {
+                app.completion = None;
+                return Action::Continue;
+            }
+            // Path and command popups close on any other key; the file popup
+            // follows the edit below.
+            _ if completion.kind != composer::Kind::File => app.completion = None,
+            _ => {}
+        }
+    }
     match key.code {
         KeyCode::F(1) => app.help = true,
         KeyCode::BackTab => return cycle_mode(app),
         KeyCode::Char('p') if ctrl => app.palette = true,
+        KeyCode::Char('x') if ctrl => copy_reply(app),
+        KeyCode::Char('g') if ctrl => {
+            // The edited draft must not meet a popup about the old one.
+            app.completion = None;
+            return Action::ExternalEditor;
+        }
         KeyCode::Char('u') if ctrl => {
             app.editor.take();
         }
         // Like Claude Code: stop what runs, else clear the draft, else ask
         // for a second press within the window to quit.
         KeyCode::Char('c') if ctrl => {
-            if app.is_busy() {
+            if app.shell_running {
+                return Action::CancelShell;
+            } else if app.is_busy() {
                 cancel_turn(app, session).await;
                 app.notice = "Cancelling…".into();
             } else if !app.editor.text.is_empty() {
@@ -522,9 +879,14 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
             }
         }
         KeyCode::Esc => {
-            if app.is_busy() {
+            if app.shell_running {
+                return Action::CancelShell;
+            } else if app.is_busy() {
                 cancel_turn(app, session).await;
                 app.notice = "Cancelling…".into();
+            } else if app.editor.text.is_empty() && !app.attachments.is_empty() {
+                app.attachments.clear();
+                app.notice = "Attachments removed".into();
             } else {
                 app.scroll = 0;
             }
@@ -547,6 +909,30 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
             if draft.is_empty() {
                 return Action::Continue;
             }
+            if let Some(rest) = draft.strip_prefix('!') {
+                let (attach, command) = match rest.strip_prefix('!') {
+                    Some(command) => (false, command.trim()),
+                    None => (true, rest.trim()),
+                };
+                if command.is_empty() {
+                    app.notice = "Type a command after !".into();
+                    return Action::Continue;
+                }
+                if app.shell_running {
+                    app.notice = "A command is already running".into();
+                    return Action::Continue;
+                }
+                let command = command.to_owned();
+                app.editor.take();
+                app.history_index = None;
+                if app.history.back() != Some(&draft) {
+                    app.history.push_back(draft);
+                    if app.history.len() > 50 {
+                        app.history.pop_front();
+                    }
+                }
+                return Action::RunShell { command, attach };
+            }
             // "/usr/lib is broken" is a prompt: no command name contains a slash.
             let path_like = draft
                 .split_whitespace()
@@ -566,8 +952,20 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
                 app.notice = "Wait for the current turn, press Esc to cancel, or /reconnect".into();
                 return Action::Continue;
             }
-            match session.handle.send(Command::Prompt(draft.clone())) {
+            let command = if app.attachments.is_empty() {
+                Command::Prompt(draft.clone())
+            } else {
+                let (wire, display) =
+                    composer::with_attachments(&draft, &app.attachments, octet_core::PROMPT_LIMIT);
+                if wire.len().max(display.len()) > octet_core::PROMPT_LIMIT {
+                    app.notice = "The prompt and its attachments are over 64 KiB. Shorten the prompt, or press Esc on an empty prompt to drop them".into();
+                    return Action::Continue;
+                }
+                Command::PromptWithDisplay { wire, display }
+            };
+            match session.handle.send(command) {
                 Ok(()) => {
+                    app.attachments.clear();
                     app.goals.user_prompt_sent();
                     app.editor.take();
                     app.running = true;
@@ -593,11 +991,41 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         KeyCode::End => app.editor.end(),
         KeyCode::Backspace => app.editor.backspace(),
         KeyCode::Delete => app.editor.delete(),
+        KeyCode::Tab => {
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            let (text, cursor, root) =
+                (app.editor.text.clone(), app.editor.cursor, app.root.clone());
+            let tab = off_loop(TAB_WAIT, move || {
+                composer::tab(&text, cursor, &root, home.as_deref())
+            })
+            .await;
+            match tab.unwrap_or_else(|| {
+                app.notice = "That folder is slow to read; Tab gave up".into();
+                composer::Tab::Nothing
+            }) {
+                composer::Tab::Replace { start, text, popup } => {
+                    if app.editor.replace(start, &text) {
+                        app.completion = popup;
+                    } else {
+                        app.notice = "Prompt limit reached".into();
+                    }
+                }
+                composer::Tab::Popup(completion) => app.completion = Some(completion),
+                composer::Tab::Mention(start) => open_mentions(app, start),
+                composer::Tab::Nothing => {}
+            }
+        }
         KeyCode::Char(c) if !ctrl && !alt && !app.editor.insert(&c.to_string()) => {
             app.notice = "Prompt limit reached".into();
         }
         _ => {}
     }
+    if key.code == KeyCode::Char('@') && app.completion.is_none() {
+        if let Some((start, "")) = composer::mention_at(&app.editor.text, app.editor.cursor) {
+            open_mentions(app, start);
+        }
+    }
+    refresh_completion(app);
     Action::Continue
 }
 /// Interrupts the turn; a goal working on it is paused first.
@@ -666,6 +1094,7 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
     match name {
         "/quit" | "/exit" => return Some(Action::Exit(Exit::Quit)),
         "/help" => app.help = true,
+        "/copy" => copy_reply(app),
         "/model" => {
             if argument.trim().is_empty() {
                 app.show_models(1);
@@ -894,6 +1323,241 @@ mod model_tests {
     }
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+    #[tokio::test]
+    async fn copy_reports_the_size_of_the_last_reply() {
+        let mut app = app();
+        assert!(matches!(command(&mut app, "/copy").await, Action::Continue));
+        assert_eq!(app.notice, "Nothing to copy yet");
+        app.event(octet_core::Event::Started);
+        app.event(octet_core::Event::Text("hello".into()));
+        app.event(octet_core::Event::Finished {
+            outcome: octet_core::Outcome::Completed,
+        });
+        assert_eq!(app.last_reply(), Some("hello"));
+        assert!(matches!(command(&mut app, "/copy").await, Action::Continue));
+        assert_eq!(app.notice, "Copied 5 B to the clipboard");
+    }
+    #[test]
+    fn sizes_read_naturally() {
+        assert_eq!(size_label(5), "5 B");
+        assert_eq!(size_label(1229), "1.2 KB");
+        assert_eq!(size_label(100 * 1024), "100.0 KB");
+    }
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+    fn ran(command: &str, output: &str) -> crate::shell::Ran {
+        crate::shell::Ran {
+            command: command.into(),
+            status: crate::shell::Status::Exited(0),
+            output: output.into(),
+        }
+    }
+    async fn next_user_text(session: &mut Session) -> String {
+        loop {
+            if let octet_core::Event::User(text) = session.events.recv().await.unwrap() {
+                return text;
+            }
+        }
+    }
+    #[tokio::test]
+    async fn at_opens_the_file_popup_and_enter_accepts() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-at").await;
+        app.files = crate::files::Files::Ready(crate::files::Index::from_paths(vec![
+            "README.md".into(),
+            "src/main.rs".into(),
+        ]));
+        for c in "see @mai".chars() {
+            key_action(&mut app, &mut session, key(KeyCode::Char(c))).await;
+        }
+        let completion = app.completion.as_ref().expect("popup open");
+        assert_eq!(completion.items, ["src/main.rs"]);
+        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        assert_eq!(app.editor.text, "see @src/main.rs ");
+        assert!(app.completion.is_none());
+        assert!(!app.running, "Enter accepted instead of sending");
+    }
+    #[tokio::test]
+    async fn the_palette_offers_the_editor_mentions_and_shell() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-palette-keys").await;
+        let open_at = |app: &mut App, index: usize| {
+            app.palette = true;
+            app.selection = index;
+        };
+        open_at(&mut app, COMMANDS.len() + 1);
+        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        assert_eq!(app.editor.text, "@");
+        assert!(app.completion.is_some(), "@ opens the file popup");
+        app.completion = None;
+        app.editor.take();
+        open_at(&mut app, COMMANDS.len() + 2);
+        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        assert_eq!(app.editor.text, "!");
+        open_at(&mut app, COMMANDS.len());
+        assert!(matches!(
+            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            Action::ExternalEditor
+        ));
+        app.palette = true;
+        app.selection = 0;
+        for _ in 0..40 {
+            key_action(&mut app, &mut session, key(KeyCode::Down)).await;
+        }
+        assert_eq!(app.selection, COMMANDS.len() + view::PALETTE_KEYS.len() - 1);
+    }
+    #[tokio::test]
+    async fn a_prompt_too_long_for_its_attachments_says_so() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-attach-limit").await;
+        app.attach(ran("echo hi", "hi\n"));
+        app.editor.set("x".repeat(octet_core::PROMPT_LIMIT - 6));
+        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        assert_eq!(
+            app.notice,
+            "The prompt and its attachments are over 64 KiB. Shorten the prompt, or press Esc on an empty prompt to drop them"
+        );
+        assert_eq!(app.attachments.len(), 1, "kept");
+        assert!(!app.running);
+    }
+    #[test]
+    fn a_finished_command_replaces_the_running_notice() {
+        let mut app = app();
+        app.shell_running = true;
+        app.notice = "Running echo hi · Esc to stop".into();
+        shell_finished(&mut app, Ok(ran("echo hi", "hi\n")), true);
+        assert!(!app.shell_running);
+        assert_eq!(app.notice, "$ echo hi · exit 0");
+        assert_eq!(app.attachments.len(), 1);
+        shell_finished(&mut app, Err("Cannot run /x: gone".into()), false);
+        assert_eq!(app.notice, "Cannot run /x: gone");
+    }
+    #[tokio::test]
+    async fn slow_work_off_the_loop_gives_up_at_its_limit() {
+        let started = std::time::Instant::now();
+        let slow = off_loop(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(2));
+            1
+        })
+        .await;
+        assert_eq!(slow, None);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(off_loop(Duration::from_secs(1), || 5).await, Some(5));
+    }
+    #[tokio::test]
+    async fn the_popup_closes_before_the_editor_and_follows_a_paste() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-at-settle").await;
+        app.files =
+            crate::files::Files::Ready(crate::files::Index::from_paths(vec!["src/main.rs".into()]));
+        for c in "a long draft @ma".chars() {
+            key_action(&mut app, &mut session, key(KeyCode::Char(c))).await;
+        }
+        assert!(app.completion.is_some());
+        assert!(matches!(
+            key_action(&mut app, &mut session, ctrl('g')).await,
+            Action::ExternalEditor
+        ));
+        assert!(
+            app.completion.is_none(),
+            "the edited draft must not meet a stale popup"
+        );
+        app.editor.set("/re".into());
+        app.completion = Some(composer::Completion {
+            kind: composer::Kind::Command,
+            items: vec!["/reconnect".into()],
+            selected: 0,
+            start: 0,
+        });
+        paste(&mut app, "port the bug");
+        assert!(app.completion.is_none(), "a paste closes a command popup");
+        key_action(&mut app, &mut session, key(KeyCode::Char('x'))).await;
+        assert_eq!(app.editor.text, "/report the bugx");
+    }
+    #[tokio::test]
+    async fn the_first_at_asks_for_the_index_and_esc_closes_the_popup() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-at-index").await;
+        key_action(&mut app, &mut session, key(KeyCode::Char('@'))).await;
+        assert!(matches!(app.files, crate::files::Files::Wanted));
+        assert!(app.completion.is_some());
+        key_action(&mut app, &mut session, key(KeyCode::Esc)).await;
+        assert!(app.completion.is_none());
+        assert_eq!(app.editor.text, "@");
+    }
+    #[tokio::test]
+    async fn an_at_inside_a_word_opens_nothing() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-at-word").await;
+        for c in "me@host".chars() {
+            key_action(&mut app, &mut session, key(KeyCode::Char(c))).await;
+        }
+        assert!(app.completion.is_none());
+    }
+    #[tokio::test]
+    async fn bang_lines_run_locally_and_double_bang_does_not_attach() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-bang").await;
+        app.editor.set("!echo hi".into());
+        assert!(matches!(
+            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            Action::RunShell { ref command, attach: true } if command == "echo hi"
+        ));
+        assert!(app.editor.text.is_empty());
+        assert_eq!(app.history.back().map(String::as_str), Some("!echo hi"));
+        app.editor.set("!!  pwd ".into());
+        assert!(matches!(
+            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            Action::RunShell { ref command, attach: false } if command == "pwd"
+        ));
+        app.editor.set("!".into());
+        assert!(matches!(
+            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            Action::Continue
+        ));
+        assert_eq!(app.notice, "Type a command after !");
+        app.shell_running = true;
+        app.editor.set("!ls".into());
+        assert!(matches!(
+            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            Action::Continue
+        ));
+        assert_eq!(app.notice, "A command is already running");
+        assert!(matches!(
+            key_action(&mut app, &mut session, key(KeyCode::Esc)).await,
+            Action::CancelShell
+        ));
+    }
+    #[tokio::test]
+    async fn attachments_go_with_the_next_prompt_then_clear() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-attach").await;
+        app.attach(ran("echo hi", "hi\n"));
+        app.editor.set("explain".into());
+        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        assert!(app.attachments.is_empty());
+        assert_eq!(next_user_text(&mut session).await, "explain\n\n[+ echo hi]");
+    }
+    #[tokio::test]
+    async fn esc_on_an_empty_idle_draft_removes_attachments() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-detach").await;
+        app.attach(ran("ls", ""));
+        key_action(&mut app, &mut session, key(KeyCode::Esc)).await;
+        assert!(app.attachments.is_empty());
+        assert_eq!(app.notice, "Attachments removed");
+    }
+    #[tokio::test]
+    async fn goal_prompts_never_carry_attachments() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-goal-attach").await;
+        app.attach(ran("ls", "a\n"));
+        send_goal_prompt(&mut app, &session, "continue the goal".into()).await;
+        assert_eq!(app.attachments.len(), 1, "kept for the user's next prompt");
+        let shown = next_user_text(&mut session).await;
+        assert!(!shown.contains("[+ ls]"), "{shown}");
     }
     async fn demo_session(name: &str) -> (octet_testkit::TempDir, Session) {
         let temp = octet_testkit::TempDir::new(name);

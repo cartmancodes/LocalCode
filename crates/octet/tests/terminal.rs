@@ -713,6 +713,7 @@ fn help_lists_every_command() {
         "/new",
         "/reconnect",
         "/export",
+        "/copy",
         "/remote-control",
     ] {
         assert!(help.contains(command), "{command} missing from --help");
@@ -761,8 +762,20 @@ esac"#,
         &[("PATH", path.as_str()), ("TMUX", "/tmp/tmux-test,1,0")],
     );
     p.wait(|p| p.shows("● ready"));
-    p.send(b"/remote-control\r");
-    p.wait(|p| p.screen_shows("[ok] mosh-server 1.4.0"));
+    // The checks share a 2-second deadline; on a machine busy with the
+    // parallel suite a stand-in can miss it, so ask again before failing.
+    // Each attempt first runs a ! command, which replaces the status line,
+    // so "Remote control:" there can only mean the new report.
+    for attempt in 1..=3 {
+        p.send(format!("!!echo attempt-{attempt}\r").as_bytes());
+        p.wait(|p| p.row_shows(35, &format!("echo attempt-{attempt} · exit 0")));
+        p.send(b"/remote-control\r");
+        p.wait(|p| p.row_shows(35, "Remote control: "));
+        if p.screen_shows("[ok] mosh-server 1.4.0") {
+            break;
+        }
+        assert!(attempt < 3, "{}", p.screen().join("\n"));
+    }
     assert!(p.screen_shows("[ok] Running in tmux session \"octet\""));
     assert!(p.screen_shows("[ok] Tailscale connected: test-mac.tail0000.ts.net"));
     assert!(!p.screen_shows("tmux reduces colours"));
@@ -831,4 +844,211 @@ fn a_valid_approval_timeout_reaches_the_engine() {
     );
     p.quit();
     p.finish();
+}
+
+#[test]
+fn copy_sends_the_last_reply_to_the_clipboard() {
+    let mut p = Pty::spawn();
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"/copy\r");
+    p.wait(|p| p.screen_shows("Nothing to copy yet"));
+    p.send(b"hello\r");
+    p.wait(|p| p.screen_shows("Try /approval-demo"));
+    p.wait(|p| p.shows("● completed"));
+    p.send(b"\x18");
+    // The demo reply starts "This": base64 of "T" begins with "V".
+    p.wait(|p| p.output.windows(8).any(|w| w == b"\x1b]52;c;V"));
+    p.wait(|p| p.screen_shows("to the clipboard"));
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn bang_runs_a_command_and_attaches_it_to_the_next_prompt() {
+    let mut p = Pty::spawn();
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"!echo hi-from-shell\r");
+    p.wait(|p| p.screen_shows("$ echo hi-from-shell"));
+    p.wait(|p| p.screen_shows("+ echo hi-from-shell (exit 0)"));
+    p.send(b"what does it say\r");
+    p.wait(|p| p.screen_shows("[+ echo hi-from-shell]"));
+    // The engine received the output itself; the demo shows what it got.
+    p.wait(|p| p.screen_shows("Output of `echo hi-from-shell` (exit 0):"));
+    p.wait(|p| p.shows("● completed"));
+    p.wait(|p| !p.screen_shows("(exit 0) "));
+    p.send(b"!!echo local-only\r");
+    p.wait(|p| p.screen_shows("$ echo local-only"));
+    assert!(!p.screen_shows("+ echo local-only"));
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn at_mentions_a_workspace_file() {
+    let workspace = octet_testkit::TempDir::new("octet-at-workspace");
+    fs::create_dir_all(workspace.path().join("src")).unwrap();
+    fs::write(workspace.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    let cwd = workspace.path().to_str().unwrap().to_owned();
+    let mut p = Pty::spawn_with(&["--cwd", &cwd]);
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"explain @mai");
+    p.wait(|p| p.screen_shows("› src/main.rs"));
+    p.send(b"\r");
+    p.wait(|p| p.screen_shows("explain @src/main.rs"));
+    p.send(b"\x15");
+    p.send(b"/rem\t");
+    p.wait(|p| p.screen_shows("/remote-control"));
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn ctrl_g_edits_the_draft_in_an_external_editor() {
+    let tools = octet_testkit::TempDir::new("octet-editor");
+    fs::create_dir_all(tools.path()).unwrap();
+    stand_in(
+        tools.path(),
+        "fake-editor",
+        r#"printf 'edited by script' > "$1""#,
+    );
+    let editor = tools.path().join("fake-editor");
+    let mut p = Pty::spawn_with_env(&[], &[("EDITOR", editor.to_str().unwrap()), ("VISUAL", "")]);
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"draft text");
+    p.wait(|p| p.screen_shows("draft text"));
+    p.send(b"\x07");
+    p.wait(|p| p.screen_shows("edited by script"));
+    assert!(!p.screen_shows("draft text"));
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn a_missing_editor_keeps_the_draft_and_the_screen() {
+    let mut p = Pty::spawn_with_env(&[], &[("EDITOR", "/no/such/editor"), ("VISUAL", "")]);
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"keep me");
+    p.wait(|p| p.screen_shows("keep me"));
+    p.send(b"\x07");
+    // The screen repaints in full after the failed start; wait for all of it.
+    p.wait(|p| p.screen_shows("Cannot start /no/such/editor") && p.screen_shows("keep me"));
+    // Keys reach Octet again after the failed start.
+    p.send(b"!");
+    p.wait(|p| p.screen_shows("keep me!"));
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn bang_commands_cannot_reach_the_terminal() {
+    // Credential prompts (git, ssh, sudo) open /dev/tty; a ! command must
+    // fail at once instead of drawing over the screen and stopping.
+    let mut p = Pty::spawn();
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"!printf 'Username: ' > /dev/tty; echo status=$?\r");
+    p.wait(|p| p.screen_shows("status="));
+    assert!(!p.screen_shows("status=0"), "{}", p.screen().join("\n"));
+    // The command line itself shows the text; nothing else may.
+    assert!(p
+        .screen()
+        .iter()
+        .filter(|row| row.contains("Username: "))
+        .all(|row| row.contains("printf")));
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn an_interrupt_while_editing_does_not_quit() {
+    // `code --wait` leaves the terminal cooked, so Ctrl+C there signals the
+    // whole group; Octet must keep the session and the edit.
+    let tools = octet_testkit::TempDir::new("octet-editor-int");
+    fs::create_dir_all(tools.path()).unwrap();
+    stand_in(
+        tools.path(),
+        "fake-editor",
+        r#"trap '' INT; kill -INT 0; sleep 0.2; printf 'after interrupt' > "$1""#,
+    );
+    let editor = tools.path().join("fake-editor");
+    let mut p = Pty::spawn_with_env(&[], &[("EDITOR", editor.to_str().unwrap()), ("VISUAL", "")]);
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"\x07");
+    p.wait(|p| p.screen_shows("after interrupt"));
+    assert!(p.child.try_wait().unwrap().is_none(), "Octet quit");
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn a_suspend_while_editing_leaves_the_terminal_usable() {
+    // vim's Ctrl+Z stops the whole group; on fg the editor restores the
+    // terminal it found, and Octet must still get raw keys afterwards.
+    let tools = octet_testkit::TempDir::new("octet-editor-tstp");
+    fs::create_dir_all(tools.path()).unwrap();
+    stand_in(
+        tools.path(),
+        "fake-editor",
+        r#"trap '' TSTP; kill -TSTP 0; sleep 0.5; stty sane; printf 'after stop' > "$1""#,
+    );
+    let editor = tools.path().join("fake-editor");
+    let mut p = Pty::spawn_with_env(&[], &[("EDITOR", editor.to_str().unwrap()), ("VISUAL", "")]);
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"\x07");
+    // Play the shell's part: continue Octet whenever it stops.
+    let pid = p.child.id() as libc::pid_t;
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !p.screen_shows("after stop") {
+        assert!(Instant::now() < deadline, "the edit never came back");
+        unsafe {
+            libc::kill(pid, libc::SIGCONT);
+        }
+        p.drain();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Octet is back in raw mode: no line editing, no echo. (Typing would not
+    // show it: the terminal's own echo looks like Octet drawing the key.)
+    p.wait(|p| flags(&p.master) & (libc::ICANON | libc::ECHO) == 0);
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn terminating_octet_while_editing_stops_the_editor() {
+    let tools = octet_testkit::TempDir::new("octet-editor-term");
+    fs::create_dir_all(tools.path()).unwrap();
+    let pid_file = tools.path().join("editor.pid");
+    stand_in(
+        tools.path(),
+        "fake-editor",
+        &format!(
+            // Ignoring HUP stands in for a real shell, where the kernel's
+            // hangup to the old session does not reach the editor.
+            r#"echo $$ > '{}'; trap '' HUP; trap 'exit 0' TERM; sleep 30 & wait"#,
+            pid_file.display()
+        ),
+    );
+    let editor = tools.path().join("fake-editor");
+    let mut p = Pty::spawn_with_env(&[], &[("EDITOR", editor.to_str().unwrap()), ("VISUAL", "")]);
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"\x07");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let editor_pid = loop {
+        if let Ok(text) = fs::read_to_string(&pid_file) {
+            if let Ok(pid) = text.trim().parse::<libc::pid_t>() {
+                break pid;
+            }
+        }
+        assert!(Instant::now() < deadline, "the editor never started");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    unsafe {
+        libc::kill(p.child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    p.finish();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    // SAFETY: signal 0 only checks that the process exists.
+    while unsafe { libc::kill(editor_pid, 0) } == 0 {
+        assert!(Instant::now() < deadline, "the editor outlived Octet");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

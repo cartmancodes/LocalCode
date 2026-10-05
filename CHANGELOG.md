@@ -38,6 +38,9 @@ Claude Code and Codex CLIs.
   on exit, signals and panic.
 - Octet, the header mascot, whose pose follows the agent's activity.
 - A build-time guard that fails if any crate names a vendor credential store.
+- `@` file mentions, Tab completion for paths and commands, `!`/`!!` shell
+  commands with output attached to the next prompt, Ctrl+G to write the
+  prompt in an external editor, and `/copy` (Ctrl+X) through OSC 52.
 - Dual licensing under MIT or Apache-2.0.
 
 [0.1.0]: https://github.com/cartmancodes/octet/commits/master
