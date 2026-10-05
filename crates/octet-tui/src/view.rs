@@ -559,10 +559,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
         return;
     }
+    // Laid out once per frame: its row count sizes the composer, and its
+    // lines and cursor are drawn there.
+    let draft = app.editor.layout(draft_width(area.width));
     let regions = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(3),
-        Constraint::Length(composer_height(app, area.width)),
+        Constraint::Length(composer_height(draft.0.len())),
         Constraint::Length(1),
     ])
     .margin(1)
@@ -642,7 +645,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         height: inner.height.saturating_sub(1),
         ..inner
     };
-    let (lines, (col, row)) = app.editor.layout(input.width as usize);
+    let (lines, (col, row)) = draft;
     let offset = row.saturating_sub(input.height.saturating_sub(1) as usize);
     if app.editor.text.is_empty() {
         frame.render_widget(
@@ -711,13 +714,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ));
     }
 }
-/// The composer's height: borders, the draft's wrapped rows (1–4), and the
-/// hint row. An empty prompt takes 4 rows, a long draft at most 7.
-fn composer_height(app: &App, terminal_width: u16) -> u16 {
-    // Margin, border and padding take three columns on each side.
-    let text_width = terminal_width.saturating_sub(6) as usize;
-    let rows = app.editor.layout(text_width).0.len().clamp(1, 4) as u16;
-    2 + rows + 1
+/// The width the draft wraps at: margin, border and padding take three
+/// columns on each side.
+fn draft_width(terminal_width: u16) -> usize {
+    terminal_width.saturating_sub(6) as usize
+}
+/// The composer's height from the draft's wrapped rows: borders, 1–4 draft
+/// rows, and the hint row. An empty prompt takes 4 rows, a long draft 7.
+fn composer_height(draft_rows: usize) -> u16 {
+    2 + draft_rows.clamp(1, 4) as u16 + 1
 }
 /// The top-left banner, after Claude Code's: the mini Octet (or a text mark
 /// without colour) beside three lines. The permission mode leads its line so
@@ -855,19 +860,34 @@ pub const COMMANDS: [(&str, &str); 10] = [
     ("/reconnect", "Reconnect to the vendor session"),
     (
         "/remote-control",
-        "Check phone access over tmux, Tailscale and mosh",
+        "Check phone access (tmux, Tailscale, mosh)",
     ),
     ("/quit", "Save and exit"),
 ];
 fn palette(frame: &mut Frame, area: Rect, selected: usize) {
-    // Borders, a blank line above and below the list, and the key line.
-    let area = modal(area, 66, COMMANDS.len() as u16 + 5);
+    let name_width = COMMANDS
+        .iter()
+        .map(|(name, _)| name.len())
+        .max()
+        .unwrap_or(0);
+    let description_width = COMMANDS
+        .iter()
+        .map(|(_, description)| description.width())
+        .max()
+        .unwrap_or(0);
+    // Width: borders, the marker and spaces around each column. Height:
+    // borders, a blank line above and below the list, and the key line.
+    let area = modal(
+        area,
+        (name_width + description_width + 7) as u16,
+        COMMANDS.len() as u16 + 5,
+    );
     frame.render_widget(Clear, area);
     let mut lines = vec![Line::default()];
     for (index, (command, description)) in COMMANDS.iter().enumerate() {
         lines.push(Line::from(Span::styled(
             format!(
-                " {} {:<14} {}",
+                " {} {:<name_width$} {}",
                 if index == selected { "›" } else { " " },
                 command,
                 description
@@ -926,9 +946,15 @@ mod tests {
     fn composer_grows_with_the_draft() {
         let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
         let mut app = App::new(&config, "journal".into());
-        assert_eq!(composer_height(&app, 80), 4);
+        assert_eq!(
+            composer_height(app.editor.layout(draft_width(80)).0.len()),
+            4
+        );
         assert!(app.editor.insert("one\ntwo\nthree"));
-        assert_eq!(composer_height(&app, 80), 6);
+        assert_eq!(
+            composer_height(app.editor.layout(draft_width(80)).0.len()),
+            6
+        );
     }
     #[test]
     fn composer_counts_wrapped_rows() {
@@ -936,14 +962,20 @@ mod tests {
         let mut app = App::new(&config, "journal".into());
         // 80 columns leave 74 for text: 100 characters wrap onto a second row.
         assert!(app.editor.insert(&"x".repeat(100)));
-        assert_eq!(composer_height(&app, 80), 5);
+        assert_eq!(
+            composer_height(app.editor.layout(draft_width(80)).0.len()),
+            5
+        );
     }
     #[test]
     fn composer_height_is_capped() {
         let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
         let mut app = App::new(&config, "journal".into());
         assert!(app.editor.insert(&"line\n".repeat(40)));
-        assert_eq!(composer_height(&app, 80), 7);
+        assert_eq!(
+            composer_height(app.editor.layout(draft_width(80)).0.len()),
+            7
+        );
     }
     #[test]
     fn an_empty_composer_gives_rows_back_to_the_conversation() {
@@ -960,9 +992,24 @@ mod tests {
         let mut app = App::new(&config, "journal".into());
         app.palette = true;
         let rows = screen(80, 24, &mut app);
-        for (name, _) in COMMANDS {
-            assert!(rows.iter().any(|row| row.contains(name)), "{name} missing");
+        let mut columns = Vec::new();
+        for (name, description) in COMMANDS {
+            // " /mode " must not match the "/model" row.
+            let row = rows
+                .iter()
+                .find(|row| row.contains(&format!(" {name} ")))
+                .unwrap_or_else(|| panic!("{name} missing"));
+            assert!(row.contains(description), "{name}: description cut: {row}");
+            // Columns, not bytes: the selected row's "›" is three bytes wide.
+            columns.push(
+                row.find(description)
+                    .map(|byte| row[..byte].chars().count()),
+            );
         }
+        assert!(
+            columns.windows(2).all(|pair| pair[0] == pair[1]),
+            "descriptions start in different columns: {columns:?}"
+        );
         assert!(rows.iter().any(|row| row.contains("Esc close")));
     }
     #[test]

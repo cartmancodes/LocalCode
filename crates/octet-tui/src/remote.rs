@@ -19,14 +19,23 @@ const SESSION: &str = "octet";
 pub struct Tailnet {
     pub name: String,
     pub address: String,
+    /// Found through the App Store app, which can't run Tailscale SSH.
+    pub app_store: bool,
+}
+
+/// Where Octet runs relative to tmux.
+pub enum Tmux {
+    Outside,
+    Session(String),
+    /// `$TMUX` is set but tmux didn't answer in time.
+    NoAnswer,
 }
 
 /// What the phone needs from this host, as found.
 pub struct Checks {
     pub user: String,
-    /// The tmux session Octet runs in; None when not inside tmux.
-    pub tmux_session: Option<String>,
-    /// Whether tmux passes 24-bit colour; None when unknown.
+    pub tmux: Tmux,
+    /// Whether tmux is configured for 24-bit colour; None when unknown.
     pub tmux_rgb: Option<bool>,
     /// None when the tailscale CLI is missing or not connected.
     pub tailnet: Option<Tailnet>,
@@ -63,7 +72,7 @@ async fn run_until(deadline: Instant, program: &str, args: &[&str]) -> Option<St
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn parse_tailnet(status_json: &str) -> Option<Tailnet> {
+fn parse_tailnet(status_json: &str, app_store: bool) -> Option<Tailnet> {
     let status: serde_json::Value = serde_json::from_str(status_json).ok()?;
     if status["BackendState"] != "Running" {
         return None;
@@ -74,7 +83,22 @@ fn parse_tailnet(status_json: &str) -> Option<Tailnet> {
             .trim_end_matches('.')
             .to_owned(),
         address: status["Self"]["TailscaleIPs"][0].as_str()?.to_owned(),
+        app_store,
     })
+}
+
+/// Whether tmux's server options give terminals 24-bit colour: an `RGB`
+/// terminal feature (tmux 3.2+) or a `Tc` override (older tmux). None when
+/// tmux reported neither option, so nothing is known.
+fn rgb_configured(features: &str, overrides: &str) -> Option<bool> {
+    if features.trim().is_empty() && overrides.trim().is_empty() {
+        return None;
+    }
+    let colour = |text: &str, flag: &str| {
+        text.lines()
+            .any(|line| line.split(':').skip(1).any(|part| part.trim() == flag))
+    };
+    Some(colour(features, "RGB") || colour(overrides, "Tc") || colour(overrides, "RGB"))
 }
 
 fn parse_mosh_version(output: &str) -> Option<(u32, u32, u32)> {
@@ -90,9 +114,11 @@ fn parse_mosh_version(output: &str) -> Option<(u32, u32, u32)> {
 /// The programs the checks run; tests substitute stand-ins.
 struct Programs<'a> {
     tmux: &'a str,
+    /// The open-source CLI first, then the App Store app's bundled CLI.
     tailscale: &'a [&'a str],
     mosh_server: &'a str,
 }
+#[cfg(not(test))]
 const PROGRAMS: Programs<'static> = Programs {
     tmux: "tmux",
     // The App Store build keeps its CLI inside the app bundle.
@@ -101,6 +127,14 @@ const PROGRAMS: Programs<'static> = Programs {
         "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
     ],
     mosh_server: "mosh-server",
+};
+/// Under test, names that never exist, so results don't depend on the
+/// machine running the tests.
+#[cfg(test)]
+const PROGRAMS: Programs<'static> = Programs {
+    tmux: "octet-test-absent-tmux",
+    tailscale: &["octet-test-absent-tailscale"],
+    mosh_server: "octet-test-absent-mosh-server",
 };
 
 /// Runs every check concurrently, each bounded by the check timeout.
@@ -112,25 +146,35 @@ async fn probe_with(programs: &Programs<'_>, inside_tmux: bool) -> Checks {
     let deadline = Instant::now() + CHECK_TIMEOUT;
     let tmux = async {
         if !inside_tmux {
-            return (None, None);
+            return (Tmux::Outside, None);
         }
-        let (session, features) = tokio::join!(
+        let (session, features, overrides) = tokio::join!(
             run_until(deadline, programs.tmux, &["display-message", "-p", "#S"]),
             run_until(
                 deadline,
                 programs.tmux,
-                &["display-message", "-p", "#{client_termfeatures}"],
+                &["show-options", "-s", "terminal-features"],
+            ),
+            run_until(
+                deadline,
+                programs.tmux,
+                &["show-options", "-s", "terminal-overrides"],
             ),
         );
-        (
-            session.map(|name| name.trim().to_owned()),
-            features.map(|list| list.split(',').any(|feature| feature.trim() == "RGB")),
-        )
+        let tmux = match session.map(|name| name.trim().to_owned()) {
+            Some(name) if !name.is_empty() => Tmux::Session(name),
+            _ => Tmux::NoAnswer,
+        };
+        let rgb = rgb_configured(
+            features.as_deref().unwrap_or(""),
+            overrides.as_deref().unwrap_or(""),
+        );
+        (tmux, rgb)
     };
     let tailnet = async {
-        for program in programs.tailscale {
+        for (index, program) in programs.tailscale.iter().enumerate() {
             if let Some(json) = run_until(deadline, program, &["status", "--json"]).await {
-                return parse_tailnet(&json);
+                return parse_tailnet(&json, index > 0);
             }
         }
         None
@@ -141,7 +185,7 @@ async fn probe_with(programs: &Programs<'_>, inside_tmux: bool) -> Checks {
             .as_deref()
             .and_then(parse_mosh_version)
     };
-    let ((tmux_session, tmux_rgb), tailnet, mosh) = tokio::join!(tmux, tailnet, mosh);
+    let ((tmux, tmux_rgb), tailnet, mosh) = tokio::join!(tmux, tailnet, mosh);
     let ssh = match &tailnet {
         Some(tailnet) => matches!(
             timeout(
@@ -155,7 +199,7 @@ async fn probe_with(programs: &Programs<'_>, inside_tmux: bool) -> Checks {
     };
     Checks {
         user: std::env::var("USER").unwrap_or_else(|_| "you".into()),
-        tmux_session,
+        tmux,
         tmux_rgb,
         tailnet,
         ssh,
@@ -170,11 +214,20 @@ fn mark(ok: bool, text: &str) -> String {
 /// The checks as notice text: one line per check, each problem with its fix,
 /// then the exact phone commands once the host is reachable.
 pub fn report(checks: &Checks) -> String {
-    let session = checks.tmux_session.as_deref().unwrap_or(SESSION);
+    let session = match &checks.tmux {
+        Tmux::Session(name) => name.as_str(),
+        Tmux::Outside | Tmux::NoAnswer => SESSION,
+    };
     let mut lines = vec!["Remote control setup (read-only check)".to_owned()];
-    lines.push(match &checks.tmux_session {
-        Some(name) => mark(true, &format!("Running in tmux session \"{name}\"")),
-        None => mark(
+    lines.push(match &checks.tmux {
+        Tmux::Session(name) => mark(true, &format!("Running in tmux session \"{name}\"")),
+        Tmux::NoAnswer => mark(
+            false,
+            &format!(
+                "Inside tmux, but tmux didn't answer; the phone command assumes session \"{SESSION}\". Check with: tmux new -A -s {SESSION}"
+            ),
+        ),
+        Tmux::Outside => mark(
             false,
             &format!(
                 "Not inside tmux. Quit and restart with: tmux new -A -s {SESSION} \"octet …\""
@@ -200,9 +253,15 @@ pub fn report(checks: &Checks) -> String {
             "Tailscale isn't connected. Install it, then run: tailscale up",
         ),
     });
-    if checks.tailnet.is_some() {
+    if let Some(tailnet) = &checks.tailnet {
         lines.push(if checks.ssh {
             mark(true, "SSH answers on the tailnet address")
+        } else if tailnet.app_store {
+            // The App Store app can't run the Tailscale SSH server.
+            mark(
+                false,
+                "SSH doesn't answer on the tailnet. Turn on Remote Login (System Settings → General → Sharing)",
+            )
         } else {
             mark(
                 false,
@@ -242,11 +301,12 @@ mod tests {
     fn ready() -> Checks {
         Checks {
             user: "me".into(),
-            tmux_session: Some("octet".into()),
+            tmux: Tmux::Session("octet".into()),
             tmux_rgb: Some(true),
             tailnet: Some(Tailnet {
                 name: "my-mac.tail1234.ts.net".into(),
                 address: "100.101.102.103".into(),
+                app_store: false,
             }),
             ssh: true,
             mosh: Some((1, 4, 0)),
@@ -265,7 +325,7 @@ mod tests {
     #[test]
     fn each_missing_piece_says_how_to_fix_it() {
         let checks = Checks {
-            tmux_session: None,
+            tmux: Tmux::Outside,
             tmux_rgb: None,
             tailnet: None,
             ssh: false,
@@ -290,6 +350,42 @@ mod tests {
         );
     }
     #[test]
+    fn tmux_that_does_not_answer_is_not_reported_as_missing() {
+        let text = report(&Checks {
+            tmux: Tmux::NoAnswer,
+            ..ready()
+        });
+        assert!(text.contains("tmux didn't answer"), "{text}");
+        assert!(!text.contains("Not inside tmux"), "{text}");
+        assert!(text.contains("tmux new -A -s octet"), "{text}");
+    }
+    #[test]
+    fn reads_the_colour_setting_from_tmux_options() {
+        let features = "terminal-features[0] xterm*:clipboard:ccolour:cstyle\nterminal-features[1] ,xterm-256color:RGB\n";
+        assert_eq!(rgb_configured(features, ""), Some(true));
+        let overrides = "terminal-overrides[0] ,xterm-256color:Tc\n";
+        assert_eq!(rgb_configured("", overrides), Some(true));
+        assert_eq!(
+            rgb_configured("terminal-features[0] xterm*:clipboard\n", ""),
+            Some(false)
+        );
+        // Old tmux without either option, or no answer: unknown, no advice.
+        assert_eq!(rgb_configured("", ""), None);
+    }
+    #[test]
+    fn the_app_store_build_gets_remote_login_advice_only() {
+        let text = report(&Checks {
+            tailnet: Some(Tailnet {
+                app_store: true,
+                ..ready().tailnet.unwrap()
+            }),
+            ssh: false,
+            ..ready()
+        });
+        assert!(text.contains("Remote Login"), "{text}");
+        assert!(!text.contains("tailscale set --ssh"), "{text}");
+    }
+    #[test]
     fn tmux_without_rgb_shows_the_config_lines() {
         let text = report(&Checks {
             tmux_rgb: Some(false),
@@ -300,11 +396,12 @@ mod tests {
     #[test]
     fn parses_tailscale_status() {
         let json = r#"{"BackendState":"Running","Self":{"DNSName":"my-mac.tail1234.ts.net.","TailscaleIPs":["100.101.102.103","fd7a::1"]}}"#;
-        let tailnet = parse_tailnet(json).unwrap();
+        let tailnet = parse_tailnet(json, false).unwrap();
         assert_eq!(tailnet.name, "my-mac.tail1234.ts.net");
         assert_eq!(tailnet.address, "100.101.102.103");
-        assert!(parse_tailnet(r#"{"BackendState":"Stopped","Self":{}}"#).is_none());
-        assert!(parse_tailnet("not json").is_none());
+        assert!(!tailnet.app_store);
+        assert!(parse_tailnet(r#"{"BackendState":"Stopped","Self":{}}"#, false).is_none());
+        assert!(parse_tailnet("not json", false).is_none());
     }
     #[test]
     fn parses_mosh_server_version() {

@@ -324,7 +324,7 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
         _ => None,
     };
     let failed = matches!(event, octet_core::Event::Error(_));
-    if matches!(event, octet_core::Event::Approval { .. }) {
+    if should_alert(app, &event) {
         alert();
     }
     app.event(event);
@@ -355,6 +355,11 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
         }
         Err(error) => app.notice(format!("Goal persistence failed; paused: {error}")),
     }
+}
+/// Ring once when an approval starts waiting; a burst of requests behind it
+/// rings no more.
+fn should_alert(app: &App, event: &octet_core::Event) -> bool {
+    matches!(event, octet_core::Event::Approval { .. }) && app.approvals.is_empty()
 }
 /// A bell plus a desktop notification (OSC 9) for an approval the user isn't
 /// watching. The bell passes through tmux and mosh to a phone; tmux drops the
@@ -862,14 +867,32 @@ mod model_tests {
         let session = Session::open(config, directory).await.unwrap();
         (temp, session)
     }
+    #[test]
+    fn only_the_first_waiting_approval_rings() {
+        let mut app = app();
+        let approval = |id| octet_core::Event::Approval {
+            id,
+            detail: "run tests".into(),
+        };
+        assert!(should_alert(&app, &approval(1)));
+        app.event(approval(1));
+        assert!(!should_alert(&app, &approval(2)), "one is already waiting");
+        assert!(!should_alert(&app, &octet_core::Event::Started));
+    }
     #[tokio::test]
     async fn remote_control_reports_without_changing_the_session() {
         let mut app = app();
+        let started = std::time::Instant::now();
         assert!(matches!(
             command(&mut app, "/remote-control").await,
             Action::Continue
         ));
-        assert!(app.entries_text().contains("Remote control setup"));
+        // Under test the checks run stand-in program names that never exist,
+        // so the result doesn't depend on what this machine has installed.
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let text = app.entries_text();
+        assert!(text.contains("Remote control setup"), "{text}");
+        assert!(text.contains("[!!] Tailscale isn't connected"), "{text}");
         assert_eq!(app.session, "thread-1");
     }
     #[tokio::test]

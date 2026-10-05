@@ -1,7 +1,8 @@
 //! Presentation-independent session boundary. Persist events before publishing;
 //! disk and subscriber failures stop execution instead of losing output silently.
 pub use octet_engine::live::{
-    Command, Config, Engine, Event, Handle, Mode, Outcome, SendError, PROMPT_LIMIT,
+    Command, Config, Engine, Event, Handle, Mode, Outcome, SendError, DEFAULT_APPROVAL_TIMEOUT,
+    PROMPT_LIMIT,
 };
 use octet_store::Journal;
 use serde_json::{json, Value};
@@ -20,12 +21,7 @@ impl Session {
             .map_err(|e| format!("Cannot create transcript journal: {e}"))?;
         journal.append("session",json!({"engine":config.engine.as_str(),"cwd":config.cwd,"resume":config.resume,"model":config.model,"mode":config.mode.label()}),true).await.map_err(|e|format!("Cannot write transcript journal: {e}"))?;
         let path = journal.path.clone();
-        let limits = octet_engine::live::Limits {
-            approval: config.approval_timeout,
-            ..Default::default()
-        };
-        let (handle, mut engine_events, mut driver) =
-            octet_engine::live::spawn_with_limits(config, limits);
+        let (handle, mut engine_events, mut driver) = octet_engine::live::spawn(config);
         let control = handle.clone();
         let (tx, events) = mpsc::channel(128);
         let task = tokio::spawn(async move {

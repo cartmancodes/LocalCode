@@ -684,3 +684,24 @@ fn a_new_approval_rings_and_notifies() {
     p.quit();
     p.finish();
 }
+
+#[test]
+fn help_lists_every_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_octet"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    let help = String::from_utf8_lossy(&output.stdout);
+    for command in [
+        "/model",
+        "/mode",
+        "/goal",
+        "/session",
+        "/new",
+        "/reconnect",
+        "/export",
+        "/remote-control",
+    ] {
+        assert!(help.contains(command), "{command} missing from --help");
+    }
+}
