@@ -1,5 +1,6 @@
 //! `!` commands: run one command the user typed, in the workspace, bounded in
 //! output and time. It is the user's own action, so no approval applies.
+//! Commands run in their own session, away from Octet's terminal.
 use std::{io::Read, path::Path, process::Stdio, time::Duration};
 use tokio::{process::Command, sync::oneshot};
 
@@ -67,8 +68,21 @@ async fn run_with(
             .stdin(Stdio::null())
             .stdout(writer.try_clone().map_err(fail)?)
             .stderr(writer)
-            .process_group(0)
+            // Prompts for credentials would otherwise wait on a terminal
+            // nobody is reading.
+            .env("GIT_TERMINAL_PROMPT", "0")
             .kill_on_drop(true);
+        // SAFETY: setsid is async-signal-safe. A new session has no
+        // controlling terminal, so opening /dev/tty fails at once instead of
+        // drawing over Octet; its group id is its pid, for kill_group.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
         cmd.spawn().map_err(fail)?
     };
     let group = child.id();

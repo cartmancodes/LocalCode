@@ -358,6 +358,9 @@ async fn run_session(
                 }
             } => {
                 if let Some((_, edit)) = editing.take() {
+                    // The editor may have changed the terminal behind
+                    // crossterm's record of it; clear the record first.
+                    let _ = disable_raw_mode();
                     guard.resume()?;
                     terminal.resize(terminal.size()?.into())?;
                     input = Some(InputReader::new());
@@ -459,13 +462,27 @@ async fn run_session(
                 }
                 dirty = true;
             }
-            _ = quit_signal() => return Ok(Exit::Quit),
+            // While an editor waits in cooked mode, Ctrl+C is meant for it.
+            _ = quit_signal() => {
+                if editing.is_none() {
+                    return Ok(Exit::Quit);
+                }
+            }
             _ = unix_signal(&mut term) => return Ok(Exit::Quit),
             _ = unix_signal(&mut hup) => return Ok(Exit::Quit),
             _ = unix_signal(&mut suspend) => {
-                guard.suspend()?;
-                terminal.resize(terminal.size()?.into())?;
-                dirty = true;
+                if editing.is_some() {
+                    // The editor owns the terminal and restores it on fg;
+                    // Octet only stops alongside it.
+                    // SAFETY: raise only delivers SIGSTOP to this process.
+                    unsafe {
+                        libc::raise(libc::SIGSTOP);
+                    }
+                } else {
+                    guard.suspend()?;
+                    terminal.resize(terminal.size()?.into())?;
+                    dirty = true;
+                }
             }
         }
     }
@@ -656,6 +673,15 @@ fn paste(app: &mut App, value: &str) {
     {
         app.notice = "Paste exceeds the 64 KiB prompt limit; draft preserved".into();
     }
+    // The file popup follows the pasted text; path and command popups close.
+    if app
+        .completion
+        .as_ref()
+        .is_some_and(|completion| completion.kind != composer::Kind::File)
+    {
+        app.completion = None;
+    }
+    refresh_completion(app);
 }
 async fn quit_signal() {
     let _ = tokio::signal::ctrl_c().await;
@@ -749,7 +775,11 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         KeyCode::BackTab => return cycle_mode(app),
         KeyCode::Char('p') if ctrl => app.palette = true,
         KeyCode::Char('x') if ctrl => copy_reply(app),
-        KeyCode::Char('g') if ctrl => return Action::ExternalEditor,
+        KeyCode::Char('g') if ctrl => {
+            // The edited draft must not meet a popup about the old one.
+            app.completion = None;
+            return Action::ExternalEditor;
+        }
         KeyCode::Char('u') if ctrl => {
             app.editor.take();
         }
@@ -1260,6 +1290,36 @@ mod model_tests {
         assert_eq!(app.editor.text, "see @src/main.rs ");
         assert!(app.completion.is_none());
         assert!(!app.running, "Enter accepted instead of sending");
+    }
+    #[tokio::test]
+    async fn the_popup_closes_before_the_editor_and_follows_a_paste() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-at-settle").await;
+        app.files =
+            crate::files::Files::Ready(crate::files::Index::from_paths(vec!["src/main.rs".into()]));
+        for c in "a long draft @ma".chars() {
+            key_action(&mut app, &mut session, key(KeyCode::Char(c))).await;
+        }
+        assert!(app.completion.is_some());
+        assert!(matches!(
+            key_action(&mut app, &mut session, ctrl('g')).await,
+            Action::ExternalEditor
+        ));
+        assert!(
+            app.completion.is_none(),
+            "the edited draft must not meet a stale popup"
+        );
+        app.editor.set("/re".into());
+        app.completion = Some(composer::Completion {
+            kind: composer::Kind::Command,
+            items: vec!["/reconnect".into()],
+            selected: 0,
+            start: 0,
+        });
+        paste(&mut app, "port the bug");
+        assert!(app.completion.is_none(), "a paste closes a command popup");
+        key_action(&mut app, &mut session, key(KeyCode::Char('x'))).await;
+        assert_eq!(app.editor.text, "/report the bugx");
     }
     #[tokio::test]
     async fn the_first_at_asks_for_the_index_and_esc_closes_the_popup() {

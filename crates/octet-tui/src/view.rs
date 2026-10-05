@@ -135,6 +135,11 @@ impl App {
         // Rebuilt per connection, so a build abandoned with the old session
         // never leaves the index stuck at Building.
         self.files = crate::files::Files::Unbuilt;
+        self.completion = None;
+        // The old session's `!` command was dropped, and killed, with it.
+        if std::mem::take(&mut self.shell_running) {
+            self.notice("The running command stopped when the session changed");
+        }
         self.engine = config.engine;
         self.mode = config.mode;
         self.mode_pending = None;
@@ -1069,6 +1074,27 @@ mod tests {
         (0..height)
             .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
             .collect()
+    }
+    #[test]
+    fn a_new_connection_settles_the_old_sessions_command_and_popup() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.shell_running = true;
+        app.completion = Some(crate::composer::Completion {
+            kind: crate::composer::Kind::File,
+            items: Vec::new(),
+            selected: 0,
+            start: 0,
+        });
+        app.connection(&config, "journal-2".into());
+        assert!(!app.shell_running, "the old session's command is gone");
+        assert!(app.completion.is_none());
+        assert!(
+            app.entries_text()
+                .contains("The running command stopped when the session changed"),
+            "{}",
+            app.entries_text()
+        );
     }
     #[test]
     fn the_popup_lists_suggestions_above_the_prompt() {

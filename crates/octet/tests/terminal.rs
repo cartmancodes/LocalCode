@@ -924,3 +924,76 @@ fn a_missing_editor_keeps_the_draft_and_the_screen() {
     p.quit();
     p.finish();
 }
+
+#[test]
+fn bang_commands_cannot_reach_the_terminal() {
+    // Credential prompts (git, ssh, sudo) open /dev/tty; a ! command must
+    // fail at once instead of drawing over the screen and stopping.
+    let mut p = Pty::spawn();
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"!printf 'Username: ' > /dev/tty; echo status=$?\r");
+    p.wait(|p| p.screen_shows("status="));
+    assert!(!p.screen_shows("status=0"), "{}", p.screen().join("\n"));
+    // The command line itself shows the text; nothing else may.
+    assert!(p
+        .screen()
+        .iter()
+        .filter(|row| row.contains("Username: "))
+        .all(|row| row.contains("printf")));
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn an_interrupt_while_editing_does_not_quit() {
+    // `code --wait` leaves the terminal cooked, so Ctrl+C there signals the
+    // whole group; Octet must keep the session and the edit.
+    let tools = octet_testkit::TempDir::new("octet-editor-int");
+    fs::create_dir_all(tools.path()).unwrap();
+    stand_in(
+        tools.path(),
+        "fake-editor",
+        r#"trap '' INT; kill -INT 0; sleep 0.2; printf 'after interrupt' > "$1""#,
+    );
+    let editor = tools.path().join("fake-editor");
+    let mut p = Pty::spawn_with_env(&[], &[("EDITOR", editor.to_str().unwrap()), ("VISUAL", "")]);
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"\x07");
+    p.wait(|p| p.screen_shows("after interrupt"));
+    assert!(p.child.try_wait().unwrap().is_none(), "Octet quit");
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn a_suspend_while_editing_leaves_the_terminal_usable() {
+    // vim's Ctrl+Z stops the whole group; on fg the editor restores the
+    // terminal it found, and Octet must still get raw keys afterwards.
+    let tools = octet_testkit::TempDir::new("octet-editor-tstp");
+    fs::create_dir_all(tools.path()).unwrap();
+    stand_in(
+        tools.path(),
+        "fake-editor",
+        r#"trap '' TSTP; kill -TSTP 0; sleep 0.5; stty sane; printf 'after stop' > "$1""#,
+    );
+    let editor = tools.path().join("fake-editor");
+    let mut p = Pty::spawn_with_env(&[], &[("EDITOR", editor.to_str().unwrap()), ("VISUAL", "")]);
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"\x07");
+    // Play the shell's part: continue Octet whenever it stops.
+    let pid = p.child.id() as libc::pid_t;
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !p.screen_shows("after stop") {
+        assert!(Instant::now() < deadline, "the edit never came back");
+        unsafe {
+            libc::kill(pid, libc::SIGCONT);
+        }
+        p.drain();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Octet is back in raw mode: no line editing, no echo. (Typing would not
+    // show it: the terminal's own echo looks like Octet drawing the key.)
+    p.wait(|p| flags(&p.master) & (libc::ICANON | libc::ECHO) == 0);
+    p.quit();
+    p.finish();
+}

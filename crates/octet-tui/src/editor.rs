@@ -16,9 +16,12 @@ impl Editor {
         true
     }
     /// Replaces `start..cursor` with `text`; false when it would not fit the
-    /// prompt limit.
+    /// prompt limit, or `start` is not a character boundary before the cursor.
     #[must_use = "false means the text did not fit the prompt limit"]
     pub fn replace(&mut self, start: usize, text: &str) -> bool {
+        if start > self.cursor || !self.text.is_char_boundary(start) {
+            return false;
+        }
         if self.text.len() - (self.cursor - start) + text.len() > octet_core::PROMPT_LIMIT {
             return false;
         }
@@ -176,5 +179,15 @@ mod tests {
         assert_eq!(editor.text, "see @src/main.rs  now");
         assert_eq!(editor.cursor, 17);
         assert!(!editor.replace(0, &"x".repeat(octet_core::PROMPT_LIMIT + 1)));
+    }
+    #[test]
+    fn replace_refuses_a_start_past_the_cursor_or_inside_a_character() {
+        let mut editor = Editor::default();
+        assert!(editor.insert("héllo"));
+        editor.cursor = 1;
+        assert!(!editor.replace(3, "x"), "start after the cursor");
+        editor.cursor = editor.text.len();
+        assert!(!editor.replace(2, "x"), "start inside é");
+        assert_eq!(editor.text, "héllo");
     }
 }
