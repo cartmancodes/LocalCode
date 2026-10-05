@@ -323,6 +323,9 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
         _ => None,
     };
     let failed = matches!(event, octet_core::Event::Error(_));
+    if matches!(event, octet_core::Event::Approval { .. }) {
+        alert();
+    }
     app.event(event);
     if failed {
         if let Err(error) = app.goals.turn_failed().await {
@@ -351,6 +354,15 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
         }
         Err(error) => app.notice(format!("Goal persistence failed; paused: {error}")),
     }
+}
+/// A bell plus a desktop notification (OSC 9), so tmux, a terminal app or a
+/// phone app can flag an approval the user isn't watching. Write errors are
+/// ignored: the alert is a courtesy, never a reason to stop.
+const ALERT: &[u8] = b"\x07\x1b]9;Octet: approval needed\x07";
+fn alert() {
+    use std::io::Write;
+    let mut stdout = io::stdout();
+    let _ = stdout.write_all(ALERT).and_then(|()| stdout.flush());
 }
 async fn send_goal_prompt(app: &mut App, session: &Session, prompt: String) {
     let command = Command::PromptWithDisplay {

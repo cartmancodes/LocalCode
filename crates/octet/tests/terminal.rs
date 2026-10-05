@@ -669,3 +669,18 @@ fn invalid_approval_timeout_is_a_startup_error() {
         );
     }
 }
+
+#[test]
+fn a_new_approval_rings_and_notifies() {
+    let mut p = Pty::spawn();
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"/approval-demo\r");
+    p.wait(|p| {
+        p.output
+            .windows(26)
+            .any(|w| w == b"\x1b]9;Octet: approval needed")
+    });
+    p.send(b"d");
+    p.quit();
+    p.finish();
+}
