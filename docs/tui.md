@@ -109,7 +109,9 @@ Commands: `/help`, `/model`, `/mode`, `/session`, `/new`, `/reconnect`, `/export
 reached from a phone over tmux, Tailscale SSH and mosh, and prints the phone
 command. Setup steps: [Use Octet from your phone](remote-control.md).
 The preview also supports persistent multi-turn goals through `/goal`.
-Changing sessions or exporting requires an idle turn. `/approval-demo` exercises
+Changing sessions or exporting requires an idle turn. In the demo, a prompt
+sent with `!` attachments (or by a goal) gets a reply that also shows the
+full text a model would receive. `/approval-demo` exercises
 the dialog in offline demo mode. Unknown preview commands return a visible error and leave the draft in place. A
 prompt may start with a path such as `/usr/lib`; it is sent, not treated as a command.
 `/reconnect` keeps the visible conversation and prompt history; `/new` clears them.

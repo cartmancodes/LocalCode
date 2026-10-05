@@ -33,7 +33,9 @@ running across turns, and pick the session up from your phone.
 
 - Multi-turn sessions with Claude Code or Codex. Replies stream in alongside
   tool activity, usage and errors.
-- An offline `demo` engine to try the interface without any login.
+- An offline `demo` engine to try the interface without any login. When a
+  `!` attachment or a goal changes what a model would receive, the demo's
+  reply shows that text too.
 - `/new` starts fresh context; `/reconnect` and `--resume ID` reopen a vendor
   session.
 
@@ -156,7 +158,7 @@ octet --engine codex --cwd /path/to/project      # Codex (the default engine)
 | Shift+Tab | Cycle permission mode: ask → accept-edits → auto |
 | A / D | Allow once / deny a permission request |
 | PageUp / PageDown | Scroll the conversation |
-| Ctrl+P | Command palette |
+| Ctrl+P | Command palette (also offers Ctrl+G, `@` and `!`) |
 | @ | Mention a file |
 | Tab | Complete a path or command |
 | Ctrl+G | Edit the prompt in $EDITOR |

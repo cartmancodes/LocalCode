@@ -41,6 +41,18 @@ Claude Code and Codex CLIs.
 - `@` file mentions, Tab completion for paths and commands, `!`/`!!` shell
   commands with output attached to the next prompt, Ctrl+G to write the
   prompt in an external editor, and `/copy` (Ctrl+X) through OSC 52.
+- `!` commands run in their own session, so credential prompts (git, ssh,
+  sudo) fail at once instead of drawing over the screen; progress output
+  keeps its last state, tabs survive in attached output, and the status line
+  shows each command's result.
+- `/copy` takes the whole reply as sent, tabs included, and keeps the reply
+  on screen copyable while a new turn starts.
+- The command palette also offers Ctrl+G, `@` and `!`; Tab fills a common
+  prefix and lists the matches, without blocking on slow folders.
+- The offline demo shows the full text a model would receive when `!`
+  attachments or a goal change it.
+- Stopping Octet (SIGTERM, SIGHUP) while an external editor is open asks the
+  editor to quit instead of leaving it on the terminal.
 - Dual licensing under MIT or Apache-2.0.
 
 [0.1.0]: https://github.com/cartmancodes/octet/commits/master
