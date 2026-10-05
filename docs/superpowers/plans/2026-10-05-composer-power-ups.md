@@ -925,6 +925,7 @@ In `lib.rs` `mod model_tests`, add:
     }
 ```
 
+```rust
     #[tokio::test]
     async fn goal_prompts_never_carry_attachments() {
         let mut app = app();
