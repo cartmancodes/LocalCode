@@ -86,30 +86,62 @@ async fn run_with(
         cmd.spawn().map_err(fail)?
     };
     let group = child.id();
-    let output = tokio::task::spawn_blocking(move || read_tail(reader, OUTPUT_LIMIT));
-    let status = tokio::select! {
-        status = child.wait() => match status.map_err(fail)?.code() {
-            Some(code) => Status::Exited(code),
-            None => Status::Signalled,
-        },
-        _ = tokio::time::sleep(limit) => Status::TimedOut,
-        _ = &mut cancel => Status::Cancelled,
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(Tail::default()));
+    let reader_tail = std::sync::Arc::clone(&tail);
+    // A plain thread, not spawn_blocking: a reader stuck on a pipe held by a
+    // process that left the group must not hold up the runtime's shutdown.
+    let (done, read) = oneshot::channel();
+    std::thread::spawn(move || {
+        read_tail(reader, OUTPUT_LIMIT, &reader_tail);
+        let _ = done.send(());
+    });
+    // Wait for the shell to exit without reaping it, so its pid, which is
+    // also the group id, stays reserved until the group is killed.
+    let exited = tokio::task::spawn_blocking(move || wait_exit(group));
+    let mut status = tokio::select! {
+        _ = exited => None,
+        _ = tokio::time::sleep(limit) => Some(Status::TimedOut),
+        _ = &mut cancel => Some(Status::Cancelled),
     };
     // Children left in the group would hold the pipe open.
     kill_group(group);
-    let _ = child.wait().await;
-    let (bytes, cut) = output.await.map_err(|e| e.to_string())?;
-    let text = String::from_utf8_lossy(&bytes);
-    let output = if cut {
-        format!("{CUT}{text}")
-    } else {
-        text.into_owned()
+    let code = child.wait().await.map_err(fail)?.code();
+    if status.is_none() {
+        status = Some(code.map_or(Status::Signalled, Status::Exited));
+    }
+    // A process that left the group may keep the pipe open; don't wait on it.
+    let _ = tokio::time::timeout(Duration::from_secs(1), read).await;
+    let (bytes, cut) = {
+        let tail = tail
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (tail.kept.clone(), tail.cut)
     };
+    let text = overstrike(&String::from_utf8_lossy(at_line(&bytes, cut)));
+    let output = if cut { format!("{CUT}{text}") } else { text };
     Ok(Ran {
         command: command.to_owned(),
-        status,
+        status: status.unwrap_or(Status::Signalled),
         output,
     })
+}
+
+/// Blocks until `pid` exits, leaving it unreaped.
+fn wait_exit(pid: Option<u32>) {
+    let Some(pid) = pid.and_then(|pid| libc::id_t::try_from(pid).ok()) else {
+        return;
+    };
+    loop {
+        // SAFETY: waitid writes only into `info`; WNOWAIT leaves the child
+        // for tokio to reap.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let result =
+            unsafe { libc::waitid(libc::P_PID, pid, &mut info, libc::WEXITED | libc::WNOWAIT) };
+        if result == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+        {
+            return;
+        }
+    }
 }
 
 fn kill_group(group: Option<u32>) {
@@ -121,30 +153,54 @@ fn kill_group(group: Option<u32>) {
     }
 }
 
-/// Reads to the end, keeping the last `limit` bytes; true when some were cut.
-fn read_tail(mut reader: impl Read, limit: usize) -> (Vec<u8>, bool) {
-    let mut kept = Vec::new();
-    let mut cut = false;
+/// The end of the output read so far.
+#[derive(Default)]
+struct Tail {
+    kept: Vec<u8>,
+    cut: bool,
+}
+
+/// Reads to the end into `tail`, keeping the last `limit` bytes.
+fn read_tail(mut reader: impl Read, limit: usize, tail: &std::sync::Mutex<Tail>) {
     let mut chunk = [0; 8192];
     loop {
-        match reader.read(&mut chunk) {
+        let n = match reader.read(&mut chunk) {
             Ok(0) => break,
-            Ok(n) => {
-                kept.extend_from_slice(&chunk[..n]);
-                if kept.len() > limit * 2 {
-                    kept.drain(..kept.len() - limit);
-                    cut = true;
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
+        };
+        let mut tail = tail
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        tail.kept.extend_from_slice(&chunk[..n]);
+        if tail.kept.len() > limit {
+            let excess = tail.kept.len() - limit;
+            tail.kept.drain(..excess);
+            tail.cut = true;
         }
     }
-    if kept.len() > limit {
-        kept.drain(..kept.len() - limit);
-        cut = true;
+}
+
+/// A cut tail starts after its first newline, so it never begins inside a
+/// line, an escape sequence or a character.
+fn at_line(bytes: &[u8], cut: bool) -> &[u8] {
+    match bytes.iter().position(|byte| *byte == b'\n') {
+        Some(newline) if cut => &bytes[newline + 1..],
+        _ => bytes,
     }
-    (kept, cut)
+}
+
+/// Each line as a terminal leaves it: a carriage return starts the line
+/// over, so progress counters keep only their last state.
+fn overstrike(text: &str) -> String {
+    text.split('\n')
+        .map(|line| {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            line.rsplit('\r').next().unwrap_or(line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -174,6 +230,31 @@ mod tests {
         assert!(ran.output.starts_with(CUT), "{}", &ran.output[..40]);
         assert!(ran.output.len() <= OUTPUT_LIMIT + CUT.len());
         assert!(ran.output.ends_with("line5999\n"));
+    }
+    #[tokio::test]
+    async fn carriage_returns_keep_what_a_terminal_would_show() {
+        let ran = sh("printf '10%%\\r20%%\\r30%%\\nok\\r\\n'").await;
+        assert_eq!(ran.output, "30%\nok\n");
+    }
+    #[tokio::test]
+    async fn a_cut_tail_starts_at_a_line() {
+        // 6,000 nine-byte lines: the last 32 KiB would start one byte into a
+        // line, which could also be inside an escape sequence.
+        let ran = sh("i=1000; while [ $i -lt 7000 ]; do echo line$i; i=$((i+1)); done").await;
+        let body = ran.output.strip_prefix(CUT).expect("cut");
+        assert!(body.starts_with("line"), "{}", &body[..20]);
+        assert!(body.ends_with("line6999\n"));
+    }
+    #[tokio::test]
+    async fn a_process_that_left_the_group_cannot_hold_the_result() {
+        let started = std::time::Instant::now();
+        let ran = sh("perl -MPOSIX -e 'setsid(); sleep 20' & sleep 0.5; echo started").await;
+        assert!(ran.output.contains("started"), "{}", ran.output);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
     }
     #[tokio::test]
     async fn commands_reading_stdin_finish_at_once() {
