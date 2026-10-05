@@ -30,6 +30,8 @@ pub enum Role {
     Tool,
     Notice,
     Error,
+    Shell,
+    ShellFailed,
 }
 struct Entry {
     role: Role,
@@ -74,6 +76,12 @@ pub struct App {
     /// empty prompt.
     pub quit_armed: Option<tokio::time::Instant>,
     pub goals: octet_core::goal::GoalRunner,
+    /// The workspace, where `!` commands run and `@` looks for files.
+    pub root: PathBuf,
+    /// `!` outputs waiting to go with the next prompt.
+    pub attachments: Vec<crate::shell::Ran>,
+    /// A `!` command is running.
+    pub shell_running: bool,
 }
 impl App {
     pub fn new(config: &octet_core::Config, journal: PathBuf) -> Self {
@@ -112,6 +120,9 @@ impl App {
             notice: String::new(),
             quit_armed: None,
             goals: octet_core::goal::GoalRunner::default(),
+            root: config.cwd.clone(),
+            attachments: Vec::new(),
+            shell_running: false,
         }
     }
     pub fn connection(&mut self, config: &octet_core::Config, journal: PathBuf) {
@@ -387,6 +398,39 @@ impl App {
             State::Approval
         }
     }
+    /// A finished `!` command in the transcript.
+    pub fn shell_output(&mut self, ran: &crate::shell::Ran) {
+        let output = clean(&ran.output);
+        let newline = if output.is_empty() || output.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        let role = if ran.ok() {
+            Role::Shell
+        } else {
+            Role::ShellFailed
+        };
+        self.add(
+            role,
+            format!("$ {}\n{output}{newline}{}", ran.command, ran.summary()),
+        );
+    }
+    /// Keeps `ran` for the next prompt, dropping the oldest attachments
+    /// beyond 32 KiB of output.
+    pub fn attach(&mut self, mut ran: crate::shell::Ran) {
+        ran.output = clean(&ran.output);
+        self.attachments.push(ran);
+        let total = |all: &[crate::shell::Ran]| all.iter().map(|a| a.output.len()).sum::<usize>();
+        let mut dropped = false;
+        while self.attachments.len() > 1 && total(&self.attachments) > crate::shell::OUTPUT_LIMIT {
+            self.attachments.remove(0);
+            dropped = true;
+        }
+        if dropped {
+            self.notice = "Dropped the oldest attachment to stay within 32 KiB".into();
+        }
+    }
     /// The most recent reply, as shown, for `/copy`.
     pub fn last_reply(&self) -> Option<&str> {
         self.entries
@@ -477,6 +521,8 @@ fn entry_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
         Role::Tool => ("TOOL", MUTED),
         Role::Notice => ("NOTE", MUTED),
         Role::Error => ("ERROR", AMBER),
+        Role::Shell => ("SHELL", MUTED),
+        Role::ShellFailed => ("SHELL", AMBER),
     };
     let mut result = vec![
         Line::default(),
@@ -639,12 +685,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if columns.len() > 1 {
         sidebar(frame, columns[1], app);
     }
-    let composer = card(if app.running {
+    let base = if app.running {
         " Compose next prompt · wait or Esc to cancel "
     } else {
         " Prompt "
-    })
-    .border_style(Style::default().fg(if app.running { EDGE } else { ACCENT }));
+    };
+    let title = match crate::composer::chip(&app.attachments) {
+        Some(chip) => format!("{} · {chip} ", base.trim_end()),
+        None => base.to_owned(),
+    };
+    let composer =
+        card(&title).border_style(Style::default().fg(if app.running { EDGE } else { ACCENT }));
     let inner = composer.inner(regions[2]);
     frame.render_widget(composer, regions[2]);
     let input = Rect {
@@ -845,7 +896,7 @@ fn modal(area: Rect, width: u16, height: u16) -> Rect {
 fn help(frame: &mut Frame, area: Rect) {
     let area = modal(area, 76, 28);
     frame.render_widget(Clear, area);
-    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/copy or Ctrl+X: copy the last reply to the clipboard\n/remote-control: check phone access setup\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
+    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/copy or Ctrl+X: copy the last reply to the clipboard\n!cmd run and attach output · !!cmd run only · Esc stops\n/remote-control: check phone access setup\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
     frame.render_widget(
         Paragraph::new(text)
             .block(card(" Help "))
@@ -950,6 +1001,34 @@ mod tests {
         (0..height)
             .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
             .collect()
+    }
+    #[test]
+    fn shell_output_is_cleaned_and_attachments_stay_bounded() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        let ran = crate::shell::Ran {
+            command: "ls -G".into(),
+            status: crate::shell::Status::Exited(1),
+            output: "\x1b[31mred\x1b[0m\r\nplain\n".into(),
+        };
+        app.shell_output(&ran);
+        let text = app.entries_text();
+        assert!(text.contains("$ ls -G\nred\nplain\nexit 1"), "{text:?}");
+        assert!(!text.contains('\x1b'));
+        app.attach(ran);
+        assert!(!app.attachments[0].output.contains('\x1b'));
+        let big = crate::shell::Ran {
+            command: "big".into(),
+            status: crate::shell::Status::Exited(0),
+            output: "x".repeat(crate::shell::OUTPUT_LIMIT),
+        };
+        app.attach(big);
+        assert_eq!(app.attachments.len(), 1, "the oldest attachment is dropped");
+        assert_eq!(app.attachments[0].command, "big");
+        assert_eq!(
+            app.notice,
+            "Dropped the oldest attachment to stay within 32 KiB"
+        );
     }
     #[test]
     fn sidebar_lines_fit_the_panel_without_wrapping() {

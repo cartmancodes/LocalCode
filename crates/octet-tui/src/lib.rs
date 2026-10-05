@@ -1,4 +1,5 @@
 mod clipboard;
+mod composer;
 mod editor;
 mod mascot;
 mod remote;
@@ -120,6 +121,13 @@ enum Action {
     Suspend,
     SetMode(octet_core::Mode),
     GoalPrompt(String),
+    /// Run a `!` line; `attach` keeps its output for the next prompt.
+    RunShell {
+        command: String,
+        attach: bool,
+    },
+    /// Stop the running `!` command.
+    CancelShell,
     /// Run the `/remote-control` checks off the event loop.
     RemoteControl,
     Exit(Exit),
@@ -227,6 +235,12 @@ async fn attach_goal_store(app: &mut App, store: octet_core::goal::GoalStore) {
         Ok(()) => {}
     }
 }
+/// A `!` command running in the background.
+struct ShellTask {
+    task: tokio::task::JoinHandle<Result<shell::Ran, String>>,
+    cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    attach: bool,
+}
 async fn run_session(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     guard: &TerminalGuard,
@@ -244,6 +258,8 @@ async fn run_session(
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(libc::SIGTSTP))?;
     // The `/remote-control` checks, running while the screen stays live.
     let mut remote_check: Option<tokio::task::JoinHandle<remote::Checks>> = None;
+    // The running `!` command, if any.
+    let mut shell_task: Option<ShellTask> = None;
     loop {
         if dirty && last_paint.elapsed() >= frame_time {
             terminal.draw(|f| view::draw(f, app))?;
@@ -290,6 +306,26 @@ async fn run_session(
                 }
                 dirty = true;
             }
+            result = async {
+                match shell_task.as_mut() {
+                    Some(running) => (&mut running.task).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let attach = shell_task.take().is_some_and(|running| running.attach);
+                app.shell_running = false;
+                match result {
+                    Ok(Ok(ran)) => {
+                        app.shell_output(&ran);
+                        if attach {
+                            app.attach(ran);
+                        }
+                    }
+                    Ok(Err(error)) => app.notice(error),
+                    Err(error) => app.notice(format!("The command failed: {error}")),
+                }
+                dirty = true;
+            }
             event = input.events.recv() => {
                 let action = match event {
                     Some(Ok(Input::Key(key))) if key.kind != KeyEventKind::Release => {
@@ -311,6 +347,26 @@ async fn run_session(
                     Action::Continue => {}
                     Action::GoalPrompt(prompt) => send_goal_prompt(app, session, prompt).await,
                     Action::RemoteControl => start_remote_check(app, &mut remote_check),
+                    Action::RunShell { command, attach } => {
+                        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+                        let root = app.root.clone();
+                        app.shell_running = true;
+                        app.notice = format!("Running {command} · Esc to stop");
+                        shell_task = Some(ShellTask {
+                            task: tokio::spawn(async move {
+                                shell::run(&command, &root, cancelled).await
+                            }),
+                            cancel: Some(cancel),
+                            attach,
+                        });
+                    }
+                    Action::CancelShell => {
+                        if let Some(cancel) =
+                            shell_task.as_mut().and_then(|running| running.cancel.take())
+                        {
+                            let _ = cancel.send(());
+                        }
+                    }
                     Action::Suspend => {
                         guard.suspend()?;
                         terminal.resize(terminal.size()?.into())?;
@@ -539,7 +595,9 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         // Like Claude Code: stop what runs, else clear the draft, else ask
         // for a second press within the window to quit.
         KeyCode::Char('c') if ctrl => {
-            if app.is_busy() {
+            if app.shell_running {
+                return Action::CancelShell;
+            } else if app.is_busy() {
                 cancel_turn(app, session).await;
                 app.notice = "Cancelling…".into();
             } else if !app.editor.text.is_empty() {
@@ -552,9 +610,14 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
             }
         }
         KeyCode::Esc => {
-            if app.is_busy() {
+            if app.shell_running {
+                return Action::CancelShell;
+            } else if app.is_busy() {
                 cancel_turn(app, session).await;
                 app.notice = "Cancelling…".into();
+            } else if app.editor.text.is_empty() && !app.attachments.is_empty() {
+                app.attachments.clear();
+                app.notice = "Attachments removed".into();
             } else {
                 app.scroll = 0;
             }
@@ -577,6 +640,30 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
             if draft.is_empty() {
                 return Action::Continue;
             }
+            if let Some(rest) = draft.strip_prefix('!') {
+                let (attach, command) = match rest.strip_prefix('!') {
+                    Some(command) => (false, command.trim()),
+                    None => (true, rest.trim()),
+                };
+                if command.is_empty() {
+                    app.notice = "Type a command after !".into();
+                    return Action::Continue;
+                }
+                if app.shell_running {
+                    app.notice = "A command is already running".into();
+                    return Action::Continue;
+                }
+                let command = command.to_owned();
+                app.editor.take();
+                app.history_index = None;
+                if app.history.back() != Some(&draft) {
+                    app.history.push_back(draft);
+                    if app.history.len() > 50 {
+                        app.history.pop_front();
+                    }
+                }
+                return Action::RunShell { command, attach };
+            }
             // "/usr/lib is broken" is a prompt: no command name contains a slash.
             let path_like = draft
                 .split_whitespace()
@@ -596,8 +683,16 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
                 app.notice = "Wait for the current turn, press Esc to cancel, or /reconnect".into();
                 return Action::Continue;
             }
-            match session.handle.send(Command::Prompt(draft.clone())) {
+            let command = if app.attachments.is_empty() {
+                Command::Prompt(draft.clone())
+            } else {
+                let (wire, display) =
+                    composer::with_attachments(&draft, &app.attachments, octet_core::PROMPT_LIMIT);
+                Command::PromptWithDisplay { wire, display }
+            };
+            match session.handle.send(command) {
                 Ok(()) => {
+                    app.attachments.clear();
                     app.goals.user_prompt_sent();
                     app.editor.take();
                     app.running = true;
@@ -945,6 +1040,86 @@ mod model_tests {
         assert_eq!(size_label(5), "5 B");
         assert_eq!(size_label(1229), "1.2 KB");
         assert_eq!(size_label(100 * 1024), "100.0 KB");
+    }
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+    fn ran(command: &str, output: &str) -> crate::shell::Ran {
+        crate::shell::Ran {
+            command: command.into(),
+            status: crate::shell::Status::Exited(0),
+            output: output.into(),
+        }
+    }
+    async fn next_user_text(session: &mut Session) -> String {
+        loop {
+            if let octet_core::Event::User(text) = session.events.recv().await.unwrap() {
+                return text;
+            }
+        }
+    }
+    #[tokio::test]
+    async fn bang_lines_run_locally_and_double_bang_does_not_attach() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-bang").await;
+        app.editor.set("!echo hi".into());
+        assert!(matches!(
+            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            Action::RunShell { ref command, attach: true } if command == "echo hi"
+        ));
+        assert!(app.editor.text.is_empty());
+        assert_eq!(app.history.back().map(String::as_str), Some("!echo hi"));
+        app.editor.set("!!  pwd ".into());
+        assert!(matches!(
+            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            Action::RunShell { ref command, attach: false } if command == "pwd"
+        ));
+        app.editor.set("!".into());
+        assert!(matches!(
+            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            Action::Continue
+        ));
+        assert_eq!(app.notice, "Type a command after !");
+        app.shell_running = true;
+        app.editor.set("!ls".into());
+        assert!(matches!(
+            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            Action::Continue
+        ));
+        assert_eq!(app.notice, "A command is already running");
+        assert!(matches!(
+            key_action(&mut app, &mut session, key(KeyCode::Esc)).await,
+            Action::CancelShell
+        ));
+    }
+    #[tokio::test]
+    async fn attachments_go_with_the_next_prompt_then_clear() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-attach").await;
+        app.attach(ran("echo hi", "hi\n"));
+        app.editor.set("explain".into());
+        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        assert!(app.attachments.is_empty());
+        assert_eq!(next_user_text(&mut session).await, "explain\n\n[+ echo hi]");
+    }
+    #[tokio::test]
+    async fn esc_on_an_empty_idle_draft_removes_attachments() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-detach").await;
+        app.attach(ran("ls", ""));
+        key_action(&mut app, &mut session, key(KeyCode::Esc)).await;
+        assert!(app.attachments.is_empty());
+        assert_eq!(app.notice, "Attachments removed");
+    }
+    #[tokio::test]
+    async fn goal_prompts_never_carry_attachments() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-goal-attach").await;
+        app.attach(ran("ls", "a\n"));
+        send_goal_prompt(&mut app, &session, "continue the goal".into()).await;
+        assert_eq!(app.attachments.len(), 1, "kept for the user's next prompt");
+        let shown = next_user_text(&mut session).await;
+        assert!(!shown.contains("[+ ls]"), "{shown}");
     }
     async fn demo_session(name: &str) -> (octet_testkit::TempDir, Session) {
         let temp = octet_testkit::TempDir::new(name);

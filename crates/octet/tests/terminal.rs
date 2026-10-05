@@ -850,3 +850,21 @@ fn copy_sends_the_last_reply_to_the_clipboard() {
     p.quit();
     p.finish();
 }
+
+#[test]
+fn bang_runs_a_command_and_attaches_it_to_the_next_prompt() {
+    let mut p = Pty::spawn();
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"!echo hi-from-shell\r");
+    p.wait(|p| p.screen_shows("$ echo hi-from-shell"));
+    p.wait(|p| p.screen_shows("+ echo hi-from-shell (exit 0)"));
+    p.send(b"what does it say\r");
+    p.wait(|p| p.screen_shows("[+ echo hi-from-shell]"));
+    p.wait(|p| p.shows("● completed"));
+    p.wait(|p| !p.screen_shows("(exit 0) "));
+    p.send(b"!!echo local-only\r");
+    p.wait(|p| p.screen_shows("$ echo local-only"));
+    assert!(!p.screen_shows("+ echo local-only"));
+    p.quit();
+    p.finish();
+}
