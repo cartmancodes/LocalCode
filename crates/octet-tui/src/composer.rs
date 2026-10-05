@@ -22,9 +22,11 @@ pub struct Completion {
 /// What Tab does to the draft.
 #[derive(Debug)]
 pub enum Tab {
+    /// Replace the word; with several matches, also open the popup.
     Replace {
         start: usize,
         text: String,
+        popup: Option<Completion>,
     },
     Popup(Completion),
     /// Open the `@` popup for the mention starting here.
@@ -94,13 +96,14 @@ pub fn tab(text: &str, cursor: usize, root: &Path, home: Option<&Path>) -> Tab {
     Tab::Nothing
 }
 
-/// One candidate fills in; several fill their common prefix, or open the
-/// popup when that adds nothing.
+/// One candidate fills in; several fill their common prefix and open the
+/// popup.
 fn choose(start: usize, word: &str, items: Vec<String>, kind: Kind, suffix: &str) -> Tab {
     match items.len() {
         0 => Tab::Nothing,
         1 => Tab::Replace {
             start,
+            popup: None,
             text: format!(
                 "{}{}",
                 items[0],
@@ -109,18 +112,20 @@ fn choose(start: usize, word: &str, items: Vec<String>, kind: Kind, suffix: &str
         },
         _ => {
             let prefix = common_prefix(&items);
+            let popup = Completion {
+                kind,
+                items: items.into_iter().take(crate::files::SHOWN).collect(),
+                selected: 0,
+                start,
+            };
             if prefix.len() > word.len() {
                 Tab::Replace {
                     start,
                     text: prefix,
+                    popup: Some(popup),
                 }
             } else {
-                Tab::Popup(Completion {
-                    kind,
-                    items: items.into_iter().take(crate::files::SHOWN).collect(),
-                    selected: 0,
-                    start,
-                })
+                Tab::Popup(popup)
             }
         }
     }
@@ -169,7 +174,9 @@ fn path_candidates(root: &Path, home: Option<&Path>, word: &str) -> Vec<String> 
                 format!("{folder}{name}{folder_mark}")
             })
         })
-        .take(200)
+        // Gathered in full, then sorted, so the common prefix is right; the
+        // bound only stops a pathological folder.
+        .take(10_000)
         .collect();
     found.sort();
     found
@@ -293,7 +300,7 @@ mod tests {
         let root = dir.path();
         let tab = |text: &str| super::tab(text, text.len(), root, None);
         assert!(
-            matches!(tab("/rem"), Tab::Replace { start: 0, ref text } if text == "/remote-control ")
+            matches!(tab("/rem"), Tab::Replace { start: 0, ref text, .. } if text == "/remote-control ")
         );
         assert!(matches!(
             tab("/re"),
@@ -303,9 +310,11 @@ mod tests {
             })
         ));
         assert!(
-            matches!(tab("look at src/ma"), Tab::Replace { start: 8, ref text } if text == "src/main.rs")
+            matches!(tab("look at src/ma"), Tab::Replace { start: 8, ref text, .. } if text == "src/main.rs")
         );
-        assert!(matches!(tab("src/b"), Tab::Replace { start: 0, ref text } if text == "src/bin/"));
+        assert!(
+            matches!(tab("src/b"), Tab::Replace { start: 0, ref text, .. } if text == "src/bin/")
+        );
         assert!(
             matches!(tab("src/m"), Tab::Popup(Completion { kind: Kind::Path, ref items, .. }) if items.len() == 2)
         );
@@ -319,6 +328,34 @@ mod tests {
             matches!(tab("/usr/li"), Tab::Replace { ref text, .. } if text.starts_with("/usr/lib")),
             "a second / makes it a path, not a command"
         );
+    }
+    #[test]
+    fn several_matches_fill_their_prefix_and_open_the_popup() {
+        let dir = octet_testkit::TempDir::new("octet-tab-prefix");
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/model.rs"), "").unwrap();
+        std::fs::write(dir.path().join("src/modem.rs"), "").unwrap();
+        let tab = |text: &str| super::tab(text, text.len(), dir.path(), None);
+        assert!(matches!(
+            tab("src/m"),
+            Tab::Replace { ref text, popup: Some(Completion { kind: Kind::Path, ref items, .. }), .. }
+                if text == "src/mode" && items.len() == 2
+        ));
+        assert!(matches!(
+            tab("/r"),
+            Tab::Replace { ref text, popup: Some(Completion { kind: Kind::Command, .. }), .. }
+                if text == "/re"
+        ));
+    }
+    #[test]
+    fn every_match_counts_before_sorting() {
+        let dir = octet_testkit::TempDir::new("octet-tab-many");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        for i in 0..250 {
+            std::fs::write(dir.path().join(format!("aa{i:03}")), "").unwrap();
+        }
+        std::fs::write(dir.path().join("ab"), "").unwrap();
+        assert_eq!(path_candidates(dir.path(), None, "a").len(), 251);
     }
     #[test]
     fn outputs_are_cut_from_the_start_to_fit_the_limit() {

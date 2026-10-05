@@ -529,6 +529,21 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
         Err(error) => app.notice(format!("Goal persistence failed; paused: {error}")),
     }
 }
+/// How long Tab waits for a folder listing.
+const TAB_WAIT: Duration = Duration::from_millis(500);
+/// Runs blocking `work` on its own thread, waiting at most `limit`. A plain
+/// thread, not spawn_blocking, so work stuck on a dead mount cannot hold up
+/// the runtime's shutdown.
+async fn off_loop<T: Send + 'static>(
+    limit: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (done, result) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(work());
+    });
+    tokio::time::timeout(limit, result).await.ok()?.ok()
+}
 /// Opens the `@` popup for the mention starting at `start`, asking for the
 /// index on first use.
 fn open_mentions(app: &mut App, start: usize) {
@@ -911,14 +926,20 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         KeyCode::Delete => app.editor.delete(),
         KeyCode::Tab => {
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            match composer::tab(
-                &app.editor.text,
-                app.editor.cursor,
-                &app.root,
-                home.as_deref(),
-            ) {
-                composer::Tab::Replace { start, text } => {
-                    if !app.editor.replace(start, &text) {
+            let (text, cursor, root) =
+                (app.editor.text.clone(), app.editor.cursor, app.root.clone());
+            let tab = off_loop(TAB_WAIT, move || {
+                composer::tab(&text, cursor, &root, home.as_deref())
+            })
+            .await;
+            match tab.unwrap_or_else(|| {
+                app.notice = "That folder is slow to read; Tab gave up".into();
+                composer::Tab::Nothing
+            }) {
+                composer::Tab::Replace { start, text, popup } => {
+                    if app.editor.replace(start, &text) {
+                        app.completion = popup;
+                    } else {
                         app.notice = "Prompt limit reached".into();
                     }
                 }
@@ -1290,6 +1311,18 @@ mod model_tests {
         assert_eq!(app.editor.text, "see @src/main.rs ");
         assert!(app.completion.is_none());
         assert!(!app.running, "Enter accepted instead of sending");
+    }
+    #[tokio::test]
+    async fn slow_work_off_the_loop_gives_up_at_its_limit() {
+        let started = std::time::Instant::now();
+        let slow = off_loop(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(2));
+            1
+        })
+        .await;
+        assert_eq!(slow, None);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(off_loop(Duration::from_secs(1), || 5).await, Some(5));
     }
     #[tokio::test]
     async fn the_popup_closes_before_the_editor_and_follows_a_paste() {
