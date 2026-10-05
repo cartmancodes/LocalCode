@@ -2,6 +2,7 @@ mod clipboard;
 mod editor;
 mod mascot;
 mod remote;
+mod shell;
 mod text;
 mod view;
 use crossterm::{
