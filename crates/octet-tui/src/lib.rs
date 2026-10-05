@@ -106,6 +106,11 @@ impl Drop for TerminalGuard {
         Self::restore();
     }
 }
+/// Shown after the first Ctrl+C on an idle, empty prompt, as in Claude Code.
+const QUIT_HINT: &str = "Press Ctrl+C again to quit";
+/// How long that first press stays armed.
+const QUIT_WINDOW: Duration = Duration::from_millis(1500);
+
 /// What a key or command asks the session loop to do.
 enum Action {
     Continue,
@@ -238,8 +243,17 @@ async fn run_session(
             last_paint = Instant::now();
             dirty = false;
         }
+        let quit_deadline = app.quit_armed;
         tokio::select! {
             _ = tokio::time::sleep_until(last_paint + frame_time), if dirty => {}
+            // The only timer outside painting: the quit hint expires.
+            _ = tokio::time::sleep_until(quit_deadline.unwrap_or(last_paint)), if quit_deadline.is_some() => {
+                app.quit_armed = None;
+                if app.notice == QUIT_HINT {
+                    app.notice.clear();
+                }
+                dirty = true;
+            }
             event = session.events.recv(), if events_open => {
                 match event {
                     Some(event) => {
@@ -378,14 +392,17 @@ async fn unix_signal(signal: &mut tokio::signal::unix::Signal) {
 async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
-    if ctrl && key.code == KeyCode::Char('q') {
-        return Action::Exit(Exit::Quit);
+    let ctrl_c = ctrl && key.code == KeyCode::Char('c');
+    // Any key ends a pending quit; only a second Ctrl+C in time completes it.
+    let quit_armed = app.quit_armed.take();
+    if quit_armed.is_some() && app.notice == QUIT_HINT {
+        app.notice.clear();
     }
     if ctrl && key.code == KeyCode::Char('z') {
         return Action::Suspend;
     }
     if app.help {
-        if matches!(key.code, KeyCode::Esc | KeyCode::F(1)) {
+        if matches!(key.code, KeyCode::Esc | KeyCode::F(1)) || ctrl_c {
             app.help = false;
         }
         return Action::Continue;
@@ -409,13 +426,14 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
             app.approval_scroll = app.approval_scroll.saturating_add(8);
         } else if key.code == KeyCode::PageUp {
             app.approval_scroll = app.approval_scroll.saturating_sub(8);
-        } else if ctrl && key.code == KeyCode::Char('c') {
+        } else if ctrl_c {
             cancel_turn(app, session).await;
         }
         return Action::Continue;
     }
     if app.palette {
         match key.code {
+            _ if ctrl_c => app.palette = false,
             KeyCode::Esc => app.palette = false,
             KeyCode::Up => app.selection = app.selection.saturating_sub(1),
             KeyCode::Down => app.selection = (app.selection + 1).min(COMMANDS.len() - 1),
@@ -434,12 +452,19 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         KeyCode::Char('u') if ctrl => {
             app.editor.take();
         }
+        // Like Claude Code: stop what runs, else clear the draft, else ask
+        // for a second press within the window to quit.
         KeyCode::Char('c') if ctrl => {
             if app.is_busy() {
                 cancel_turn(app, session).await;
                 app.notice = "Cancelling…".into();
-            } else {
+            } else if !app.editor.text.is_empty() {
                 app.editor.take();
+            } else if quit_armed.is_some_and(|deadline| Instant::now() < deadline) {
+                return Action::Exit(Exit::Quit);
+            } else {
+                app.quit_armed = Some(Instant::now() + QUIT_WINDOW);
+                app.notice = QUIT_HINT.into();
             }
         }
         KeyCode::Esc => {
@@ -808,6 +833,116 @@ mod model_tests {
             command(&mut app, "/goal resume").await,
             Action::Continue
         ));
+    }
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+    async fn demo_session(name: &str) -> (octet_testkit::TempDir, Session) {
+        let temp = octet_testkit::TempDir::new(name);
+        let directory = temp.path().to_path_buf();
+        let config = Config::new(Engine::Demo, "demo", directory.clone());
+        let session = Session::open(config, directory).await.unwrap();
+        (temp, session)
+    }
+    #[tokio::test]
+    async fn ctrl_c_twice_on_an_idle_empty_prompt_quits() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-quit-twice").await;
+        assert!(matches!(
+            key_action(&mut app, &mut session, ctrl('c')).await,
+            Action::Continue
+        ));
+        assert_eq!(app.notice, QUIT_HINT);
+        assert!(matches!(
+            key_action(&mut app, &mut session, ctrl('c')).await,
+            Action::Exit(Exit::Quit)
+        ));
+        session.shutdown().await;
+    }
+    #[tokio::test]
+    async fn ctrl_c_clears_a_draft_before_it_can_quit() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-quit-draft").await;
+        assert!(app.editor.insert("half-written prompt"));
+        assert!(matches!(
+            key_action(&mut app, &mut session, ctrl('c')).await,
+            Action::Continue
+        ));
+        assert!(app.editor.text.is_empty());
+        assert_ne!(app.notice, QUIT_HINT);
+        assert!(matches!(
+            key_action(&mut app, &mut session, ctrl('c')).await,
+            Action::Continue
+        ));
+        assert!(matches!(
+            key_action(&mut app, &mut session, ctrl('c')).await,
+            Action::Exit(Exit::Quit)
+        ));
+        session.shutdown().await;
+    }
+    #[tokio::test]
+    async fn another_key_or_an_expired_window_disarms_quit() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-quit-disarm").await;
+        key_action(&mut app, &mut session, ctrl('c')).await;
+        let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+        key_action(&mut app, &mut session, left).await;
+        assert_ne!(app.notice, QUIT_HINT, "another key clears the hint");
+        assert!(matches!(
+            key_action(&mut app, &mut session, ctrl('c')).await,
+            Action::Continue
+        ));
+        // The window has passed: the press arms again instead of quitting.
+        app.quit_armed = Some(Instant::now() - Duration::from_millis(1));
+        assert!(matches!(
+            key_action(&mut app, &mut session, ctrl('c')).await,
+            Action::Continue
+        ));
+        assert_eq!(app.notice, QUIT_HINT);
+        session.shutdown().await;
+    }
+    #[tokio::test]
+    async fn ctrl_c_closes_help_and_the_palette_without_quitting() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-quit-overlay").await;
+        app.help = true;
+        assert!(matches!(
+            key_action(&mut app, &mut session, ctrl('c')).await,
+            Action::Continue
+        ));
+        assert!(!app.help);
+        app.palette = true;
+        assert!(matches!(
+            key_action(&mut app, &mut session, ctrl('c')).await,
+            Action::Continue
+        ));
+        assert!(!app.palette);
+        assert_ne!(app.notice, QUIT_HINT);
+        session.shutdown().await;
+    }
+    #[tokio::test]
+    async fn ctrl_c_interrupts_a_running_turn_instead_of_quitting() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-quit-busy").await;
+        app.running = true;
+        for _ in 0..2 {
+            assert!(matches!(
+                key_action(&mut app, &mut session, ctrl('c')).await,
+                Action::Continue
+            ));
+            assert_eq!(app.notice, "Cancelling…");
+        }
+        session.shutdown().await;
+    }
+    #[tokio::test]
+    async fn ctrl_q_no_longer_quits() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-quit-q").await;
+        assert!(matches!(
+            key_action(&mut app, &mut session, ctrl('q')).await,
+            Action::Continue
+        ));
+        session.shutdown().await;
     }
     #[tokio::test]
     async fn ctrl_c_in_approval_dialog_pauses_the_active_goal() {

@@ -46,11 +46,11 @@ is respected. The minimum usable size is 38 columns by 12 rows.
 | Ctrl+U | Clear draft |
 | PageUp/PageDown | Scroll the conversation or approval details |
 | Ctrl+End | Follow the latest output |
-| Esc / Ctrl+C | Cancel the active operation |
+| Esc / Ctrl+C | Cancel the active operation. Ctrl+C also closes help or the palette, and clears a draft when idle |
 | Ctrl+P | Command palette |
 | Shift+Tab | Cycle permission mode: ask → accept-edits → auto |
 | F1 | Help |
-| Ctrl+Q | Stop vendor children, finish journal writes, exit |
+| Ctrl+C twice | Quit, as in Claude Code: on an idle, empty prompt the first press shows "Press Ctrl+C again to quit", and a second within 1.5 seconds stops vendor children, finishes journal writes and exits |
 | Ctrl+Z | Restore terminal and suspend; use the shell's `fg` to return |
 | A / D / Esc in an approval | Allow once / deny / deny |
 

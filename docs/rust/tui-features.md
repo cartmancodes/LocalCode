@@ -20,7 +20,7 @@ removed from the repository on 2026-10-04.
 | Conversation view | Scrollback, cached word wrapping, a responsive workspace panel, a help view, and a command palette. The interface accepts terminals as small as 38 by 12 cells and respects `NO_COLOR`. |
 | Approval and cancellation | Command and file-change requests can be allowed once or denied in a modal showing the complete request. Esc or Ctrl+C cancels an active turn. Oversized or expired approval requests are denied. |
 | Sessions and journals | `/new` starts a fresh vendor context; `/reconnect` reopens the current one. `--resume ID` opens a vendor session on launch. Events are written to a private JSONL journal before appearing in the UI. `/session` shows its path; `/export [NEW_PATH]` creates a copy without overwriting an existing file. |
-| Terminal lifecycle | Ctrl+Q exits, Ctrl+Z suspends for shell use, and terminal modes are restored on ordinary exit, supported signals, and panic. |
+| Terminal lifecycle | Ctrl+C twice on an idle, empty prompt exits (the first press asks for confirmation), Ctrl+Z suspends for shell use, and terminal modes are restored on ordinary exit, supported signals, and panic. |
 | Persistent goals | `/goal <objective>` continues across successful turns, with status, pause, resume, audit, and clear commands. Goals survive restart in a private workspace-scoped file and load paused. Completion currently relies on a model-reported audit marker. |
 
 Model availability depends on the installed CLI, its version, account, and

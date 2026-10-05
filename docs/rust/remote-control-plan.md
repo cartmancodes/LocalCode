@@ -207,7 +207,7 @@ Verify clean builds and asset reproducibility on the supported release targets.
    Existing model/new/reconnect behavior invalidates the old remote grant.
 7. Phone viewport and keyboard do not hide send/cancel/approval actions; long
    command and patch details remain readable on iOS Safari and Android Chrome.
-8. Existing Rust tests and terminal lifecycle checks pass, including Ctrl+Q,
+8. Existing Rust tests and terminal lifecycle checks pass, including Ctrl+C twice to quit,
    SIGTERM, suspend/resume and child cleanup. Tunnel failure/off leaves vendor
    execution intact; TUI quit tears down owned remote resources.
 

@@ -70,6 +70,9 @@ pub struct App {
     pub history_index: Option<usize>,
     pub saved_draft: String,
     pub notice: String,
+    /// Until when a second Ctrl+C quits; set by the first press on an idle,
+    /// empty prompt.
+    pub quit_armed: Option<tokio::time::Instant>,
     pub goals: octet_core::goal::GoalRunner,
 }
 impl App {
@@ -107,6 +110,7 @@ impl App {
             history_index: None,
             saved_draft: String::new(),
             notice: String::new(),
+            quit_armed: None,
             goals: octet_core::goal::GoalRunner::default(),
         }
     }
@@ -540,7 +544,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if area.width < 38 || area.height < 12 {
         frame.render_widget(
             Paragraph::new(
-                "Octet\n\nEnlarge the terminal to at least 38 × 12.\nCtrl+Q quits safely.",
+                "Octet\n\nEnlarge the terminal to at least 38 × 12.\nPress Ctrl+C twice to quit.",
             )
             .wrap(Wrap { trim: false }),
             area,
@@ -669,9 +673,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(
         Paragraph::new(if app.notice.is_empty() {
             if app.engine == octet_core::Engine::Demo {
-                " Offline demo · no model calls   |   Ctrl+Q quit".into()
+                " Offline demo · no model calls   |   Ctrl+C twice to quit".into()
             } else {
-                " Journal saved locally   |   F1 help   |   Ctrl+Q quit".into()
+                " Journal saved locally   |   F1 help   |   Ctrl+C twice to quit".into()
             }
         } else {
             app.notice.clone()
@@ -786,7 +790,7 @@ fn sidebar(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled(" CONTROL", Style::default().fg(MUTED))),
         Line::from(" Esc         Cancel turn"),
         Line::from(" PgUp/PgDn   Read history"),
-        Line::from(" Ctrl+Q      Save and quit"),
+        Line::from(" Ctrl+C ×2   Save and quit"),
         Line::default(),
         Line::from(Span::styled(
             " Preview · core migration",
@@ -812,7 +816,7 @@ fn modal(area: Rect, width: u16, height: u16) -> Rect {
 fn help(frame: &mut Frame, area: Rect) {
     let area = modal(area, 76, 24);
     frame.render_widget(Clear, area);
-    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+Q quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
+    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
     frame.render_widget(
         Paragraph::new(text)
             .block(card(" Help "))
@@ -880,7 +884,7 @@ fn approval(frame: &mut Frame, area: Rect, id: u64, detail: &str, scroll: u16, c
         parts[1],
     );
     frame.render_widget(
-        Paragraph::new("\n A  Allow once     D / Esc  Deny     Ctrl+Q  Quit")
+        Paragraph::new("\n A  Allow once     D / Esc  Deny     Ctrl+C  Cancel turn")
             .style(Style::default().fg(AMBER).bg(PANEL)),
         parts[2],
     );
