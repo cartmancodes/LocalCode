@@ -201,10 +201,13 @@ tailnet configuration. It checks what is there and prints the next step:
    session name? If not, show the `tmux new -A -s octet …` line to restart in.
 2. **Tailnet:** is the `tailscale` CLI present and connected? Read this
    host's tailnet name and address from `tailscale status --json`.
-3. **Login:** does SSH answer on the tailnet address? If not, it names both
-   ways to turn it on (Remote Login, or `tailscale set --ssh`).
+3. **Login:** does SSH answer on the tailnet address? If not, it names the
+   ways to turn it on: Remote Login, or `tailscale set --ssh` unless only the
+   App Store app is installed, which can't run Tailscale SSH.
 4. **mosh:** is `mosh-server` installed and at least version 1.4.0?
-5. **Colour:** does tmux advertise RGB? If not, show the `.tmux.conf` lines.
+5. **Colour:** do tmux's server options give terminals 24-bit colour (an `RGB`
+   terminal feature, or a `Tc` override on older tmux)? If not, show the
+   `.tmux.conf` lines; if tmux reports neither option, say nothing.
 6. **Phone command:** print the exact Blink and Termius commands for this
    host, user and tmux session, ready to copy.
 

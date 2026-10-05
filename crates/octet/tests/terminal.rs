@@ -25,6 +25,9 @@ impl Pty {
         Self::spawn_with(&[])
     }
     fn spawn_with(args: &[&str]) -> Self {
+        Self::spawn_with_env(args, &[])
+    }
+    fn spawn_with_env(args: &[&str], env: &[(&str, &str)]) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
             "octet-pty-{}-{}",
@@ -67,6 +70,7 @@ impl Pty {
             .args(args)
             .env("TERM", "xterm-256color")
             .env_remove("NO_COLOR")
+            .envs(env.iter().copied())
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave.try_clone().unwrap()));
@@ -141,12 +145,19 @@ impl Pty {
         self.row_shows(2, text)
     }
     fn row_shows(&self, wanted: usize, text: &str) -> bool {
-        // Ratatui reuses unchanged cells, so a status can be split across many
-        // cursor-positioned writes. Reconstruct one screen row (1-based).
+        self.screen()[wanted - 1].contains(text)
+    }
+    fn screen_shows(&self, text: &str) -> bool {
+        self.screen().iter().any(|row| row.contains(text))
+    }
+    /// The 120 × 36 screen rebuilt from everything written so far. Ratatui
+    /// reuses unchanged cells, so text arrives as many cursor-positioned
+    /// writes; replaying them gives each row as a person would see it.
+    fn screen(&self) -> Vec<String> {
         let output = String::from_utf8_lossy(&self.output);
         let mut chars = output.chars().peekable();
         let (mut row, mut column) = (1usize, 1usize);
-        let mut header = vec![' '; 120];
+        let mut cells = vec![vec![' '; 120]; 36];
         while let Some(ch) = chars.next() {
             if ch == '\u{1b}' && chars.next() == Some('[') {
                 let mut parameters = String::new();
@@ -157,7 +168,9 @@ impl Pty {
                             row = values.next().and_then(|v| v.parse().ok()).unwrap_or(1);
                             column = values.next().and_then(|v| v.parse().ok()).unwrap_or(1);
                         } else if ch == 'J' && parameters == "2" {
-                            header.fill(' ');
+                            for line in &mut cells {
+                                line.fill(' ');
+                            }
                         }
                         break;
                     }
@@ -168,13 +181,13 @@ impl Pty {
             } else if ch == '\n' {
                 row += 1;
             } else if !ch.is_control() {
-                if row == wanted && column > 0 && column <= header.len() {
-                    header[column - 1] = ch;
+                if (1..=cells.len()).contains(&row) && (1..=120).contains(&column) {
+                    cells[row - 1][column - 1] = ch;
                 }
                 column += 1;
             }
         }
-        header.into_iter().collect::<String>().contains(text)
+        cells.into_iter().map(String::from_iter).collect()
     }
     fn goal(&self) -> Option<serde_json::Value> {
         fs::read_dir(&self.directory)
@@ -704,4 +717,62 @@ fn help_lists_every_command() {
     ] {
         assert!(help.contains(command), "{command} missing from --help");
     }
+}
+
+/// Writes an executable stand-in script.
+fn stand_in(dir: &std::path::Path, name: &str, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn remote_control_reports_a_ready_host_with_the_phone_command() {
+    // Stand-ins for tmux, tailscale and mosh-server, first on the PATH, so
+    // the real binary's checks run end to end without those tools installed.
+    let tools = octet_testkit::TempDir::new("octet-remote-tools");
+    fs::create_dir_all(tools.path()).unwrap();
+    stand_in(
+        tools.path(),
+        "tmux",
+        r#"case "$1 $3" in
+  "display-message "*) echo octet ;;
+  "show-options terminal-features") echo 'terminal-features[0] ,xterm-256color:RGB' ;;
+esac"#,
+    );
+    stand_in(
+        tools.path(),
+        "tailscale",
+        r#"echo '{"BackendState":"Running","Self":{"DNSName":"test-mac.tail0000.ts.net.","TailscaleIPs":["127.0.0.1"]}}'"#,
+    );
+    stand_in(
+        tools.path(),
+        "mosh-server",
+        "echo 'mosh-server (mosh 1.4.0) [build mosh-1.4.0]'",
+    );
+    let path = format!(
+        "{}:{}",
+        tools.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut p = Pty::spawn_with_env(
+        &[],
+        &[("PATH", path.as_str()), ("TMUX", "/tmp/tmux-test,1,0")],
+    );
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"/remote-control\r");
+    p.wait(|p| p.screen_shows("[ok] mosh-server 1.4.0"));
+    assert!(p.screen_shows("[ok] Running in tmux session \"octet\""));
+    assert!(p.screen_shows("[ok] Tailscale connected: test-mac.tail0000.ts.net"));
+    assert!(!p.screen_shows("tmux reduces colours"));
+    // Port 22 on 127.0.0.1 answers only if this machine runs an SSH server,
+    // so either outcome is valid; the phone command follows it.
+    if p.screen_shows("[ok] SSH answers") {
+        assert!(p.screen_shows("tmux new -A -s octet"));
+    } else {
+        assert!(p.screen_shows("[!!] SSH doesn't answer"));
+    }
+    p.quit();
+    p.finish();
 }

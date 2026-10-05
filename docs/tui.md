@@ -60,7 +60,7 @@ text. Approval expiration (120 seconds by default; `--approval-timeout SECONDS`
 sets 10–3600), cancellation and unknown request types fail closed; requests too large to display completely are denied explicitly.
 Vendor sandbox policy still applies. The vendor policy depends on the permission
 mode below; this is not a promise that every vendor action raises a dialog.
-When an approval opens, Octet rings the terminal bell and sends a desktop
+When an approval starts waiting, Octet rings the terminal bell once and sends a desktop
 notification (OSC 9). The bell passes through tmux and mosh to a phone app;
 the notification reaches only a desktop terminal connected directly.
 
