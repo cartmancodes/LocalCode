@@ -554,7 +554,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let regions = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(3),
-        Constraint::Length(7),
+        Constraint::Length(composer_height(app, area.width)),
         Constraint::Length(1),
     ])
     .margin(1)
@@ -702,6 +702,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             input.y + ((row - offset) as u16).min(input.height.saturating_sub(1)),
         ));
     }
+}
+/// The composer's height: borders, the draft's wrapped rows (1–4), and the
+/// hint row. An empty prompt takes 4 rows, a long draft at most 7.
+fn composer_height(app: &App, terminal_width: u16) -> u16 {
+    // Margin, border and padding take three columns on each side.
+    let text_width = terminal_width.saturating_sub(6) as usize;
+    let rows = app.editor.layout(text_width).0.len().clamp(1, 4) as u16;
+    2 + rows + 1
 }
 /// The top-left banner, after Claude Code's: the mini Octet (or a text mark
 /// without colour) beside three lines. The permission mode leads its line so
@@ -902,6 +910,38 @@ mod tests {
             .collect()
     }
     #[test]
+    fn composer_grows_with_the_draft() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        assert_eq!(composer_height(&app, 80), 4);
+        assert!(app.editor.insert("one\ntwo\nthree"));
+        assert_eq!(composer_height(&app, 80), 6);
+    }
+    #[test]
+    fn composer_counts_wrapped_rows() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        // 80 columns leave 74 for text: 100 characters wrap onto a second row.
+        assert!(app.editor.insert(&"x".repeat(100)));
+        assert_eq!(composer_height(&app, 80), 5);
+    }
+    #[test]
+    fn composer_height_is_capped() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        assert!(app.editor.insert(&"line\n".repeat(40)));
+        assert_eq!(composer_height(&app, 80), 7);
+    }
+    #[test]
+    fn an_empty_composer_gives_rows_back_to_the_conversation() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.event(Event::User("hello".into()));
+        let rows = screen(44, 16, &mut app);
+        // The composer's top border sits 4 rows above the status line.
+        assert!(rows[16 - 6].starts_with(" ╭ Prompt"), "{}", rows[16 - 6]);
+    }
+    #[test]
     fn empty_conversation_leaves_the_centre_blank() {
         let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
         for (width, height) in [(80, 24), (60, 20)] {
@@ -911,9 +951,9 @@ mod tests {
                 session: "demo".into(),
             });
             let rows = screen(width, height, &mut app);
-            // Rows between the 3-row banner (after the margin) and the 7-row
-            // composer, its status line and the bottom margin.
-            for row in &rows[4..rows.len() - 9] {
+            // Rows between the 3-row banner (after the margin) and the empty
+            // 4-row composer, the status line and the bottom margin.
+            for row in &rows[4..rows.len() - 6] {
                 let inside: String = row.chars().skip(1).take(width as usize - 2).collect();
                 assert!(inside.trim().is_empty(), "{width}×{height}: {row:?}");
             }
