@@ -138,8 +138,11 @@ impl Pty {
         self.records().iter().filter(|v| v["type"] == kind).count()
     }
     fn shows(&self, text: &str) -> bool {
+        self.row_shows(2, text)
+    }
+    fn row_shows(&self, wanted: usize, text: &str) -> bool {
         // Ratatui reuses unchanged cells, so a status can be split across many
-        // cursor-positioned writes. Reconstruct the ASCII/status header row.
+        // cursor-positioned writes. Reconstruct one screen row (1-based).
         let output = String::from_utf8_lossy(&self.output);
         let mut chars = output.chars().peekable();
         let (mut row, mut column) = (1usize, 1usize);
@@ -165,7 +168,7 @@ impl Pty {
             } else if ch == '\n' {
                 row += 1;
             } else if !ch.is_control() {
-                if row == 2 && column > 0 && column <= header.len() {
+                if row == wanted && column > 0 && column <= header.len() {
                     header[column - 1] = ch;
                 }
                 column += 1;
@@ -180,6 +183,20 @@ impl Pty {
             .find(|entry| entry.file_name().to_string_lossy().starts_with("goal-"))
             .and_then(|entry| fs::read(entry.path()).ok())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    }
+    /// Quits the way a person does: Ctrl+C until Octet exits. Early presses
+    /// may cancel a turn or clear the draft; two in a row on an idle, empty
+    /// prompt quit.
+    fn quit(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "Ctrl+C did not quit Octet");
+            self.send(b"\x03");
+            for _ in 0..15 {
+                self.drain();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
     }
     fn finish(&mut self) {
         self.wait(|p| flags(&p.master) == p.original);
@@ -270,7 +287,7 @@ fn real_terminal_handles_paste_approval_resize_suspend_and_quit() {
         p.drain();
         std::thread::sleep(Duration::from_millis(10));
     }
-    p.send(b"\x11");
+    p.quit();
     p.finish();
 }
 #[test]
@@ -319,7 +336,7 @@ fn terminal_idle_diagnostic() {
         first.trim(),
         last.trim()
     );
-    p.send(b"\x11");
+    p.quit();
     p.finish();
 }
 
@@ -371,7 +388,7 @@ fn corrupt_goal_does_not_prevent_chat_or_explicit_recovery() {
     assert_eq!(fs::read(&path).unwrap(), b"{broken goal");
     p.send(b"/goal clear\r");
     p.wait(|_| !path.exists());
-    p.send(b"\x11");
+    p.quit();
     p.finish();
 }
 
@@ -410,7 +427,7 @@ fn goals_continue_complete_and_reload_for_both_providers_in_every_mode() {
             p.send(b"/goal status\r");
             p.send(b"/goal clear\r");
             p.wait(|p| p.goal().is_none());
-            p.send(b"\x11");
+            p.quit();
             p.finish();
         }
     }
@@ -474,7 +491,7 @@ fn goals_pause_cancel_resume_audit_and_stop_on_failure_for_both_providers() {
         p.send(b"/goal complete\r");
         p.wait(|p| p.goal().is_some_and(|g| g["status"] == "complete"));
         assert_eq!(p.count("started"), turns + 1);
-        p.send(b"\x11");
+        p.quit();
         p.finish();
     }
 }
@@ -521,7 +538,7 @@ fn installed_providers_complete_a_goal_in_auto_mode() {
             p.goal().is_some_and(|g| g["status"] != "active") || p.count("error") > 0
         });
         let goal = p.goal();
-        p.send(b"\x11");
+        p.quit();
         p.finish();
         assert_eq!(p.count("error"), 0, "{engine}: {:?}", p.records());
         assert_eq!(
@@ -555,7 +572,7 @@ fn auto_mode_skips_the_demo_dialog_and_shift_tab_cycles() {
             .iter()
             .any(|v| v["type"] == "mode" && v["data"] == "ask")
     });
-    p.send(b"\x11");
+    p.quit();
     p.finish();
 }
 #[test]
@@ -582,7 +599,7 @@ fn live_mode_change_survives_a_new_session() {
         .collect();
     assert!(sessions.contains(&"auto".to_owned()), "{sessions:?}");
     assert!(sessions.contains(&"ask".to_owned()), "{sessions:?}");
-    p.send(b"\x11");
+    p.quit();
     p.finish();
 }
 #[test]
@@ -618,6 +635,21 @@ fn reconnect_keeps_the_visible_conversation() {
             .windows(20)
             .any(|w| w == b"remember-this-prompt")
     });
-    p.send(b"\x11");
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn ctrl_c_twice_quits_and_the_first_press_only_warns() {
+    let mut p = Pty::spawn();
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"\x03");
+    // The 120 × 36 screen's status line is row 35, above the bottom margin.
+    p.wait(|p| p.row_shows(35, "Press Ctrl+C again to quit"));
+    assert!(
+        p.child.try_wait().unwrap().is_none(),
+        "one Ctrl+C must not quit"
+    );
+    p.send(b"\x03");
     p.finish();
 }

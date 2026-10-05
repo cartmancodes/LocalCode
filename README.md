@@ -48,7 +48,7 @@ scripts/rust-env.sh cargo install --locked --path crates/octet --root "$HOME/.lo
 | A / D | Allow once / deny a permission request |
 | Ctrl+P | Command palette |
 | F1 | Help |
-| Ctrl+Q | Quit |
+| Ctrl+C twice | Quit (the first press on an empty prompt asks to press again) |
 
 Commands: `/model` (switch model or provider), `/mode` (permission mode),
 `/goal` (a multi-turn objective), `/session`, `/new`, `/reconnect`,
