@@ -312,6 +312,16 @@ impl App {
             }
         }
     }
+    /// Something that failed, as an `ERROR` entry and on the status line.
+    pub fn error(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.notice = clean(&text);
+        self.add(Role::Error, text);
+    }
+    #[cfg(test)]
+    pub fn last_role(&self) -> Option<Role> {
+        self.entries.back().map(|entry| entry.role)
+    }
     pub fn notice(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.notice = clean(&text);
@@ -857,6 +867,13 @@ fn completion_popup(frame: &mut Frame, composer: Rect, app: &App) {
         crate::composer::Kind::Path => " Paths ",
         crate::composer::Kind::Command => " Commands ",
     };
+    // On a short screen the popup is clipped; scroll so the selected row
+    // stays in sight.
+    let room = composer.y.saturating_sub(2) as usize;
+    if completion.items.len() > room && room > 0 {
+        let skip = completion.selected.saturating_sub(room - 1);
+        lines = lines.into_iter().skip(skip).take(room).collect();
+    }
     let height = lines.len() as u16 + 2;
     let area = Rect {
         x: composer.x,
@@ -1004,6 +1021,12 @@ fn help(frame: &mut Frame, area: Rect) {
         area,
     );
 }
+/// Keys the palette also offers, after the commands.
+pub const PALETTE_KEYS: [(&str, &str); 3] = [
+    ("Ctrl+G", "Write the prompt in $EDITOR"),
+    ("@", "Mention a file"),
+    ("!", "Run a shell command"),
+];
 pub const COMMANDS: [(&str, &str); 11] = [
     ("/help", "Keyboard shortcuts"),
     ("/model", "Switch model or provider"),
@@ -1023,14 +1046,16 @@ pub const COMMANDS: [(&str, &str); 11] = [
     ),
     ("/quit", "Save and exit"),
 ];
+/// The palette's rows: every command, then the keys it also offers.
+pub fn palette_entries() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    COMMANDS.iter().chain(PALETTE_KEYS.iter())
+}
 fn palette(frame: &mut Frame, area: Rect, selected: usize) {
-    let name_width = COMMANDS
-        .iter()
+    let name_width = palette_entries()
         .map(|(name, _)| name.len())
         .max()
         .unwrap_or(0);
-    let description_width = COMMANDS
-        .iter()
+    let description_width = palette_entries()
         .map(|(_, description)| description.width())
         .max()
         .unwrap_or(0);
@@ -1039,11 +1064,11 @@ fn palette(frame: &mut Frame, area: Rect, selected: usize) {
     let area = modal(
         area,
         (name_width + description_width + 7) as u16,
-        COMMANDS.len() as u16 + 5,
+        palette_entries().count() as u16 + 5,
     );
     frame.render_widget(Clear, area);
     let mut lines = vec![Line::default()];
-    for (index, (command, description)) in COMMANDS.iter().enumerate() {
+    for (index, (command, description)) in palette_entries().enumerate() {
         lines.push(Line::from(Span::styled(
             format!(
                 " {} {:<name_width$} {}",
@@ -1137,6 +1162,31 @@ mod tests {
             "{}",
             app.entries_text()
         );
+    }
+    #[test]
+    fn the_popup_keeps_the_selected_row_in_sight_on_a_short_screen() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.completion = Some(crate::composer::Completion {
+            kind: crate::composer::Kind::File,
+            items: (0..8).map(|i| format!("file{i}.rs")).collect(),
+            selected: 7,
+            start: 0,
+        });
+        let rows = screen(80, 14, &mut app);
+        assert!(
+            rows.iter().any(|row| row.contains(" › file7.rs")),
+            "{}",
+            rows.join("\n")
+        );
+    }
+    #[test]
+    fn a_shell_that_cannot_start_is_an_error_entry() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.error("Cannot run /no/such/shell: No such file or directory");
+        assert!(app.last_role() == Some(Role::Error));
+        assert!(app.notice.starts_with("Cannot run"));
     }
     #[test]
     fn the_popup_lists_suggestions_above_the_prompt() {
@@ -1254,7 +1304,7 @@ mod tests {
         app.palette = true;
         let rows = screen(80, 24, &mut app);
         let mut columns = Vec::new();
-        for (name, description) in COMMANDS {
+        for (name, description) in COMMANDS.iter().chain(PALETTE_KEYS.iter()) {
             // " /mode " must not match the "/model" row.
             let row = rows
                 .iter()

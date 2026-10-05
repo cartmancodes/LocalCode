@@ -346,8 +346,8 @@ async fn run_session(
                             app.attach(ran);
                         }
                     }
-                    Ok(Err(error)) => app.notice(error),
-                    Err(error) => app.notice(format!("The command failed: {error}")),
+                    Ok(Err(error)) => app.error(error),
+                    Err(error) => app.error(format!("The command failed: {error}")),
                 }
                 dirty = true;
             }
@@ -407,6 +407,7 @@ async fn run_session(
                                 match tokio::process::Command::new(&edit.program)
                                     .args(&edit.args)
                                     .arg(&edit.path)
+                                    .kill_on_drop(true)
                                     .spawn()
                                 {
                                     Ok(child) => editing = Some((child, edit)),
@@ -468,8 +469,14 @@ async fn run_session(
                     return Ok(Exit::Quit);
                 }
             }
-            _ = unix_signal(&mut term) => return Ok(Exit::Quit),
-            _ = unix_signal(&mut hup) => return Ok(Exit::Quit),
+            _ = unix_signal(&mut term) => {
+                stop_editor(&mut editing).await;
+                return Ok(Exit::Quit);
+            }
+            _ = unix_signal(&mut hup) => {
+                stop_editor(&mut editing).await;
+                return Ok(Exit::Quit);
+            }
             _ = unix_signal(&mut suspend) => {
                 if editing.is_some() {
                     // The editor owns the terminal and restores it on fg;
@@ -543,6 +550,51 @@ async fn off_loop<T: Send + 'static>(
         let _ = done.send(work());
     });
     tokio::time::timeout(limit, result).await.ok()?.ok()
+}
+/// Asks a running editor to quit, so it can put the terminal back, and
+/// kills it if it has not within a second.
+async fn stop_editor(editing: &mut Option<(tokio::process::Child, external::Edit)>) {
+    let Some((child, _)) = editing.as_mut() else {
+        return;
+    };
+    if let Some(pid) = child.id().and_then(|pid| libc::pid_t::try_from(pid).ok()) {
+        // SAFETY: signals only the editor this session started.
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+    }
+    if tokio::time::timeout(Duration::from_secs(1), child.wait())
+        .await
+        .is_err()
+    {
+        let _ = child.kill().await;
+    }
+}
+/// A key chosen from the palette.
+fn palette_key(app: &mut App, key: &str) -> Action {
+    match key {
+        "Ctrl+G" => {
+            app.completion = None;
+            return Action::ExternalEditor;
+        }
+        "@" => {
+            let after_word = app.editor.text[..app.editor.cursor]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !c.is_whitespace());
+            let mention = if after_word { " @" } else { "@" };
+            if !app.editor.insert(mention) {
+                app.notice = "Prompt limit reached".into();
+            } else if let Some((start, _)) =
+                composer::mention_at(&app.editor.text, app.editor.cursor)
+            {
+                open_mentions(app, start);
+            }
+        }
+        _ if app.editor.text.is_empty() => app.editor.set("!".into()),
+        _ => app.notice = "Clear the prompt to start a ! command".into(),
+    }
+    Action::Continue
 }
 /// Opens the `@` popup for the mention starting at `start`, asking for the
 /// index on first use.
@@ -751,10 +803,15 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
             _ if ctrl_c => app.palette = false,
             KeyCode::Esc => app.palette = false,
             KeyCode::Up => app.selection = app.selection.saturating_sub(1),
-            KeyCode::Down => app.selection = (app.selection + 1).min(COMMANDS.len() - 1),
+            KeyCode::Down => {
+                app.selection = (app.selection + 1).min(view::palette_entries().count() - 1)
+            }
             KeyCode::Enter => {
                 app.palette = false;
-                return command(app, COMMANDS[app.selection].0).await;
+                if let Some((name, _)) = COMMANDS.get(app.selection) {
+                    return command(app, name).await;
+                }
+                return palette_key(app, view::PALETTE_KEYS[app.selection - COMMANDS.len()].0);
             }
             _ => {}
         }
@@ -894,6 +951,10 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
             } else {
                 let (wire, display) =
                     composer::with_attachments(&draft, &app.attachments, octet_core::PROMPT_LIMIT);
+                if wire.len().max(display.len()) > octet_core::PROMPT_LIMIT {
+                    app.notice = "The prompt and its attachments are over 64 KiB. Shorten the prompt, or press Esc on an empty prompt to drop them".into();
+                    return Action::Continue;
+                }
                 Command::PromptWithDisplay { wire, display }
             };
             match session.handle.send(command) {
@@ -1311,6 +1372,49 @@ mod model_tests {
         assert_eq!(app.editor.text, "see @src/main.rs ");
         assert!(app.completion.is_none());
         assert!(!app.running, "Enter accepted instead of sending");
+    }
+    #[tokio::test]
+    async fn the_palette_offers_the_editor_mentions_and_shell() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-palette-keys").await;
+        let open_at = |app: &mut App, index: usize| {
+            app.palette = true;
+            app.selection = index;
+        };
+        open_at(&mut app, COMMANDS.len() + 1);
+        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        assert_eq!(app.editor.text, "@");
+        assert!(app.completion.is_some(), "@ opens the file popup");
+        app.completion = None;
+        app.editor.take();
+        open_at(&mut app, COMMANDS.len() + 2);
+        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        assert_eq!(app.editor.text, "!");
+        open_at(&mut app, COMMANDS.len());
+        assert!(matches!(
+            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            Action::ExternalEditor
+        ));
+        app.palette = true;
+        app.selection = 0;
+        for _ in 0..40 {
+            key_action(&mut app, &mut session, key(KeyCode::Down)).await;
+        }
+        assert_eq!(app.selection, COMMANDS.len() + view::PALETTE_KEYS.len() - 1);
+    }
+    #[tokio::test]
+    async fn a_prompt_too_long_for_its_attachments_says_so() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-attach-limit").await;
+        app.attach(ran("echo hi", "hi\n"));
+        app.editor.set("x".repeat(octet_core::PROMPT_LIMIT - 6));
+        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        assert_eq!(
+            app.notice,
+            "The prompt and its attachments are over 64 KiB. Shorten the prompt, or press Esc on an empty prompt to drop them"
+        );
+        assert_eq!(app.attachments.len(), 1, "kept");
+        assert!(!app.running);
     }
     #[tokio::test]
     async fn slow_work_off_the_loop_gives_up_at_its_limit() {

@@ -997,3 +997,44 @@ fn a_suspend_while_editing_leaves_the_terminal_usable() {
     p.quit();
     p.finish();
 }
+
+#[test]
+fn terminating_octet_while_editing_stops_the_editor() {
+    let tools = octet_testkit::TempDir::new("octet-editor-term");
+    fs::create_dir_all(tools.path()).unwrap();
+    let pid_file = tools.path().join("editor.pid");
+    stand_in(
+        tools.path(),
+        "fake-editor",
+        &format!(
+            // Ignoring HUP stands in for a real shell, where the kernel's
+            // hangup to the old session does not reach the editor.
+            r#"echo $$ > '{}'; trap '' HUP; trap 'exit 0' TERM; sleep 30 & wait"#,
+            pid_file.display()
+        ),
+    );
+    let editor = tools.path().join("fake-editor");
+    let mut p = Pty::spawn_with_env(&[], &[("EDITOR", editor.to_str().unwrap()), ("VISUAL", "")]);
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"\x07");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let editor_pid = loop {
+        if let Ok(text) = fs::read_to_string(&pid_file) {
+            if let Ok(pid) = text.trim().parse::<libc::pid_t>() {
+                break pid;
+            }
+        }
+        assert!(Instant::now() < deadline, "the editor never started");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    unsafe {
+        libc::kill(p.child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    p.finish();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    // SAFETY: signal 0 only checks that the process exists.
+    while unsafe { libc::kill(editor_pid, 0) } == 0 {
+        assert!(Instant::now() < deadline, "the editor outlived Octet");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
