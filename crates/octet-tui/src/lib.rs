@@ -891,9 +891,9 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
                 app.scroll = 0;
             }
         }
-        KeyCode::PageUp => app.scroll = app.scroll.saturating_add(10).min(65536),
-        KeyCode::PageDown => app.scroll = app.scroll.saturating_sub(10),
-        KeyCode::End if ctrl => app.scroll = 0,
+        KeyCode::PageUp => app.scroll_by(10),
+        KeyCode::PageDown => app.scroll_by(-10),
+        KeyCode::End if ctrl => app.follow_latest(),
         KeyCode::Enter if alt || key.modifiers.contains(KeyModifiers::SHIFT) => {
             if !app.editor.insert("\n") {
                 app.notice = "Prompt limit reached".into();

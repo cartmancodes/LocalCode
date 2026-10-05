@@ -91,6 +91,8 @@ pub struct App {
     reply_sanitizer: Sanitizer,
     /// A tool ran since the last text; the next text starts a new paragraph.
     reply_break: bool,
+    /// A new turn started; the last reply stays copyable until its first text.
+    reply_stale: bool,
 }
 impl App {
     pub fn new(config: &octet_core::Config, journal: PathBuf) -> Self {
@@ -137,6 +139,7 @@ impl App {
             reply: String::new(),
             reply_sanitizer: Sanitizer::keeping_tabs(),
             reply_break: false,
+            reply_stale: false,
         }
     }
     pub fn connection(&mut self, config: &octet_core::Config, journal: PathBuf) {
@@ -360,9 +363,7 @@ impl App {
                 self.status = "working".into();
                 self.notice.clear();
                 self.sanitizer = Sanitizer::default();
-                self.reply.clear();
-                self.reply_sanitizer = Sanitizer::keeping_tabs();
-                self.reply_break = false;
+                self.reply_stale = true;
             }
             Event::Text(text) => {
                 self.activity = State::Thinking;
@@ -468,6 +469,17 @@ impl App {
             self.notice = "Dropped the oldest attachment to stay within 32 KiB".into();
         }
     }
+    /// Back to the newest output, cancelling a catalog scroll that the next
+    /// frame would otherwise still apply.
+    pub fn follow_latest(&mut self) {
+        self.scroll = 0;
+        self.catalog_focus = None;
+    }
+    /// Scrolls the conversation by `rows`, up when positive.
+    pub fn scroll_by(&mut self, rows: isize) {
+        self.catalog_focus = None;
+        self.scroll = self.scroll.saturating_add_signed(rows).min(65536);
+    }
     /// The most recent reply as the vendor sent it, every segment of the
     /// turn, for `/copy`.
     pub fn last_reply(&self) -> Option<&str> {
@@ -476,6 +488,11 @@ impl App {
     /// Adds streamed text to the reply `/copy` takes, up to just over the
     /// clipboard limit so a cut can still be reported.
     fn keep_reply(&mut self, text: &str) {
+        if std::mem::take(&mut self.reply_stale) {
+            self.reply.clear();
+            self.reply_sanitizer = Sanitizer::keeping_tabs();
+            self.reply_break = false;
+        }
         let text = self.reply_sanitizer.push(text);
         if text.is_empty() || self.reply.len() > crate::clipboard::LIMIT {
             return;
@@ -1125,6 +1142,37 @@ mod tests {
         (0..height)
             .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
             .collect()
+    }
+    #[test]
+    fn copy_keeps_the_last_reply_until_new_text_arrives() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.event(Event::Started);
+        app.event(Event::Text("first".into()));
+        app.event(Event::Finished {
+            outcome: octet_core::Outcome::Completed,
+        });
+        app.event(Event::Started);
+        assert_eq!(app.last_reply(), Some("first"), "the reply on screen");
+        app.event(Event::Text("second".into()));
+        assert_eq!(app.last_reply(), Some("second"));
+    }
+    #[test]
+    fn following_the_latest_cancels_a_pending_catalog_scroll() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.models = (0..30)
+            .map(|i| octet_core::ModelInfo {
+                selection: format!("m{i}"),
+                id: Some(format!("m{i}")),
+                name: format!("Model {i}"),
+                description: String::new(),
+            })
+            .collect();
+        app.show_models(1);
+        app.follow_latest();
+        screen(120, 36, &mut app);
+        assert_eq!(app.scroll, 0, "Ctrl+End before the next frame still wins");
     }
     #[test]
     fn copy_takes_the_whole_reply_with_its_tabs() {
