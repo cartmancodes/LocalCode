@@ -56,12 +56,20 @@ is respected. The minimum usable size is 38 columns by 12 rows.
 
 Bracketed paste preserves newlines without submitting them. A rejected oversized
 paste leaves the draft intact. Approval requests are never answered by pasted
-text. Approval expiration (120 seconds), cancellation and unknown request types
-fail closed; requests too large to display completely are denied explicitly.
+text. Approval expiration (120 seconds by default; `--approval-timeout SECONDS`
+sets 10–3600), cancellation and unknown request types fail closed; requests too large to display completely are denied explicitly.
 Vendor sandbox policy still applies. The vendor policy depends on the permission
 mode below; this is not a promise that every vendor action raises a dialog.
+When an approval opens, Octet rings the terminal bell and sends a desktop
+notification (OSC 9), so a terminal, tmux or a phone app can flag it.
 
-Commands: `/help`, `/model`, `/mode`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/quit`.
+The prompt box grows with the draft: 4 rows when empty, up to 7 for a draft of
+four or more lines, leaving the rest of the screen to the conversation.
+
+Commands: `/help`, `/model`, `/mode`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/remote-control`, `/quit`.
+`/remote-control` checks, without changing anything, whether this session can be
+reached from a phone over tmux, Tailscale SSH and mosh, and prints the phone
+command; see [phone access](rust/remote-control-ssh.md).
 The preview also supports persistent multi-turn goals through `/goal`.
 Changing sessions or exporting requires an idle turn. `/approval-demo` exercises
 the dialog in offline demo mode. Unknown preview commands return a visible error and leave the draft in place. A

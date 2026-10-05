@@ -1,7 +1,8 @@
 # Phone access over tmux, Tailscale SSH and mosh
 
-Evaluation date: 2026-10-05. Status: evaluation; nothing here is implemented
-or deployed. Companion to the [web-client plan](remote-control-plan.md).
+Evaluation date: 2026-10-05. Status: the `/remote-control` helper and the
+three phone fixes below are implemented; testing on real phones is still
+pending. Companion to the [web-client plan](remote-control-plan.md).
 
 ## Question and answer
 
@@ -107,6 +108,15 @@ This works with the App Store Tailscale app.
 
    `-A` attaches if the session already exists. Start it at your desk; the
    phone only reattaches.
+5. So a bell from a window you aren't looking at gets flagged, add to
+   `~/.tmux.conf`:
+
+   ```
+   set -g monitor-bell on
+   set -g bell-action any
+   ```
+
+6. Run `/remote-control` in Octet to check all of the above.
 
 ## Phone setup
 
@@ -146,7 +156,7 @@ with `stty size` on each phone.
 | Phone layout (approx. columns × rows) | Result |
 | --- | --- |
 | Portrait, keyboard hidden (≈ 44 × 30) | Usable. Banner, mode, status and about 15 rows of conversation. The header cuts the model and folder names. |
-| Portrait, keyboard shown (≈ 44 × 16) | **Barely usable.** The 7-row prompt box and the banner leave **one row** of conversation. |
+| Portrait, keyboard shown (≈ 44 × 16) | Tight. Before the prompt box change, the fixed 7-row box left **one row** of conversation; now an empty box takes 4 rows and **four** remain. |
 | Approval at ≈ 44 × 16 | The request fits and can be scrolled; **A** and **D** are visible. The key line and title are cut off at the right. |
 | Landscape, keyboard shown (≈ 90 × 10) | **Blocked.** Below Octet's 38 × 12 minimum, so only "Enlarge the terminal" shows. Rotate to portrait to type. |
 
@@ -179,7 +189,7 @@ with `stty size` on each phone.
   leave `mosh-server` processes on the host until they time out. Clear them
   with `pkill mosh-server` if needed.
 
-## What `/remote-control` could do (thin helper, 1–2 days)
+## What `/remote-control` does
 
 A read-only command that sets nothing up by itself, and never edits system or
 tailnet configuration. It checks what is there and prints the next step:
@@ -188,33 +198,33 @@ tailnet configuration. It checks what is there and prints the next step:
    session name? If not, show the `tmux new -A -s octet …` line to restart in.
 2. **Tailnet:** is the `tailscale` CLI present and connected? Read this
    host's tailnet name and address from `tailscale status --json`.
-3. **Login:** is Tailscale SSH on, or is Remote Login reachable? Report which
-   option is in use and what is missing.
+3. **Login:** does SSH answer on the tailnet address? If not, it names both
+   ways to turn it on (Remote Login, or `tailscale set --ssh`).
 4. **mosh:** is `mosh-server` installed and at least version 1.4.0?
 5. **Colour:** does tmux advertise RGB? If not, show the `.tmux.conf` lines.
 6. **Phone command:** print the exact Blink and Termius commands for this
    host, user and tmux session, ready to copy.
 
-It would run each check as a short command with a timeout and show the
-results as a notice in the transcript. It starts no
-listener and holds no secrets.
+Each check runs as a short command with a 2-second timeout, and the results
+appear as a note in the conversation. It starts no listener and holds no
+secrets. The App Store Tailscale app is found inside its app bundle when
+`tailscale` isn't on the PATH.
 
 `/remote-control status` shows the same checks. Pairing, QR codes and grants
 belong to the [web plan](remote-control-plan.md), not here.
 
-## Phone fixes worth doing next (3–5 days)
+## Phone fixes
 
-1. **Prompt box that grows with the draft (1–2 days).** With the keyboard
-   shown this returns 3–4 rows to the conversation, the biggest single phone
-   improvement.
-2. **Approval alert (1–2 days).** Send a terminal bell (and, where the app
-   supports it, an OSC 9 desktop notification) when an approval opens, so
-   tmux and the phone app can flag it. Whether Blink or Termius show these
-   while backgrounded needs testing on a device; if they don't, a push
-   service is the fallback, and that is part of the web plan.
-3. **A longer approval window for remote use (½ day).** A `--approval-timeout`
-   option, so a phone user has time to notice. The default stays 120 s, and
-   timeouts still deny.
+1. **Prompt box that grows with the draft.** 4 rows when empty, up to 7. With
+   the keyboard shown this returns 3 rows to the conversation, the biggest
+   single phone improvement.
+2. **Approval alert.** A terminal bell and an OSC 9 desktop notification when
+   an approval opens, so tmux and the phone app can flag it. Whether Blink or
+   Termius show these while backgrounded needs testing on a device; if they
+   don't, a push service is the fallback, and that is part of the web plan.
+3. **A longer approval window.** `octet --approval-timeout 600` gives a phone
+   user ten minutes to notice. It accepts 10–3600 seconds; the default stays
+   120, and timeouts still deny. Set it when starting Octet in tmux.
 
 ## Verify on real devices before recommending it widely
 
