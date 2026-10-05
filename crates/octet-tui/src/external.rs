@@ -67,8 +67,23 @@ impl Edit {
         if !success {
             return Err("The editor exited with an error; the draft is unchanged".into());
         }
-        let text = std::fs::read_to_string(&self.path)
+        use std::io::Read;
+        // Read no more than the limit plus a trailing newline and one byte,
+        // so an enormous result is refused without loading it.
+        let mut bytes = Vec::new();
+        std::fs::File::open(&self.path)
+            .and_then(|file| {
+                file.take(octet_core::PROMPT_LIMIT as u64 + 3)
+                    .read_to_end(&mut bytes)
+            })
             .map_err(|e| format!("Cannot read the edited draft: {e}; the draft is unchanged"))?;
+        if bytes.len() > octet_core::PROMPT_LIMIT + 2 {
+            return Err(
+                "The edited prompt is over the 64 KiB limit; the draft is unchanged".into(),
+            );
+        }
+        let text = String::from_utf8(bytes)
+            .map_err(|_| "The edited prompt is not UTF-8 text; the draft is unchanged")?;
         let text = text
             .strip_suffix("\r\n")
             .or_else(|| text.strip_suffix('\n'))
@@ -113,6 +128,30 @@ mod tests {
         let big = edit("keep");
         std::fs::write(&big.path, "x".repeat(octet_core::PROMPT_LIMIT + 1)).unwrap();
         assert!(big.finish(true).unwrap_err().contains("64 KiB"));
+    }
+    #[test]
+    fn reading_the_edit_stops_at_the_limit() {
+        // A pipe that never closes stands in for a file too large to read
+        // whole: an unbounded read would never return.
+        let edit = edit("keep");
+        std::fs::remove_file(&edit.path).unwrap();
+        let path = std::ffi::CString::new(edit.path.to_str().unwrap()).unwrap();
+        // SAFETY: creates a FIFO at a path this test owns.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let fifo = edit.path.clone();
+        std::thread::spawn(move || {
+            let mut writer = std::fs::OpenOptions::new().write(true).open(fifo).unwrap();
+            let _ = writer.write_all(&vec![b'x'; octet_core::PROMPT_LIMIT + 10]);
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        });
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(edit.finish(true));
+        });
+        let outcome = result
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("finish read the whole stream");
+        assert!(outcome.unwrap_err().contains("64 KiB"));
     }
     #[test]
     fn an_empty_command_is_refused() {
