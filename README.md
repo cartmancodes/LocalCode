@@ -78,7 +78,12 @@ running across turns, and pick the session up from your phone.
 **In the terminal**
 
 - A multiline editor with Unicode-aware editing, bracketed paste and history.
-  The prompt box grows with the draft.
+  `@` suggests workspace files, Tab completes paths and commands, Ctrl+G
+  opens the prompt in your own editor, and the prompt box grows with the
+  draft.
+- `!git status` runs a command and attaches its output to your next prompt;
+  `!!` runs it without attaching. `/copy` (Ctrl+X) puts the last reply on
+  the clipboard, even over SSH to a phone.
 - Works down to 38×12 cells; a workspace panel appears from 112 columns.
   Respects `NO_COLOR`.
 - Ctrl+Z suspends to the shell. The terminal is restored on exit, on signals
@@ -152,6 +157,10 @@ octet --engine codex --cwd /path/to/project      # Codex (the default engine)
 | A / D | Allow once / deny a permission request |
 | PageUp / PageDown | Scroll the conversation |
 | Ctrl+P | Command palette |
+| @ | Mention a file |
+| Tab | Complete a path or command |
+| Ctrl+G | Edit the prompt in $EDITOR |
+| Ctrl+X | Copy the last reply |
 | F1 | Help |
 | Ctrl+C twice | Quit |
 
@@ -166,6 +175,8 @@ octet --engine codex --cwd /path/to/project      # Codex (the default engine)
 | `/new` | Start fresh vendor context |
 | `/reconnect` | Reopen the current vendor session |
 | `/export [PATH]` | Copy the journal to a new file |
+| `/copy` | Copy the last reply to the clipboard |
+| `!cmd`, `!!cmd` | Run a shell command; `!` attaches its output to the next prompt |
 | `/remote-control` | Check phone access |
 | `/help`, `/quit` | Help; save and exit |
 
