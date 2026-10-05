@@ -713,6 +713,7 @@ fn help_lists_every_command() {
         "/new",
         "/reconnect",
         "/export",
+        "/copy",
         "/remote-control",
     ] {
         assert!(help.contains(command), "{command} missing from --help");
@@ -829,6 +830,23 @@ fn a_valid_approval_timeout_reaches_the_engine() {
         "denied after {:?}",
         opened.elapsed()
     );
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn copy_sends_the_last_reply_to_the_clipboard() {
+    let mut p = Pty::spawn();
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"/copy\r");
+    p.wait(|p| p.screen_shows("Nothing to copy yet"));
+    p.send(b"hello\r");
+    p.wait(|p| p.screen_shows("Try /approval-demo"));
+    p.wait(|p| p.shows("● completed"));
+    p.send(b"\x18");
+    // The demo reply starts "This": base64 of "T" begins with "V".
+    p.wait(|p| p.output.windows(8).any(|w| w == b"\x1b]52;c;V"));
+    p.wait(|p| p.screen_shows("to the clipboard"));
     p.quit();
     p.finish();
 }

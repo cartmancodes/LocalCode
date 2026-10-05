@@ -1,3 +1,4 @@
+mod clipboard;
 mod editor;
 mod mascot;
 mod remote;
@@ -402,9 +403,36 @@ fn should_alert(app: &App, event: &octet_core::Event) -> bool {
 /// are ignored: the alert is a courtesy, never a reason to stop.
 const ALERT: &[u8] = b"\x07\x1b]9;Octet: approval needed\x07";
 fn alert() {
+    write_terminal(ALERT);
+}
+/// Writes control bytes straight to the terminal, outside a frame. Errors are
+/// ignored: these are courtesies, never a reason to stop.
+fn write_terminal(bytes: &[u8]) {
     use std::io::Write;
     let mut stdout = io::stdout();
-    let _ = stdout.write_all(ALERT).and_then(|()| stdout.flush());
+    let _ = stdout.write_all(bytes).and_then(|()| stdout.flush());
+}
+/// `/copy` and Ctrl+X: the last reply to the clipboard.
+fn copy_reply(app: &mut App) {
+    let Some((bytes, cut, size)) = app.last_reply().and_then(|text| {
+        clipboard::osc52(text).map(|(bytes, cut)| (bytes, cut, text.len().min(clipboard::LIMIT)))
+    }) else {
+        app.notice = "Nothing to copy yet".into();
+        return;
+    };
+    write_terminal(&bytes);
+    app.notice = if cut {
+        "Copied the first 100 KB to the clipboard".into()
+    } else {
+        format!("Copied {} to the clipboard", size_label(size))
+    };
+}
+fn size_label(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    }
 }
 async fn send_goal_prompt(app: &mut App, session: &Session, prompt: String) {
     let command = Command::PromptWithDisplay {
@@ -503,6 +531,7 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         KeyCode::F(1) => app.help = true,
         KeyCode::BackTab => return cycle_mode(app),
         KeyCode::Char('p') if ctrl => app.palette = true,
+        KeyCode::Char('x') if ctrl => copy_reply(app),
         KeyCode::Char('u') if ctrl => {
             app.editor.take();
         }
@@ -666,6 +695,7 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
     match name {
         "/quit" | "/exit" => return Some(Action::Exit(Exit::Quit)),
         "/help" => app.help = true,
+        "/copy" => copy_reply(app),
         "/model" => {
             if argument.trim().is_empty() {
                 app.show_models(1);
@@ -894,6 +924,26 @@ mod model_tests {
     }
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+    #[tokio::test]
+    async fn copy_reports_the_size_of_the_last_reply() {
+        let mut app = app();
+        assert!(matches!(command(&mut app, "/copy").await, Action::Continue));
+        assert_eq!(app.notice, "Nothing to copy yet");
+        app.event(octet_core::Event::Started);
+        app.event(octet_core::Event::Text("hello".into()));
+        app.event(octet_core::Event::Finished {
+            outcome: octet_core::Outcome::Completed,
+        });
+        assert_eq!(app.last_reply(), Some("hello"));
+        assert!(matches!(command(&mut app, "/copy").await, Action::Continue));
+        assert_eq!(app.notice, "Copied 5 B to the clipboard");
+    }
+    #[test]
+    fn sizes_read_naturally() {
+        assert_eq!(size_label(5), "5 B");
+        assert_eq!(size_label(1229), "1.2 KB");
+        assert_eq!(size_label(100 * 1024), "100.0 KB");
     }
     async fn demo_session(name: &str) -> (octet_testkit::TempDir, Session) {
         let temp = octet_testkit::TempDir::new(name);
