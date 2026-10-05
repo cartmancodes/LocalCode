@@ -1,7 +1,7 @@
 use crate::{
     editor::Editor,
     mascot::{self, State},
-    text::{clean, Sanitizer},
+    text::{clean, strip, Sanitizer},
 };
 use octet_core::Event;
 use ratatui::{
@@ -86,6 +86,11 @@ pub struct App {
     pub completion: Option<crate::composer::Completion>,
     /// The workspace file index for `@`.
     pub files: crate::files::Files,
+    /// The current turn's reply as sent, tabs and all, for `/copy`.
+    reply: String,
+    reply_sanitizer: Sanitizer,
+    /// A tool ran since the last text; the next text starts a new paragraph.
+    reply_break: bool,
 }
 impl App {
     pub fn new(config: &octet_core::Config, journal: PathBuf) -> Self {
@@ -129,6 +134,9 @@ impl App {
             shell_running: false,
             completion: None,
             files: crate::files::Files::Unbuilt,
+            reply: String::new(),
+            reply_sanitizer: Sanitizer::keeping_tabs(),
+            reply_break: false,
         }
     }
     pub fn connection(&mut self, config: &octet_core::Config, journal: PathBuf) {
@@ -342,9 +350,13 @@ impl App {
                 self.status = "working".into();
                 self.notice.clear();
                 self.sanitizer = Sanitizer::default();
+                self.reply.clear();
+                self.reply_sanitizer = Sanitizer::keeping_tabs();
+                self.reply_break = false;
             }
             Event::Text(text) => {
                 self.activity = State::Thinking;
+                self.keep_reply(&text);
                 let text = self.sanitizer.push(&text);
                 if self
                     .entries
@@ -365,6 +377,7 @@ impl App {
                 self.trim();
             }
             Event::Tool(text) => {
+                self.reply_break = true;
                 self.activity = State::tool(&text);
                 self.add(Role::Tool, text);
             }
@@ -433,7 +446,7 @@ impl App {
     /// Keeps `ran` for the next prompt, dropping the oldest attachments
     /// beyond 32 KiB of output.
     pub fn attach(&mut self, mut ran: crate::shell::Ran) {
-        ran.output = clean(&ran.output);
+        ran.output = strip(&ran.output);
         self.attachments.push(ran);
         let total = |all: &[crate::shell::Ran]| all.iter().map(|a| a.output.len()).sum::<usize>();
         let mut dropped = false;
@@ -445,13 +458,26 @@ impl App {
             self.notice = "Dropped the oldest attachment to stay within 32 KiB".into();
         }
     }
-    /// The most recent reply, as shown, for `/copy`.
+    /// The most recent reply as the vendor sent it, every segment of the
+    /// turn, for `/copy`.
     pub fn last_reply(&self) -> Option<&str> {
-        self.entries
-            .iter()
-            .rev()
-            .find(|entry| entry.role == Role::Assistant)
-            .map(|entry| entry.text.as_str())
+        (!self.reply.is_empty()).then_some(self.reply.as_str())
+    }
+    /// Adds streamed text to the reply `/copy` takes, up to just over the
+    /// clipboard limit so a cut can still be reported.
+    fn keep_reply(&mut self, text: &str) {
+        let text = self.reply_sanitizer.push(text);
+        if text.is_empty() || self.reply.len() > crate::clipboard::LIMIT {
+            return;
+        }
+        if std::mem::take(&mut self.reply_break) && !self.reply.is_empty() {
+            self.reply.push_str("\n\n");
+        }
+        self.reply.push_str(&text);
+        if self.reply.len() > crate::clipboard::LIMIT + 1 {
+            let end = self.reply.floor_char_boundary(crate::clipboard::LIMIT + 1);
+            self.reply.truncate(end);
+        }
     }
     #[cfg(test)]
     pub fn entries_text(&self) -> String {
@@ -1074,6 +1100,22 @@ mod tests {
         (0..height)
             .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
             .collect()
+    }
+    #[test]
+    fn copy_takes_the_whole_reply_with_its_tabs() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.event(Event::Started);
+        app.event(Event::Text("one".into()));
+        app.event(Event::Tool("Read\nsrc/main.rs".into()));
+        app.event(Event::Text("two\tcolumns".into()));
+        assert_eq!(app.last_reply(), Some("one\n\ntwo\tcolumns"));
+        app.attach(crate::shell::Ran {
+            command: "cat Makefile".into(),
+            status: crate::shell::Status::Exited(0),
+            output: "all:\n\tcargo build\n".into(),
+        });
+        assert_eq!(app.attachments[0].output, "all:\n\tcargo build\n");
     }
     #[test]
     fn a_new_connection_settles_the_old_sessions_command_and_popup() {

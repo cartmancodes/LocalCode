@@ -15,8 +15,17 @@ enum State {
 #[derive(Default)]
 pub struct Sanitizer {
     state: State,
+    /// Keep tabs, for text that leaves Octet (the clipboard, the vendor);
+    /// the screen gets four spaces.
+    tabs: bool,
 }
 impl Sanitizer {
+    pub fn keeping_tabs() -> Self {
+        Self {
+            tabs: true,
+            ..Self::default()
+        }
+    }
     pub fn push(&mut self, text: &str) -> String {
         let mut out = String::with_capacity(text.len());
         for c in text.chars() {
@@ -26,6 +35,7 @@ impl Sanitizer {
                     '\u{9b}' => self.state = State::Csi,
                     '\u{9d}' => self.state = State::String,
                     '\n' => out.push(c),
+                    '\t' if self.tabs => out.push(c),
                     '\t' => out.push_str("    "),
                     c if !c.is_control()
                         && !matches!(c,'\u{202a}'..='\u{202e}'|'\u{2066}'..='\u{2069}') =>
@@ -59,6 +69,10 @@ impl Sanitizer {
         out
     }
 }
+/// Like `clean`, keeping tabs.
+pub fn strip(text: &str) -> String {
+    Sanitizer::keeping_tabs().push(text)
+}
 pub fn clean(text: &str) -> String {
     Sanitizer::default().push(text)
 }
@@ -72,5 +86,10 @@ mod tests {
         assert_eq!(s.push("payload\x07safe\x1b[3"), "safe");
         assert_eq!(s.push("1mred\x1b[0m"), "red");
         assert_eq!(clean("x\r\x08\u{202e}y"), "xy");
+    }
+    #[test]
+    fn strip_keeps_tabs_for_text_that_leaves_octet() {
+        assert_eq!(strip("a\tb\x1b[31mc"), "a\tbc");
+        assert_eq!(clean("a\tb"), "a    b");
     }
 }
