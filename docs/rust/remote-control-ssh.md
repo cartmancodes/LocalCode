@@ -209,15 +209,18 @@ tailnet configuration. It checks what is there and prints the next step:
    Remote Login, or `tailscale set --ssh` unless only the App Store app is
    installed, which can't run Tailscale SSH.
 4. **mosh:** is `mosh-server` installed and at least version 1.4.0?
-5. **Colour:** do tmux's server options give terminals 24-bit colour (an `RGB`
-   terminal feature, or a `Tc` override on older tmux)? If not, show the
+5. **Colour:** do tmux's server options give `xterm-256color`, the name the
+   phone arrives under over mosh, 24-bit colour (an `RGB` terminal feature,
+   or a `Tc` override on older tmux)? If not, show the
    `.tmux.conf` lines; if tmux reports neither option, say nothing.
 6. **Phone command:** print the exact Blink and Termius commands for this
    host, user and tmux session, ready to copy.
 
 All the commands share one 2-second deadline, and the SSH check then gets
-half a second, so the screen waits about 2.5 seconds at most. The results
-appear as a note in the conversation. It starts no listener and holds no
+half a second, so the report arrives within about 2.5 seconds. The checks
+run in the background, so the screen keeps drawing and taking keys. The
+results appear as a note in the conversation, with a count of problems on
+the status line. It starts no listener and holds no
 secrets. The App Store Tailscale app is found inside its app bundle when
 `tailscale` isn't on the PATH.
 

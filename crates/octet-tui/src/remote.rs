@@ -98,18 +98,43 @@ fn parse_run_ssh(prefs_json: &str) -> Option<bool> {
     prefs["RunSSH"].as_bool()
 }
 
-/// Whether tmux's server options give terminals 24-bit colour: an `RGB`
-/// terminal feature (tmux 3.2+) or a `Tc` override (older tmux). None when
-/// tmux reported neither option, so nothing is known.
+/// Over mosh the phone's terminal reaches tmux under this name.
+const PHONE_TERM: &str = "xterm-256color";
+
+/// Whether tmux's server options give the phone's terminal 24-bit colour: an
+/// `RGB` terminal feature (tmux 3.2+) or a `Tc` override (older tmux) on a
+/// pattern matching `PHONE_TERM`. None when tmux reported neither option, so
+/// nothing is known.
 fn rgb_configured(features: &str, overrides: &str) -> Option<bool> {
     if features.trim().is_empty() && overrides.trim().is_empty() {
         return None;
     }
+    // Each line reads `name[index] pattern:flag:flag`.
     let colour = |text: &str, flag: &str| {
-        text.lines()
-            .any(|line| line.split(':').skip(1).any(|part| part.trim() == flag))
+        text.lines().any(|line| {
+            let value = line.split_once(' ').map_or(line, |(_, value)| value);
+            let mut parts = value.trim().trim_matches('"').split(':');
+            let pattern = parts.next().unwrap_or("").trim_start_matches(',');
+            glob(pattern, PHONE_TERM) && parts.any(|part| part.trim() == flag)
+        })
     };
     Some(colour(features, "RGB") || colour(overrides, "Tc") || colour(overrides, "RGB"))
+}
+
+/// tmux's terminal patterns: `*` matches any run, `?` one character, and
+/// everything else itself.
+fn glob(pattern: &str, text: &str) -> bool {
+    match pattern.chars().next() {
+        None => text.is_empty(),
+        Some('*') => (0..=text.len())
+            .filter(|&at| text.is_char_boundary(at))
+            .any(|at| glob(&pattern[1..], &text[at..])),
+        Some('?') => text
+            .chars()
+            .next()
+            .is_some_and(|c| glob(&pattern[1..], &text[c.len_utf8()..])),
+        Some(c) => text.starts_with(c) && glob(&pattern[c.len_utf8()..], &text[c.len_utf8()..]),
+    }
 }
 
 fn parse_mosh_version(output: &str) -> Option<(u32, u32, u32)> {
@@ -254,7 +279,7 @@ pub fn report(checks: &Checks) -> String {
         Tmux::NoAnswer => mark(
             false,
             &format!(
-                "Inside tmux, but tmux didn't answer; the phone command assumes session \"{SESSION}\". Check with: tmux new -A -s {SESSION}"
+                "Inside tmux, but tmux didn't answer; the phone command assumes session \"{SESSION}\". Run tmux ls in another terminal and restart tmux if it hangs"
             ),
         ),
         Tmux::Outside => mark(
@@ -314,6 +339,10 @@ pub fn report(checks: &Checks) -> String {
         None => mark(false, "mosh-server isn't installed: brew install mosh"),
     });
     if let (Some(tailnet), true) = (&checks.tailnet, checks.ssh || checks.tailscale_ssh) {
+        // Run now, the command would open a new, empty session, not this one.
+        if matches!(checks.tmux, Tmux::Outside) {
+            lines.push("After restarting Octet in tmux:".into());
+        }
         lines.push(format!(
             "Phone (Blink):   mosh {}@{} -- tmux new -A -s {session}",
             checks.user, tailnet.name
@@ -325,6 +354,19 @@ pub fn report(checks: &Checks) -> String {
     }
     lines.push("Setup guide: docs/remote-control.md".into());
     lines.join("\n")
+}
+
+/// The status-line form of a report: how many checks failed.
+pub fn summary(report: &str) -> String {
+    match report
+        .lines()
+        .filter(|line| line.starts_with("[!!]"))
+        .count()
+    {
+        0 => "Remote control: ready (report above)".into(),
+        1 => "Remote control: 1 problem (report above)".into(),
+        problems => format!("Remote control: {problems} problems (report above)"),
+    }
 }
 
 #[cfg(test)]
@@ -420,6 +462,46 @@ mod tests {
         assert!(text.contains("tmux didn't answer"), "{text}");
         assert!(!text.contains("Not inside tmux"), "{text}");
         assert!(text.contains("tmux new -A -s octet"), "{text}");
+        // `tmux new -A` run inside tmux refuses to nest, so it can't be the
+        // check; `tmux ls` from another terminal is.
+        let line = text
+            .lines()
+            .find(|line| line.contains("didn't answer"))
+            .unwrap();
+        assert!(line.contains("tmux ls"), "{line}");
+        assert!(!line.contains("tmux new"), "{line}");
+    }
+    #[test]
+    fn outside_tmux_the_phone_commands_wait_for_a_restart() {
+        // Run now, the phone command would open a new, empty session.
+        let text = report(&Checks {
+            tmux: Tmux::Outside,
+            ..ready()
+        });
+        let commands = text.find("Phone (Blink)").unwrap();
+        assert!(
+            text[..commands].ends_with("After restarting Octet in tmux:\n"),
+            "{text}"
+        );
+        assert!(!report(&ready()).contains("After restarting"));
+    }
+    #[test]
+    fn the_status_line_counts_the_problems() {
+        assert_eq!(
+            summary(&report(&ready())),
+            "Remote control: ready (report above)"
+        );
+        let one = report(&Checks {
+            mosh: None,
+            ..ready()
+        });
+        assert_eq!(summary(&one), "Remote control: 1 problem (report above)");
+        let two = report(&Checks {
+            mosh: None,
+            tmux: Tmux::Outside,
+            ..ready()
+        });
+        assert_eq!(summary(&two), "Remote control: 2 problems (report above)");
     }
     #[test]
     fn reads_the_colour_setting_from_tmux_options() {
@@ -433,6 +515,27 @@ mod tests {
         );
         // Old tmux without either option, or no answer: unknown, no advice.
         assert_eq!(rgb_configured("", ""), None);
+    }
+    #[test]
+    fn only_patterns_matching_the_phone_terminal_give_colour() {
+        // Over mosh the phone arrives as xterm-256color, so a setting for
+        // another terminal doesn't help it. tmux prints patterns without
+        // the leading comma people write in ~/.tmux.conf.
+        for (features, rgb) in [
+            ("terminal-features[0] xterm-256color:RGB", true),
+            ("terminal-features[0] xterm*:RGB", true),
+            ("terminal-features[0] *256col*:RGB", true),
+            ("terminal-features[0] xterm-256colo?:clipboard:RGB", true),
+            ("terminal-features[0] alacritty:RGB", false),
+            ("terminal-features[0] xterm-kitty:RGB", false),
+            ("terminal-features[0] screen*:RGB", false),
+        ] {
+            assert_eq!(rgb_configured(features, ""), Some(rgb), "{features}");
+        }
+        assert_eq!(
+            rgb_configured("", "terminal-overrides[0] alacritty:Tc\n"),
+            Some(false)
+        );
     }
     #[test]
     fn the_app_store_build_gets_remote_login_advice_only() {
@@ -499,6 +602,44 @@ mod tests {
             "the interface waits {elapsed:?}"
         );
         assert!(checks.tailnet.is_none() && checks.mosh.is_none());
+    }
+    #[tokio::test]
+    async fn the_ssh_checks_get_their_own_half_second_after_the_commands() {
+        // The worst case: Tailscale answers, tmux hangs to the deadline, then
+        // `tailscale debug prefs` and the connection to port 22 hang too.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = octet_testkit::TempDir::new("octet-remote-ssh-hang");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let tool = dir.path().join("tool");
+        // 192.0.2.1 is reserved for documentation, so connecting never answers.
+        std::fs::write(
+            &tool,
+            r#"#!/bin/sh
+case "$1" in
+  status) echo '{"BackendState":"Running","Self":{"DNSName":"m.ts.net.","TailscaleIPs":["192.0.2.1"]}}' ;;
+  *) exec sleep 10 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tool = tool.to_str().unwrap();
+        let programs = Programs {
+            tmux: tool,
+            tailscale: &[tool],
+            mosh_server: tool,
+        };
+        let started = std::time::Instant::now();
+        let checks = probe_with(&programs, true).await;
+        let elapsed = started.elapsed();
+        assert!(checks.tailnet.is_some(), "tailscale answered");
+        assert!(!checks.ssh && !checks.tailscale_ssh);
+        assert!(matches!(checks.tmux, Tmux::NoAnswer));
+        assert!(
+            elapsed >= CHECK_TIMEOUT
+                && elapsed < CHECK_TIMEOUT + SSH_TIMEOUT + Duration::from_millis(400),
+            "the interface waits {elapsed:?}"
+        );
     }
     #[tokio::test]
     async fn run_gives_up_after_the_timeout() {

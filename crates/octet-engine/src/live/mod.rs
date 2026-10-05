@@ -319,6 +319,8 @@ pub fn spawn(config: Config) -> (Handle, mpsc::Receiver<Event>, tokio::task::Joi
     };
     spawn_with_limits(config, limits)
 }
+/// Like `spawn`, with explicit time limits. `limits.approval` is the
+/// approval window here; `config.approval_timeout` is not read.
 pub fn spawn_with_limits(
     config: Config,
     limits: Limits,

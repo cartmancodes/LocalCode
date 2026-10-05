@@ -144,7 +144,9 @@ Setup guide: docs/remote-control.md
 ```
 
 Each `[!!]` line names its fix; the full list is in
-[Report lines and fixes](#report-lines-and-fixes).
+[Report lines and fixes](#report-lines-and-fixes). The status line under the
+prompt sums it up, for example `Remote control: ready (report above)` or
+`Remote control: 2 problems (report above)`.
 
 ## 6. Set up the phone
 
@@ -228,7 +230,7 @@ unchanged.
 | Check | How it finds out | Passes when |
 | --- | --- | --- |
 | tmux session | `$TMUX` is set in Octet's environment, then `tmux display-message -p '#S'` gives the session name. | The session name comes back. |
-| tmux colour | `tmux show-options -s terminal-features` and `terminal-overrides`. Shown only when it fails. | An `RGB` feature, or a `Tc`/`RGB` override on older tmux. If tmux lists neither option, or Octet isn't in tmux, there is no line. |
+| tmux colour | `tmux show-options -s terminal-features` and `terminal-overrides`. Shown only when it fails. | An `RGB` feature, or a `Tc`/`RGB` override on older tmux, for a pattern that matches `xterm-256color` (the name the phone arrives under over mosh), such as `xterm-256color`, `xterm*` or `*256col*`. A setting for another terminal, such as `alacritty`, doesn't count. If tmux lists neither option, or Octet isn't in tmux, there is no line. |
 | Tailscale | `tailscale status --json`. If `tailscale` isn't on the PATH, the App Store app's own CLI at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`. | `BackendState` is `Running`. The report shows the machine name and first tailnet address. |
 | SSH login | Only checked once Tailscale is connected. Two checks at once: `tailscale debug prefs` reports `RunSSH: true` (Option B, skipped for the App Store app), or a TCP connection to port 22 on the Mac's own tailnet address succeeds (Option A). | Either one passes. |
 | mosh | `mosh-server --version`. | Version 1.4.0 or newer. |
@@ -244,7 +246,10 @@ Tailscale for its setting instead.
 All the commands run at once and share one 2-second deadline. A command
 that hasn't answered by then is stopped and counts as missing (or, for
 tmux, as "didn't answer"). The SSH checks then get half a second. So the
-screen waits about 2.5 seconds at most, even if tmux or Tailscale hangs.
+report arrives within about 2.5 seconds, even if tmux or Tailscale hangs.
+The checks run in the background: while they do, the status line reads
+`Checking phone access…`, and the screen keeps drawing, taking keys and
+showing the agent's output.
 
 ### Report lines and fixes
 
@@ -262,7 +267,7 @@ screen waits about 2.5 seconds at most, even if tmux or Tailscale hangs.
 | `[ok] mosh-server 1.4.0` | mosh is ready. |
 | `[!!] mosh-server X.Y.Z is too old for 24-bit colour; …` | `brew upgrade mosh`. |
 | `[!!] mosh-server isn't installed: brew install mosh` | Do step 1. The same line appears if `mosh-server` isn't on Octet's PATH. |
-| `Phone (Blink): …` and `Phone (Termius): …` | Copy these into the phone app (step 6). |
+| `Phone (Blink): …` and `Phone (Termius): …` | Copy these into the phone app (step 6). When Octet isn't in tmux they follow `After restarting Octet in tmux:`, because until then they would open a new, empty session. |
 | `Setup guide: docs/remote-control.md` | Always the last line. |
 
 ### What it can't check
@@ -323,8 +328,9 @@ code until then.
 When an approval starts waiting, Octet rings the terminal bell; tmux flags
 it, and the bell reaches your phone app over mosh. Whether the phone shows it
 while the app is in the background depends on the app. The desk and the
-phone can be attached to the same session at once; tmux sizes the screen to
-the smaller of the two.
+phone can be attached to the same session at once. By default (tmux 3.1 and
+later) the screen takes the size of whichever of them was used last; add
+`set -g window-size smallest` to `~/.tmux.conf` to fit both instead.
 
 ## Turn it off
 

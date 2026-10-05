@@ -776,3 +776,59 @@ esac"#,
     p.quit();
     p.finish();
 }
+
+#[test]
+fn remote_control_keeps_the_screen_live_while_checks_run() {
+    // Every check hangs to its deadline. The screen must keep painting and
+    // taking keys meanwhile, then show the report when the checks end.
+    let tools = octet_testkit::TempDir::new("octet-remote-slow");
+    fs::create_dir_all(tools.path()).unwrap();
+    for name in ["tmux", "tailscale", "mosh-server"] {
+        stand_in(tools.path(), name, "exec sleep 10");
+    }
+    let path = format!(
+        "{}:{}",
+        tools.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut p = Pty::spawn_with_env(
+        &[],
+        &[("PATH", path.as_str()), ("TMUX", "/tmp/tmux-test,1,0")],
+    );
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"/remote-control\r");
+    p.wait_for(Duration::from_secs(1), |p| {
+        p.screen_shows("Checking phone access")
+    });
+    p.send(b"typed meanwhile");
+    p.wait_for(Duration::from_secs(1), |p| {
+        p.screen_shows("typed meanwhile")
+    });
+    // The status line is painted after the conversation, so once the
+    // summary shows, the whole report has.
+    p.wait(|p| p.row_shows(35, "Remote control: 3 problems (report above)"));
+    assert!(p.screen_shows("tmux didn't answer"));
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn a_valid_approval_timeout_reaches_the_engine() {
+    // The demo denies an unanswered approval when the window closes; with
+    // the 120-second default this would not happen within the wait.
+    let mut p = Pty::spawn_with(&["--approval-timeout", "10"]);
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"/approval-demo\r");
+    p.wait(|p| p.screen_shows("Write a greeting to hello.txt?"));
+    let opened = Instant::now();
+    p.wait_for(Duration::from_secs(15), |p| {
+        p.screen_shows("Denied. No action was performed.")
+    });
+    assert!(
+        opened.elapsed() >= Duration::from_secs(9),
+        "denied after {:?}",
+        opened.elapsed()
+    );
+    p.quit();
+    p.finish();
+}
