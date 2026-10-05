@@ -248,10 +248,12 @@ mod tests {
     #[tokio::test]
     async fn a_process_that_left_the_group_cannot_hold_the_result() {
         let started = std::time::Instant::now();
-        let ran = sh("perl -MPOSIX -e 'setsid(); sleep 20' & sleep 0.5; echo started").await;
+        // Without the fix this waits the full 60 s; the bound leaves room
+        // for a machine busy with the rest of the suite.
+        let ran = sh("perl -MPOSIX -e 'setsid(); sleep 60' & sleep 0.5; echo started").await;
         assert!(ran.output.contains("started"), "{}", ran.output);
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < Duration::from_secs(30),
             "{:?}",
             started.elapsed()
         );
