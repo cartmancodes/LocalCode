@@ -868,3 +868,22 @@ fn bang_runs_a_command_and_attaches_it_to_the_next_prompt() {
     p.quit();
     p.finish();
 }
+
+#[test]
+fn at_mentions_a_workspace_file() {
+    let workspace = octet_testkit::TempDir::new("octet-at-workspace");
+    fs::create_dir_all(workspace.path().join("src")).unwrap();
+    fs::write(workspace.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    let cwd = workspace.path().to_str().unwrap().to_owned();
+    let mut p = Pty::spawn_with(&["--cwd", &cwd]);
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"explain @mai");
+    p.wait(|p| p.screen_shows("› src/main.rs"));
+    p.send(b"\r");
+    p.wait(|p| p.screen_shows("explain @src/main.rs"));
+    p.send(b"\x15");
+    p.send(b"/rem\t");
+    p.wait(|p| p.screen_shows("/remote-control"));
+    p.quit();
+    p.finish();
+}

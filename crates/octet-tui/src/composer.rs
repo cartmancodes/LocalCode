@@ -1,5 +1,179 @@
 //! The prompt box's attachment and completion logic, free of terminal I/O.
 use crate::shell::{Ran, CUT};
+use std::path::Path;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Kind {
+    File,
+    Path,
+    Command,
+}
+
+/// The suggestion popup above the prompt box.
+#[derive(Debug)]
+pub struct Completion {
+    pub kind: Kind,
+    pub items: Vec<String>,
+    pub selected: usize,
+    /// Where the word being completed starts in the draft.
+    pub start: usize,
+}
+
+/// What Tab does to the draft.
+#[derive(Debug)]
+pub enum Tab {
+    Replace {
+        start: usize,
+        text: String,
+    },
+    Popup(Completion),
+    /// Open the `@` popup for the mention starting here.
+    Mention(usize),
+    Nothing,
+}
+
+/// The start of the word ending at `cursor`.
+fn word_start(text: &str, cursor: usize) -> usize {
+    text[..cursor]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(at, c)| at + c.len_utf8())
+}
+
+/// The `@` mention ending at the cursor: where it starts and the query after
+/// the `@`.
+pub fn mention_at(text: &str, cursor: usize) -> Option<(usize, &str)> {
+    let start = word_start(text, cursor);
+    let query = text[start..cursor].strip_prefix('@')?;
+    // The word must end at the cursor, or the user moved past it.
+    if text[cursor..]
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_whitespace())
+    {
+        return None;
+    }
+    (!query.contains('"')).then_some((start, query))
+}
+
+/// The text an accepted file suggestion puts in the draft.
+pub fn mention(path: &str) -> String {
+    if path.contains(char::is_whitespace) {
+        format!("@\"{path}\" ")
+    } else {
+        format!("@{path} ")
+    }
+}
+
+/// What Tab does with the word ending at the cursor.
+pub fn tab(text: &str, cursor: usize, root: &Path, home: Option<&Path>) -> Tab {
+    let start = word_start(text, cursor);
+    let word = &text[start..cursor];
+    if word.starts_with('@') {
+        return Tab::Mention(start);
+    }
+    let first_word = text[..start].trim().is_empty();
+    if first_word && word.starts_with('/') && !word[1..].contains('/') {
+        let names: Vec<String> = crate::view::COMMANDS
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .filter(|name| name.starts_with(word))
+            .collect();
+        return choose(start, word, names, Kind::Command, " ");
+    }
+    if word.contains('/') || word.starts_with('~') {
+        return choose(
+            start,
+            word,
+            path_candidates(root, home, word),
+            Kind::Path,
+            "",
+        );
+    }
+    Tab::Nothing
+}
+
+/// One candidate fills in; several fill their common prefix, or open the
+/// popup when that adds nothing.
+fn choose(start: usize, word: &str, items: Vec<String>, kind: Kind, suffix: &str) -> Tab {
+    match items.len() {
+        0 => Tab::Nothing,
+        1 => Tab::Replace {
+            start,
+            text: format!(
+                "{}{}",
+                items[0],
+                if items[0].ends_with('/') { "" } else { suffix }
+            ),
+        },
+        _ => {
+            let prefix = common_prefix(&items);
+            if prefix.len() > word.len() {
+                Tab::Replace {
+                    start,
+                    text: prefix,
+                }
+            } else {
+                Tab::Popup(Completion {
+                    kind,
+                    items: items.into_iter().take(crate::files::SHOWN).collect(),
+                    selected: 0,
+                    start,
+                })
+            }
+        }
+    }
+}
+
+fn common_prefix(items: &[String]) -> String {
+    let first = &items[0];
+    let mut end = first.len();
+    for item in &items[1..] {
+        end = first
+            .char_indices()
+            .zip(item.chars())
+            .find(|((_, a), b)| a != b)
+            .map_or(end.min(item.len()), |((at, _), _)| at.min(end));
+    }
+    first[..end].to_owned()
+}
+
+/// Entries of the word's folder starting with its last part, as whole words
+/// (folders end in `/`). Hidden entries only when the part starts with `.`.
+fn path_candidates(root: &Path, home: Option<&Path>, word: &str) -> Vec<String> {
+    let (folder, part) = match word.rfind('/') {
+        Some(slash) => (&word[..=slash], &word[slash + 1..]),
+        None => ("", word),
+    };
+    let base = if let Some(rest) = folder.strip_prefix("~/") {
+        match home {
+            Some(home) => home.join(rest),
+            None => return Vec::new(),
+        }
+    } else if folder.starts_with('/') {
+        std::path::PathBuf::from(folder)
+    } else {
+        root.join(folder)
+    };
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let visible = !name.starts_with('.') || part.starts_with('.');
+            (visible && name.starts_with(part)).then(|| {
+                let folder_mark = if entry.path().is_dir() { "/" } else { "" };
+                format!("{folder}{name}{folder_mark}")
+            })
+        })
+        .take(200)
+        .collect();
+    found.sort();
+    found
+}
 
 /// The prompt box title's note of waiting attachments.
 pub fn chip(attachments: &[Ran]) -> Option<String> {
@@ -92,6 +266,59 @@ mod tests {
         );
         assert!(wire.contains("\n````\n```rust"), "{wire}");
         assert!(wire.ends_with("```\n````"), "{wire}");
+    }
+    #[test]
+    fn finds_the_mention_being_typed() {
+        assert_eq!(mention_at("@ma", 3), Some((0, "ma")));
+        assert_eq!(mention_at("see @src/ma", 11), Some((4, "src/ma")));
+        assert_eq!(mention_at("héllo @ma", "héllo @ma".len()), Some((7, "ma")));
+        assert_eq!(
+            mention_at("me@example.com", 14),
+            None,
+            "mid-word @ is not a mention"
+        );
+        assert_eq!(mention_at("@ma rest", 8), None, "the cursor left the token");
+    }
+    #[test]
+    fn mentions_quote_paths_with_spaces() {
+        assert_eq!(mention("src/main.rs"), "@src/main.rs ");
+        assert_eq!(mention("my notes.md"), "@\"my notes.md\" ");
+    }
+    #[test]
+    fn tab_completes_commands_paths_and_mentions() {
+        let dir = octet_testkit::TempDir::new("octet-tab");
+        std::fs::create_dir_all(dir.path().join("src/bin")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
+        std::fs::write(dir.path().join("src/model.rs"), "").unwrap();
+        let root = dir.path();
+        let tab = |text: &str| super::tab(text, text.len(), root, None);
+        assert!(
+            matches!(tab("/rem"), Tab::Replace { start: 0, ref text } if text == "/remote-control ")
+        );
+        assert!(matches!(
+            tab("/re"),
+            Tab::Popup(Completion {
+                kind: Kind::Command,
+                ..
+            })
+        ));
+        assert!(
+            matches!(tab("look at src/ma"), Tab::Replace { start: 8, ref text } if text == "src/main.rs")
+        );
+        assert!(matches!(tab("src/b"), Tab::Replace { start: 0, ref text } if text == "src/bin/"));
+        assert!(
+            matches!(tab("src/m"), Tab::Popup(Completion { kind: Kind::Path, ref items, .. }) if items.len() == 2)
+        );
+        assert!(matches!(tab("héllo @ma"), Tab::Mention(7)));
+        assert!(matches!(tab("plain words"), Tab::Nothing));
+        assert!(
+            matches!(tab("nowhere/zz"), Tab::Nothing),
+            "missing folders complete to nothing"
+        );
+        assert!(
+            matches!(tab("/usr/li"), Tab::Replace { ref text, .. } if text.starts_with("/usr/lib")),
+            "a second / makes it a path, not a command"
+        );
     }
     #[test]
     fn outputs_are_cut_from_the_start_to_fit_the_limit() {

@@ -261,6 +261,8 @@ async fn run_session(
     let mut remote_check: Option<tokio::task::JoinHandle<remote::Checks>> = None;
     // The running `!` command, if any.
     let mut shell_task: Option<ShellTask> = None;
+    // The workspace file index being built for `@`.
+    let mut index_task: Option<tokio::task::JoinHandle<files::Index>> = None;
     loop {
         if dirty && last_paint.elapsed() >= frame_time {
             terminal.draw(|f| view::draw(f, app))?;
@@ -305,6 +307,20 @@ async fn run_session(
                     Ok(checks) => show_remote_report(app, &checks),
                     Err(error) => app.notice(format!("Phone-access check failed: {error}")),
                 }
+                dirty = true;
+            }
+            index = async {
+                match index_task.as_mut() {
+                    Some(task) => task.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                index_task = None;
+                app.files = match index {
+                    Ok(index) => files::Files::Ready(index),
+                    Err(_) => files::Files::Unbuilt,
+                };
+                refresh_completion(app);
                 dirty = true;
             }
             result = async {
@@ -378,6 +394,13 @@ async fn run_session(
                     },
                     Action::Exit(exit) => return Ok(exit),
                 }
+                if matches!(app.files, files::Files::Wanted) {
+                    let root = app.root.clone();
+                    index_task = Some(tokio::task::spawn_blocking(move || {
+                        files::Index::build(&root)
+                    }));
+                    app.files = files::Files::Building;
+                }
                 dirty = true;
             }
             _ = quit_signal() => return Ok(Exit::Quit),
@@ -431,6 +454,61 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
             }
         }
         Err(error) => app.notice(format!("Goal persistence failed; paused: {error}")),
+    }
+}
+/// Opens the `@` popup for the mention starting at `start`, asking for the
+/// index on first use.
+fn open_mentions(app: &mut App, start: usize) {
+    if matches!(app.files, files::Files::Unbuilt) {
+        app.files = files::Files::Wanted;
+    }
+    app.completion = Some(composer::Completion {
+        kind: composer::Kind::File,
+        items: Vec::new(),
+        selected: 0,
+        start,
+    });
+    refresh_completion(app);
+}
+/// Re-ranks the `@` popup for the current draft, closing it when the cursor
+/// has left the mention.
+fn refresh_completion(app: &mut App) {
+    let Some(completion) = app.completion.as_mut() else {
+        return;
+    };
+    if completion.kind != composer::Kind::File {
+        return;
+    }
+    match composer::mention_at(&app.editor.text, app.editor.cursor) {
+        Some((start, query)) if start == completion.start => {
+            completion.items = match &app.files {
+                files::Files::Ready(index) => {
+                    index.rank(query).into_iter().map(str::to_owned).collect()
+                }
+                _ => Vec::new(),
+            };
+            completion.selected = completion
+                .selected
+                .min(completion.items.len().saturating_sub(1));
+        }
+        _ => app.completion = None,
+    }
+}
+/// Puts the selected suggestion into the draft and closes the popup.
+fn accept_completion(app: &mut App) {
+    let Some(completion) = app.completion.take() else {
+        return;
+    };
+    let Some(item) = completion.items.get(completion.selected) else {
+        return;
+    };
+    let text = match completion.kind {
+        composer::Kind::File => composer::mention(item),
+        composer::Kind::Path => item.clone(),
+        composer::Kind::Command => format!("{item} "),
+    };
+    if !app.editor.replace(completion.start, &text) {
+        app.notice = "Prompt limit reached".into();
     }
 }
 /// Starts the `/remote-control` checks in the background. They take up to
@@ -585,6 +663,31 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         }
         return Action::Continue;
     }
+    if let Some(completion) = app.completion.as_mut() {
+        match key.code {
+            KeyCode::Up => {
+                completion.selected = completion.selected.saturating_sub(1);
+                return Action::Continue;
+            }
+            KeyCode::Down => {
+                completion.selected =
+                    (completion.selected + 1).min(completion.items.len().saturating_sub(1));
+                return Action::Continue;
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                accept_completion(app);
+                return Action::Continue;
+            }
+            KeyCode::Esc => {
+                app.completion = None;
+                return Action::Continue;
+            }
+            // Path and command popups close on any other key; the file popup
+            // follows the edit below.
+            _ if completion.kind != composer::Kind::File => app.completion = None,
+            _ => {}
+        }
+    }
     match key.code {
         KeyCode::F(1) => app.help = true,
         KeyCode::BackTab => return cycle_mode(app),
@@ -719,11 +822,35 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         KeyCode::End => app.editor.end(),
         KeyCode::Backspace => app.editor.backspace(),
         KeyCode::Delete => app.editor.delete(),
+        KeyCode::Tab => {
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            match composer::tab(
+                &app.editor.text,
+                app.editor.cursor,
+                &app.root,
+                home.as_deref(),
+            ) {
+                composer::Tab::Replace { start, text } => {
+                    if !app.editor.replace(start, &text) {
+                        app.notice = "Prompt limit reached".into();
+                    }
+                }
+                composer::Tab::Popup(completion) => app.completion = Some(completion),
+                composer::Tab::Mention(start) => open_mentions(app, start),
+                composer::Tab::Nothing => {}
+            }
+        }
         KeyCode::Char(c) if !ctrl && !alt && !app.editor.insert(&c.to_string()) => {
             app.notice = "Prompt limit reached".into();
         }
         _ => {}
     }
+    if key.code == KeyCode::Char('@') && app.completion.is_none() {
+        if let Some((start, "")) = composer::mention_at(&app.editor.text, app.editor.cursor) {
+            open_mentions(app, start);
+        }
+    }
+    refresh_completion(app);
     Action::Continue
 }
 /// Interrupts the turn; a goal working on it is paused first.
@@ -1058,6 +1185,44 @@ mod model_tests {
                 return text;
             }
         }
+    }
+    #[tokio::test]
+    async fn at_opens_the_file_popup_and_enter_accepts() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-at").await;
+        app.files = crate::files::Files::Ready(crate::files::Index::from_paths(vec![
+            "README.md".into(),
+            "src/main.rs".into(),
+        ]));
+        for c in "see @mai".chars() {
+            key_action(&mut app, &mut session, key(KeyCode::Char(c))).await;
+        }
+        let completion = app.completion.as_ref().expect("popup open");
+        assert_eq!(completion.items, ["src/main.rs"]);
+        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        assert_eq!(app.editor.text, "see @src/main.rs ");
+        assert!(app.completion.is_none());
+        assert!(!app.running, "Enter accepted instead of sending");
+    }
+    #[tokio::test]
+    async fn the_first_at_asks_for_the_index_and_esc_closes_the_popup() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-at-index").await;
+        key_action(&mut app, &mut session, key(KeyCode::Char('@'))).await;
+        assert!(matches!(app.files, crate::files::Files::Wanted));
+        assert!(app.completion.is_some());
+        key_action(&mut app, &mut session, key(KeyCode::Esc)).await;
+        assert!(app.completion.is_none());
+        assert_eq!(app.editor.text, "@");
+    }
+    #[tokio::test]
+    async fn an_at_inside_a_word_opens_nothing() {
+        let mut app = app();
+        let (_temp, mut session) = demo_session("octet-at-word").await;
+        for c in "me@host".chars() {
+            key_action(&mut app, &mut session, key(KeyCode::Char(c))).await;
+        }
+        assert!(app.completion.is_none());
     }
     #[tokio::test]
     async fn bang_lines_run_locally_and_double_bang_does_not_attach() {

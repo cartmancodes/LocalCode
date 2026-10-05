@@ -82,6 +82,10 @@ pub struct App {
     pub attachments: Vec<crate::shell::Ran>,
     /// A `!` command is running.
     pub shell_running: bool,
+    /// The suggestion popup, when open.
+    pub completion: Option<crate::composer::Completion>,
+    /// The workspace file index for `@`.
+    pub files: crate::files::Files,
 }
 impl App {
     pub fn new(config: &octet_core::Config, journal: PathBuf) -> Self {
@@ -123,9 +127,14 @@ impl App {
             root: config.cwd.clone(),
             attachments: Vec::new(),
             shell_running: false,
+            completion: None,
+            files: crate::files::Files::Unbuilt,
         }
     }
     pub fn connection(&mut self, config: &octet_core::Config, journal: PathBuf) {
+        // Rebuilt per connection, so a build abandoned with the old session
+        // never leaves the index stuck at Building.
+        self.files = crate::files::Files::Unbuilt;
         self.engine = config.engine;
         self.mode = config.mode;
         self.mode_pending = None;
@@ -740,6 +749,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .style(Style::default().fg(MUTED)),
         hints,
     );
+    completion_popup(frame, regions[2], app);
     frame.render_widget(
         Paragraph::new(if app.notice.is_empty() {
             if app.engine == octet_core::Engine::Demo {
@@ -772,6 +782,64 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             input.y + ((row - offset) as u16).min(input.height.saturating_sub(1)),
         ));
     }
+}
+/// The `@`, path or command suggestions, just above the prompt box.
+fn completion_popup(frame: &mut Frame, composer: Rect, app: &App) {
+    let Some(completion) = &app.completion else {
+        return;
+    };
+    let mut lines: Vec<Line> = completion
+        .items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let chosen = index == completion.selected;
+            Line::from(Span::styled(
+                format!(" {} {item}", if chosen { "›" } else { " " }),
+                Style::default()
+                    .fg(if chosen { ACCENT } else { FG })
+                    .bg(if chosen { SELECTED } else { PANEL }),
+            ))
+        })
+        .collect();
+    if lines.is_empty() {
+        let message = match (&completion.kind, &app.files) {
+            (crate::composer::Kind::File, crate::files::Files::Ready(_)) => " No matching files",
+            (crate::composer::Kind::File, _) => " Indexing files…",
+            _ => " No matches",
+        };
+        lines.push(Line::from(Span::styled(
+            message,
+            Style::default().fg(MUTED),
+        )));
+    }
+    if let crate::files::Files::Ready(index) = &app.files {
+        if index.capped && completion.kind == crate::composer::Kind::File {
+            lines.push(Line::from(Span::styled(
+                " Indexed the first 50,000 files",
+                Style::default().fg(MUTED),
+            )));
+        }
+    }
+    let title = match completion.kind {
+        crate::composer::Kind::File => " Files · Enter choose · Esc close ",
+        crate::composer::Kind::Path => " Paths ",
+        crate::composer::Kind::Command => " Commands ",
+    };
+    let height = lines.len() as u16 + 2;
+    let area = Rect {
+        x: composer.x,
+        y: composer.y.saturating_sub(height),
+        width: composer.width.min(64),
+        height: height.min(composer.y),
+    };
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(card(title))
+            .style(Style::default().bg(PANEL)),
+        area,
+    );
 }
 /// The width the draft wraps at: margin, border and padding take three
 /// columns on each side.
@@ -896,7 +964,7 @@ fn modal(area: Rect, width: u16, height: u16) -> Rect {
 fn help(frame: &mut Frame, area: Rect) {
     let area = modal(area, 76, 28);
     frame.render_widget(Clear, area);
-    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/copy or Ctrl+X: copy the last reply to the clipboard\n!cmd run and attach output · !!cmd run only · Esc stops\n/remote-control: check phone access setup\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
+    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/copy or Ctrl+X: copy the last reply to the clipboard\n!cmd run and attach output · !!cmd run only · Esc stops\n@ mention a file · Tab completes paths and /commands\n/remote-control: check phone access setup\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
     frame.render_widget(
         Paragraph::new(text)
             .block(card(" Help "))
@@ -1001,6 +1069,23 @@ mod tests {
         (0..height)
             .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
             .collect()
+    }
+    #[test]
+    fn the_popup_lists_suggestions_above_the_prompt() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.completion = Some(crate::composer::Completion {
+            kind: crate::composer::Kind::File,
+            items: vec!["src/main.rs".into(), "src/model.rs".into()],
+            selected: 1,
+            start: 0,
+        });
+        let rows = screen(100, 30, &mut app);
+        assert!(rows.iter().any(|row| row.contains("   src/main.rs")));
+        assert!(rows.iter().any(|row| row.contains(" › src/model.rs")));
+        app.completion.as_mut().unwrap().items.clear();
+        let rows = screen(100, 30, &mut app);
+        assert!(rows.iter().any(|row| row.contains("Indexing files…")));
     }
     #[test]
     fn shell_output_is_cleaned_and_attachments_stay_bounded() {

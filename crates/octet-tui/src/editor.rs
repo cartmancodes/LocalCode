@@ -15,6 +15,17 @@ impl Editor {
         self.cursor += text.len();
         true
     }
+    /// Replaces `start..cursor` with `text`; false when it would not fit the
+    /// prompt limit.
+    #[must_use = "false means the text did not fit the prompt limit"]
+    pub fn replace(&mut self, start: usize, text: &str) -> bool {
+        if self.text.len() - (self.cursor - start) + text.len() > octet_core::PROMPT_LIMIT {
+            return false;
+        }
+        self.text.replace_range(start..self.cursor, text);
+        self.cursor = start + text.len();
+        true
+    }
     pub fn left(&mut self) {
         self.cursor = self.text[..self.cursor]
             .grapheme_indices(true)
@@ -155,5 +166,15 @@ mod tests {
         assert!(e.insert("draft"));
         assert!(!e.insert(&"x".repeat(octet_core::PROMPT_LIMIT)));
         assert_eq!(e.text, "draft");
+    }
+    #[test]
+    fn replace_swaps_the_text_before_the_cursor() {
+        let mut editor = Editor::default();
+        assert!(editor.insert("see @ma now"));
+        editor.cursor = 7;
+        assert!(editor.replace(4, "@src/main.rs "));
+        assert_eq!(editor.text, "see @src/main.rs  now");
+        assert_eq!(editor.cursor, 17);
+        assert!(!editor.replace(0, &"x".repeat(octet_core::PROMPT_LIMIT + 1)));
     }
 }
