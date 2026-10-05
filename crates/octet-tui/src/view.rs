@@ -387,6 +387,14 @@ impl App {
             State::Approval
         }
     }
+    #[cfg(test)]
+    pub fn entries_text(&self) -> String {
+        self.entries
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
     pub fn recall(&mut self, older: bool) {
         if self.history.is_empty() {
             return;
@@ -824,7 +832,7 @@ fn modal(area: Rect, width: u16, height: u16) -> Rect {
 fn help(frame: &mut Frame, area: Rect) {
     let area = modal(area, 76, 24);
     frame.render_widget(Clear, area);
-    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
+    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/remote-control: check phone access setup\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
     frame.render_widget(
         Paragraph::new(text)
             .block(card(" Help "))
@@ -833,7 +841,7 @@ fn help(frame: &mut Frame, area: Rect) {
         area,
     );
 }
-pub const COMMANDS: [(&str, &str); 9] = [
+pub const COMMANDS: [(&str, &str); 10] = [
     ("/help", "Keyboard shortcuts"),
     ("/model", "Switch model or provider"),
     (
@@ -845,10 +853,15 @@ pub const COMMANDS: [(&str, &str); 9] = [
     ("/export", "Export journal to a new file"),
     ("/new", "Start a fresh conversation"),
     ("/reconnect", "Reconnect to the vendor session"),
+    (
+        "/remote-control",
+        "Check phone access over tmux, Tailscale and mosh",
+    ),
     ("/quit", "Save and exit"),
 ];
 fn palette(frame: &mut Frame, area: Rect, selected: usize) {
-    let area = modal(area, 66, 14);
+    // Borders, a blank line above and below the list, and the key line.
+    let area = modal(area, 66, COMMANDS.len() as u16 + 5);
     frame.render_widget(Clear, area);
     let mut lines = vec![Line::default()];
     for (index, (command, description)) in COMMANDS.iter().enumerate() {
@@ -940,6 +953,17 @@ mod tests {
         let rows = screen(44, 16, &mut app);
         // The composer's top border sits 4 rows above the status line.
         assert!(rows[16 - 6].starts_with(" ╭ Prompt"), "{}", rows[16 - 6]);
+    }
+    #[test]
+    fn the_palette_shows_every_command_and_its_keys() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.palette = true;
+        let rows = screen(80, 24, &mut app);
+        for (name, _) in COMMANDS {
+            assert!(rows.iter().any(|row| row.contains(name)), "{name} missing");
+        }
+        assert!(rows.iter().any(|row| row.contains("Esc close")));
     }
     #[test]
     fn empty_conversation_leaves_the_centre_blank() {

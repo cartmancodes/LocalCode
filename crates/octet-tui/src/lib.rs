@@ -1,5 +1,6 @@
 mod editor;
 mod mascot;
+mod remote;
 mod text;
 mod view;
 use crossterm::{
@@ -741,6 +742,10 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                 },
             }
         }
+        "/remote-control" => match argument {
+            "" | "status" => app.notice(remote::report(&remote::probe().await)),
+            _ => app.notice("Use /remote-control or /remote-control status"),
+        },
         "/export" => {
             if app.running {
                 app.notice = "Wait for completion or cancel before exporting".into();
@@ -855,6 +860,16 @@ mod model_tests {
         let config = Config::new(Engine::Demo, "demo", directory.clone());
         let session = Session::open(config, directory).await.unwrap();
         (temp, session)
+    }
+    #[tokio::test]
+    async fn remote_control_reports_without_changing_the_session() {
+        let mut app = app();
+        assert!(matches!(
+            command(&mut app, "/remote-control").await,
+            Action::Continue
+        ));
+        assert!(app.entries_text().contains("Remote control setup"));
+        assert_eq!(app.session, "thread-1");
     }
     #[tokio::test]
     async fn ctrl_c_twice_on_an_idle_empty_prompt_quits() {
