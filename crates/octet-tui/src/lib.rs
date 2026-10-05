@@ -1,6 +1,7 @@
 mod clipboard;
 mod composer;
 mod editor;
+mod external;
 mod files;
 mod mascot;
 mod remote;
@@ -96,14 +97,17 @@ impl TerminalGuard {
         );
         let _ = disable_raw_mode();
     }
+    fn resume(&self) -> io::Result<()> {
+        enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)
+    }
     fn suspend(&self) -> io::Result<()> {
         Self::restore();
         // SAFETY: raise only delivers SIGSTOP to this process.
         unsafe {
             libc::raise(libc::SIGSTOP);
         }
-        enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)
+        self.resume()
     }
 }
 impl Drop for TerminalGuard {
@@ -131,6 +135,8 @@ enum Action {
     CancelShell,
     /// Run the `/remote-control` checks off the event loop.
     RemoteControl,
+    /// Hand the terminal to the user's editor for the draft.
+    ExternalEditor,
     Exit(Exit),
 }
 /// Why a session ended; `run` decides whether to reconnect.
@@ -248,7 +254,7 @@ async fn run_session(
     app: &mut App,
     session: &mut Session,
 ) -> io::Result<Exit> {
-    let mut input = InputReader::new();
+    let mut input = Some(InputReader::new());
     let mut dirty = true;
     let mut last_paint = Instant::now() - Duration::from_secs(1);
     let frame_time = Duration::from_millis(33);
@@ -263,15 +269,17 @@ async fn run_session(
     let mut shell_task: Option<ShellTask> = None;
     // The workspace file index being built for `@`.
     let mut index_task: Option<tokio::task::JoinHandle<files::Index>> = None;
+    // The external editor, while it has the terminal.
+    let mut editing: Option<(tokio::process::Child, external::Edit)> = None;
     loop {
-        if dirty && last_paint.elapsed() >= frame_time {
+        if dirty && editing.is_none() && last_paint.elapsed() >= frame_time {
             terminal.draw(|f| view::draw(f, app))?;
             last_paint = Instant::now();
             dirty = false;
         }
         let quit_deadline = app.quit_armed;
         tokio::select! {
-            _ = tokio::time::sleep_until(last_paint + frame_time), if dirty => {}
+            _ = tokio::time::sleep_until(last_paint + frame_time), if dirty && editing.is_none() => {}
             // The only timer outside painting: the quit hint expires.
             _ = tokio::time::sleep_until(quit_deadline.unwrap_or(last_paint)), if quit_deadline.is_some() => {
                 app.quit_armed = None;
@@ -343,7 +351,29 @@ async fn run_session(
                 }
                 dirty = true;
             }
-            event = input.events.recv() => {
+            status = async {
+                match editing.as_mut() {
+                    Some((child, _)) => child.wait().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Some((_, edit)) = editing.take() {
+                    guard.resume()?;
+                    terminal.resize(terminal.size()?.into())?;
+                    input = Some(InputReader::new());
+                    match edit.finish(status.is_ok_and(|status| status.success())) {
+                        Ok(text) => app.editor.set(text),
+                        Err(error) => app.notice(error),
+                    }
+                }
+                dirty = true;
+            }
+            event = async {
+                match input.as_mut() {
+                    Some(reader) => reader.events.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 let action = match event {
                     Some(Ok(Input::Key(key))) if key.kind != KeyEventKind::Release => {
                         key_action(app, session, key).await
@@ -364,6 +394,32 @@ async fn run_session(
                     Action::Continue => {}
                     Action::GoalPrompt(prompt) => send_goal_prompt(app, session, prompt).await,
                     Action::RemoteControl => start_remote_check(app, &mut remote_check),
+                    Action::ExternalEditor => {
+                        match external::prepare(&app.editor.text, external::editor_command()) {
+                            Err(error) => app.notice(error),
+                            Ok(edit) => {
+                                // Stop reading keys so the editor gets them all.
+                                input = None;
+                                TerminalGuard::restore();
+                                match tokio::process::Command::new(&edit.program)
+                                    .args(&edit.args)
+                                    .arg(&edit.path)
+                                    .spawn()
+                                {
+                                    Ok(child) => editing = Some((child, edit)),
+                                    Err(error) => {
+                                        guard.resume()?;
+                                        terminal.resize(terminal.size()?.into())?;
+                                        input = Some(InputReader::new());
+                                        app.notice(format!(
+                                            "Cannot start {}: {error}",
+                                            edit.program
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Action::RunShell { command, attach } => {
                         let (cancel, cancelled) = tokio::sync::oneshot::channel();
                         let root = app.root.clone();
@@ -693,6 +749,7 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
         KeyCode::BackTab => return cycle_mode(app),
         KeyCode::Char('p') if ctrl => app.palette = true,
         KeyCode::Char('x') if ctrl => copy_reply(app),
+        KeyCode::Char('g') if ctrl => return Action::ExternalEditor,
         KeyCode::Char('u') if ctrl => {
             app.editor.take();
         }

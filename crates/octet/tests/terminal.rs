@@ -887,3 +887,40 @@ fn at_mentions_a_workspace_file() {
     p.quit();
     p.finish();
 }
+
+#[test]
+fn ctrl_g_edits_the_draft_in_an_external_editor() {
+    let tools = octet_testkit::TempDir::new("octet-editor");
+    fs::create_dir_all(tools.path()).unwrap();
+    stand_in(
+        tools.path(),
+        "fake-editor",
+        r#"printf 'edited by script' > "$1""#,
+    );
+    let editor = tools.path().join("fake-editor");
+    let mut p = Pty::spawn_with_env(&[], &[("EDITOR", editor.to_str().unwrap()), ("VISUAL", "")]);
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"draft text");
+    p.wait(|p| p.screen_shows("draft text"));
+    p.send(b"\x07");
+    p.wait(|p| p.screen_shows("edited by script"));
+    assert!(!p.screen_shows("draft text"));
+    p.quit();
+    p.finish();
+}
+
+#[test]
+fn a_missing_editor_keeps_the_draft_and_the_screen() {
+    let mut p = Pty::spawn_with_env(&[], &[("EDITOR", "/no/such/editor"), ("VISUAL", "")]);
+    p.wait(|p| p.shows("● ready"));
+    p.send(b"keep me");
+    p.wait(|p| p.screen_shows("keep me"));
+    p.send(b"\x07");
+    // The screen repaints in full after the failed start; wait for all of it.
+    p.wait(|p| p.screen_shows("Cannot start /no/such/editor") && p.screen_shows("keep me"));
+    // Keys reach Octet again after the failed start.
+    p.send(b"!");
+    p.wait(|p| p.screen_shows("keep me!"));
+    p.quit();
+    p.finish();
+}
