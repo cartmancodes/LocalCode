@@ -1,6 +1,6 @@
 use octet_core::Config;
 use std::{io::IsTerminal, path::PathBuf};
-const HELP:&str="Octet — terminal coding workspace (Rust preview)\n\nUsage: octet [--engine codex|claude|demo] [--cwd PATH]\n                 [--model MODEL] [--mode MODE] [--resume VENDOR_SESSION_ID]\n                 [--binary PATH] [--journal-dir PATH]\n\nDefaults: Codex, current directory. Vendor CLI installation and login required.\nModes: ask (default) · accept-edits · auto (vendor auto-review) · full-access\nUse --engine demo for an offline interactive preview.\n\nKeys: Enter send · Alt+Enter / Ctrl+J newline · Esc cancel · Ctrl+C twice quit\n      PageUp/PageDown scroll · Ctrl+P commands · F1 help · Shift+Tab mode\n\nCommands: /model, /mode, /goal, /session, /new, /reconnect, /export\nJournals are separate JSONL files; see --journal-dir.\nFleet, full plugin/hook parity, v3 browsing and legacy RPC compatibility remain pending.\n";
+const HELP:&str="Octet — terminal coding workspace (Rust preview)\n\nUsage: octet [--engine codex|claude|demo] [--cwd PATH]\n                 [--model MODEL] [--mode MODE] [--resume VENDOR_SESSION_ID]\n                 [--binary PATH] [--journal-dir PATH]\n                 [--approval-timeout SECONDS]\n\nDefaults: Codex, current directory. Vendor CLI installation and login required.\nModes: ask (default) · accept-edits · auto (vendor auto-review) · full-access\nUse --engine demo for an offline interactive preview.\n\nKeys: Enter send · Alt+Enter / Ctrl+J newline · Esc cancel · Ctrl+C twice quit\n      PageUp/PageDown scroll · Ctrl+P commands · F1 help · Shift+Tab mode\n\nCommands: /model, /mode, /goal, /session, /new, /reconnect, /export\nJournals are separate JSONL files; see --journal-dir.\nFleet, full plugin/hook parity, v3 browsing and legacy RPC compatibility remain pending.\n";
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
@@ -17,6 +17,7 @@ async fn run() -> Result<(), String> {
     let mut cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let mut directory = None;
     let mut mode = octet_core::Mode::Ask;
+    let mut approval_timeout = std::time::Duration::from_secs(120);
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
             print!("{HELP}");
@@ -40,6 +41,14 @@ async fn run() -> Result<(), String> {
                 mode = octet_core::Mode::parse(&value).ok_or_else(|| {
                     format!("Unknown mode {value}. Use ask, accept-edits, auto or full-access.")
                 })?
+            }
+            "--approval-timeout" => {
+                approval_timeout = value
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|seconds| (10..=3600).contains(seconds))
+                    .map(std::time::Duration::from_secs)
+                    .ok_or("Approval timeout must be a whole number of seconds from 10 to 3600")?
             }
             _ => return Err(format!("Unknown option {arg}. Use --help.")),
         }
@@ -76,6 +85,7 @@ async fn run() -> Result<(), String> {
         model,
         resume,
         mode,
+        approval_timeout,
     };
     octet_tui::run(config, directory)
         .await

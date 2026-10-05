@@ -86,6 +86,8 @@ pub struct Config {
     pub model: Option<String>,
     pub resume: Option<String>,
     pub mode: Mode,
+    /// How long an approval waits for an answer before it is denied.
+    pub approval_timeout: Duration,
 }
 impl Config {
     /// Ask mode, the vendor's default model, a new vendor session.
@@ -97,6 +99,7 @@ impl Config {
             model: None,
             resume: None,
             mode: Mode::Ask,
+            approval_timeout: Duration::from_secs(120),
         }
     }
 }
@@ -323,7 +326,7 @@ pub fn spawn_with_limits(
     };
     let task = tokio::spawn(async move {
         let result = if config.engine == Engine::Demo {
-            demo(config.mode, rx, cancel, stopping, &events)
+            demo(config.mode, limits.approval, rx, cancel, stopping, &events)
                 .await
                 .map_err(|error| error.to_string())
         } else {

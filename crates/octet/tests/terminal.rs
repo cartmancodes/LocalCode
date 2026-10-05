@@ -653,3 +653,19 @@ fn ctrl_c_twice_quits_and_the_first_press_only_warns() {
     p.send(b"\x03");
     p.finish();
 }
+
+#[test]
+fn invalid_approval_timeout_is_a_startup_error() {
+    for value in ["5", "abc", "3601"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_octet"))
+            .args(["--engine", "demo", "--approval-timeout", value])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{value}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("Approval timeout must be a whole number of seconds from 10 to 3600"),
+            "{value}"
+        );
+    }
+}

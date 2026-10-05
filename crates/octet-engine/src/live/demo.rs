@@ -20,6 +20,7 @@ pub(super) fn demo_set_mode(
 }
 pub(super) async fn demo(
     mut mode: Mode,
+    approval: Duration,
     mut commands: mpsc::Receiver<Command>,
     mut cancel: watch::Receiver<u64>,
     mut stop: watch::Receiver<bool>,
@@ -49,6 +50,7 @@ pub(super) async fn demo(
                 };
                 let mut turn = DemoTurn {
                     mode: &mut mode,
+                    approval,
                     commands: &mut commands,
                     cancel: &mut cancel,
                     stop: &mut stop,
@@ -72,6 +74,7 @@ enum Flow {
 /// One demo turn, borrowing the loop's channels.
 struct DemoTurn<'a> {
     mode: &'a mut Mode,
+    approval: Duration,
     commands: &'a mut mpsc::Receiver<Command>,
     cancel: &'a mut watch::Receiver<u64>,
     stop: &'a mut watch::Receiver<bool>,
@@ -137,7 +140,7 @@ impl DemoTurn<'_> {
                     .into(),
             },
         )?;
-        let expiry = tokio::time::sleep(Duration::from_secs(120));
+        let expiry = tokio::time::sleep(self.approval);
         tokio::pin!(expiry);
         // A mode switch while the dialog is open applies and keeps waiting.
         let allowed = loop {
