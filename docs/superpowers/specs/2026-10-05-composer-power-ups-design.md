@@ -164,6 +164,9 @@ external editor is a `tokio::process::Child` awaited in its own branch.
   - display: the draft followed by `[+ <command>]` per attachment.
   If the wire would exceed the 64 KiB prompt limit, attachment outputs are
   cut from their start, with `[earlier output cut]`, until it fits.
+  The vendor receives the wire and keeps it in its own session history; the
+  transcript and Octet's journal record the display text, as they already do
+  for goal prompts (`Event::User` carries the display).
   Attachments clear after a successful send and stay after a failed one.
 - Goal continuation prompts never carry attachments.
 

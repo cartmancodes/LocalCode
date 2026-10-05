@@ -1137,6 +1137,7 @@ mod tests {
     fn mascot_tracks_activity_and_keeps_errors_visible_after_disconnect() {
         let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
         let mut app = App::new(&config, "journal".into());
+        app.monochrome = false;
         for (event, expected) in [
             (
                 Event::Ready {
