@@ -801,10 +801,10 @@ fn sidebar(frame: &mut Frame, area: Rect, app: &App) {
         }),
         Line::default(),
         Line::from(Span::styled(" QUICK COMMANDS", Style::default().fg(MUTED))),
-        Line::from(" /model      Model / provider"),
-        Line::from(" /mode       Permission mode"),
+        Line::from(" /model      Switch model"),
+        Line::from(" /mode       Permissions"),
         Line::from(" /new        Fresh context"),
-        Line::from(" /session    Session details"),
+        Line::from(" /session    Session info"),
         Line::from(" /export     Save journal"),
         Line::from(" /reconnect  Resume vendor"),
         Line::default(),
@@ -941,6 +941,26 @@ mod tests {
         (0..height)
             .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
             .collect()
+    }
+    #[test]
+    fn sidebar_lines_fit_the_panel_without_wrapping() {
+        // Every sidebar line starts with a space; a wrapped remainder would
+        // start in the first column, against the border.
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        let rows = screen(120, 48, &mut app);
+        let title = rows.iter().find(|row| row.contains("╭ Workspace")).unwrap();
+        let border = title.chars().position(|c| c == '╭').unwrap();
+        let first = border + 1;
+        let inside: Vec<&String> = rows
+            .iter()
+            .filter(|row| row.chars().nth(border) == Some('│'))
+            .collect();
+        assert!(inside.len() > 20, "sidebar not drawn");
+        for row in inside {
+            let start = row.chars().nth(first).unwrap();
+            assert_eq!(start, ' ', "wrapped sidebar line: {row}");
+        }
     }
     #[test]
     fn composer_grows_with_the_draft() {

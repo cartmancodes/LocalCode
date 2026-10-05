@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest something Octet should do
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like
+      description: How you picture it working, from the keyboard.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+  - type: markdown
+    attributes:
+      value: |
+        Check the "Not yet supported" list in the README and the [parity matrix](https://github.com/cartmancodes/octet/blob/master/docs/rust/parity-matrix.md) first: your idea may already be planned.
