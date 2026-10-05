@@ -221,8 +221,11 @@ appear as a note in the conversation. It starts no listener and holds no
 secrets. The App Store Tailscale app is found inside its app bundle when
 `tailscale` isn't on the PATH.
 
-`/remote-control status` shows the same checks. Pairing, QR codes and grants
-belong to the [web plan](remote-control-plan.md), not here.
+`/remote-control status` shows the same checks. Every report line, its fix,
+what the check can't see and phone-side troubleshooting are in
+[the setup guide](../remote-control.md#the-remote-control-check). Pairing,
+QR codes and grants belong to the [web plan](remote-control-plan.md), not
+here.
 
 ## Phone fixes
 
