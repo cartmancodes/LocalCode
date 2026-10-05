@@ -222,9 +222,11 @@ v3 recovery implementation.
 ## Preview scope
 
 Implemented: real multi-turn conversations, streamed responses, tool events,
-per-request command/file approval, cancellation, vendor context resume, model
-selection and in-session switching, multiline editing, history, scrollback, new sessions, journal
-export, terminal restoration, persistent goals, and an offline demo.
+per-request command/file approval with a configurable window and an alert,
+four permission modes with live switching, cancellation, vendor context resume,
+model selection and in-session switching, multiline editing, history,
+scrollback, new sessions, journal export, terminal restoration, persistent
+goals, phone-access checks (`/remote-control`), and an offline demo.
 
 Pending: pi v3 session browsing/recovery, images, steer/follow-up queues, full
 thinking/compaction controls, fleet, quota routing, resources, plugins, legacy
