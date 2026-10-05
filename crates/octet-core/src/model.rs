@@ -43,6 +43,7 @@ impl Selection {
         let same = self.provider == current.engine;
         Config {
             mode: current.mode,
+            approval_timeout: current.approval_timeout,
             engine: self.provider,
             model: self.model.clone(),
             cwd: current.cwd.clone(),
@@ -75,6 +76,17 @@ mod tests {
             mode: crate::Mode::Auto,
             ..Config::new(Engine::Codex, "/custom/codex", "/workspace")
         }
+    }
+    #[test]
+    fn configure_carries_approval_timeout() {
+        let current = Config {
+            approval_timeout: std::time::Duration::from_secs(300),
+            ..config()
+        };
+        let next = Selection::parse("claude example", Engine::Codex)
+            .unwrap()
+            .configure(&current, "thread", None);
+        assert_eq!(next.approval_timeout, std::time::Duration::from_secs(300));
     }
     #[test]
     fn configure_carries_mode() {

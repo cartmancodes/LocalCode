@@ -814,3 +814,24 @@ async fn waiting_for_the_user_is_not_vendor_silence() {
     handle.shutdown();
     task.await.unwrap();
 }
+
+#[tokio::test]
+async fn spawn_uses_the_configured_approval_window() {
+    let config = Config {
+        approval_timeout: Duration::from_millis(300),
+        ..Config::new(Engine::Demo, "demo", std::env::temp_dir())
+    };
+    let (handle, mut events, task) = spawn(config);
+    handle
+        .send(Command::Prompt("/approval-demo".into()))
+        .unwrap();
+    loop {
+        match next(&mut events).await {
+            Event::ApprovalClosed(_) => break,
+            Event::Error(e) => panic!("{e}"),
+            _ => {}
+        }
+    }
+    handle.shutdown();
+    task.await.unwrap();
+}

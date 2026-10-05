@@ -52,10 +52,11 @@ scripts/rust-env.sh cargo install --locked --path crates/octet --root "$HOME/.lo
 
 Commands: `/model` (switch model or provider), `/mode` (permission mode),
 `/goal` (a multi-turn objective), `/session`, `/new`, `/reconnect`,
-`/export`. In `auto` mode each vendor's own reviewer decides approvals;
-`full-access` has to be typed and turns every check off. The full key and
-command reference, permission-mode mapping and limits are in
-[docs/tui.md](docs/tui.md).
+`/export`, `/remote-control` (check phone access over tmux, Tailscale and
+mosh; setup steps in [docs/remote-control.md](docs/remote-control.md)). In
+`auto` mode each vendor's own reviewer decides approvals; `full-access` has to
+be typed and turns every check off. The full key and command reference,
+permission-mode mapping and limits are in [docs/tui.md](docs/tui.md).
 
 ## Layout
 

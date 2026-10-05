@@ -387,6 +387,14 @@ impl App {
             State::Approval
         }
     }
+    #[cfg(test)]
+    pub fn entries_text(&self) -> String {
+        self.entries
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
     pub fn recall(&mut self, older: bool) {
         if self.history.is_empty() {
             return;
@@ -551,10 +559,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
         return;
     }
+    // Laid out once per frame: its row count sizes the composer, and its
+    // lines and cursor are drawn there.
+    let draft = app.editor.layout(draft_width(area.width));
     let regions = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(3),
-        Constraint::Length(7),
+        Constraint::Length(composer_height(draft.0.len())),
         Constraint::Length(1),
     ])
     .margin(1)
@@ -634,7 +645,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         height: inner.height.saturating_sub(1),
         ..inner
     };
-    let (lines, (col, row)) = app.editor.layout(input.width as usize);
+    let (lines, (col, row)) = draft;
     let offset = row.saturating_sub(input.height.saturating_sub(1) as usize);
     if app.editor.text.is_empty() {
         frame.render_widget(
@@ -702,6 +713,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             input.y + ((row - offset) as u16).min(input.height.saturating_sub(1)),
         ));
     }
+}
+/// The width the draft wraps at: margin, border and padding take three
+/// columns on each side.
+fn draft_width(terminal_width: u16) -> usize {
+    terminal_width.saturating_sub(6) as usize
+}
+/// The composer's height from the draft's wrapped rows: borders, 1–4 draft
+/// rows, and the hint row. An empty prompt takes 4 rows, a long draft 7.
+fn composer_height(draft_rows: usize) -> u16 {
+    2 + draft_rows.clamp(1, 4) as u16 + 1
 }
 /// The top-left banner, after Claude Code's: the mini Octet (or a text mark
 /// without colour) beside three lines. The permission mode leads its line so
@@ -816,7 +837,7 @@ fn modal(area: Rect, width: u16, height: u16) -> Rect {
 fn help(frame: &mut Frame, area: Rect) {
     let area = modal(area, 76, 24);
     frame.render_widget(Clear, area);
-    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
+    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/remote-control: check phone access setup\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
     frame.render_widget(
         Paragraph::new(text)
             .block(card(" Help "))
@@ -825,7 +846,7 @@ fn help(frame: &mut Frame, area: Rect) {
         area,
     );
 }
-pub const COMMANDS: [(&str, &str); 9] = [
+pub const COMMANDS: [(&str, &str); 10] = [
     ("/help", "Keyboard shortcuts"),
     ("/model", "Switch model or provider"),
     (
@@ -837,16 +858,36 @@ pub const COMMANDS: [(&str, &str); 9] = [
     ("/export", "Export journal to a new file"),
     ("/new", "Start a fresh conversation"),
     ("/reconnect", "Reconnect to the vendor session"),
+    (
+        "/remote-control",
+        "Check phone access (tmux, Tailscale, mosh)",
+    ),
     ("/quit", "Save and exit"),
 ];
 fn palette(frame: &mut Frame, area: Rect, selected: usize) {
-    let area = modal(area, 66, 14);
+    let name_width = COMMANDS
+        .iter()
+        .map(|(name, _)| name.len())
+        .max()
+        .unwrap_or(0);
+    let description_width = COMMANDS
+        .iter()
+        .map(|(_, description)| description.width())
+        .max()
+        .unwrap_or(0);
+    // Width: borders, the marker and spaces around each column. Height:
+    // borders, a blank line above and below the list, and the key line.
+    let area = modal(
+        area,
+        (name_width + description_width + 7) as u16,
+        COMMANDS.len() as u16 + 5,
+    );
     frame.render_widget(Clear, area);
     let mut lines = vec![Line::default()];
     for (index, (command, description)) in COMMANDS.iter().enumerate() {
         lines.push(Line::from(Span::styled(
             format!(
-                " {} {:<14} {}",
+                " {} {:<name_width$} {}",
                 if index == selected { "›" } else { " " },
                 command,
                 description
@@ -902,6 +943,76 @@ mod tests {
             .collect()
     }
     #[test]
+    fn composer_grows_with_the_draft() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        assert_eq!(
+            composer_height(app.editor.layout(draft_width(80)).0.len()),
+            4
+        );
+        assert!(app.editor.insert("one\ntwo\nthree"));
+        assert_eq!(
+            composer_height(app.editor.layout(draft_width(80)).0.len()),
+            6
+        );
+    }
+    #[test]
+    fn composer_counts_wrapped_rows() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        // 80 columns leave 74 for text: 100 characters wrap onto a second row.
+        assert!(app.editor.insert(&"x".repeat(100)));
+        assert_eq!(
+            composer_height(app.editor.layout(draft_width(80)).0.len()),
+            5
+        );
+    }
+    #[test]
+    fn composer_height_is_capped() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        assert!(app.editor.insert(&"line\n".repeat(40)));
+        assert_eq!(
+            composer_height(app.editor.layout(draft_width(80)).0.len()),
+            7
+        );
+    }
+    #[test]
+    fn an_empty_composer_gives_rows_back_to_the_conversation() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.event(Event::User("hello".into()));
+        let rows = screen(44, 16, &mut app);
+        // The composer's top border sits 4 rows above the status line.
+        assert!(rows[16 - 6].starts_with(" ╭ Prompt"), "{}", rows[16 - 6]);
+    }
+    #[test]
+    fn the_palette_shows_every_command_and_its_keys() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.palette = true;
+        let rows = screen(80, 24, &mut app);
+        let mut columns = Vec::new();
+        for (name, description) in COMMANDS {
+            // " /mode " must not match the "/model" row.
+            let row = rows
+                .iter()
+                .find(|row| row.contains(&format!(" {name} ")))
+                .unwrap_or_else(|| panic!("{name} missing"));
+            assert!(row.contains(description), "{name}: description cut: {row}");
+            // Columns, not bytes: the selected row's "›" is three bytes wide.
+            columns.push(
+                row.find(description)
+                    .map(|byte| row[..byte].chars().count()),
+            );
+        }
+        assert!(
+            columns.windows(2).all(|pair| pair[0] == pair[1]),
+            "descriptions start in different columns: {columns:?}"
+        );
+        assert!(rows.iter().any(|row| row.contains("Esc close")));
+    }
+    #[test]
     fn empty_conversation_leaves_the_centre_blank() {
         let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
         for (width, height) in [(80, 24), (60, 20)] {
@@ -911,9 +1022,9 @@ mod tests {
                 session: "demo".into(),
             });
             let rows = screen(width, height, &mut app);
-            // Rows between the 3-row banner (after the margin) and the 7-row
-            // composer, its status line and the bottom margin.
-            for row in &rows[4..rows.len() - 9] {
+            // Rows between the 3-row banner (after the margin) and the empty
+            // 4-row composer, the status line and the bottom margin.
+            for row in &rows[4..rows.len() - 6] {
                 let inside: String = row.chars().skip(1).take(width as usize - 2).collect();
                 assert!(inside.trim().is_empty(), "{width}×{height}: {row:?}");
             }

@@ -3,6 +3,11 @@
 Planning date: 2026-10-04. Status: proposal; no implementation or deployment.
 User requirement: connect over the internet from anywhere.
 
+A zero-code alternative for a single user, the full TUI over tmux + Tailscale
+SSH + mosh from Blink or Termius, is evaluated in
+[remote-control-ssh.md](remote-control-ssh.md). It also covers a thin
+`/remote-control` setup helper.
+
 ## Recommendation and effort
 
 Build a mobile browser client attached to the existing Rust session, with a

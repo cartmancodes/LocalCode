@@ -102,3 +102,30 @@ async fn journal_keeps_engine_and_outcome_spelling() {
         .iter()
         .any(|record| record["type"] == "finished" && record["data"] == "completed"));
 }
+#[tokio::test]
+async fn the_session_uses_the_configured_approval_window() {
+    let temp = octet_testkit::TempDir::new("octet-approval-window");
+    let config = Config {
+        approval_timeout: Duration::from_millis(300),
+        ..Config::new(Engine::Demo, "demo", temp.path())
+    };
+    let mut session = Session::open(config, temp.path().to_path_buf())
+        .await
+        .unwrap();
+    session
+        .handle
+        .send(Command::Prompt("/approval-demo".into()))
+        .unwrap();
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = session.events.recv().await {
+            if matches!(event, Event::ApprovalClosed(_)) {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap();
+    assert!(closed, "the demo approval should expire after 300 ms");
+    session.shutdown().await;
+}

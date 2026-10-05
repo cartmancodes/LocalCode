@@ -20,6 +20,10 @@ pub const PROMPT_LIMIT: usize = 64 * 1024;
 const EVENT_CAPACITY: usize = 128;
 const EVENT_BYTES: usize = 32 * 1024;
 
+/// How long an approval waits for an answer before it is denied, unless
+/// `Config::approval_timeout` says otherwise.
+pub const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Driver time limits. The defaults suit real vendors; tests shorten them.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -40,7 +44,7 @@ impl Default for Limits {
             connect: Duration::from_secs(30),
             turn_idle: Duration::from_secs(600),
             interrupt: Duration::from_secs(10),
-            approval: Duration::from_secs(120),
+            approval: DEFAULT_APPROVAL_TIMEOUT,
             mode_confirm: Duration::from_secs(10),
         }
     }
@@ -86,6 +90,8 @@ pub struct Config {
     pub model: Option<String>,
     pub resume: Option<String>,
     pub mode: Mode,
+    /// How long an approval waits for an answer before it is denied.
+    pub approval_timeout: Duration,
 }
 impl Config {
     /// Ask mode, the vendor's default model, a new vendor session.
@@ -97,6 +103,7 @@ impl Config {
             model: None,
             resume: None,
             mode: Mode::Ask,
+            approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
         }
     }
 }
@@ -306,8 +313,14 @@ fn limited(text: &str) -> String {
     }
 }
 pub fn spawn(config: Config) -> (Handle, mpsc::Receiver<Event>, tokio::task::JoinHandle<()>) {
-    spawn_with_limits(config, Limits::default())
+    let limits = Limits {
+        approval: config.approval_timeout,
+        ..Limits::default()
+    };
+    spawn_with_limits(config, limits)
 }
+/// Like `spawn`, with explicit time limits. `limits.approval` is the
+/// approval window here; `config.approval_timeout` is not read.
 pub fn spawn_with_limits(
     config: Config,
     limits: Limits,
@@ -323,7 +336,7 @@ pub fn spawn_with_limits(
     };
     let task = tokio::spawn(async move {
         let result = if config.engine == Engine::Demo {
-            demo(config.mode, rx, cancel, stopping, &events)
+            demo(config.mode, limits.approval, rx, cancel, stopping, &events)
                 .await
                 .map_err(|error| error.to_string())
         } else {

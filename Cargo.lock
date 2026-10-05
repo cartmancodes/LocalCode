@@ -468,6 +468,7 @@ dependencies = [
  "octet-core",
  "octet-testkit",
  "ratatui",
+ "serde_json",
  "tokio",
  "unicode-segmentation",
  "unicode-width",

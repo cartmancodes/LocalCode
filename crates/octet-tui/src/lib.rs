@@ -1,5 +1,6 @@
 mod editor;
 mod mascot;
+mod remote;
 mod text;
 mod view;
 use crossterm::{
@@ -117,6 +118,8 @@ enum Action {
     Suspend,
     SetMode(octet_core::Mode),
     GoalPrompt(String),
+    /// Run the `/remote-control` checks off the event loop.
+    RemoteControl,
     Exit(Exit),
 }
 /// Why a session ended; `run` decides whether to reconnect.
@@ -237,6 +240,8 @@ async fn run_session(
     let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
     let mut suspend =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(libc::SIGTSTP))?;
+    // The `/remote-control` checks, running while the screen stays live.
+    let mut remote_check: Option<tokio::task::JoinHandle<remote::Checks>> = None;
     loop {
         if dirty && last_paint.elapsed() >= frame_time {
             terminal.draw(|f| view::draw(f, app))?;
@@ -270,6 +275,19 @@ async fn run_session(
                 }
                 dirty = true;
             }
+            checks = async {
+                match remote_check.as_mut() {
+                    Some(task) => task.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                remote_check = None;
+                match checks {
+                    Ok(checks) => show_remote_report(app, &checks),
+                    Err(error) => app.notice(format!("Phone-access check failed: {error}")),
+                }
+                dirty = true;
+            }
             event = input.events.recv() => {
                 let action = match event {
                     Some(Ok(Input::Key(key))) if key.kind != KeyEventKind::Release => {
@@ -290,6 +308,7 @@ async fn run_session(
                 match action {
                     Action::Continue => {}
                     Action::GoalPrompt(prompt) => send_goal_prompt(app, session, prompt).await,
+                    Action::RemoteControl => start_remote_check(app, &mut remote_check),
                     Action::Suspend => {
                         guard.suspend()?;
                         terminal.resize(terminal.size()?.into())?;
@@ -323,6 +342,9 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
         _ => None,
     };
     let failed = matches!(event, octet_core::Event::Error(_));
+    if should_alert(app, &event) {
+        alert();
+    }
     app.event(event);
     if failed {
         if let Err(error) = app.goals.turn_failed().await {
@@ -351,6 +373,38 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
         }
         Err(error) => app.notice(format!("Goal persistence failed; paused: {error}")),
     }
+}
+/// Starts the `/remote-control` checks in the background. They take up to
+/// about 2.5 seconds, and the loop must keep draining vendor events meanwhile.
+fn start_remote_check(app: &mut App, check: &mut Option<tokio::task::JoinHandle<remote::Checks>>) {
+    if check.is_some() {
+        app.notice = "Phone-access check already running".into();
+        return;
+    }
+    app.notice = "Checking phone access…".into();
+    *check = Some(tokio::spawn(remote::probe()));
+}
+/// The full report goes in the conversation; the status line, one row high,
+/// gets the count of problems.
+fn show_remote_report(app: &mut App, checks: &remote::Checks) {
+    let report = remote::report(checks);
+    app.notice(report.as_str());
+    app.notice = remote::summary(&report);
+}
+/// Ring once when an approval starts waiting; a burst of requests behind it
+/// rings no more.
+fn should_alert(app: &App, event: &octet_core::Event) -> bool {
+    matches!(event, octet_core::Event::Approval { .. }) && app.approvals.is_empty()
+}
+/// A bell plus a desktop notification (OSC 9) for an approval the user isn't
+/// watching. The bell passes through tmux and mosh to a phone; tmux drops the
+/// OSC 9, which helps only a desktop terminal connected directly. Write errors
+/// are ignored: the alert is a courtesy, never a reason to stop.
+const ALERT: &[u8] = b"\x07\x1b]9;Octet: approval needed\x07";
+fn alert() {
+    use std::io::Write;
+    let mut stdout = io::stdout();
+    let _ = stdout.write_all(ALERT).and_then(|()| stdout.flush());
 }
 async fn send_goal_prompt(app: &mut App, session: &Session, prompt: String) {
     let command = Command::PromptWithDisplay {
@@ -729,6 +783,10 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                 },
             }
         }
+        "/remote-control" => match argument {
+            "" | "status" => return Some(Action::RemoteControl),
+            _ => app.notice("Use /remote-control or /remote-control status"),
+        },
         "/export" => {
             if app.running {
                 app.notice = "Wait for completion or cancel before exporting".into();
@@ -843,6 +901,46 @@ mod model_tests {
         let config = Config::new(Engine::Demo, "demo", directory.clone());
         let session = Session::open(config, directory).await.unwrap();
         (temp, session)
+    }
+    #[test]
+    fn only_the_first_waiting_approval_rings() {
+        let mut app = app();
+        let approval = |id| octet_core::Event::Approval {
+            id,
+            detail: "run tests".into(),
+        };
+        assert!(should_alert(&app, &approval(1)));
+        app.event(approval(1));
+        assert!(!should_alert(&app, &approval(2)), "one is already waiting");
+        assert!(!should_alert(&app, &octet_core::Event::Started));
+    }
+    #[tokio::test]
+    async fn remote_control_reports_without_changing_the_session() {
+        let mut app = app();
+        assert!(matches!(
+            command(&mut app, "/remote-control").await,
+            Action::RemoteControl
+        ));
+        let mut check = None;
+        start_remote_check(&mut app, &mut check);
+        assert_eq!(app.notice, "Checking phone access…");
+        // A second request while one runs starts nothing new.
+        start_remote_check(&mut app, &mut check);
+        assert_eq!(app.notice, "Phone-access check already running");
+        // Under test the checks run stand-in program names that never exist,
+        // so the result doesn't depend on what this machine has installed.
+        let checks = check.take().unwrap().await.unwrap();
+        show_remote_report(&mut app, &checks);
+        let text = app.entries_text();
+        assert!(text.contains("Remote control setup"), "{text}");
+        assert!(text.contains("[!!] Tailscale isn't connected"), "{text}");
+        assert!(app.notice.starts_with("Remote control: "), "{}", app.notice);
+        assert!(
+            app.notice.ends_with("problems (report above)"),
+            "{}",
+            app.notice
+        );
+        assert_eq!(app.session, "thread-1");
     }
     #[tokio::test]
     async fn ctrl_c_twice_on_an_idle_empty_prompt_quits() {
