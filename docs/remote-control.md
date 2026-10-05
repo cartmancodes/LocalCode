@@ -111,14 +111,18 @@ tmux new -A -s octet "octet --engine codex --cwd ~/Projects/my-app --approval-ti
   the phone before it is denied (the default is 120 seconds).
 - `-A` reattaches to the session if it already exists.
 
-Type `/remote-control`. When the Mac is ready, every line shows `[ok]`, and
-the report ends with the exact commands for your phone:
+Type `/remote-control` on the Mac. It checks the Mac's side only (the phone's
+Tailscale and app settings are yours to check), so run it before you leave
+the desk or when the phone can't connect. When the Mac is ready, every line
+shows `[ok]`, and the report ends with the exact commands for your phone.
+With Option A the SSH line reads `[ok] SSH answers on the tailnet address`
+instead:
 
 ```
 Remote control setup (read-only check)
 [ok] Running in tmux session "octet"
 [ok] Tailscale connected: my-mac.tail1234.ts.net (100.101.102.103)
-[ok] SSH answers on the tailnet address
+[ok] Tailscale SSH is on
 [ok] mosh-server 1.4.0
 Phone (Blink):   mosh you@my-mac.tail1234.ts.net -- tmux new -A -s octet
 Phone (Termius): host my-mac.tail1234.ts.net, user you, Mosh on, startup: tmux new -A -s octet

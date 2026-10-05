@@ -202,9 +202,12 @@ tailnet configuration. It checks what is there and prints the next step:
    session name? If not, show the `tmux new -A -s octet …` line to restart in.
 2. **Tailnet:** is the `tailscale` CLI present and connected? Read this
    host's tailnet name and address from `tailscale status --json`.
-3. **Login:** does SSH answer on the tailnet address? If not, it names the
-   ways to turn it on: Remote Login, or `tailscale set --ssh` unless only the
-   App Store app is installed, which can't run Tailscale SSH.
+3. **Login:** is Tailscale SSH on (asked from `tailscale debug prefs`), or
+   does SSH answer on the tailnet address (Remote Login)? Tailscale SSH serves
+   only connections arriving through the tunnel, so the Mac can't test it by
+   connecting to itself. If neither, it names the ways to turn SSH on:
+   Remote Login, or `tailscale set --ssh` unless only the App Store app is
+   installed, which can't run Tailscale SSH.
 4. **mosh:** is `mosh-server` installed and at least version 1.4.0?
 5. **Colour:** do tmux's server options give terminals 24-bit colour (an `RGB`
    terminal feature, or a `Tc` override on older tmux)? If not, show the

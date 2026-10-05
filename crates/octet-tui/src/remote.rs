@@ -40,8 +40,12 @@ pub struct Checks {
     pub tmux_rgb: Option<bool>,
     /// None when the tailscale CLI is missing or not connected.
     pub tailnet: Option<Tailnet>,
-    /// SSH answered on the tailnet address.
+    /// SSH answered on the tailnet address (Remote Login or another server
+    /// listening on every address).
     pub ssh: bool,
+    /// Tailscale's own SSH server is on. It serves only connections arriving
+    /// through the tunnel, so `ssh` can't see it from this Mac.
+    pub tailscale_ssh: bool,
     /// mosh-server's version; None when it isn't installed.
     pub mosh: Option<(u32, u32, u32)>,
 }
@@ -86,6 +90,12 @@ fn parse_tailnet(status_json: &str, app_store: bool) -> Option<Tailnet> {
         address: status["Self"]["TailscaleIPs"][0].as_str()?.to_owned(),
         app_store,
     })
+}
+
+/// Whether `tailscale debug prefs` reports Tailscale SSH as on.
+fn parse_run_ssh(prefs_json: &str) -> Option<bool> {
+    let prefs: serde_json::Value = serde_json::from_str(prefs_json).ok()?;
+    prefs["RunSSH"].as_bool()
 }
 
 /// Whether tmux's server options give terminals 24-bit colour: an `RGB`
@@ -175,7 +185,7 @@ async fn probe_with(programs: &Programs<'_>, inside_tmux: bool) -> Checks {
     let tailnet = async {
         for (index, program) in programs.tailscale.iter().enumerate() {
             if let Some(json) = run_until(deadline, program, &["status", "--json"]).await {
-                return parse_tailnet(&json, index > 0);
+                return parse_tailnet(&json, index > 0).map(|tailnet| (tailnet, *program));
             }
         }
         None
@@ -187,23 +197,42 @@ async fn probe_with(programs: &Programs<'_>, inside_tmux: bool) -> Checks {
             .and_then(parse_mosh_version)
     };
     let ((tmux, tmux_rgb), tailnet, mosh) = tokio::join!(tmux, tailnet, mosh);
-    let ssh = match &tailnet {
-        Some(tailnet) => matches!(
-            timeout(
-                SSH_TIMEOUT,
-                TcpStream::connect((tailnet.address.as_str(), 22))
-            )
-            .await,
-            Ok(Ok(_))
-        ),
-        None => false,
+    // Both SSH checks share the half-second budget after the commands above.
+    let (ssh, tailscale_ssh) = match &tailnet {
+        Some((tailnet, program)) => {
+            let connect = async {
+                matches!(
+                    timeout(
+                        SSH_TIMEOUT,
+                        TcpStream::connect((tailnet.address.as_str(), 22))
+                    )
+                    .await,
+                    Ok(Ok(_))
+                )
+            };
+            let prefs = async {
+                // The App Store build can't run Tailscale SSH.
+                if tailnet.app_store {
+                    return false;
+                }
+                run_until(Instant::now() + SSH_TIMEOUT, program, &["debug", "prefs"])
+                    .await
+                    .as_deref()
+                    .and_then(parse_run_ssh)
+                    .unwrap_or(false)
+            };
+            tokio::join!(connect, prefs)
+        }
+        None => (false, false),
     };
+    let tailnet = tailnet.map(|(tailnet, _)| tailnet);
     Checks {
         user: std::env::var("USER").unwrap_or_else(|_| "you".into()),
         tmux,
         tmux_rgb,
         tailnet,
         ssh,
+        tailscale_ssh,
         mosh,
     }
 }
@@ -255,7 +284,9 @@ pub fn report(checks: &Checks) -> String {
         ),
     });
     if let Some(tailnet) = &checks.tailnet {
-        lines.push(if checks.ssh {
+        lines.push(if checks.tailscale_ssh {
+            mark(true, "Tailscale SSH is on")
+        } else if checks.ssh {
             mark(true, "SSH answers on the tailnet address")
         } else if tailnet.app_store {
             // The App Store app can't run the Tailscale SSH server.
@@ -282,7 +313,7 @@ pub fn report(checks: &Checks) -> String {
         ),
         None => mark(false, "mosh-server isn't installed: brew install mosh"),
     });
-    if let (Some(tailnet), true) = (&checks.tailnet, checks.ssh) {
+    if let (Some(tailnet), true) = (&checks.tailnet, checks.ssh || checks.tailscale_ssh) {
         lines.push(format!(
             "Phone (Blink):   mosh {}@{} -- tmux new -A -s {session}",
             checks.user, tailnet.name
@@ -310,8 +341,34 @@ mod tests {
                 app_store: false,
             }),
             ssh: true,
+            tailscale_ssh: false,
             mosh: Some((1, 4, 0)),
         }
+    }
+    #[test]
+    fn tailscale_ssh_counts_even_though_the_mac_cannot_reach_itself() {
+        // Tailscale SSH serves connections arriving through the tunnel only,
+        // so the Mac's own connection to its tailnet address is refused.
+        let text = report(&Checks {
+            ssh: false,
+            tailscale_ssh: true,
+            ..ready()
+        });
+        assert!(text.contains("[ok] Tailscale SSH is on"), "{text}");
+        assert!(!text.contains("[!!]"), "{text}");
+        assert!(
+            text.contains("mosh me@my-mac.tail1234.ts.net -- tmux new -A -s octet"),
+            "{text}"
+        );
+    }
+    #[test]
+    fn reads_whether_tailscale_ssh_is_on() {
+        assert_eq!(
+            parse_run_ssh(r#"{"RunSSH":true,"WantRunning":true}"#),
+            Some(true)
+        );
+        assert_eq!(parse_run_ssh(r#"{"RunSSH":false}"#), Some(false));
+        assert_eq!(parse_run_ssh("not json"), None);
     }
     #[test]
     fn a_ready_host_prints_the_phone_commands() {
