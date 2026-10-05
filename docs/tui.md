@@ -61,7 +61,8 @@ sets 10–3600), cancellation and unknown request types fail closed; requests to
 Vendor sandbox policy still applies. The vendor policy depends on the permission
 mode below; this is not a promise that every vendor action raises a dialog.
 When an approval opens, Octet rings the terminal bell and sends a desktop
-notification (OSC 9), so a terminal, tmux or a phone app can flag it.
+notification (OSC 9). The bell passes through tmux and mosh to a phone app;
+the notification reaches only a desktop terminal connected directly.
 
 The prompt box grows with the draft: 4 rows when empty, up to 7 for a draft of
 four or more lines, leaving the rest of the screen to the conversation.

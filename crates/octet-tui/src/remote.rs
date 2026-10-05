@@ -2,9 +2,17 @@
 //! phone over tmux, Tailscale SSH and mosh. Nothing here changes system,
 //! tmux or tailnet settings. Guide: docs/rust/remote-control-ssh.md.
 use std::{process::Stdio, time::Duration};
-use tokio::{net::TcpStream, process::Command, time::timeout};
+use tokio::{
+    net::TcpStream,
+    process::Command,
+    time::{timeout, timeout_at, Instant},
+};
 
+/// All commands share one deadline, so the interface waits at most this
+/// long for them, plus `SSH_TIMEOUT` for the connection check after.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+/// The SSH check connects to this host's own tailnet address.
+const SSH_TIMEOUT: Duration = Duration::from_millis(500);
 const SESSION: &str = "octet";
 
 /// This host's place on the tailnet.
@@ -28,9 +36,15 @@ pub struct Checks {
     pub mosh: Option<(u32, u32, u32)>,
 }
 
-/// Runs one read-only check: stdin and stderr closed, killed after the
-/// timeout. None when the program is missing, fails or overruns.
+/// Runs one read-only check with its own timeout.
+#[cfg(test)]
 async fn run(program: &str, args: &[&str]) -> Option<String> {
+    run_until(Instant::now() + CHECK_TIMEOUT, program, args).await
+}
+
+/// Runs one read-only check: stdin and stderr closed, killed at the
+/// deadline. None when the program is missing, fails or overruns.
+async fn run_until(deadline: Instant, program: &str, args: &[&str]) -> Option<String> {
     let child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -39,7 +53,7 @@ async fn run(program: &str, args: &[&str]) -> Option<String> {
         .kill_on_drop(true)
         .spawn()
         .ok()?;
-    let output = timeout(CHECK_TIMEOUT, child.wait_with_output())
+    let output = timeout_at(deadline, child.wait_with_output())
         .await
         .ok()?
         .ok()?;
@@ -73,34 +87,56 @@ fn parse_mosh_version(output: &str) -> Option<(u32, u32, u32)> {
     ))
 }
 
+/// The programs the checks run; tests substitute stand-ins.
+struct Programs<'a> {
+    tmux: &'a str,
+    tailscale: &'a [&'a str],
+    mosh_server: &'a str,
+}
+const PROGRAMS: Programs<'static> = Programs {
+    tmux: "tmux",
+    // The App Store build keeps its CLI inside the app bundle.
+    tailscale: &[
+        "tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    ],
+    mosh_server: "mosh-server",
+};
+
 /// Runs every check concurrently, each bounded by the check timeout.
 pub async fn probe() -> Checks {
-    let inside_tmux = std::env::var_os("TMUX").is_some();
+    probe_with(&PROGRAMS, std::env::var_os("TMUX").is_some()).await
+}
+
+async fn probe_with(programs: &Programs<'_>, inside_tmux: bool) -> Checks {
+    let deadline = Instant::now() + CHECK_TIMEOUT;
     let tmux = async {
         if !inside_tmux {
             return (None, None);
         }
-        let session = run("tmux", &["display-message", "-p", "#S"]).await;
-        let features = run("tmux", &["display-message", "-p", "#{client_termfeatures}"]).await;
+        let (session, features) = tokio::join!(
+            run_until(deadline, programs.tmux, &["display-message", "-p", "#S"]),
+            run_until(
+                deadline,
+                programs.tmux,
+                &["display-message", "-p", "#{client_termfeatures}"],
+            ),
+        );
         (
             session.map(|name| name.trim().to_owned()),
             features.map(|list| list.split(',').any(|feature| feature.trim() == "RGB")),
         )
     };
     let tailnet = async {
-        // The App Store build keeps its CLI inside the app bundle.
-        for program in [
-            "tailscale",
-            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
-        ] {
-            if let Some(json) = run(program, &["status", "--json"]).await {
+        for program in programs.tailscale {
+            if let Some(json) = run_until(deadline, program, &["status", "--json"]).await {
                 return parse_tailnet(&json);
             }
         }
         None
     };
     let mosh = async {
-        run("mosh-server", &["--version"])
+        run_until(deadline, programs.mosh_server, &["--version"])
             .await
             .as_deref()
             .and_then(parse_mosh_version)
@@ -109,7 +145,7 @@ pub async fn probe() -> Checks {
     let ssh = match &tailnet {
         Some(tailnet) => matches!(
             timeout(
-                CHECK_TIMEOUT,
+                SSH_TIMEOUT,
                 TcpStream::connect((tailnet.address.as_str(), 22))
             )
             .await,
@@ -281,6 +317,29 @@ mod tests {
             Some((1, 3, 2))
         );
         assert_eq!(parse_mosh_version("unexpected"), None);
+    }
+    #[tokio::test]
+    async fn probe_answers_in_bounded_time_when_commands_hang() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = octet_testkit::TempDir::new("octet-remote-hang");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let hang = dir.path().join("hang");
+        std::fs::write(&hang, "#!/bin/sh\nsleep 10\n").unwrap();
+        std::fs::set_permissions(&hang, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let hang = hang.to_str().unwrap();
+        let programs = Programs {
+            tmux: hang,
+            tailscale: &[hang, hang],
+            mosh_server: hang,
+        };
+        let started = std::time::Instant::now();
+        let checks = probe_with(&programs, true).await;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(2700),
+            "the interface waits {elapsed:?}"
+        );
+        assert!(checks.tailnet.is_none() && checks.mosh.is_none());
     }
     #[tokio::test]
     async fn run_gives_up_after_the_timeout() {

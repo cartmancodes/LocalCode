@@ -356,9 +356,10 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
         Err(error) => app.notice(format!("Goal persistence failed; paused: {error}")),
     }
 }
-/// A bell plus a desktop notification (OSC 9), so tmux, a terminal app or a
-/// phone app can flag an approval the user isn't watching. Write errors are
-/// ignored: the alert is a courtesy, never a reason to stop.
+/// A bell plus a desktop notification (OSC 9) for an approval the user isn't
+/// watching. The bell passes through tmux and mosh to a phone; tmux drops the
+/// OSC 9, which helps only a desktop terminal connected directly. Write errors
+/// are ignored: the alert is a courtesy, never a reason to stop.
 const ALERT: &[u8] = b"\x07\x1b]9;Octet: approval needed\x07";
 fn alert() {
     use std::io::Write;

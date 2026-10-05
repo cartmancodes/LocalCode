@@ -15,14 +15,16 @@ today.**
 - mosh keeps the session through switches between Wi-Fi and cellular.
 - tmux keeps Octet running while the phone is away.
 
-**Two things make it a personal setup rather than a product:**
-- **Approvals time out unseen.** Nothing alerts the phone, so a request
-  waiting while you are away is denied after 120 seconds.
-- **The prompt box crowds out the conversation on a phone.** With the on-screen
-  keyboard open, the conversation shrinks to a single row.
+**Before the fixes below, two things made it a personal setup rather than a
+product:**
+- **Approvals timed out unseen.** Nothing alerted the phone, and a request
+  waiting while you were away was denied after 120 seconds. Now a terminal
+  bell reaches the phone, and `--approval-timeout` lengthens the window.
+- **The prompt box crowded out the conversation on a phone.** With the
+  on-screen keyboard open, the conversation shrank to a single row. Now an
+  empty prompt box takes 4 rows instead of 7.
 
-A thin `/remote-control` helper (about 1–2 days) and three small layout and
-notification changes would remove most of the friction. The 20–28-day web
+The `/remote-control` helper and those three changes are implemented. The 20–28-day web
 client remains the route to a guided, multi-device product.
 
 | Option | Effort | What you get | What you give up |
@@ -167,14 +169,15 @@ with `stty size` on each phone.
 | SSH handles login and encryption | Yes | Tailscale's WireGuard encrypts. Tailscale SSH or OpenSSH authenticates. |
 | mosh survives Wi-Fi ↔ cellular | Yes | Over UDP inside the tailnet; no extra firewall or ports. |
 | Full TUI at phone width | Partly | Works in portrait; landscape with keyboard is below the minimum. See above. |
-| No alerts, so approvals time out | Yes | The 120 s approval window (`Limits::approval`) runs while the phone is away; unanswered requests are denied. |
+| No alerts, so approvals time out | Yes, before the fixes | The approval window ran while the phone was away and unanswered requests were denied. A bell now reaches the phone, and `--approval-timeout` sets the window (10–3600 s, default 120). |
 | Keystroke access includes full-access | Yes | An SSH user can type `/mode full-access` and also has a shell. Limit who can reach the host (see Risks). |
 
 ## Risks and mitigations
 
 - **Approvals are denied while you're away.** Expect denied actions on
   long-running work. Prefer `ask` mode and check in, or use `auto` so the
-  vendor's own reviewer decides. Phone fix 2 below addresses this.
+  vendor's own reviewer decides. Phone fixes 2 and 3 below help: a bell
+  when an approval opens, and a longer window with `--approval-timeout`.
 - **Full shell access.** Whoever can SSH in can run anything as your user.
   Grant SSH only to your own devices in the tailnet policy, use Tailscale
   check mode or key-only Remote Login, and never expose SSH outside the
@@ -205,7 +208,8 @@ tailnet configuration. It checks what is there and prints the next step:
 6. **Phone command:** print the exact Blink and Termius commands for this
    host, user and tmux session, ready to copy.
 
-Each check runs as a short command with a 2-second timeout, and the results
+All the commands share one 2-second deadline, and the SSH check then gets
+half a second, so the screen waits about 2.5 seconds at most. The results
 appear as a note in the conversation. It starts no listener and holds no
 secrets. The App Store Tailscale app is found inside its app bundle when
 `tailscale` isn't on the PATH.
@@ -219,9 +223,12 @@ belong to the [web plan](remote-control-plan.md), not here.
    the keyboard shown this returns 3 rows to the conversation, the biggest
    single phone improvement.
 2. **Approval alert.** A terminal bell and an OSC 9 desktop notification when
-   an approval opens, so tmux and the phone app can flag it. Whether Blink or
-   Termius show these while backgrounded needs testing on a device; if they
-   don't, a push service is the fallback, and that is part of the web plan.
+   an approval opens. Through the documented chain (phone app, mosh, tmux)
+   only the **bell** arrives: tmux drops OSC 9 and mosh doesn't forward it.
+   The notification helps only a desktop terminal connected directly. Whether
+   Blink or Termius show a bell while backgrounded needs testing on a device;
+   if they don't, a push service is the fallback, and that is part of the web
+   plan.
 3. **A longer approval window.** `octet --approval-timeout 600` gives a phone
    user ten minutes to notice. It accepts 10–3600 seconds; the default stays
    120, and timeouts still deny. Set it when starting Octet in tmux.
