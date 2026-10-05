@@ -86,8 +86,15 @@ impl DemoTurn<'_> {
         emit(self.tx, Event::User(display.clone()))?;
         emit(self.tx, Event::Started)?;
         let reply = if text.trim() != "/approval-demo" {
+            // Attachments make what a model receives differ from what is
+            // shown; the demo shows it so the difference can be checked.
+            let sent = if text == display {
+                String::new()
+            } else {
+                format!("\n\nA model would receive:\n\n{text}")
+            };
             format!(
-                "This is an offline demo. Your prompt was:\n\n{display}\n\nThe editor, streaming transcript, approval dialog, history, and cancellation are live. Start with --engine codex or --engine claude to work with a model.\n\nTry /approval-demo to preview a permission request."
+                "This is an offline demo. Your prompt was:\n\n{display}{sent}\n\nThe editor, streaming transcript, approval dialog, history, and cancellation are live. Start with --engine codex or --engine claude to work with a model.\n\nTry /approval-demo to preview a permission request."
             )
         } else if !matches!(*self.mode, Mode::Ask | Mode::AcceptEdits) {
             emit(

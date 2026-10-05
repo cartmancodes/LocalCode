@@ -860,6 +860,8 @@ fn bang_runs_a_command_and_attaches_it_to_the_next_prompt() {
     p.wait(|p| p.screen_shows("+ echo hi-from-shell (exit 0)"));
     p.send(b"what does it say\r");
     p.wait(|p| p.screen_shows("[+ echo hi-from-shell]"));
+    // The engine received the output itself; the demo shows what it got.
+    p.wait(|p| p.screen_shows("Output of `echo hi-from-shell` (exit 0):"));
     p.wait(|p| p.shows("● completed"));
     p.wait(|p| !p.screen_shows("(exit 0) "));
     p.send(b"!!echo local-only\r");
