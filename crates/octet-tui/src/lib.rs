@@ -1,6 +1,7 @@
 mod clipboard;
 mod composer;
 mod editor;
+mod files;
 mod mascot;
 mod remote;
 mod shell;
