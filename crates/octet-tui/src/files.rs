@@ -9,6 +9,8 @@ pub const SHOWN: usize = 8;
 
 pub struct Index {
     paths: Vec<String>,
+    /// `paths` lowercased once, for ranking on every keystroke.
+    lower: Vec<String>,
     /// The workspace had more than `LIMIT` files.
     pub capped: bool,
 }
@@ -27,19 +29,25 @@ impl Index {
     pub fn build(root: &Path) -> Index {
         git(root, LIMIT).unwrap_or_else(|| walk(root, LIMIT))
     }
-    #[cfg(test)]
-    pub fn from_paths(paths: Vec<String>) -> Index {
+    fn new(paths: Vec<String>, capped: bool) -> Index {
+        let lower = paths.iter().map(|path| path.to_lowercase()).collect();
         Index {
             paths,
-            capped: false,
+            lower,
+            capped,
         }
+    }
+    #[cfg(test)]
+    pub fn from_paths(paths: Vec<String>) -> Index {
+        Index::new(paths, false)
     }
     pub fn rank(&self, query: &str) -> Vec<&str> {
         let query = query.to_lowercase();
         let mut scored: Vec<((bool, usize), &str)> = self
             .paths
             .iter()
-            .filter_map(|path| score(path, &query).map(|score| (score, path.as_str())))
+            .zip(&self.lower)
+            .filter_map(|(path, lower)| score(lower, &query).map(|score| (score, path.as_str())))
             .collect();
         scored.sort_by(|a, b| {
             a.0.cmp(&b.0)
@@ -54,35 +62,50 @@ impl Index {
     }
 }
 
-/// Lower is better: (outside the file name, gaps between matched characters).
-fn score(path: &str, query: &str) -> Option<(bool, usize)> {
+/// Lower is better: (outside the file name, gaps between matched
+/// characters). `lower` and `query` are already lowercase.
+fn score(lower: &str, query: &str) -> Option<(bool, usize)> {
     if query.is_empty() {
         return Some((false, 0));
     }
-    let lower = path.to_lowercase();
     let name = &lower[lower.rfind('/').map_or(0, |slash| slash + 1)..];
     subsequence(name, query)
         .map(|gaps| (false, gaps))
-        .or_else(|| subsequence(&lower, query).map(|gaps| (true, gaps)))
+        .or_else(|| subsequence(lower, query).map(|gaps| (true, gaps)))
 }
 
-/// Gaps between `query`'s characters found in order in `text`, or None.
+/// The fewest gaps with which `query`'s characters appear in order in
+/// `text`, or None when they don't.
 fn subsequence(text: &str, query: &str) -> Option<usize> {
-    let mut chars = text.chars().enumerate();
-    let mut gaps = 0;
-    let mut last: Option<usize> = None;
-    for wanted in query.chars() {
-        let (at, _) = chars.by_ref().find(|(_, c)| *c == wanted)?;
-        if last.is_some_and(|last| at != last + 1) {
-            gaps += 1;
+    let query: Vec<char> = query.chars().collect();
+    let none = usize::MAX;
+    // ending[j]: fewest gaps matching query[..j] with its last character at
+    // the previous position; best[j]: the same, ending anywhere before.
+    let mut ending = vec![none; query.len() + 1];
+    let mut best = vec![none; query.len() + 1];
+    for c in text.chars() {
+        let mut here = vec![none; query.len() + 1];
+        for j in 1..=query.len() {
+            if c != query[j - 1] {
+                continue;
+            }
+            here[j] = if j == 1 {
+                0
+            } else {
+                ending[j - 1].min(best[j - 1].saturating_add(1))
+            };
         }
-        last = Some(at);
+        for j in 1..=query.len() {
+            best[j] = best[j].min(here[j]);
+        }
+        ending = here;
     }
-    Some(gaps)
+    (best[query.len()] != none).then_some(best[query.len()])
 }
 
 fn git(root: &Path, limit: usize) -> Option<Index> {
-    let output = std::process::Command::new("git")
+    use std::io::BufRead;
+    let mut child = std::process::Command::new("git")
         .args([
             "ls-files",
             "--cached",
@@ -92,28 +115,33 @@ fn git(root: &Path, limit: usize) -> Option<Index> {
         ])
         .current_dir(root)
         .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .output()
+        .spawn()
         .ok()?;
-    if !output.status.success() {
-        return None;
-    }
+    // Read paths as they come, so a huge tree costs no more than the cap.
+    let stdout = std::io::BufReader::new(child.stdout.take()?);
     let mut paths = Vec::new();
     let mut capped = false;
-    for path in output
-        .stdout
-        .split(|byte| *byte == 0)
+    for path in stdout
+        .split(0)
+        .map_while(Result::ok)
         .filter(|p| !p.is_empty())
     {
         if paths.len() == limit {
             capped = true;
+            let _ = child.kill();
             break;
         }
-        paths.push(String::from_utf8_lossy(path).into_owned());
+        paths.push(String::from_utf8_lossy(&path).into_owned());
+    }
+    let finished = child.wait().ok()?;
+    if !capped && !finished.success() {
+        return None;
     }
     paths.sort();
     paths.dedup();
-    Some(Index { paths, capped })
+    Some(Index::new(paths, capped))
 }
 
 fn walk(root: &Path, limit: usize) -> Index {
@@ -147,7 +175,7 @@ fn walk(root: &Path, limit: usize) -> Index {
         }
     }
     paths.sort();
-    Index { paths, capped }
+    Index::new(paths, capped)
 }
 
 #[cfg(test)]
@@ -173,6 +201,15 @@ mod tests {
         assert_eq!(all.rank("MAIN")[0], "src/main.rs", "case is ignored");
         assert!(all.rank("zzz").is_empty());
         assert_eq!(all.rank("").len(), 5);
+    }
+    #[test]
+    fn matching_finds_the_fewest_gaps_not_the_first_letters() {
+        // Greedy matching takes "ma" from "max" and then has a gap.
+        assert_eq!(subsequence("maxmain", "main"), Some(0));
+        assert_eq!(subsequence("m_a_i_n", "main"), Some(3));
+        assert_eq!(subsequence("nope", "main"), None);
+        let all = index(&["maxmain.rs", "mainly_long_name.rs"]);
+        assert_eq!(all.rank("main")[0], "maxmain.rs", "no gaps, shorter");
     }
     #[test]
     fn shows_at_most_eight() {
