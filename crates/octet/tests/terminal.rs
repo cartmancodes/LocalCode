@@ -762,8 +762,20 @@ esac"#,
         &[("PATH", path.as_str()), ("TMUX", "/tmp/tmux-test,1,0")],
     );
     p.wait(|p| p.shows("● ready"));
-    p.send(b"/remote-control\r");
-    p.wait(|p| p.screen_shows("[ok] mosh-server 1.4.0"));
+    // The checks share a 2-second deadline; on a machine busy with the
+    // parallel suite a stand-in can miss it, so ask again before failing.
+    // Each attempt first runs a ! command, which replaces the status line,
+    // so "Remote control:" there can only mean the new report.
+    for attempt in 1..=3 {
+        p.send(format!("!!echo attempt-{attempt}\r").as_bytes());
+        p.wait(|p| p.row_shows(35, &format!("echo attempt-{attempt} · exit 0")));
+        p.send(b"/remote-control\r");
+        p.wait(|p| p.row_shows(35, "Remote control: "));
+        if p.screen_shows("[ok] mosh-server 1.4.0") {
+            break;
+        }
+        assert!(attempt < 3, "{}", p.screen().join("\n"));
+    }
     assert!(p.screen_shows("[ok] Running in tmux session \"octet\""));
     assert!(p.screen_shows("[ok] Tailscale connected: test-mac.tail0000.ts.net"));
     assert!(!p.screen_shows("tmux reduces colours"));

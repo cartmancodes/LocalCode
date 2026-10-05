@@ -338,17 +338,8 @@ async fn run_session(
                 }
             } => {
                 let attach = shell_task.take().is_some_and(|running| running.attach);
-                app.shell_running = false;
-                match result {
-                    Ok(Ok(ran)) => {
-                        app.shell_output(&ran);
-                        if attach {
-                            app.attach(ran);
-                        }
-                    }
-                    Ok(Err(error)) => app.error(error),
-                    Err(error) => app.error(format!("The command failed: {error}")),
-                }
+                let result = result.unwrap_or_else(|error| Err(format!("The command failed: {error}")));
+                shell_finished(app, result, attach);
                 dirty = true;
             }
             status = async {
@@ -568,6 +559,21 @@ async fn stop_editor(editing: &mut Option<(tokio::process::Child, external::Edit
         .is_err()
     {
         let _ = child.kill().await;
+    }
+}
+/// A `!` command's result: in the transcript, on the status line in place
+/// of "Running …", and attached when asked.
+fn shell_finished(app: &mut App, result: Result<shell::Ran, String>, attach: bool) {
+    app.shell_running = false;
+    match result {
+        Ok(ran) => {
+            app.shell_output(&ran);
+            app.notice = format!("$ {} · {}", ran.command, ran.summary());
+            if attach {
+                app.attach(ran);
+            }
+        }
+        Err(error) => app.error(error),
     }
 }
 /// A key chosen from the palette.
@@ -1415,6 +1421,18 @@ mod model_tests {
         );
         assert_eq!(app.attachments.len(), 1, "kept");
         assert!(!app.running);
+    }
+    #[test]
+    fn a_finished_command_replaces_the_running_notice() {
+        let mut app = app();
+        app.shell_running = true;
+        app.notice = "Running echo hi · Esc to stop".into();
+        shell_finished(&mut app, Ok(ran("echo hi", "hi\n")), true);
+        assert!(!app.shell_running);
+        assert_eq!(app.notice, "$ echo hi · exit 0");
+        assert_eq!(app.attachments.len(), 1);
+        shell_finished(&mut app, Err("Cannot run /x: gone".into()), false);
+        assert_eq!(app.notice, "Cannot run /x: gone");
     }
     #[tokio::test]
     async fn slow_work_off_the_loop_gives_up_at_its_limit() {
