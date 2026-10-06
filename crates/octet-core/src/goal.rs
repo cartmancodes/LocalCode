@@ -1,6 +1,6 @@
 //! Durable, provider-neutral goal state. A vendor turn is never resumed merely
 //! because a goal file exists; the user explicitly resumes after restart.
-use crate::Outcome;
+use crate::{GoalError, Outcome};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -51,11 +51,11 @@ pub struct Goal {
 }
 
 impl Goal {
-    pub fn new(objective: &str) -> Result<Self, String> {
+    pub fn new(objective: &str) -> Result<Self, GoalError> {
         let objective = objective.trim();
         if objective.is_empty() || objective.len() > 8192 || objective.chars().any(char::is_control)
         {
-            return Err("Goal must be 1–8192 bytes on one line".into());
+            return Err(GoalError::InvalidObjective);
         }
         Ok(Self {
             objective: objective.into(),
@@ -148,30 +148,29 @@ impl GoalStore {
             path: directory.join(format!("goal-{hash:016x}.json")),
         }
     }
-    pub async fn load(&self) -> Result<Option<Goal>, String> {
+    pub async fn load(&self) -> Result<Option<Goal>, GoalError> {
         let bytes = match tokio::fs::read(&self.path).await {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(format!("Cannot read goal: {e}")),
+            Err(e) => return Err(GoalError::Read(e)),
         };
         // An 8 KiB objective plus 4096 evidence characters can exceed 16 KiB;
         // JSON escaping can expand the evidence to six bytes per character.
         if bytes.len() > 48 * 1024 {
-            return Err("Goal file exceeds 48 KiB".into());
+            return Err(GoalError::TooLarge);
         }
-        let v: Value =
-            serde_json::from_slice(&bytes).map_err(|e| format!("Invalid goal file: {e}"))?;
-        let objective = v["objective"].as_str().ok_or("Goal objective missing")?;
+        let v: Value = serde_json::from_slice(&bytes).map_err(GoalError::Parse)?;
+        let objective = v["objective"].as_str().ok_or(GoalError::MissingObjective)?;
         let mut goal = Goal::new(objective)?;
         goal.status = match v["status"].as_str() {
             Some("active" | "paused") => Status::Paused,
             Some("complete") => Status::Complete,
-            _ => return Err("Invalid goal status".into()),
+            _ => return Err(GoalError::InvalidStatus),
         };
         goal.turns = v["turns"]
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
-            .ok_or("Invalid goal turn count")?;
+            .ok_or(GoalError::InvalidTurns)?;
         goal.evidence = v["evidence"]
             .as_str()
             .unwrap_or("")
@@ -180,14 +179,14 @@ impl GoalStore {
             .collect();
         Ok(Some(goal))
     }
-    pub async fn save(&self, goal: &Goal) -> Result<(), String> {
-        let failed = |e: std::io::Error| format!("Cannot save goal: {e}");
-        tokio::fs::create_dir_all(self.path.parent().ok_or("Invalid goal path")?)
+    pub async fn save(&self, goal: &Goal) -> Result<(), GoalError> {
+        let failed = GoalError::Save;
+        tokio::fs::create_dir_all(self.path.parent().ok_or(GoalError::InvalidPath)?)
             .await
             .map_err(failed)?;
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| format!("Cannot save goal: {e}"))?
+            .map_err(|e| GoalError::Save(std::io::Error::other(e)))?
             .as_nanos();
         let temp = self
             .path
@@ -199,7 +198,7 @@ impl GoalStore {
             "turns": goal.turns,
             "evidence": goal.evidence,
         }))
-        .map_err(|e| format!("Cannot save goal: {e}"))?;
+        .map_err(|e| GoalError::Save(std::io::Error::other(e)))?;
         use tokio::io::AsyncWriteExt;
         file.write_all(&bytes).await.map_err(failed)?;
         file.sync_data().await.map_err(failed)?;
@@ -207,11 +206,11 @@ impl GoalStore {
         tokio::fs::rename(&temp, &self.path).await.map_err(failed)
     }
     /// Removes the stored goal; a missing file is already cleared.
-    pub async fn clear(&self) -> Result<(), String> {
+    pub async fn clear(&self) -> Result<(), GoalError> {
         match tokio::fs::remove_file(&self.path).await {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("Cannot clear goal: {e}")),
+            Err(e) => Err(GoalError::Clear(e)),
         }
     }
 }
@@ -246,7 +245,7 @@ impl GoalRunner {
     /// Attaches the store and loads its goal; a stored goal is always paused.
     /// On error the store stays attached and no goal is loaded, so the file is
     /// kept until the user clears or replaces it.
-    pub async fn attach(&mut self, store: GoalStore) -> Result<(), String> {
+    pub async fn attach(&mut self, store: GoalStore) -> Result<(), GoalError> {
         let loaded = store.load().await;
         self.store = Some(store);
         self.goal = loaded?;
@@ -257,14 +256,14 @@ impl GoalRunner {
             .as_ref()
             .is_some_and(|goal| goal.status == Status::Active)
     }
-    pub async fn save(&self) -> Result<(), String> {
+    pub async fn save(&self) -> Result<(), GoalError> {
         match (&self.store, &self.goal) {
             (None, _) => Ok(()),
             (Some(store), Some(goal)) => store.save(goal).await,
             (Some(store), None) => store.clear().await,
         }
     }
-    async fn save_or_pause(&mut self) -> Result<(), String> {
+    async fn save_or_pause(&mut self) -> Result<(), GoalError> {
         let saved = self.save().await;
         if saved.is_err() {
             if let Some(goal) = &mut self.goal {
@@ -309,7 +308,7 @@ impl GoalRunner {
     }
     /// The vendor reported an error. Adapters send it before the failed
     /// terminal event, so the turn is counted here and the later finish ignored.
-    pub async fn turn_failed(&mut self) -> Result<(), String> {
+    pub async fn turn_failed(&mut self) -> Result<(), GoalError> {
         if !self.running {
             return Ok(());
         }
@@ -319,7 +318,7 @@ impl GoalRunner {
         }
         self.save_or_pause().await
     }
-    pub async fn turn_finished(&mut self, outcome: &Outcome) -> Result<Next, String> {
+    pub async fn turn_finished(&mut self, outcome: &Outcome) -> Result<Next, GoalError> {
         if !self.running {
             return Ok(Next::Idle);
         }
@@ -342,7 +341,7 @@ impl GoalRunner {
         })
     }
     /// Esc/Ctrl+C during a goal turn: the goal must not continue by itself.
-    pub async fn pause_running_turn(&mut self) -> Result<(), String> {
+    pub async fn pause_running_turn(&mut self) -> Result<(), GoalError> {
         if !self.running {
             return Ok(());
         }
@@ -352,7 +351,7 @@ impl GoalRunner {
         self.save().await
     }
     /// A new connection never continues a goal by itself. True if it paused one.
-    pub async fn pause_active(&mut self) -> Result<bool, String> {
+    pub async fn pause_active(&mut self) -> Result<bool, GoalError> {
         if !self.is_active() {
             return Ok(false);
         }
@@ -362,44 +361,44 @@ impl GoalRunner {
         self.save().await.map(|()| true)
     }
     /// The goal prompt could not be sent.
-    pub async fn send_failed(&mut self) -> Result<(), String> {
+    pub async fn send_failed(&mut self) -> Result<(), GoalError> {
         if let Some(goal) = &mut self.goal {
             goal.status = Status::Paused;
         }
         self.save().await
     }
     /// `/goal <objective>`: the first prompt to send.
-    pub async fn start(&mut self, objective: &str) -> Result<String, String> {
+    pub async fn start(&mut self, objective: &str) -> Result<String, GoalError> {
         if self.is_active() {
-            return Err("Pause or clear the active goal before replacing it".into());
+            return Err(GoalError::AlreadyActive);
         }
         let goal = Goal::new(objective)?;
         let prompt = goal.prompt(GoalStep::Begin);
         self.goal = Some(goal);
         if let Err(error) = self.save().await {
             self.goal = None;
-            return Err(format!("Goal persistence failed: {error}"));
+            return Err(GoalError::Persist(Box::new(error)));
         }
         Ok(prompt)
     }
     /// `/goal resume` (`Continue`) or `/goal complete` (`Audit`).
-    pub async fn resume(&mut self, step: GoalStep) -> Result<String, String> {
-        let goal = self.goal.as_mut().ok_or("No goal set")?;
+    pub async fn resume(&mut self, step: GoalStep) -> Result<String, GoalError> {
+        let goal = self.goal.as_mut().ok_or(GoalError::NoGoal)?;
         if goal.status == Status::Complete {
-            return Err("Goal is already complete; set a new goal to continue.".into());
+            return Err(GoalError::Complete);
         }
         if goal.turns >= MAX_GOAL_TURNS {
-            return Err("Goal reached the 200-turn guard. Set a new goal to continue.".into());
+            return Err(GoalError::TurnGuard);
         }
         goal.status = Status::Active;
         let prompt = goal.prompt(step);
         self.save_or_pause()
             .await
-            .map_err(|error| format!("Goal persistence failed; paused: {error}"))?;
+            .map_err(|error| GoalError::PersistPaused(Box::new(error)))?;
         Ok(prompt)
     }
     /// `/goal pause`: the notice to show.
-    pub async fn pause(&mut self) -> Result<&'static str, String> {
+    pub async fn pause(&mut self) -> Result<&'static str, GoalError> {
         match &mut self.goal {
             None => Ok("No goal set"),
             Some(goal) if goal.status == Status::Complete => {
@@ -412,7 +411,7 @@ impl GoalRunner {
             }
         }
     }
-    pub async fn clear(&mut self) -> Result<(), String> {
+    pub async fn clear(&mut self) -> Result<(), GoalError> {
         self.goal = None;
         self.running = false;
         self.save().await

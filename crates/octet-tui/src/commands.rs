@@ -228,7 +228,7 @@ fn model_command(app: &mut App, argument: &str) -> Action {
     } else {
         match octet_core::model::Selection::parse(argument, app.conn.engine) {
             Ok(selection) => return Action::Exit(Exit::Model(selection)),
-            Err(error) => app.notice(error),
+            Err(error) => app.notice(error.to_string()),
         }
     }
     Action::Continue
@@ -295,13 +295,13 @@ async fn goal_command(app: &mut App, argument: &str) -> Action {
             };
             match app.goals.resume(step).await {
                 Ok(prompt) => return Action::GoalPrompt(prompt),
-                Err(error) => app.notice(error),
+                Err(error) => app.notice(error.to_string()),
             }
         }
         _ if !idle => app.notice("Wait for a ready, idle session before starting a goal"),
         objective => match app.goals.start(objective).await {
             Ok(prompt) => return Action::GoalPrompt(prompt),
-            Err(error) => app.notice(error),
+            Err(error) => app.notice(error.to_string()),
         },
     }
     Action::Continue

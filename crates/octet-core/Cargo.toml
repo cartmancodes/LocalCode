@@ -10,6 +10,7 @@ octet-engine = { path = "../octet-engine" }
 octet-store = { path = "../octet-store" }
 tokio.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 octet-testkit = { path = "../octet-testkit" }

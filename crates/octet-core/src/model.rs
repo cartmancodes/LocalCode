@@ -1,5 +1,5 @@
 //! Model names remain vendor-owned; no stale hard-coded model catalog.
-use crate::{Config, Engine};
+use crate::{Config, Engine, SelectionError};
 use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selection {
@@ -8,16 +8,11 @@ pub struct Selection {
     pub model: Option<String>,
 }
 impl Selection {
-    pub fn parse(input: &str, current: Engine) -> Result<Self, String> {
+    pub fn parse(input: &str, current: Engine) -> Result<Self, SelectionError> {
         let vendor = |name: &str| Engine::parse(name).filter(|engine| engine.is_vendor());
         let parts: Vec<_> = input.split_whitespace().collect();
         let (provider, model) = match parts.as_slice() {
-            [] => {
-                return Err(
-                    "Use /model <name>, /model codex <name>, /model claude <name>, or /model <provider> default"
-                        .into(),
-                )
-            }
+            [] => return Err(SelectionError::Empty),
             [name] => match vendor(name) {
                 Some(engine) => (engine, "default"),
                 None => name
@@ -27,17 +22,15 @@ impl Selection {
             },
             [name, model] => match vendor(name) {
                 Some(engine) => (engine, *model),
-                None => return Err("Use /model <name> or /model <codex|claude> <name>".into()),
+                None => return Err(SelectionError::Syntax),
             },
-            _ => return Err("Use /model <name> or /model <codex|claude> <name>".into()),
+            _ => return Err(SelectionError::Syntax),
         };
         if !provider.is_vendor() {
-            return Err(
-                "Choose a real provider: /model codex or /model claude. Demo has no model.".into(),
-            );
+            return Err(SelectionError::Demo);
         }
         if !octet_engine::live::valid_identifier(model) {
-            return Err("Model must be a non-empty vendor model name, at most 256 bytes".into());
+            return Err(SelectionError::InvalidModel);
         }
         Ok(Self {
             provider,

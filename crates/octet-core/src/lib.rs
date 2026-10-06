@@ -15,10 +15,10 @@ pub struct Session {
     task: tokio::task::JoinHandle<()>,
 }
 impl Session {
-    pub async fn open(config: Config, directory: PathBuf) -> Result<Self, String> {
+    pub async fn open(config: Config, directory: PathBuf) -> Result<Self, SessionError> {
         let mut journal = Journal::create(&directory)
             .await
-            .map_err(|e| format!("Cannot create transcript journal: {e}"))?;
+            .map_err(SessionError::Create)?;
         let header = json!({
             "engine": config.engine.as_str(),
             "cwd": config.cwd,
@@ -29,7 +29,7 @@ impl Session {
         journal
             .append("session", header, true)
             .await
-            .map_err(|e| format!("Cannot write transcript journal: {e}"))?;
+            .map_err(SessionError::Write)?;
         let path = journal.path.clone();
         let (handle, mut engine_events, mut driver) = octet_engine::live::spawn(config);
         let control = handle.clone();
@@ -151,15 +151,24 @@ fn record(event: &Event) -> (&'static str, Value) {
 pub async fn export_journal(
     source: &std::path::Path,
     target: &std::path::Path,
-) -> Result<(), String> {
+) -> Result<(), ExportError> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let read = |e: std::io::Error| format!("Cannot read journal {}: {e}", source.display());
+    let read = |source_error| ExportError::Read {
+        path: source.to_owned(),
+        source: source_error,
+    };
     let input = tokio::fs::File::open(source).await.map_err(read)?;
     let size = input.metadata().await.map_err(read)?.len();
     let mut output = octet_store::create_private(target)
         .await
-        .map_err(|e| format!("Cannot create {}: {e}", target.display()))?;
-    let write = |e: std::io::Error| format!("Cannot write {}: {e}", target.display());
+        .map_err(|source| ExportError::Create {
+            path: target.to_owned(),
+            source,
+        })?;
+    let write = |source| ExportError::Write {
+        path: target.to_owned(),
+        source,
+    };
     tokio::io::copy(&mut input.take(size), &mut output)
         .await
         .map_err(write)?;
@@ -167,6 +176,8 @@ pub async fn export_journal(
     output.sync_data().await.map_err(write)
 }
 
+mod error;
+pub use error::{ExportError, GoalError, SelectionError, SessionError};
 pub mod goal;
 pub mod model;
 
