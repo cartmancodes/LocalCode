@@ -1,4 +1,5 @@
 use crate::{
+    commands::COMMANDS,
     editor::Editor,
     mascot::{self, State},
     text::{clean, strip, Sanitizer},
@@ -1022,7 +1023,7 @@ fn sidebar(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         app.session.as_str()
     };
-    let lines = vec![
+    let mut lines = vec![
         Line::default(),
         Line::from(Span::styled(" ENGINE", Style::default().fg(MUTED))),
         Line::from(format!(" {}", app.engine)),
@@ -1046,18 +1047,19 @@ fn sidebar(frame: &mut Frame, area: Rect, app: &App) {
         }),
         Line::default(),
         Line::from(Span::styled(" QUICK COMMANDS", Style::default().fg(MUTED))),
-        Line::from(" /model      Switch model"),
-        Line::from(" /mode       Permissions"),
-        Line::from(" /new        Fresh context"),
-        Line::from(" /session    Session info"),
-        Line::from(" /export     Save journal"),
-        Line::from(" /reconnect  Resume vendor"),
+    ];
+    lines.extend(
+        COMMANDS
+            .iter()
+            .filter_map(|spec| Some(Line::from(format!(" {:<11} {}", spec.name, spec.quick?)))),
+    );
+    lines.extend([
         Line::default(),
         Line::from(Span::styled(" CONTROL", Style::default().fg(MUTED))),
         Line::from(" Esc         Cancel turn"),
         Line::from(" PgUp/PgDn   Read history"),
         Line::from(" Ctrl+C ×2   Save and quit"),
-    ];
+    ]);
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 fn modal(area: Rect, width: u16, height: u16) -> Rect {
@@ -1070,10 +1072,39 @@ fn modal(area: Rect, width: u16, height: u16) -> Rect {
         height,
     }
 }
+/// The help screen: keys, then every command's usage, then the rest.
+pub fn help_lines() -> Vec<String> {
+    let keys = [
+        "Octet terminal preview",
+        "",
+        "Enter send · Alt+Enter / Ctrl+J newline",
+        "Arrows, Home, End edit; ↑ ↓ browse prompt history",
+        "Ctrl+U clear draft · PgUp/PgDn scroll conversation",
+        "Ctrl+End follow · Esc/Ctrl+C cancel turn",
+        "Ctrl+C twice quit · Ctrl+Z suspend (return with fg)",
+        "",
+    ];
+    let rest = [
+        "!cmd run and attach output · !!cmd run only · Esc stops",
+        "@ mention a file · Tab completes paths and /commands",
+        "Ctrl+P commands · Ctrl+G write the prompt in $EDITOR",
+        "/approval-demo: offline permission dialog",
+        "",
+        "Approval: A allow once · D/Esc deny",
+        "Journals retain older output beyond the viewport.",
+        "Esc or F1 closes help",
+    ];
+    keys.into_iter()
+        .chain(COMMANDS.iter().map(|spec| spec.usage))
+        .chain(rest)
+        .map(str::to_owned)
+        .collect()
+}
 fn help(frame: &mut Frame, area: Rect) {
-    let area = modal(area, 76, 28);
+    let lines = help_lines();
+    let area = modal(area, 76, cells(lines.len()).saturating_add(2));
     frame.render_widget(Clear, area);
-    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/copy or Ctrl+X: copy the last reply to the clipboard\n!cmd run and attach output · !!cmd run only · Esc stops\n@ mention a file · Tab completes paths and /commands\nCtrl+P commands · Ctrl+G write the prompt in $EDITOR\n/remote-control: check phone access setup\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
+    let text = lines.join("\n");
     frame.render_widget(
         Paragraph::new(text)
             .block(card(" Help "))
@@ -1088,28 +1119,12 @@ pub const PALETTE_KEYS: [(&str, &str); 3] = [
     ("@", "Mention a file"),
     ("!", "Run a shell command"),
 ];
-pub const COMMANDS: [(&str, &str); 11] = [
-    ("/help", "Keyboard shortcuts"),
-    ("/model", "Switch model or provider"),
-    (
-        "/mode",
-        "Permission mode: ask, accept-edits, auto, full-access",
-    ),
-    ("/goal", "Inspect or manage an autonomous goal"),
-    ("/session", "Session ID and journal path"),
-    ("/export", "Export journal to a new file"),
-    ("/copy", "Copy the last reply (also Ctrl+X)"),
-    ("/new", "Start a fresh conversation"),
-    ("/reconnect", "Reconnect to the vendor session"),
-    (
-        "/remote-control",
-        "Check phone access (tmux, Tailscale, mosh)",
-    ),
-    ("/quit", "Save and exit"),
-];
 /// The palette's rows: every command, then the keys it also offers.
-pub fn palette_entries() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
-    COMMANDS.iter().chain(PALETTE_KEYS.iter())
+pub fn palette_entries() -> impl Iterator<Item = (&'static str, &'static str)> {
+    COMMANDS
+        .iter()
+        .map(|spec| (spec.name, spec.summary))
+        .chain(PALETTE_KEYS.iter().copied())
 }
 fn palette(frame: &mut Frame, area: Rect, selected: usize) {
     let name_width = palette_entries()
@@ -1461,7 +1476,7 @@ mod tests {
         app.palette = true;
         let rows = screen(80, 24, &mut app);
         let mut columns = Vec::new();
-        for (name, description) in COMMANDS.iter().chain(PALETTE_KEYS.iter()) {
+        for (name, description) in palette_entries() {
             // " /mode " must not match the "/model" row.
             let row = rows
                 .iter()
@@ -1777,6 +1792,6 @@ mod model_detail_tests {
         assert!(screen(&t).contains("ask…"));
         a.event(Event::ModeChanged(octet_core::Mode::FullAccess));
         assert_eq!(mode_chip(&a).style.fg, Some(AMBER));
-        assert!(COMMANDS.iter().any(|(name, _)| *name == "/mode"));
+        assert!(COMMANDS.iter().any(|spec| spec.name == "/mode"));
     }
 }

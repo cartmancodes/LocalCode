@@ -1,4 +1,5 @@
 mod clipboard;
+mod commands;
 mod composer;
 mod editor;
 mod external;
@@ -8,6 +9,7 @@ mod remote;
 mod shell;
 mod text;
 mod view;
+use commands::{Cmd, COMMANDS};
 use crossterm::{
     event::{
         DisableBracketedPaste, EnableBracketedPaste, Event as Input, KeyCode, KeyEvent,
@@ -25,7 +27,7 @@ use std::{
     time::Duration,
 };
 use tokio::time::Instant;
-use view::{App, COMMANDS};
+use view::App;
 // One thread owns both poll and read. A finite poll deadline avoids stale
 // wakeups after SIGCONT without adding any timer to the render loop.
 // Crossterm use-dev-tty selects level-triggered poll: resize and keyboard
@@ -146,6 +148,10 @@ enum Exit {
     Reconnect,
     Model(octet_core::model::Selection),
     Mode(octet_core::Mode),
+}
+/// Every slash command's name, for the CLI help.
+pub fn command_names() -> impl Iterator<Item = &'static str> {
+    COMMANDS.iter().map(|spec| spec.name)
 }
 pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     let old = std::panic::take_hook();
@@ -831,8 +837,8 @@ async fn key_action(app: &mut App, session: &Session, key: KeyEvent) -> Action {
             }
             KeyCode::Enter => {
                 app.palette = false;
-                if let Some((name, _)) = COMMANDS.get(app.selection) {
-                    return command(app, name).await;
+                if let Some(spec) = COMMANDS.get(app.selection) {
+                    return command(app, spec.name).await;
                 }
                 return palette_key(app, view::PALETTE_KEYS[app.selection - COMMANDS.len()].0);
             }
@@ -1089,11 +1095,18 @@ fn cycle_mode(app: &mut App) -> Action {
 async fn try_command(app: &mut App, input: &str) -> Option<Action> {
     let (name, argument) = input.split_once(' ').unwrap_or((input, ""));
     let argument = argument.trim();
-    match name {
-        "/quit" | "/exit" => return Some(Action::Exit(Exit::Quit)),
-        "/help" => app.help = true,
-        "/copy" => copy_reply(app),
-        "/model" => {
+    let Some(cmd) = Cmd::parse(name) else {
+        app.notice(format!(
+            "Unknown command {name}. Use /help, or edit the draft: \
+             only a path such as /usr/lib can start a prompt with a slash."
+        ));
+        return None;
+    };
+    match cmd {
+        Cmd::Quit => return Some(Action::Exit(Exit::Quit)),
+        Cmd::Help => app.help = true,
+        Cmd::Copy => copy_reply(app),
+        Cmd::Model => {
             if argument.trim().is_empty() {
                 app.show_models(1);
             } else if argument == "list" || argument.starts_with("list ") {
@@ -1115,7 +1128,7 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                 }
             }
         }
-        "/mode" => {
+        Cmd::Mode => {
             use octet_core::Mode;
             if argument.is_empty() {
                 app.notice(app.mode_details());
@@ -1147,18 +1160,18 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                 }
             }
         }
-        "/new" | "/reconnect" => {
+        Cmd::New | Cmd::Reconnect => {
             if app.running {
                 app.notice = "Cancel the active turn before changing sessions".into();
             } else {
-                return Some(if name == "/new" {
+                return Some(if cmd == Cmd::New {
                     Action::Exit(Exit::New)
                 } else {
                     Action::Exit(Exit::Reconnect)
                 });
             }
         }
-        "/session" => app.notice(format!(
+        Cmd::Session => app.notice(format!(
             "{}\nSession: {}\nJournal: {}\nWorkspace: {}",
             app.model_details(),
             if app.session.is_empty() {
@@ -1169,7 +1182,7 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
             app.journal.display(),
             app.workspace
         )),
-        "/goal" => {
+        Cmd::Goal => {
             use octet_core::goal::{Goal, GoalStep};
             let idle = !app.running && app.ready && !app.stopped;
             match argument {
@@ -1210,11 +1223,11 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                 },
             }
         }
-        "/remote-control" => match argument {
+        Cmd::RemoteControl => match argument {
             "" | "status" => return Some(Action::RemoteControl),
             _ => app.notice("Use /remote-control or /remote-control status"),
         },
-        "/export" => {
+        Cmd::Export => {
             if app.running {
                 app.notice = "Wait for completion or cancel before exporting".into();
                 return Some(Action::Continue);
@@ -1230,13 +1243,6 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
                 Ok(()) => app.notice(format!("Exported journal to {}", path.display())),
                 Err(error) => app.notice(format!("Export failed: {error}")),
             }
-        }
-        _ => {
-            app.notice(format!(
-                "Unknown command {name}. Use /help, or edit the draft: \
-                 only a path such as /usr/lib can start a prompt with a slash."
-            ));
-            return None;
         }
     }
     Some(Action::Continue)
@@ -1273,6 +1279,14 @@ mod model_tests {
         };
         assert_eq!(selection.provider, octet_core::Engine::Claude);
         assert_eq!(selection.model.as_deref(), Some("example"));
+    }
+    #[tokio::test]
+    async fn aliases_dispatch_like_their_command() {
+        let mut app = app();
+        assert!(matches!(
+            command(&mut app, "/exit").await,
+            Action::Exit(Exit::Quit)
+        ));
     }
     #[tokio::test]
     async fn model_help_and_invalid_syntax_never_restart_a_session() {

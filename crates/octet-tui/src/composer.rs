@@ -77,9 +77,9 @@ pub fn tab(text: &str, cursor: usize, root: &Path, home: Option<&Path>) -> Tab {
     }
     let first_word = text[..start].trim().is_empty();
     if first_word && word.starts_with('/') && !word[1..].contains('/') {
-        let names: Vec<String> = crate::view::COMMANDS
+        let names: Vec<String> = crate::commands::COMMANDS
             .iter()
-            .map(|(name, _)| name.to_string())
+            .map(|spec| spec.name.to_owned())
             .filter(|name| name.starts_with(word))
             .collect();
         return choose(start, word, names, Kind::Command, " ");

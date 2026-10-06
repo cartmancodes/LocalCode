@@ -793,17 +793,7 @@ fn help_lists_every_command() {
         .output()
         .unwrap();
     let help = String::from_utf8_lossy(&output.stdout);
-    for command in [
-        "/model",
-        "/mode",
-        "/goal",
-        "/session",
-        "/new",
-        "/reconnect",
-        "/export",
-        "/copy",
-        "/remote-control",
-    ] {
+    for command in octet_tui::command_names() {
         assert!(help.contains(command), "{command} missing from --help");
     }
 }
