@@ -505,7 +505,8 @@ mod tests {
     }
     #[test]
     fn reads_the_colour_setting_from_tmux_options() {
-        let features = "terminal-features[0] xterm*:clipboard:ccolour:cstyle\nterminal-features[1] ,xterm-256color:RGB\n";
+        let features = "terminal-features[0] xterm*:clipboard:ccolour:cstyle\n\
+                        terminal-features[1] ,xterm-256color:RGB\n";
         assert_eq!(rgb_configured(features, ""), Some(true));
         let overrides = "terminal-overrides[0] ,xterm-256color:Tc\n";
         assert_eq!(rgb_configured("", overrides), Some(true));
@@ -560,8 +561,12 @@ mod tests {
     }
     #[test]
     fn parses_tailscale_status() {
-        let json = r#"{"BackendState":"Running","Self":{"DNSName":"my-mac.tail1234.ts.net.","TailscaleIPs":["100.101.102.103","fd7a::1"]}}"#;
-        let tailnet = parse_tailnet(json, false).unwrap();
+        let json = serde_json::json!({
+            "BackendState": "Running",
+            "Self": {"DNSName": "my-mac.tail1234.ts.net.", "TailscaleIPs": ["100.101.102.103", "fd7a::1"]},
+        })
+        .to_string();
+        let tailnet = parse_tailnet(&json, false).unwrap();
         assert_eq!(tailnet.name, "my-mac.tail1234.ts.net");
         assert_eq!(tailnet.address, "100.101.102.103");
         assert!(!tailnet.app_store);
@@ -645,6 +650,7 @@ esac
     async fn run_gives_up_after_the_timeout() {
         let started = std::time::Instant::now();
         assert_eq!(run("sleep", &["10"]).await, None);
+        // Stopped at the 2 s check limit, not after the 10 s sleep.
         assert!(started.elapsed() < std::time::Duration::from_secs(4));
         assert_eq!(run("echo", &["hi"]).await.as_deref(), Some("hi\n"));
         assert_eq!(run("octet-no-such-program", &[]).await, None);

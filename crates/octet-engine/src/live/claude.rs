@@ -47,23 +47,31 @@ pub(super) fn answer(wire: &Value, allow: bool) -> Value {
     } else {
         json!({"behavior":"deny","message":"Denied by Octet user or timeout"})
     };
-    json!({"type":"control_response","response":{"subtype":"success","request_id":wire["request_id"],"response":response}})
+    json!({
+        "type": "control_response",
+        "response": {"subtype": "success", "request_id": wire["request_id"], "response": response},
+    })
 }
 
 impl Driver<'_> {
-    pub(super) async fn claude_initialize(&mut self) -> Result<(), DriverError> {
+    pub(super) async fn claude_initialize(&self) -> Result<(), DriverError> {
         self.send(json!({"type":"control_request","request_id":"octet-init","request":{"subtype":"initialize"}}))
             .await
     }
 
-    pub(super) async fn claude_interrupt(&mut self) -> Result<(), DriverError> {
+    pub(super) async fn claude_interrupt(&self) -> Result<(), DriverError> {
         self.send(json!({"type":"control_request","request_id":"octet-interrupt","request":{"subtype":"interrupt"}}))
             .await
     }
 
-    pub(super) async fn claude_send_prompt(&mut self, text: &str) -> Result<(), DriverError> {
-        self.send(json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":text}]},"parent_tool_use_id":null}))
-            .await
+    pub(super) async fn claude_send_prompt(&self, text: &str) -> Result<(), DriverError> {
+        let content = json!([{"type": "text", "text": text}]);
+        self.send(json!({
+            "type": "user",
+            "message": {"role": "user", "content": content},
+            "parent_tool_use_id": null,
+        }))
+        .await
     }
 
     pub(super) async fn claude_request_mode(&mut self, target: Mode) -> Result<(), DriverError> {
@@ -283,18 +291,25 @@ pub(super) fn switch_reply_mode(
 /// Reply to a Claude control request the driver will not put in front of the
 /// user: a permission request outside an active turn is denied, anything else
 /// is reported as unsupported. The deny text is shown to the model.
-pub(super) fn claude_stray_reply(value: &Value) -> Option<Value> {
+pub fn claude_stray_reply(value: &Value) -> Option<Value> {
     if value.get("type")?.as_str()? != "control_request" {
         return None;
     }
     let id = value.get("request_id")?;
-    Some(
-        if value.pointer("/request/subtype")?.as_str()? == "can_use_tool" {
-            json!({"type":"control_response","response":{"subtype":"success","request_id":id,"response":{"behavior":"deny","message":"Denied by Octet: no turn is waiting for this request"}}})
-        } else {
-            json!({"type":"control_response","response":{"subtype":"error","request_id":id,"error":"Octet does not support this control request"}})
-        },
-    )
+    let response = if value.pointer("/request/subtype")?.as_str()? == "can_use_tool" {
+        let deny = json!({
+            "behavior": "deny",
+            "message": "Denied by Octet: no turn is waiting for this request",
+        });
+        json!({"subtype": "success", "request_id": id, "response": deny})
+    } else {
+        json!({
+            "subtype": "error",
+            "request_id": id,
+            "error": "Octet does not support this control request",
+        })
+    };
+    Some(json!({"type": "control_response", "response": response}))
 }
 
 #[cfg(test)]
@@ -302,7 +317,8 @@ mod tests {
     use super::*;
     #[test]
     fn stray_permission_denial_says_why() {
-        let permission = json!({"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{}}});
+        let request = json!({"subtype": "can_use_tool", "tool_name": "Bash", "input": {}});
+        let permission = json!({"type": "control_request", "request_id": "r1", "request": request});
         let message = claude_stray_reply(&permission).unwrap()["response"]["response"]["message"]
             .as_str()
             .unwrap()

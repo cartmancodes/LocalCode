@@ -418,6 +418,7 @@ dependencies = [
  "octet-store",
  "octet-testkit",
  "serde_json",
+ "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -427,6 +428,17 @@ version = "0.1.0"
 dependencies = [
  "octet-proc",
  "octet-testkit",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "octet-gate"
+version = "0.1.0"
+dependencies = [
+ "octet-engine",
+ "octet-proc",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
@@ -456,6 +468,7 @@ dependencies = [
 name = "octet-testkit"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serde_json",
 ]
 
@@ -902,7 +915,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",

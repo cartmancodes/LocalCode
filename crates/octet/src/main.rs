@@ -1,6 +1,46 @@
 use octet_core::Config;
 use std::{io::IsTerminal, path::PathBuf};
-const HELP:&str="Octet — terminal coding workspace (Rust preview)\n\nUsage: octet [--engine codex|claude|demo] [--cwd PATH]\n                 [--model MODEL] [--mode MODE] [--resume VENDOR_SESSION_ID]\n                 [--binary PATH] [--journal-dir PATH]\n                 [--approval-timeout SECONDS]\n\nDefaults: Codex, current directory. Vendor CLI installation and login required.\nModes: ask (default) · accept-edits · auto (vendor auto-review) · full-access\nUse --engine demo for an offline interactive preview.\n\nKeys: Enter send · Alt+Enter / Ctrl+J newline · Esc cancel · Ctrl+C twice quit\n      PageUp/PageDown scroll · Ctrl+P commands · F1 help · Shift+Tab mode\n      @ mention a file · Tab complete · !cmd run (attach) · !!cmd run only\n      Ctrl+G edit in $EDITOR · Ctrl+X copy the last reply\n\nCommands: /model, /mode, /goal, /session, /new, /reconnect, /export,\n          /copy, /remote-control (check phone access)\nJournals are separate JSONL files; see --journal-dir.\nFleet, full plugin/hook parity, v3 browsing and legacy RPC compatibility remain pending.\n";
+/// `--help`: fixed usage and keys, then every command from the registry.
+fn help() -> String {
+    const HEAD: &[&str] = &[
+        "Octet — terminal coding workspace (Rust preview)",
+        "",
+        "Usage: octet [--engine codex|claude|demo] [--cwd PATH]",
+        "                 [--model MODEL] [--mode MODE] [--resume VENDOR_SESSION_ID]",
+        "                 [--binary PATH] [--journal-dir PATH]",
+        "                 [--approval-timeout SECONDS]",
+        "",
+        "Defaults: Codex, current directory. Vendor CLI installation and login required.",
+        "Modes: ask (default) · accept-edits · auto (vendor auto-review) · full-access",
+        "Use --engine demo for an offline interactive preview.",
+        "",
+        "Keys: Enter send · Alt+Enter / Ctrl+J newline · Esc cancel · Ctrl+C twice quit",
+        "      PageUp/PageDown scroll · Ctrl+P commands · F1 help · Shift+Tab mode",
+        "      @ mention a file · Tab complete · !cmd run (attach) · !!cmd run only",
+        "      Ctrl+G edit in $EDITOR · Ctrl+X copy the last reply",
+        "",
+    ];
+    let mut text = HEAD.join("\n");
+    // "Commands: " then the names, wrapped at 76 columns under the first.
+    let mut line = String::from("\nCommands: ");
+    for (i, name) in octet_tui::command_names().enumerate() {
+        let item = if i == 0 {
+            name.to_owned()
+        } else {
+            format!(", {name}")
+        };
+        if line.chars().count() + item.chars().count() > 77 {
+            text.push_str(line.trim_end());
+            text.push(',');
+            line = format!("\n          {}", &item[2..]);
+        } else {
+            line.push_str(&item);
+        }
+    }
+    text.push_str(&line);
+    text.push_str("\nJournals are separate JSONL files; see --journal-dir.\n");
+    text
+}
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
@@ -20,7 +60,7 @@ async fn run() -> Result<(), String> {
     let mut approval_timeout = octet_core::DEFAULT_APPROVAL_TIMEOUT;
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
-            print!("{HELP}");
+            print!("{}", help());
             return Ok(());
         }
         if arg == "--version" {

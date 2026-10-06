@@ -42,65 +42,104 @@ impl Index {
         Index::new(paths, false)
     }
     pub fn rank(&self, query: &str) -> Vec<&str> {
-        let query = query.to_lowercase();
+        let query: Vec<char> = query.to_lowercase().chars().collect();
+        let mut scratch = Scratch::default();
         let mut scored: Vec<((bool, usize), &str)> = self
             .paths
             .iter()
             .zip(&self.lower)
-            .filter_map(|(path, lower)| score(lower, &query).map(|score| (score, path.as_str())))
+            .filter_map(|(path, lower)| {
+                scratch
+                    .score(lower, &query)
+                    .map(|score| (score, path.as_str()))
+            })
             .collect();
-        scored.sort_by(|a, b| {
+        let order = |a: &((bool, usize), &str), b: &((bool, usize), &str)| {
             a.0.cmp(&b.0)
                 .then_with(|| a.1.len().cmp(&b.1.len()))
                 .then_with(|| a.1.cmp(b.1))
-        });
-        scored
-            .into_iter()
-            .take(SHOWN)
-            .map(|(_, path)| path)
-            .collect()
+        };
+        // Only the best few are shown: pick them, then sort just those.
+        if scored.len() > SHOWN {
+            scored.select_nth_unstable_by(SHOWN - 1, order);
+            scored.truncate(SHOWN);
+        }
+        scored.sort_by(order);
+        scored.into_iter().map(|(_, path)| path).collect()
     }
 }
 
-/// Lower is better: (outside the file name, gaps between matched
-/// characters). `lower` and `query` are already lowercase.
-fn score(lower: &str, query: &str) -> Option<(bool, usize)> {
-    if query.is_empty() {
-        return Some((false, 0));
-    }
-    let name = &lower[lower.rfind('/').map_or(0, |slash| slash + 1)..];
-    subsequence(name, query)
-        .map(|gaps| (false, gaps))
-        .or_else(|| subsequence(lower, query).map(|gaps| (true, gaps)))
-}
-
-/// The fewest gaps with which `query`'s characters appear in order in
-/// `text`, or None when they don't.
-fn subsequence(text: &str, query: &str) -> Option<usize> {
-    let query: Vec<char> = query.chars().collect();
-    let none = usize::MAX;
-    // ending[j]: fewest gaps matching query[..j] with its last character at
-    // the previous position; best[j]: the same, ending anywhere before.
-    let mut ending = vec![none; query.len() + 1];
-    let mut best = vec![none; query.len() + 1];
+/// Whether `query`'s characters appear in `text` in order. Taking each
+/// character at its first chance is exact for this question.
+fn in_order(text: &str, query: &[char]) -> bool {
+    let mut wanted = query.iter();
+    let mut next = wanted.next();
     for c in text.chars() {
-        let mut here = vec![none; query.len() + 1];
-        for j in 1..=query.len() {
-            if c != query[j - 1] {
-                continue;
-            }
-            here[j] = if j == 1 {
-                0
-            } else {
-                ending[j - 1].min(best[j - 1].saturating_add(1))
-            };
+        if next == Some(&c) {
+            next = wanted.next();
         }
-        for j in 1..=query.len() {
-            best[j] = best[j].min(here[j]);
-        }
-        ending = here;
     }
-    (best[query.len()] != none).then_some(best[query.len()])
+    next.is_none()
+}
+
+/// The matching rows, reused for every path so ranking a large workspace on
+/// each keystroke allocates nothing per character.
+#[derive(Default)]
+struct Scratch {
+    ending: Vec<usize>,
+    best: Vec<usize>,
+    here: Vec<usize>,
+}
+
+impl Scratch {
+    /// Lower is better: (outside the file name, gaps between matched
+    /// characters). `lower` and `query` are already lowercase.
+    fn score(&mut self, lower: &str, query: &[char]) -> Option<(bool, usize)> {
+        if query.is_empty() {
+            return Some((false, 0));
+        }
+        // A one-pass check rules most paths out before the gap count runs.
+        if !in_order(lower, query) {
+            return None;
+        }
+        let name = &lower[lower.rfind('/').map_or(0, |slash| slash + 1)..];
+        if in_order(name, query) {
+            return self.subsequence(name, query).map(|gaps| (false, gaps));
+        }
+        self.subsequence(lower, query).map(|gaps| (true, gaps))
+    }
+
+    /// The fewest gaps with which `query`'s characters appear in order in
+    /// `text`, or None when they don't.
+    fn subsequence(&mut self, text: &str, query: &[char]) -> Option<usize> {
+        const NONE: usize = usize::MAX;
+        let n = query.len();
+        // ending[j]: fewest gaps matching query[..j] with its last character at
+        // the previous position; best[j]: the same, ending anywhere before.
+        self.ending.clear();
+        self.ending.resize(n + 1, NONE);
+        self.best.clear();
+        self.best.resize(n + 1, NONE);
+        for c in text.chars() {
+            self.here.clear();
+            self.here.resize(n + 1, NONE);
+            for j in 1..=n {
+                if c != query[j - 1] {
+                    continue;
+                }
+                self.here[j] = if j == 1 {
+                    0
+                } else {
+                    self.ending[j - 1].min(self.best[j - 1].saturating_add(1))
+                };
+            }
+            for j in 1..=n {
+                self.best[j] = self.best[j].min(self.here[j]);
+            }
+            std::mem::swap(&mut self.ending, &mut self.here);
+        }
+        (self.best[n] != NONE).then_some(self.best[n])
+    }
 }
 
 fn git(root: &Path, limit: usize) -> Option<Index> {
@@ -181,6 +220,123 @@ fn walk(root: &Path, limit: usize) -> Index {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Today's ranking, verbatim, as the reference the faster one must match.
+    fn reference_rank(paths: &[String], query: &str) -> Vec<String> {
+        fn subsequence(text: &str, query: &str) -> Option<usize> {
+            let query: Vec<char> = query.chars().collect();
+            let none = usize::MAX;
+            let mut ending = vec![none; query.len() + 1];
+            let mut best = vec![none; query.len() + 1];
+            for c in text.chars() {
+                let mut here = vec![none; query.len() + 1];
+                for j in 1..=query.len() {
+                    if c != query[j - 1] {
+                        continue;
+                    }
+                    here[j] = if j == 1 {
+                        0
+                    } else {
+                        ending[j - 1].min(best[j - 1].saturating_add(1))
+                    };
+                }
+                for j in 1..=query.len() {
+                    best[j] = best[j].min(here[j]);
+                }
+                ending = here;
+            }
+            (best[query.len()] != none).then_some(best[query.len()])
+        }
+        fn score(lower: &str, query: &str) -> Option<(bool, usize)> {
+            if query.is_empty() {
+                return Some((false, 0));
+            }
+            let name = &lower[lower.rfind('/').map_or(0, |slash| slash + 1)..];
+            subsequence(name, query)
+                .map(|gaps| (false, gaps))
+                .or_else(|| subsequence(lower, query).map(|gaps| (true, gaps)))
+        }
+        let query = query.to_lowercase();
+        let mut scored: Vec<((bool, usize), &str)> = paths
+            .iter()
+            .filter_map(|path| score(&path.to_lowercase(), &query).map(|s| (s, path.as_str())))
+            .collect();
+        scored.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.len().cmp(&b.1.len()))
+                .then_with(|| a.1.cmp(b.1))
+        });
+        scored
+            .into_iter()
+            .take(SHOWN)
+            .map(|(_, path)| path.to_owned())
+            .collect()
+    }
+    #[test]
+    fn ranking_matches_the_reference_on_generated_paths() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let parts = ["src", "main", "Lib", "界", "é", "mod", "test", "a_b", "x"];
+        let paths: Vec<String> = (0..3000)
+            .map(|_| {
+                let depth = 1 + next() % 4;
+                let words: Vec<&str> = (0..depth)
+                    .map(|_| parts[usize::try_from(next() % 9).unwrap()])
+                    .collect();
+                words.join("/") + ".rs"
+            })
+            .collect();
+        let index = Index::from_paths(paths.clone());
+        for query in [
+            "",
+            "m",
+            "main",
+            "MAIN",
+            "界",
+            "é/m",
+            "srcmainrs",
+            "zz",
+            "a_b",
+        ] {
+            assert_eq!(index.rank(query), reference_rank(&paths, query), "{query}");
+        }
+    }
+    #[test]
+    #[ignore = "timing; run with cargo test --release -p octet-tui -- --ignored"]
+    fn ranking_fifty_thousand_paths_takes_under_25_ms() {
+        let paths: Vec<String> = (0..50_000)
+            .map(|i| {
+                format!(
+                    "crates/module{}/src/sub{}/file_{i}_handler.rs",
+                    i % 40,
+                    i % 300
+                )
+            })
+            .collect();
+        let index = Index::from_paths(paths);
+        for query in ["m", "main", "handler_rs"] {
+            // The best of three measures the code, not a busy moment.
+            let took = (0..3)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    let _ = index.rank(query);
+                    started.elapsed()
+                })
+                .min()
+                .unwrap();
+            assert!(
+                took < std::time::Duration::from_millis(25),
+                "{query}: {took:?}"
+            );
+        }
+    }
+    fn gaps(text: &str, query: &str) -> Option<usize> {
+        Scratch::default().subsequence(text, &query.chars().collect::<Vec<_>>())
+    }
     fn index(paths: &[&str]) -> Index {
         Index::from_paths(paths.iter().map(|p| p.to_string()).collect())
     }
@@ -205,9 +361,9 @@ mod tests {
     #[test]
     fn matching_finds_the_fewest_gaps_not_the_first_letters() {
         // Greedy matching takes "ma" from "max" and then has a gap.
-        assert_eq!(subsequence("maxmain", "main"), Some(0));
-        assert_eq!(subsequence("m_a_i_n", "main"), Some(3));
-        assert_eq!(subsequence("nope", "main"), None);
+        assert_eq!(gaps("maxmain", "main"), Some(0));
+        assert_eq!(gaps("m_a_i_n", "main"), Some(3));
+        assert_eq!(gaps("nope", "main"), None);
         let all = index(&["maxmain.rs", "mainly_long_name.rs"]);
         assert_eq!(all.rank("main")[0], "maxmain.rs", "no gaps, shorter");
     }

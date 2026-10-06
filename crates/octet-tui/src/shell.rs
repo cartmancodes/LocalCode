@@ -15,7 +15,8 @@ pub const CUT: &str = "[earlier output cut]\n";
 pub enum Status {
     Exited(i32),
     Signalled,
-    TimedOut,
+    /// Stopped at the time limit it carries.
+    TimedOut(Duration),
     Cancelled,
 }
 
@@ -35,9 +36,20 @@ impl Ran {
         match self.status {
             Status::Exited(code) => format!("exit {code}"),
             Status::Signalled => "killed by a signal".into(),
-            Status::TimedOut => "timed out after 10 minutes".into(),
+            Status::TimedOut(limit) => format!("timed out after {}", duration_text(limit)),
             Status::Cancelled => "cancelled".into(),
         }
+    }
+}
+
+/// A limit as people say it: whole minutes, else seconds, else milliseconds.
+pub fn duration_text(limit: Duration) -> String {
+    match limit.as_secs() {
+        0 => format!("{} ms", limit.as_millis()),
+        60 => "1 minute".into(),
+        s if s % 60 == 0 => format!("{} minutes", s / 60),
+        1 => "1 second".into(),
+        s => format!("{s} seconds"),
     }
 }
 
@@ -100,7 +112,7 @@ async fn run_with(
     let exited = tokio::task::spawn_blocking(move || wait_exit(group));
     let mut status = tokio::select! {
         _ = exited => None,
-        _ = tokio::time::sleep(limit) => Some(Status::TimedOut),
+        _ = tokio::time::sleep(limit) => Some(Status::TimedOut(limit)),
         _ = &mut cancel => Some(Status::Cancelled),
     };
     // Children left in the group would hold the pipe open.
@@ -250,7 +262,12 @@ mod tests {
         let started = std::time::Instant::now();
         // Without the fix this waits the full 60 s; the bound leaves room
         // for a machine busy with the rest of the suite.
-        let ran = sh("perl -MPOSIX -e 'setsid(); sleep 60' & sleep 0.5; echo started").await;
+        let escaped = octet_testkit::detached_sleep();
+        let ran = sh(&format!(
+            "'{}' 60 & sleep 0.5; echo started",
+            escaped.display()
+        ))
+        .await;
         assert!(ran.output.contains("started"), "{}", ran.output);
         assert!(
             started.elapsed() < Duration::from_secs(30),
@@ -262,14 +279,14 @@ mod tests {
     async fn commands_reading_stdin_finish_at_once() {
         let started = std::time::Instant::now();
         assert_eq!(sh("cat").await.status, Status::Exited(0));
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < octet_testkit::QUICK);
     }
     #[tokio::test]
     async fn background_children_do_not_hold_it_open() {
         let started = std::time::Instant::now();
         let ran = sh("sleep 30 & echo done").await;
         assert_eq!(ran.output, "done\n");
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < octet_testkit::QUICK);
     }
     #[tokio::test]
     async fn cancel_stops_the_whole_pipeline() {
@@ -290,7 +307,7 @@ mod tests {
         let ran = task.await.unwrap().unwrap();
         assert_eq!(ran.status, Status::Cancelled);
         assert_eq!(ran.summary(), "cancelled");
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < octet_testkit::QUICK);
     }
     #[tokio::test]
     async fn times_out() {
@@ -304,8 +321,32 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(ran.status, Status::TimedOut);
-        assert_eq!(ran.summary(), "timed out after 10 minutes");
+        assert_eq!(ran.status, Status::TimedOut(Duration::from_millis(300)));
+        assert_eq!(ran.summary(), "timed out after 300 ms");
+    }
+    #[test]
+    fn time_limit_wording_follows_the_limit() {
+        let summary = |limit| {
+            Ran {
+                command: "x".into(),
+                status: Status::TimedOut(limit),
+                output: String::new(),
+            }
+            .summary()
+        };
+        assert_eq!(
+            summary(Duration::from_secs(600)),
+            "timed out after 10 minutes"
+        );
+        assert_eq!(summary(Duration::from_secs(60)), "timed out after 1 minute");
+        assert_eq!(
+            summary(Duration::from_secs(90)),
+            "timed out after 90 seconds"
+        );
+        assert_eq!(
+            summary(Duration::from_millis(300)),
+            "timed out after 300 ms"
+        );
     }
     #[tokio::test]
     async fn a_missing_shell_is_an_error() {

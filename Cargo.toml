@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/octet-proc", "crates/octet-testkit", "crates/octet-engine", "crates/octet-store", "crates/octet-core", "crates/octet-tui", "crates/octet"]
+members = ["crates/octet-proc", "crates/octet-testkit", "crates/octet-engine", "crates/octet-gate", "crates/octet-store", "crates/octet-core", "crates/octet-tui", "crates/octet"]
 resolver = "2"
 
 [workspace.package]
@@ -9,7 +9,17 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/cartmancodes/octet"
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "sync", "time", "io-util", "fs", "net"] }
 serde_json = "1"
 thiserror = "2"
 libc = "0.2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[workspace.lints.clippy]
+cast_possible_truncation = "warn"
+needless_pass_by_ref_mut = "warn"
+unused_async = "warn"

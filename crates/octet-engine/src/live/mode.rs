@@ -43,8 +43,12 @@ impl Mode {
             (Engine::Claude, Mode::Auto) => "Claude's classifier approves or blocks each action (auto)",
             (Engine::Claude, Mode::FullAccess) => "No permission checks at all (bypassPermissions)",
             (Engine::Codex, Mode::Ask) => "Workspace sandbox; untrusted commands ask (untrusted)",
-            (Engine::Codex, Mode::AcceptEdits) => "Workspace sandbox; asks only to escalate (on-request). Codex has no edits-only mode",
-            (Engine::Codex, Mode::Auto) => "Workspace sandbox; Codex's auto-review agent decides escalations (auto_review)",
+            (Engine::Codex, Mode::AcceptEdits) => {
+                "Workspace sandbox; asks only to escalate (on-request). Codex has no edits-only mode"
+            }
+            (Engine::Codex, Mode::Auto) => {
+                "Workspace sandbox; Codex's auto-review agent decides escalations (auto_review)"
+            }
             (Engine::Codex, Mode::FullAccess) => "No sandbox; never asks (danger-full-access)",
             (Engine::Demo, Mode::Ask | Mode::AcceptEdits) => "Offline demo: /approval-demo shows the dialog",
             (Engine::Demo, Mode::Auto | Mode::FullAccess) => "Offline demo: /approval-demo is allowed without a dialog",
@@ -139,7 +143,11 @@ pub(super) fn confirm_mode(
             Ok(actual)
         }
         Some((None, raw)) => {
-            emit(tx, Event::Notice(format!("{vendor} reports a permission setting Octet does not map ({raw}); showing the requested {}", requested.label())))?;
+            let notice = format!(
+                "{vendor} reports a permission setting Octet does not map ({raw}); showing the requested {}",
+                requested.label()
+            );
+            emit(tx, Event::Notice(notice))?;
             Ok(requested)
         }
     }
@@ -223,9 +231,17 @@ mod tests {
             assert_eq!(codex_reported(&echo).map(|r| r.0), Some(Some(mode)));
         }
         assert_eq!(claude_reported_mode("plan"), None);
-        let legacy = json!({"sandbox":{"type":"workspaceWrite"},"approvalPolicy":"on-request","approvalsReviewer":"guardian_subagent"});
+        let legacy = json!({
+            "sandbox": {"type": "workspaceWrite"},
+            "approvalPolicy": "on-request",
+            "approvalsReviewer": "guardian_subagent",
+        });
         assert_eq!(codex_reported(&legacy).map(|r| r.0), Some(Some(Mode::Auto)));
-        let read_only = json!({"sandbox":{"type":"readOnly"},"approvalPolicy":"on-request","approvalsReviewer":"user"});
+        let read_only = json!({
+            "sandbox": {"type": "readOnly"},
+            "approvalPolicy": "on-request",
+            "approvalsReviewer": "user",
+        });
         let (mode, raw) = codex_reported(&read_only).unwrap();
         assert_eq!(mode, None);
         assert!(raw.contains("readOnly"), "{raw}");

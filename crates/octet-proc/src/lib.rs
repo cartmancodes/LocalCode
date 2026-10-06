@@ -141,7 +141,9 @@ pub struct Process {
 }
 
 impl Process {
-    pub async fn spawn(config: ProcessConfig) -> Result<Self, ProcessError> {
+    /// Starts the child and its reader tasks. Call it inside a Tokio runtime:
+    /// the pipes register with the runtime's reactor.
+    pub fn spawn(config: ProcessConfig) -> Result<Self, ProcessError> {
         if config.max_frame_bytes == 0 || config.max_frame_bytes > config.queue_bytes {
             return Err(ProcessError::InvalidConfig(
                 "max_frame_bytes must fit inside queue_bytes",
@@ -372,29 +374,38 @@ async fn read_frames<R: AsyncRead + Unpin>(
                 break;
             }
             Ok(n) => {
-                for &byte in &chunk[..n] {
-                    if byte == b'\n' {
-                        let size = frame.len();
-                        let permit = match Arc::clone(&permits)
-                            .acquire_many_owned(size.max(1) as u32)
-                            .await
-                        {
-                            Ok(permit) => permit,
-                            Err(_) => return,
-                        };
-                        let complete = std::mem::take(&mut frame).into_boxed_slice();
-                        if tx.send(FrameEvent::Data(complete, permit)).await.is_err() {
-                            return;
-                        }
-                    } else if frame.len() == max {
+                // Copy whole runs up to each newline instead of byte by byte.
+                let mut rest = &chunk[..n];
+                loop {
+                    let newline = rest.iter().position(|byte| *byte == b'\n');
+                    let part = &rest[..newline.unwrap_or(rest.len())];
+                    if frame.len() + part.len() > max {
                         let _ = tx
                             .send(FrameEvent::Error(ProcessError::FrameTooLarge {
                                 limit: max,
                             }))
                             .await;
                         return;
-                    } else {
-                        frame.push(byte);
+                    }
+                    frame.extend_from_slice(part);
+                    let Some(newline) = newline else {
+                        break;
+                    };
+                    rest = &rest[newline + 1..];
+                    let size = frame.len();
+                    let permit = match Arc::clone(&permits)
+                        .acquire_many_owned(
+                            u32::try_from(size.max(1))
+                                .expect("frame size fits u32: queue_bytes is checked at spawn"),
+                        )
+                        .await
+                    {
+                        Ok(permit) => permit,
+                        Err(_) => return,
+                    };
+                    let complete = std::mem::take(&mut frame).into_boxed_slice();
+                    if tx.send(FrameEvent::Data(complete, permit)).await.is_err() {
+                        return;
                     }
                 }
             }

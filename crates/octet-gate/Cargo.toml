@@ -1,19 +1,18 @@
 [package]
-name = "octet"
+name = "octet-gate"
 version = "0.1.0"
+publish = false
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-[dependencies]
-octet-tui = { path = "../octet-tui" }
-octet-core = { path = "../octet-core" }
-tokio.workspace = true
 
-[dev-dependencies]
-octet-testkit = { path = "../octet-testkit" }
-libc.workspace = true
+[dependencies]
+octet-engine = { path = "../octet-engine" }
+octet-proc = { path = "../octet-proc" }
+tokio.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

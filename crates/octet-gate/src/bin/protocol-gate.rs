@@ -1,7 +1,7 @@
-use octet_engine::{
+use octet_gate::{
     claude_fixture_allow, claude_fixture_hook_response, claude_fixture_mcp_response,
-    claude_fixture_mcp_tool_allow, claude_response_for_request, codex_fixture_allow,
-    codex_fixture_user_input, codex_response_for_request, GateError, GateProcess,
+    claude_fixture_mcp_tool_allow, codex_fixture_allow, codex_fixture_user_input, GateError,
+    GateProcess,
 };
 use serde_json::{json, Value};
 use std::{
@@ -105,7 +105,7 @@ async fn codex(gate: &mut GateProcess, scenario: &str, cwd: &Path) -> Result<(),
             }
             break;
         }
-        if let Some(reply) = codex_response_for_request(&v) {
+        if let Some(reply) = octet_engine::live::codex_stray_reply(&v) {
             gate.send(&reply).await?;
         }
     }
@@ -149,7 +149,7 @@ async fn codex(gate: &mut GateProcess, scenario: &str, cwd: &Path) -> Result<(),
                 .to_owned();
             break (thread_id, model);
         }
-        if let Some(reply) = codex_response_for_request(&v) {
+        if let Some(reply) = octet_engine::live::codex_stray_reply(&v) {
             gate.send(&reply).await?;
         }
     };
@@ -360,7 +360,7 @@ async fn codex(gate: &mut GateProcess, scenario: &str, cwd: &Path) -> Result<(),
                         if ack && (scenario != "compact" || compacted && compact_terminal) {
                             return Ok(());
                         }
-                        if let Some(reply) = codex_response_for_request(&next) {
+                        if let Some(reply) = octet_engine::live::codex_stray_reply(&next) {
                             gate.send(&reply).await?;
                         }
                     }
@@ -377,7 +377,7 @@ async fn codex(gate: &mut GateProcess, scenario: &str, cwd: &Path) -> Result<(),
                 .is_some_and(|m| m.ends_with("/requestApproval"))
         {
             if codex_fixture_allow(&v, cwd).is_none() {
-                gate.send(&codex_response_for_request(&v).expect("server request"))
+                gate.send(&octet_engine::live::codex_stray_reply(&v).expect("server request"))
                     .await?;
                 continue;
             }
@@ -405,12 +405,13 @@ async fn codex(gate: &mut GateProcess, scenario: &str, cwd: &Path) -> Result<(),
             if allowed.is_some() {
                 gate.approval_requests += 1;
             }
-            let reply =
-                allowed.unwrap_or_else(|| codex_response_for_request(&v).expect("server request"));
+            let reply = allowed.unwrap_or_else(|| {
+                octet_engine::live::codex_stray_reply(&v).expect("server request")
+            });
             gate.send(&reply).await?;
             continue;
         }
-        if let Some(reply) = codex_response_for_request(&v) {
+        if let Some(reply) = octet_engine::live::codex_stray_reply(&v) {
             if scenario == "approval-deny"
                 && codex_fixture_allow(&v, cwd).is_some()
                 && v.get("method")
@@ -446,7 +447,7 @@ async fn claude(gate: &mut GateProcess, scenario: &str, cwd: &Path) -> Result<()
                 continue;
             }
         }
-        if let Some(reply) = claude_response_for_request(&v) {
+        if let Some(reply) = octet_engine::live::claude_stray_reply(&v) {
             gate.send(&reply).await?;
         }
     }
@@ -541,7 +542,7 @@ async fn claude(gate: &mut GateProcess, scenario: &str, cwd: &Path) -> Result<()
                 continue;
             }
         }
-        if let Some(reply) = claude_response_for_request(&v) {
+        if let Some(reply) = octet_engine::live::claude_stray_reply(&v) {
             if v.pointer("/request/subtype").and_then(Value::as_str) == Some("can_use_tool") {
                 let fixture_write_request = claude_fixture_allow(&v, cwd);
                 if scenario.starts_with("approval-") && fixture_write_request.is_some() {
@@ -654,7 +655,7 @@ async fn main() {
     let mut failure_kind = None;
     let mut cleaned = false;
     let mut status =
-        match GateProcess::spawn(opt.binary.clone(), args.clone(), cwd.clone(), deadline).await {
+        match GateProcess::spawn(opt.binary.clone(), args.clone(), cwd.clone(), deadline) {
             Err(error) => format!("failed: {error}"),
             Ok(mut gate) => {
                 let result = if opt.engine == "claude" {
@@ -695,9 +696,7 @@ async fn main() {
                             resumed_args,
                             cwd.clone(),
                             deadline,
-                        )
-                        .await
-                        {
+                        ) {
                             Err(error) => outcome = format!("failed: {error}"),
                             Ok(mut second) => {
                                 let second_result = claude(&mut second, "simple", &cwd).await;
