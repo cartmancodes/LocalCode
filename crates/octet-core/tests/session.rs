@@ -6,7 +6,7 @@ use std::time::Duration;
 async fn demo_turn_is_journaled_and_export_never_overwrites() {
     let temp = octet_testkit::TempDir::new("octet-core-test");
     let directory = temp.path().to_path_buf();
-    let config = Config::new(Engine::Demo, "unused", directory.clone());
+    let config = Config::new(Engine::DEMO, "unused", directory.clone());
     let mut session = Session::open(config, directory.clone()).await.unwrap();
     assert!(matches!(
         session.events.recv().await,
@@ -43,7 +43,7 @@ async fn demo_turn_is_journaled_and_export_never_overwrites() {
 async fn repeated_mode_events_are_journaled_once_but_all_delivered() {
     let temp = octet_testkit::TempDir::new("octet-core-mode");
     let directory = temp.path().to_path_buf();
-    let config = Config::new(Engine::Demo, "unused", directory.clone());
+    let config = Config::new(Engine::DEMO, "unused", directory.clone());
     let mut session = Session::open(config, directory.clone()).await.unwrap();
     let mut delivered = Vec::new();
     for command in [
@@ -79,7 +79,7 @@ async fn repeated_mode_events_are_journaled_once_but_all_delivered() {
 #[tokio::test]
 async fn journal_keeps_engine_and_outcome_spelling() {
     let temp = octet_testkit::TempDir::new("octet-journal-spelling");
-    let config = Config::new(Engine::Demo, "demo", temp.path());
+    let config = Config::new(Engine::DEMO, "demo", temp.path());
     let mut session = Session::open(config, temp.path().to_path_buf())
         .await
         .unwrap();
@@ -109,7 +109,7 @@ async fn the_session_uses_the_configured_approval_window() {
     let temp = octet_testkit::TempDir::new("octet-approval-window");
     let config = Config {
         approval_timeout: Duration::from_millis(300),
-        ..Config::new(Engine::Demo, "demo", temp.path())
+        ..Config::new(Engine::DEMO, "demo", temp.path())
     };
     let mut session = Session::open(config, temp.path().to_path_buf())
         .await

@@ -16,9 +16,9 @@ impl Selection {
     /// ```
     /// use octet_core::{model::Selection, Engine};
     ///
-    /// let both = Selection::parse("claude sonnet", Engine::Codex).unwrap();
-    /// assert_eq!(both, Selection::parse("claude/sonnet", Engine::Codex).unwrap());
-    /// assert_eq!(Selection::parse("codex", Engine::Claude).unwrap().model, None);
+    /// let both = Selection::parse("claude sonnet", Engine::CODEX).unwrap();
+    /// assert_eq!(both, Selection::parse("claude/sonnet", Engine::CODEX).unwrap());
+    /// assert_eq!(Selection::parse("codex", Engine::CLAUDE).unwrap().model, None);
     /// ```
     /// # Errors
     ///
@@ -67,7 +67,7 @@ impl Selection {
                 if same {
                     current.binary.clone()
                 } else {
-                    PathBuf::from(self.provider.as_str())
+                    PathBuf::from(self.provider.provider().default_binary)
                 }
             }),
             resume: if same {
@@ -90,7 +90,7 @@ mod tests {
             model: Some("old".into()),
             resume: Some("old-thread".into()),
             mode: crate::Mode::Auto,
-            ..Config::new(Engine::Codex, "/custom/codex", "/workspace")
+            ..Config::new(Engine::CODEX, "/custom/codex", "/workspace")
         }
     }
     #[test]
@@ -99,14 +99,14 @@ mod tests {
             approval_timeout: std::time::Duration::from_secs(300),
             ..config()
         };
-        let next = Selection::parse("claude example", Engine::Codex)
+        let next = Selection::parse("claude example", Engine::CODEX)
             .unwrap()
             .configure(&current, "thread", None);
         assert_eq!(next.approval_timeout, std::time::Duration::from_secs(300));
     }
     #[test]
     fn configure_carries_mode() {
-        let selection = Selection::parse("claude example", Engine::Codex).unwrap();
+        let selection = Selection::parse("claude example", Engine::CODEX).unwrap();
         assert_eq!(
             selection.configure(&config(), "thread", None).mode,
             crate::Mode::Auto
@@ -115,28 +115,28 @@ mod tests {
     #[test]
     fn parses_provider_model_forms_without_restricting_vendor_names() {
         assert_eq!(
-            Selection::parse("claude example-model", Engine::Codex).unwrap(),
-            Selection::parse("claude/example-model", Engine::Codex).unwrap()
+            Selection::parse("claude example-model", Engine::CODEX).unwrap(),
+            Selection::parse("claude/example-model", Engine::CODEX).unwrap()
         );
         assert_eq!(
-            Selection::parse("codex", Engine::Claude).unwrap().model,
+            Selection::parse("codex", Engine::CLAUDE).unwrap().model,
             None
         );
         assert_eq!(
-            Selection::parse("custom/name", Engine::Codex)
+            Selection::parse("custom/name", Engine::CODEX)
                 .unwrap()
                 .model
                 .as_deref(),
             Some("custom/name")
         );
         for bad in ["", "claude/", "other model", "claude model extra"] {
-            assert!(Selection::parse(bad, Engine::Codex).is_err());
+            assert!(Selection::parse(bad, Engine::CODEX).is_err());
         }
-        assert!(Selection::parse("example", Engine::Demo).is_err());
+        assert!(Selection::parse("example", Engine::DEMO).is_err());
     }
     #[test]
     fn same_provider_retains_context_and_custom_binary() {
-        let selected = Selection::parse("new-model", Engine::Codex)
+        let selected = Selection::parse("new-model", Engine::CODEX)
             .unwrap()
             .configure(&config(), "live-thread", None);
         assert_eq!(selected.resume.as_deref(), Some("live-thread"));
@@ -145,7 +145,7 @@ mod tests {
     }
     #[test]
     fn changing_provider_cannot_reuse_foreign_session_or_binary() {
-        let selected = Selection::parse("claude default", Engine::Codex)
+        let selected = Selection::parse("claude default", Engine::CODEX)
             .unwrap()
             .configure(&config(), "live-thread", None);
         assert_eq!(selected.resume, None);

@@ -1,8 +1,8 @@
 //! The vendor process loop shared by Claude and Codex. Protocol details live
 //! in `claude.rs` and `codex.rs` as further `impl Driver` blocks.
 use super::{
-    claude, codex, emit, Command, Config, DriverError, Engine, Event, Limits, Mode, ModelInfo,
-    EVENT_BYTES,
+    claude, codex, emit, Channels, Command, Config, DriverError, Engine, Event, Limits, Mode,
+    ModelInfo, EVENT_BYTES,
 };
 use octet_proc::{Process, ProcessConfig};
 use serde_json::Value;
@@ -75,15 +75,19 @@ pub(super) struct Driver<'a> {
 pub(super) async fn vendor(
     config: Config,
     limits: Limits,
-    mut commands: mpsc::Receiver<Command>,
-    mut cancel: watch::Receiver<u64>,
-    mut stopping: watch::Receiver<bool>,
-    tx: &mpsc::Sender<Event>,
+    channels: Channels,
 ) -> Result<(), String> {
-    let protocol = match config.engine {
-        Engine::Claude => Protocol::Claude,
-        Engine::Codex => Protocol::Codex,
-        Engine::Demo => return Err("The demo engine has no vendor process".into()),
+    let Channels {
+        mut commands,
+        mut cancel,
+        mut stopping,
+        events,
+    } = channels;
+    let tx = &events;
+    let protocol = if config.engine == Engine::CLAUDE {
+        Protocol::Claude
+    } else {
+        Protocol::Codex
     };
     let engine = config.engine;
     let process = Process::spawn(&ProcessConfig {
@@ -473,11 +477,11 @@ mod tests {
     fn stderr_is_attached_only_to_vendor_failures_and_starts_on_a_line() {
         let vendor = || DriverError::from("Vendor disconnected.");
         assert_eq!(
-            with_stderr(vendor(), Engine::Claude, b"reason\n"),
+            with_stderr(vendor(), Engine::CLAUDE, b"reason\n"),
             "Vendor disconnected.\nclaude stderr: reason"
         );
         assert_eq!(
-            with_stderr(vendor(), Engine::Claude, b" \n"),
+            with_stderr(vendor(), Engine::CLAUDE, b" \n"),
             "Vendor disconnected."
         );
         for (local, text) in [
@@ -492,13 +496,13 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                with_stderr(local, Engine::Codex, b"unrelated log line\n"),
+                with_stderr(local, Engine::CODEX, b"unrelated log line\n"),
                 text
             );
         }
         let mut long = vec![b'a'; 1500];
         long.extend_from_slice("\nlast line é\n".as_bytes());
-        let text = with_stderr("x".into(), Engine::Codex, &long);
+        let text = with_stderr("x".into(), Engine::CODEX, &long);
         assert!(text.ends_with("codex stderr: last line é"), "{text}");
     }
     #[test]

@@ -3,7 +3,7 @@ use crate::{commands::*, input::*};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use octet_core::Engine;
 fn app() -> App {
-    let config = Config::new(Engine::Codex, "codex", "/tmp");
+    let config = Config::new(Engine::CODEX, "codex", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.conn.ready = true;
     app.conn.session = "thread-1".into();
@@ -17,14 +17,14 @@ async fn model_command_rejects_busy_switch_and_preserves_current_session() {
         command(&mut app, "/model claude example").await,
         Action::Continue
     ));
-    assert_eq!(app.conn.engine, octet_core::Engine::Codex);
+    assert_eq!(app.conn.engine, octet_core::Engine::CODEX);
     assert_eq!(app.conn.session, "thread-1");
     app.conn.running = false;
     let Action::Exit(Exit::Model(selection)) = command(&mut app, "/model claude example").await
     else {
         panic!("expected a model switch");
     };
-    assert_eq!(selection.provider, octet_core::Engine::Claude);
+    assert_eq!(selection.provider, octet_core::Engine::CLAUDE);
     assert_eq!(selection.model.as_deref(), Some("example"));
 }
 #[tokio::test]
@@ -344,7 +344,7 @@ async fn goal_prompts_never_carry_attachments() {
 async fn demo_session(name: &str) -> (octet_testkit::TempDir, Session) {
     let temp = octet_testkit::TempDir::new(name);
     let directory = temp.path().to_path_buf();
-    let config = Config::new(Engine::Demo, "demo", directory.clone());
+    let config = Config::new(Engine::DEMO, "demo", directory.clone());
     let session = Session::open(config, directory).await.unwrap();
     (temp, session)
 }
@@ -497,7 +497,7 @@ async fn ctrl_c_in_approval_dialog_pauses_the_active_goal() {
     app.overlay.approvals.push_back((1, "command".into()));
     let temp = octet_testkit::TempDir::new("octet-goal-cancel");
     let directory = temp.path().to_path_buf();
-    let config = Config::new(Engine::Demo, "demo", directory.clone());
+    let config = Config::new(Engine::DEMO, "demo", directory.clone());
     let mut session = Session::open(config, directory.clone()).await.unwrap();
     key_action(
         &mut app,
@@ -653,26 +653,26 @@ async fn stopped_session_can_always_leave_full_access() {
 #[test]
 fn full_access_notice_says_what_the_reconnect_does() {
     use octet_core::Mode;
-    let entering = full_access_notice(Mode::FullAccess, Engine::Claude, "session-1");
+    let entering = full_access_notice(Mode::FullAccess, Engine::CLAUDE, "session-1");
     assert!(entering.starts_with("Full access:"), "{entering}");
     assert!(
         entering.ends_with("Reconnecting to the same session…"),
         "{entering}"
     );
-    assert!(full_access_notice(Mode::FullAccess, Engine::Claude, "")
+    assert!(full_access_notice(Mode::FullAccess, Engine::CLAUDE, "")
         .ends_with("Starting a new session (no session ID yet)…"));
     assert!(
-        full_access_notice(Mode::Ask, Engine::Demo, "demo · offline")
+        full_access_notice(Mode::Ask, Engine::DEMO, "demo · offline")
             .ends_with("Restarting the offline demo…")
     );
-    assert!(full_access_notice(Mode::Ask, Engine::Codex, "thread")
+    assert!(full_access_notice(Mode::Ask, Engine::CODEX, "thread")
         .starts_with("Leaving full access for ask."));
 }
 #[tokio::test]
 async fn unknown_command_keeps_the_draft() {
     let temp = octet_testkit::TempDir::new("octet-tui-draft");
     let directory = temp.path().to_path_buf();
-    let config = Config::new(Engine::Demo, "demo", directory.clone());
+    let config = Config::new(Engine::DEMO, "demo", directory.clone());
     let mut session = Session::open(config.clone(), directory.clone())
         .await
         .unwrap();

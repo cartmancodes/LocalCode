@@ -4,9 +4,29 @@ use super::{
     driver::Driver,
     limited,
     mode::{codex_reported, codex_thread_params, codex_turn_overrides, confirm_mode},
-    model_catalog, valid_identifier, DriverError, Event, Mode, Outcome, EVENT_BYTES,
+    model_catalog, valid_identifier, BoxFuture, Channels, Config, DriverError, Event, Limits, Mode,
+    Outcome, Provider, EVENT_BYTES,
 };
 use serde_json::{json, Value};
+
+/// Codex's row in the provider table.
+pub(super) const PROVIDER: Provider = Provider {
+    name: "codex",
+    title: "Codex",
+    default_binary: "codex",
+    offline: false,
+    modes: [
+        "Workspace sandbox; untrusted commands ask (untrusted)",
+        "Workspace sandbox; asks only to escalate (on-request). Codex has no edits-only mode",
+        "Workspace sandbox; Codex's auto-review agent decides escalations (auto_review)",
+        "No sandbox; never asks (danger-full-access)",
+    ],
+    start,
+};
+
+fn start(config: Config, limits: Limits, channels: Channels) -> BoxFuture<Result<(), String>> {
+    Box::pin(async move { super::driver::vendor(config, limits, channels).await })
+}
 
 pub(super) fn answer(wire: &Value, allow: bool) -> Value {
     json!({"id":wire["id"],"result":{"decision":if allow {"accept"} else {"decline"}}})
@@ -192,7 +212,12 @@ impl Driver<'_> {
             self.emit(Event::Ready {
                 session: self.session.clone(),
             })?;
-            self.mode = confirm_mode(self.tx, "Codex", self.mode, codex_reported(&v["result"]))?;
+            self.mode = confirm_mode(
+                self.tx,
+                super::Engine::CODEX.title(),
+                self.mode,
+                codex_reported(&v["result"]),
+            )?;
             self.emit(Event::ModeChanged(self.mode))?;
             if let Some(model) = v["result"]["model"]
                 .as_str()

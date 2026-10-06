@@ -4,11 +4,31 @@ use super::{
     driver::{Driver, ModeRequest},
     limited,
     mode::{claude_mode, claude_permission_args, claude_reported_mode, confirm_mode},
-    model_catalog, valid_identifier, Config, DriverError, Event, Mode, Outcome,
+    model_catalog, valid_identifier, BoxFuture, Channels, Config, DriverError, Event, Limits, Mode,
+    Outcome, Provider,
 };
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use tokio::{sync::mpsc, time::Instant};
+
+/// Claude Code's row in the provider table.
+pub(super) const PROVIDER: Provider = Provider {
+    name: "claude",
+    title: "Claude",
+    default_binary: "claude",
+    offline: false,
+    modes: [
+        "Claude asks before edits and commands (permission mode default)",
+        "File edits proceed; other actions ask (acceptEdits)",
+        "Claude's classifier approves or blocks each action (auto)",
+        "No permission checks at all (bypassPermissions)",
+    ],
+    start,
+};
+
+fn start(config: Config, limits: Limits, channels: Channels) -> BoxFuture<Result<(), String>> {
+    Box::pin(async move { super::driver::vendor(config, limits, channels).await })
+}
 
 pub(super) fn launch_args(config: &Config) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
@@ -226,7 +246,7 @@ impl Driver<'_> {
                 .pointer("/response/response/current_permission_mode")
                 .and_then(Value::as_str)
                 .map(|raw| (claude_reported_mode(raw), limited(raw)));
-            self.mode = confirm_mode(self.tx, "Claude", self.mode, reported)?;
+            self.mode = confirm_mode(self.tx, super::Engine::CLAUDE.title(), self.mode, reported)?;
             self.emit(Event::ModeChanged(self.mode))?;
             self.emit(Event::Models(model_catalog(
                 &v["response"]["response"]["models"],
@@ -286,7 +306,7 @@ pub(super) fn switch_reply_mode(
         .pointer("/response/response/mode")
         .and_then(Value::as_str)
         .map(|raw| (claude_reported_mode(raw), limited(raw)));
-    confirm_mode(tx, "Claude", target, reported)
+    confirm_mode(tx, super::Engine::CLAUDE.title(), target, reported)
 }
 /// Reply to a Claude control request the driver will not put in front of the
 /// user: a permission request outside an active turn is denied, anything else

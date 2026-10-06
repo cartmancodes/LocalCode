@@ -666,7 +666,7 @@ fn full_access_notice(mode: octet_core::Mode, engine: octet_core::Engine, sessio
     } else {
         format!("Leaving full access for {}.", mode.label())
     };
-    let next = if engine == octet_core::Engine::Demo {
+    let next = if engine == octet_core::Engine::DEMO {
         "Restarting the offline demo…"
     } else if session.is_empty() {
         "Starting a new session (no session ID yet)…"

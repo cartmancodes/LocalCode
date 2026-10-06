@@ -207,7 +207,7 @@ impl App {
                 .find(|m| m.id.as_ref() == Some(id))
                 .map(|m| format!("{} · {}", clean(&m.name), id))
                 .unwrap_or_else(|| id.clone()),
-            None if self.conn.engine == octet_core::Engine::Demo => "offline · no model".into(),
+            None if self.conn.engine == octet_core::Engine::DEMO => "offline · no model".into(),
             None => self
                 .catalog_selection()
                 .map(|m| {
@@ -267,7 +267,7 @@ impl App {
                 .unwrap_or("provider default"),
             self.conn.resolved_model
                 .as_deref()
-                .unwrap_or(if self.conn.engine == octet_core::Engine::Demo {
+                .unwrap_or(if self.conn.engine == octet_core::Engine::DEMO {
                     "none (offline demo)"
                 } else {
                     "not yet reported by provider"

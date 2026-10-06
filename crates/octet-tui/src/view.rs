@@ -224,7 +224,7 @@ fn composer(
 fn status_line(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(if app.notice.is_empty() {
-            if app.conn.engine == octet_core::Engine::Demo {
+            if app.conn.engine == octet_core::Engine::DEMO {
                 " Offline demo · no model calls   |   Ctrl+C twice to quit".into()
             } else {
                 " Journal saved locally   |   F1 help   |   Ctrl+C twice to quit".into()
