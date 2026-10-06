@@ -46,13 +46,51 @@ pub(crate) struct Connection {
     pub(crate) models: Vec<octet_core::ModelInfo>,
     pub(crate) session: String,
     pub(crate) journal: PathBuf,
-    pub(crate) ready: bool,
-    pub(crate) running: bool,
-    pub(crate) stopped: bool,
+    pub(crate) phase: ConnPhase,
     pub(crate) status: String,
     pub(crate) usage: String,
     pub(crate) activity: State,
 }
+/// Where the vendor connection is, as the interface sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConnPhase {
+    /// Starting or reconnecting; not ready for prompts.
+    Connecting,
+    /// Ready, with no turn running.
+    Idle,
+    /// A turn is running.
+    Running,
+    /// The session ended; only a reconnect leaves this.
+    Stopped,
+}
+
+impl Connection {
+    /// The session is open (idle or in a turn).
+    pub(crate) fn is_ready(&self) -> bool {
+        matches!(self.phase, ConnPhase::Idle | ConnPhase::Running)
+    }
+    /// A turn is running.
+    pub(crate) fn is_running(&self) -> bool {
+        self.phase == ConnPhase::Running
+    }
+    /// The session has ended.
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.phase == ConnPhase::Stopped
+    }
+    /// A turn started or a prompt was sent; a stopped session stays stopped.
+    pub(crate) fn start_turn(&mut self) {
+        if self.phase != ConnPhase::Stopped {
+            self.phase = ConnPhase::Running;
+        }
+    }
+    /// The running turn ended.
+    pub(crate) fn end_turn(&mut self) {
+        if self.phase == ConnPhase::Running {
+            self.phase = ConnPhase::Idle;
+        }
+    }
+}
+
 /// The conversation: entries, scroll and the copyable reply.
 pub(crate) struct Transcript {
     pub(crate) entries: VecDeque<Entry>,
@@ -119,9 +157,7 @@ impl App {
                 models: Vec::new(),
                 session: String::new(),
                 journal,
-                ready: false,
-                running: false,
-                stopped: false,
+                phase: ConnPhase::Connecting,
                 status: "connecting".into(),
                 usage: String::new(),
                 activity: State::Thinking,
@@ -180,9 +216,7 @@ impl App {
         self.conn.session.clear();
         self.chat.catalog_focus = None;
         self.conn.journal = journal;
-        self.conn.ready = false;
-        self.conn.running = false;
-        self.conn.stopped = false;
+        self.conn.phase = ConnPhase::Connecting;
         self.conn.status = "connecting".into();
         self.conn.activity = State::Thinking;
         self.conn.usage.clear();
@@ -192,11 +226,15 @@ impl App {
     }
     /// Neither connected nor stopped: the vendor is still starting.
     pub fn is_connecting(&self) -> bool {
-        !self.conn.ready && !self.conn.stopped
+        self.conn.phase == ConnPhase::Connecting
+    }
+    /// Ready for a prompt: connected, no turn running.
+    pub fn is_idle(&self) -> bool {
+        self.conn.phase == ConnPhase::Idle
     }
     /// A turn is running or the connection is still being made; Esc cancels.
     pub fn is_busy(&self) -> bool {
-        self.conn.running || self.is_connecting()
+        self.conn.is_running() || self.is_connecting()
     }
     fn refresh_model_label(&mut self) {
         self.conn.model = match &self.conn.resolved_model {
@@ -207,7 +245,7 @@ impl App {
                 .find(|m| m.id.as_ref() == Some(id))
                 .map(|m| format!("{} · {}", clean(&m.name), id))
                 .unwrap_or_else(|| id.clone()),
-            None if self.conn.engine == octet_core::Engine::DEMO => "offline · no model".into(),
+            None if self.conn.engine.offline() => "offline · no model".into(),
             None => self
                 .catalog_selection()
                 .map(|m| {
@@ -267,7 +305,7 @@ impl App {
                 .unwrap_or("provider default"),
             self.conn.resolved_model
                 .as_deref()
-                .unwrap_or(if self.conn.engine == octet_core::Engine::DEMO {
+                .unwrap_or(if self.conn.engine.offline() {
                     "none (offline demo)"
                 } else {
                     "not yet reported by provider"
@@ -382,9 +420,13 @@ impl App {
             }
             Event::Ready { session } => {
                 self.refresh_model_label();
-                self.conn.ready = true;
+                // Claude can report its session ID mid-turn: a running or
+                // stopped connection keeps its phase.
+                if self.conn.phase == ConnPhase::Connecting {
+                    self.conn.phase = ConnPhase::Idle;
+                }
                 self.conn.session = clean(&session);
-                if !self.conn.running {
+                if !self.conn.is_running() {
                     self.conn.status = "ready".into();
                     self.conn.activity = State::Idle;
                 }
@@ -394,7 +436,7 @@ impl App {
                 self.chat.scroll = 0;
             }
             Event::Started => {
-                self.conn.running = true;
+                self.conn.start_turn();
                 self.conn.activity = State::Thinking;
                 self.conn.status = "working".into();
                 self.notice.clear();
@@ -443,7 +485,7 @@ impl App {
             }
             Event::Usage(text) => self.conn.usage = clean(&text),
             Event::Finished { outcome } => {
-                self.conn.running = false;
+                self.conn.end_turn();
                 if self.notice == CANCELLING {
                     self.notice.clear();
                 }
@@ -465,9 +507,7 @@ impl App {
                     self.conn.activity = State::Sleeping;
                 }
                 self.conn.mode_pending = None;
-                self.conn.stopped = true;
-                self.conn.running = false;
-                self.conn.ready = false;
+                self.conn.phase = ConnPhase::Stopped;
                 self.overlay.approvals.clear();
                 self.conn.status = "disconnected".into();
             }

@@ -138,3 +138,28 @@ fn transcript_memory_is_bounded() {
     assert!(a.chat.entries.len() <= 160);
     assert!(!a.visible_lines(60, 20).is_empty());
 }
+#[test]
+fn ready_mid_turn_keeps_running() {
+    let config = octet_core::Config::new(octet_core::Engine::CLAUDE, "claude", "/tmp");
+    let mut app = App::new(&config, "journal".into());
+    assert!(app.is_connecting());
+    app.event(Event::Ready {
+        session: String::new(),
+    });
+    assert!(app.is_idle());
+    app.event(Event::Started);
+    // Claude reports its session ID with the turn's first frames.
+    app.event(Event::Ready {
+        session: "s-1".into(),
+    });
+    assert!(app.conn.is_running());
+    app.event(Event::Finished {
+        outcome: octet_core::Outcome::Completed,
+    });
+    assert!(app.is_idle());
+    app.event(Event::Stopped);
+    app.event(Event::Ready {
+        session: "late".into(),
+    });
+    assert!(app.conn.is_stopped() && !app.is_busy() && !app.is_idle());
+}

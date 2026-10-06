@@ -94,7 +94,7 @@ fn header(frame: &mut Frame, area: Rect, app: &App) {
     banner(frame, header[0], app);
     let status_color = if !app.overlay.approvals.is_empty() {
         AMBER
-    } else if app.conn.stopped {
+    } else if app.conn.is_stopped() {
         MUTED
     } else {
         ACCENT
@@ -153,7 +153,7 @@ fn composer(
     app: &App,
     draft: (Vec<String>, (usize, usize)),
 ) -> (u16, u16) {
-    let base = if app.conn.running {
+    let base = if app.conn.is_running() {
         " Compose next prompt · wait or Esc to cancel "
     } else {
         " Prompt "
@@ -162,7 +162,7 @@ fn composer(
         Some(chip) => format!("{} · {chip} ", base.trim_end()),
         None => base.to_owned(),
     };
-    let composer = card(&title).border_style(Style::default().fg(if app.conn.running {
+    let composer = card(&title).border_style(Style::default().fg(if app.conn.is_running() {
         EDGE
     } else {
         ACCENT
@@ -224,7 +224,7 @@ fn composer(
 fn status_line(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(if app.notice.is_empty() {
-            if app.conn.engine == octet_core::Engine::DEMO {
+            if app.conn.engine.offline() {
                 " Offline demo · no model calls   |   Ctrl+C twice to quit".into()
             } else {
                 " Journal saved locally   |   F1 help   |   Ctrl+C twice to quit".into()

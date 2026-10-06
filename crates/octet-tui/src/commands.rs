@@ -148,7 +148,7 @@ pub(crate) async fn send_goal_prompt(app: &mut App, session: &Session, prompt: S
     match session.handle.send(command) {
         Ok(()) => {
             app.goals.goal_prompt_sent();
-            app.conn.running = true;
+            app.conn.start_turn();
             app.conn.status = "working on goal".into();
         }
         Err(error) => goal_send_failed(app, error).await,
@@ -180,7 +180,7 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
         Cmd::Model => return Some(model_command(app, argument)),
         Cmd::Mode => return Some(mode_command(app, argument)),
         Cmd::New | Cmd::Reconnect => {
-            if app.conn.running {
+            if app.conn.is_running() {
                 app.notice = "Cancel the active turn before changing sessions".into();
             } else {
                 return Some(if cmd == Cmd::New {
@@ -221,7 +221,7 @@ fn model_command(app: &mut App, argument: &str) -> Action {
                 Err(_) => app.notice("Use /model list <page number>"),
             },
         }
-    } else if app.conn.running || !app.overlay.approvals.is_empty() {
+    } else if app.conn.is_running() || !app.overlay.approvals.is_empty() {
         app.notice = "Cancel or finish the current turn before switching models".into();
     } else if app.is_connecting() {
         app.notice = "Wait for connection, or cancel it, before switching models".into();
@@ -248,12 +248,14 @@ fn mode_command(app: &mut App, argument: &str) -> Action {
                 app.notice("Already in full-access mode")
             }
             Some(target) if target == Mode::FullAccess || app.conn.mode == Mode::FullAccess => {
-                if app.conn.running || !app.overlay.approvals.is_empty() {
+                if app.conn.is_running() || !app.overlay.approvals.is_empty() {
                     app.notice =
                         "Cancel or finish the current turn before changing full access".into();
                 }
                 // Tightening out of full access is always allowed once the vendor has stopped.
-                else if !app.conn.ready && !(app.conn.stopped && target != Mode::FullAccess) {
+                else if !app.conn.is_ready()
+                    && !(app.conn.is_stopped() && target != Mode::FullAccess)
+                {
                     app.notice = "Wait for a ready session before changing full access".into();
                 } else {
                     return Action::Exit(Exit::Mode(target));
@@ -266,7 +268,7 @@ fn mode_command(app: &mut App, argument: &str) -> Action {
 }
 async fn goal_command(app: &mut App, argument: &str) -> Action {
     use octet_core::goal::{Goal, GoalStep};
-    let idle = !app.conn.running && app.conn.ready && !app.conn.stopped;
+    let idle = app.is_idle();
     match argument {
         "" | "status" => app.notice(
             app.goals
@@ -307,7 +309,7 @@ async fn goal_command(app: &mut App, argument: &str) -> Action {
     Action::Continue
 }
 async fn export_command(app: &mut App, argument: &str) -> Action {
-    if app.conn.running {
+    if app.conn.is_running() {
         app.notice = "Wait for completion or cancel before exporting".into();
         return Action::Continue;
     }

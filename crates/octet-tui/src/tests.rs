@@ -1,25 +1,26 @@
 use super::*;
+use crate::app::ConnPhase;
 use crate::{commands::*, input::*};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use octet_core::Engine;
 fn app() -> App {
     let config = Config::new(Engine::CODEX, "codex", "/tmp");
     let mut app = App::new(&config, "journal".into());
-    app.conn.ready = true;
+    app.conn.phase = ConnPhase::Idle;
     app.conn.session = "thread-1".into();
     app
 }
 #[tokio::test]
 async fn model_command_rejects_busy_switch_and_preserves_current_session() {
     let mut app = app();
-    app.conn.running = true;
+    app.conn.phase = ConnPhase::Running;
     assert!(matches!(
         command(&mut app, "/model claude example").await,
         Action::Continue
     ));
     assert_eq!(app.conn.engine, octet_core::Engine::CODEX);
     assert_eq!(app.conn.session, "thread-1");
-    app.conn.running = false;
+    app.conn.phase = ConnPhase::Idle;
     let Action::Exit(Exit::Model(selection)) = command(&mut app, "/model claude example").await
     else {
         panic!("expected a model switch");
@@ -139,7 +140,7 @@ async fn at_opens_the_file_popup_and_enter_accepts() {
     key_action(&mut app, &session, key(KeyCode::Enter)).await;
     assert_eq!(app.composer.editor.text, "see @src/main.rs ");
     assert!(app.composer.completion.is_none());
-    assert!(!app.conn.running, "Enter accepted instead of sending");
+    assert!(!app.conn.is_running(), "Enter accepted instead of sending");
 }
 #[tokio::test]
 async fn the_palette_offers_the_editor_mentions_and_shell() {
@@ -187,7 +188,7 @@ async fn a_prompt_too_long_for_its_attachments_says_so() {
         "The prompt and its attachments are over 64 KiB. Shorten the prompt, or press Esc on an empty prompt to drop them"
     );
     assert_eq!(app.composer.attachments.len(), 1, "kept");
-    assert!(!app.conn.running);
+    assert!(!app.conn.is_running());
 }
 #[test]
 fn a_finished_command_replaces_the_running_notice() {
@@ -468,7 +469,7 @@ async fn ctrl_c_closes_help_and_the_palette_without_quitting() {
 async fn ctrl_c_interrupts_a_running_turn_instead_of_quitting() {
     let mut app = app();
     let (_temp, mut session) = demo_session("octet-quit-busy").await;
-    app.conn.running = true;
+    app.conn.phase = ConnPhase::Running;
     for _ in 0..2 {
         assert!(matches!(
             key_action(&mut app, &session, ctrl('c')).await,
@@ -493,7 +494,7 @@ async fn ctrl_c_in_approval_dialog_pauses_the_active_goal() {
     let mut app = app();
     app.goals.goal = Some(octet_core::goal::Goal::new("Ship the project").unwrap());
     app.goals.goal_prompt_sent();
-    app.conn.running = true;
+    app.conn.phase = ConnPhase::Running;
     app.overlay.approvals.push_back((1, "command".into()));
     let temp = octet_testkit::TempDir::new("octet-goal-cancel");
     let directory = temp.path().to_path_buf();
@@ -558,7 +559,7 @@ async fn mode_command_switches_live_modes_and_rejects_unknown() {
         command(&mut app, "/mode auto").await,
         Action::SetMode(octet_core::Mode::Auto)
     ));
-    app.conn.running = true;
+    app.conn.phase = ConnPhase::Running;
     assert!(matches!(
         command(&mut app, "/mode accept-edits").await,
         Action::SetMode(octet_core::Mode::AcceptEdits)
@@ -574,24 +575,24 @@ async fn mode_command_switches_live_modes_and_rejects_unknown() {
 #[tokio::test]
 async fn full_access_requires_idle_ready_session() {
     let mut app = app();
-    app.conn.running = true;
+    app.conn.phase = ConnPhase::Running;
     assert!(matches!(
         command(&mut app, "/mode full-access").await,
         Action::Continue
     ));
-    app.conn.running = false;
+    app.conn.phase = ConnPhase::Idle;
     app.overlay.approvals.push_back((1, "x".into()));
     assert!(matches!(
         command(&mut app, "/mode full-access").await,
         Action::Continue
     ));
     app.overlay.approvals.clear();
-    app.conn.ready = false;
+    app.conn.phase = ConnPhase::Connecting;
     assert!(matches!(
         command(&mut app, "/mode full-access").await,
         Action::Continue
     ));
-    app.conn.ready = true;
+    app.conn.phase = ConnPhase::Idle;
     assert!(matches!(
         command(&mut app, "/mode full-access").await,
         Action::Exit(Exit::Mode(octet_core::Mode::FullAccess))
@@ -638,8 +639,8 @@ async fn cycle_is_ignored_while_a_switch_is_pending() {
 async fn stopped_session_can_always_leave_full_access() {
     let mut app = app();
     app.conn.mode = octet_core::Mode::FullAccess;
-    app.conn.ready = false;
-    app.conn.stopped = true;
+    app.conn.phase = ConnPhase::Connecting;
+    app.conn.phase = ConnPhase::Stopped;
     assert!(matches!(
         command(&mut app, "/mode ask").await,
         Action::Exit(Exit::Mode(octet_core::Mode::Ask))
@@ -693,7 +694,7 @@ async fn unknown_command_keeps_the_draft() {
     assert!(app.notice.contains("Unknown command"));
     app.composer.editor.take();
     // A path is a prompt, not a command.
-    app.conn.ready = true;
+    app.conn.phase = ConnPhase::Idle;
     assert!(app
         .composer
         .editor
@@ -703,7 +704,7 @@ async fn unknown_command_keeps_the_draft() {
         Action::Continue
     ));
     assert!(
-        app.composer.editor.text.is_empty() && app.conn.running,
+        app.composer.editor.text.is_empty() && app.conn.is_running(),
         "{}",
         app.notice
     );
@@ -711,7 +712,7 @@ async fn unknown_command_keeps_the_draft() {
         app.composer.history.back().map(String::as_str),
         Some("/usr/lib is where this breaks, please look")
     );
-    app.conn.running = false;
+    app.conn.phase = ConnPhase::Idle;
     // A prompt starting with a multi-byte character is an ordinary prompt.
     assert!(app.composer.editor.insert("界 means world"));
     assert!(matches!(
@@ -722,7 +723,7 @@ async fn unknown_command_keeps_the_draft() {
         app.composer.history.back().map(String::as_str),
         Some("界 means world")
     );
-    app.conn.running = false;
+    app.conn.phase = ConnPhase::Idle;
     assert!(app.composer.editor.insert("/session"));
     assert!(matches!(
         key_action(&mut app, &session, enter).await,
