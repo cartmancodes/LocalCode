@@ -1,6 +1,10 @@
 //! Drawing: the header, conversation, prompt box, sidebar and dialogs. The
 //! state they draw is in `app`.
-use crate::{app::App, commands::COMMANDS, mascot};
+use crate::{
+    app::App,
+    commands::{Cmd, COMMANDS},
+    mascot,
+};
 use ratatui::{
     prelude::*,
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
@@ -451,14 +455,27 @@ pub fn help_lines() -> Vec<String> {
         "Esc or F1 closes help",
     ];
     keys.into_iter()
-        .chain(COMMANDS.iter().map(|spec| spec.usage))
+        .chain(
+            COMMANDS
+                .iter()
+                .filter(|spec| spec.id != Cmd::Help)
+                .map(|spec| spec.usage),
+        )
         .chain(rest)
         .map(str::to_owned)
         .collect()
 }
 fn help(frame: &mut Frame, area: Rect) {
     let lines = help_lines();
-    let area = modal(area, 76, cells(lines.len()).saturating_add(2));
+    // Tall enough for every line as wrapped, so a narrow terminal still
+    // shows the last one.
+    let width = 76.min(area.width.saturating_sub(4));
+    let inner = usize::from(width.saturating_sub(2));
+    let rows: usize = lines
+        .iter()
+        .map(|line| crate::app::wrap(line, inner).len())
+        .sum();
+    let area = modal(area, 76, cells(rows).saturating_add(2));
     frame.render_widget(Clear, area);
     let text = lines.join("\n");
     frame.render_widget(

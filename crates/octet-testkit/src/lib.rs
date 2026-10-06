@@ -59,14 +59,20 @@ fn testkit_bin(name: &str) -> PathBuf {
     };
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let status = Command::new(cargo)
+    let status = Command::new(&cargo)
         .args(["build", "--quiet", "--locked", "-p", "octet-testkit"])
         .args(["--bin", name, "--profile", profile])
         .arg("--target-dir")
         .arg(target_dir)
-        .current_dir(workspace)
+        .current_dir(&workspace)
         .status()
-        .unwrap_or_else(|error| panic!("run cargo to build {name}: {error}"));
+        .unwrap_or_else(|error| {
+            panic!(
+                "run {} in {} to build {name}: {error}",
+                Path::new(&cargo).display(),
+                workspace.display()
+            )
+        });
     assert!(status.success(), "building {name} failed");
     profile_dir.join(name)
 }

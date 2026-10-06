@@ -78,7 +78,7 @@ pub const COMMANDS: &[Spec] = &[
     spec(
         Cmd::Goal,
         "/goal",
-        "/goal <objective> · status · pause · resume · complete (audit) · clear",
+        "/goal <objective> · status|pause|resume|complete|clear",
         "Inspect or manage an autonomous goal",
     ),
     spec(

@@ -93,6 +93,20 @@ fn an_empty_composer_gives_rows_back_to_the_conversation() {
     assert!(rows[16 - 6].starts_with(" ╭ Prompt"), "{}", rows[16 - 6]);
 }
 #[test]
+fn help_keeps_its_last_line_on_narrow_and_short_terminals() {
+    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let mut app = App::new(&config, "journal".into());
+    app.overlay.help = true;
+    for (width, height) in [(100, 30), (75, 40), (70, 40), (60, 40), (100, 32)] {
+        let rows = screen(width, height, &mut app);
+        assert!(
+            rows.iter().any(|row| row.contains("Esc or F1 closes help")),
+            "{width}x{height}:\n{}",
+            rows.join("\n")
+        );
+    }
+}
+#[test]
 fn help_names_the_command_palette_key() {
     let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
