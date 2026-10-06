@@ -567,7 +567,8 @@ mod tests {
     #[test]
     fn the_table_is_complete_and_unambiguous() {
         let names: Vec<&str> = Engine::ALL.iter().map(|e| e.as_str()).collect();
-        assert_eq!(names, ["codex", "claude", "demo"]);
+        // New rows go after these three; their order is what help shows.
+        assert_eq!(names[..3], ["codex", "claude", "demo"]);
         for engine in Engine::ALL {
             assert_eq!(Engine::parse(engine.as_str()), Some(*engine));
             assert!(engine.provider().modes.iter().all(|m| !m.is_empty()));

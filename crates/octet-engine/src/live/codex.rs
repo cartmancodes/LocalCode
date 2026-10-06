@@ -223,6 +223,10 @@ impl CodexProtocol {
             if v.get("error").is_some() {
                 return Err("Codex initialization failed".into());
             }
+            // The phase only moves forward: a repeated reply is ignored.
+            if core.phase != Phase::Starting {
+                return Ok(());
+            }
             core.phase = Phase::Handshaken;
             core.send(json!({"method":"initialized","params":{}}))
                 .await?;
@@ -245,6 +249,14 @@ impl CodexProtocol {
                 return Err(
                     format!("Codex could not open the session: {}", error_text(error)).into(),
                 );
+            }
+            // A session opened before the handshake is a protocol fault; one
+            // already open ignores a repeated reply.
+            if core.phase == Phase::Starting {
+                return Err("Unexpected protocol initialization order".into());
+            }
+            if core.phase.is_ready() {
+                return Ok(());
             }
             core.session = v
                 .pointer("/result/thread/id")

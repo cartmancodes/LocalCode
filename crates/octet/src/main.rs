@@ -1,14 +1,6 @@
 //! `octet`: parses the command line and starts the terminal interface.
 use octet_core::Config;
 use std::{io::IsTerminal, path::PathBuf};
-/// "a, b or c".
-fn or_list(items: &[&str]) -> String {
-    match items {
-        [] => String::new(),
-        [only] => (*only).to_owned(),
-        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
-    }
-}
 
 /// `--help`: fixed usage and keys, then every command from the registry.
 fn help() -> String {
@@ -129,7 +121,7 @@ async fn run() -> Result<(), String> {
             .iter()
             .map(|engine| engine.as_str())
             .collect();
-        format!("Engine must be {}", or_list(&names))
+        format!("Engine must be {}", octet_core::model::or_list(&names))
     })?;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(

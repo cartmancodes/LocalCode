@@ -100,7 +100,7 @@ scenarios are per vendor.
 | Method | Contract |
 | --- | --- |
 | `launch_args` | The CLI's arguments for `config`: model, resume ID, the permission mode at launch. |
-| `initialize` | Send the handshake. When the session is open: set `core.phase = Phase::Idle`, emit `Event::Ready` with the session ID, confirm the mode (`confirm_mode`) and emit `Event::ModeChanged`. A two-step handshake passes through `Phase::Handshaken`. |
+| `initialize` | Send the handshake. When its reply arrives (in `on_frame`): set `core.phase = Phase::Idle`, emit `Event::Ready` with the session ID, confirm the mode (`confirm_mode`) and emit `Event::ModeChanged`. A two-step handshake passes through `Phase::Handshaken`. **Only move the phase forward**: ignore a repeated reply, and treat a step that arrives early as a protocol error, as Codex and Claude do. |
 | `send_prompt` | Send the user's text. The driver has already set `Phase::InTurn` and emitted `User` and `Started`. |
 | `interrupt` | Ask the vendor to stop the turn. The driver has set `Phase::Interrupting`, and denies pending approvals after this returns. |
 | `set_mode` | Switch a live session to `target`. The driver has refused full access, an unready session, a pending switch and a no-op. Emit `Event::ModeChanged` once the vendor confirms. |

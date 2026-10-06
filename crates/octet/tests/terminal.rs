@@ -395,9 +395,7 @@ fn unknown_engine_is_a_startup_error() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("Engine must be codex, claude or demo")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains(&engine_error()));
 }
 
 #[test]
@@ -800,6 +798,11 @@ fn a_new_approval_rings_and_notifies() {
     p.finish();
 }
 
+/// The invalid-engine error, from the provider table.
+fn engine_error() -> String {
+    let names: Vec<&str> = octet_core::Engine::ALL.iter().map(|e| e.as_str()).collect();
+    format!("Engine must be {}", octet_core::model::or_list(&names))
+}
 #[test]
 fn help_and_errors_name_exactly_the_providers() {
     let names: Vec<&str> = octet_core::Engine::ALL.iter().map(|e| e.as_str()).collect();
@@ -816,7 +819,7 @@ fn help_and_errors_name_exactly_the_providers() {
         .args(["--engine", "nope"])
         .output()
         .unwrap();
-    assert!(String::from_utf8_lossy(&bad.stderr).contains("Engine must be codex, claude or demo"));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains(&engine_error()));
 }
 
 #[test]

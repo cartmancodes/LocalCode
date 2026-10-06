@@ -20,6 +20,77 @@ async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
         .unwrap()
         .unwrap()
 }
+/// A fake vendor from a shell script, in a directory that lives as long as
+/// the returned guard.
+fn script_vendor(name: &str, body: &str) -> (octet_testkit::TempDir, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = octet_testkit::TempDir::new(name);
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let path = dir.path().join("vendor");
+    std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (dir, path)
+}
+#[tokio::test]
+async fn codex_opening_the_session_before_the_handshake_is_an_error() {
+    // Codex answers thread/start (id 2) before initialize (id 1).
+    let (_dir, vendor) = script_vendor(
+        "octet-live-out-of-order",
+        "read line\n\
+         echo '{\"id\":2,\"result\":{\"thread\":{\"id\":\"t1\"}}}'\n\
+         echo '{\"id\":1,\"result\":{}}'\n\
+         exec sleep 30\n",
+    );
+    let (_handle, mut events, task) =
+        spawn(Config::new(Engine::CODEX, vendor, std::env::temp_dir()));
+    loop {
+        match next(&mut events).await {
+            Event::Error(error) => {
+                assert_eq!(error, "Unexpected protocol initialization order");
+                break;
+            }
+            Event::Ready { session } if session != "t1" => {
+                panic!("a second session opened: {session}")
+            }
+            _ => {}
+        }
+    }
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn a_repeated_claude_handshake_mid_turn_does_not_end_the_turn() {
+    let init = r#"{"type":"control_response","response":{"subtype":"success","request_id":"octet-init","response":{}}}"#;
+    let result = r#"{"type":"result","is_error":false,"result":"done","session_id":"s1"}"#;
+    let (_dir, vendor) = script_vendor(
+        "octet-live-repeated-init",
+        &format!(
+            "read line\necho '{init}'\nread line\necho '{init}'\necho '{result}'\nexec sleep 30\n"
+        ),
+    );
+    let mut config = Config::new(Engine::CLAUDE, vendor, std::env::temp_dir());
+    config.mode = Mode::Ask;
+    let (handle, mut events, task) = spawn(config);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("hello".into())).unwrap();
+    let finished = wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
+    assert!(
+        matches!(
+            finished,
+            Event::Finished {
+                outcome: Outcome::Completed
+            }
+        ),
+        "{finished:?}"
+    );
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
 #[tokio::test]
 async fn cancel_while_starting_is_cancelled() {
     // A vendor that never answers the handshake.

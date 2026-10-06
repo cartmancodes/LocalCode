@@ -357,10 +357,11 @@ impl App {
                 self.notice(entry);
             }
         }
-        self.notice(
-            "/model <ID or alias> · /model codex <ID> · /model claude <ID>\n\
-             /model default uses the provider default. Switching providers starts fresh context.",
-        );
+        let vendors = octet_core::model::vendor_names();
+        self.notice(format!(
+            "{}\n/model default uses the provider default. Switching providers starts fresh context.",
+            octet_core::model::catalog_hint(&vendors)
+        ));
         if !self.conn.models.is_empty() {
             self.chat.catalog_focus = Some((self.conn.models.len() - (page - 1) * 20).min(20) + 2);
         }

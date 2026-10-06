@@ -60,13 +60,13 @@ pub enum GoalError {
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SelectionError {
     /// No model or provider was given.
-    #[error("Use /model <name>, /model codex <name>, /model claude <name>, or /model <provider> default")]
+    #[error("{}", crate::model::usage_empty(&crate::model::vendor_names()))]
     Empty,
     /// The words do not form a model selection.
-    #[error("Use /model <name> or /model <codex|claude> <name>")]
+    #[error("{}", crate::model::usage_syntax(&crate::model::vendor_names()))]
     Syntax,
     /// The demo has no models to select.
-    #[error("Choose a real provider: /model codex or /model claude. Demo has no model.")]
+    #[error("{}", crate::model::usage_demo(&crate::model::vendor_names()))]
     Demo,
     /// The model name is empty, too long, or has control characters.
     #[error("Model must be a non-empty vendor model name, at most 256 bytes")]

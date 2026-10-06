@@ -303,7 +303,11 @@ impl ClaudeProtocol {
             if !succeeded {
                 return Err("Claude initialization failed".into());
             }
-            core.phase = Phase::Idle;
+            // The phase only moves forward: a repeated reply mid-turn must
+            // not end the turn.
+            if !core.phase.is_ready() {
+                core.phase = Phase::Idle;
+            }
             core.emit(Event::Ready {
                 session: core.config.resume.clone().unwrap_or_default(),
             })?;

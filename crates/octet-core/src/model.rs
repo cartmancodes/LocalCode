@@ -82,9 +82,88 @@ impl Selection {
         }
     }
 }
+/// The providers `/model` can select, from the provider table: every vendor,
+/// not the offline demo.
+pub fn vendor_names() -> Vec<&'static str> {
+    Engine::ALL
+        .iter()
+        .filter(|engine| engine.is_vendor())
+        .map(|engine| engine.as_str())
+        .collect()
+}
+
+/// "a, b or c".
+pub fn or_list<S: AsRef<str>>(items: &[S]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.as_ref().to_owned(),
+        [rest @ .., last] => {
+            let rest: Vec<&str> = rest.iter().map(AsRef::as_ref).collect();
+            format!("{} or {}", rest.join(", "), last.as_ref())
+        }
+    }
+}
+
+/// `/model` with no argument.
+pub(crate) fn usage_empty(vendors: &[&str]) -> String {
+    let forms: Vec<String> = vendors
+        .iter()
+        .map(|v| format!("/model {v} <name>"))
+        .collect();
+    format!(
+        "Use /model <name>, {}, or /model <provider> default",
+        forms.join(", ")
+    )
+}
+
+/// `/model` with words that do not form a selection.
+pub(crate) fn usage_syntax(vendors: &[&str]) -> String {
+    format!("Use /model <name> or /model <{}> <name>", vendors.join("|"))
+}
+
+/// `/model` asked of the offline demo.
+pub(crate) fn usage_demo(vendors: &[&str]) -> String {
+    let forms: Vec<String> = vendors.iter().map(|v| format!("/model {v}")).collect();
+    format!(
+        "Choose a real provider: {}. Demo has no model.",
+        or_list(&forms)
+    )
+}
+
+/// The catalog footer's first line.
+pub fn catalog_hint(vendors: &[&str]) -> String {
+    std::iter::once("/model <ID or alias>".to_owned())
+        .chain(vendors.iter().map(|v| format!("/model {v} <ID>")))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn usage_text_names_every_vendor() {
+        let three = ["codex", "claude", "gemini"];
+        assert_eq!(or_list(&["a"]), "a");
+        assert_eq!(or_list(&["a", "b", "c"]), "a, b or c");
+        assert_eq!(
+            usage_empty(&three),
+            "Use /model <name>, /model codex <name>, /model claude <name>, /model gemini <name>, or /model <provider> default"
+        );
+        assert_eq!(
+            usage_syntax(&three),
+            "Use /model <name> or /model <codex|claude|gemini> <name>"
+        );
+        assert_eq!(
+            usage_demo(&three),
+            "Choose a real provider: /model codex, /model claude or /model gemini. Demo has no model."
+        );
+        assert_eq!(
+            catalog_hint(&three),
+            "/model <ID or alias> · /model codex <ID> · /model claude <ID> · /model gemini <ID>"
+        );
+        assert_eq!(vendor_names(), ["codex", "claude"]);
+    }
     fn config() -> Config {
         Config {
             model: Some("old".into()),
