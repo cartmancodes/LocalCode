@@ -12,6 +12,8 @@ mod codex;
 mod demo;
 mod driver;
 mod mode;
+pub use claude::claude_stray_reply;
+pub use codex::codex_stray_reply;
 use demo::demo;
 use driver::vendor;
 pub use mode::Mode;

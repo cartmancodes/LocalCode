@@ -328,7 +328,7 @@ pub(super) fn codex_tool_detail(item: &Value, phase: &str) -> String {
     limited(&text)
 }
 /// Codex counterpart of `claude_stray_reply`.
-pub(super) fn codex_stray_reply(value: &Value) -> Option<Value> {
+pub fn codex_stray_reply(value: &Value) -> Option<Value> {
     let id = value.get("id")?;
     Some(match value.get("method")?.as_str()? {
         "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {

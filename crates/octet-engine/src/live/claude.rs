@@ -291,7 +291,7 @@ pub(super) fn switch_reply_mode(
 /// Reply to a Claude control request the driver will not put in front of the
 /// user: a permission request outside an active turn is denied, anything else
 /// is reported as unsupported. The deny text is shown to the model.
-pub(super) fn claude_stray_reply(value: &Value) -> Option<Value> {
+pub fn claude_stray_reply(value: &Value) -> Option<Value> {
     if value.get("type")?.as_str()? != "control_request" {
         return None;
     }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/octet-proc", "crates/octet-testkit", "crates/octet-engine", "crates/octet-store", "crates/octet-core", "crates/octet-tui", "crates/octet"]
+members = ["crates/octet-proc", "crates/octet-testkit", "crates/octet-engine", "crates/octet-gate", "crates/octet-store", "crates/octet-core", "crates/octet-tui", "crates/octet"]
 resolver = "2"
 
 [workspace.package]

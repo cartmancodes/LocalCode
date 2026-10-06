@@ -1,7 +1,6 @@
-use octet_engine::{
+use octet_gate::{
     claude_fixture_allow, claude_fixture_hook_response, claude_fixture_mcp_response,
-    claude_fixture_mcp_tool_allow, claude_response_for_request, codex_fixture_allow,
-    codex_fixture_user_input, codex_response_for_request,
+    claude_fixture_mcp_tool_allow, codex_fixture_allow, codex_fixture_user_input,
 };
 use serde_json::json;
 use std::path::Path;
@@ -28,7 +27,7 @@ fn codex_approval_decisions_are_scoped_to_fixture_command() {
         "accept"
     );
     assert_eq!(
-        codex_response_for_request(&request).unwrap()["result"]["decision"],
+        octet_engine::live::codex_stray_reply(&request).unwrap()["result"]["decision"],
         "decline"
     );
     let wrong_path = json!({"id":0,"method":"item/commandExecution/requestApproval","params":{"command":"/bin/zsh -lc 'printf READY > probe.out'","cwd":"/tmp/other"}});
@@ -57,7 +56,7 @@ fn claude_approval_retains_request_id_and_original_input() {
         allowed["response"]["response"]["updatedInput"],
         request["request"]["input"]
     );
-    let denied = claude_response_for_request(&request).unwrap();
+    let denied = octet_engine::live::claude_stray_reply(&request).unwrap();
     assert_eq!(denied["response"]["response"]["behavior"], "deny");
     assert!(claude_fixture_mcp_tool_allow(&request).is_none());
     let target = cwd.canonicalize().unwrap().join("probe.out");
@@ -106,7 +105,7 @@ fn sdk_mcp_initialize_list_call_and_notification_ack() {
 
 #[test]
 fn permissions_denial_is_an_empty_profile_not_an_array() {
-    let reply = codex_response_for_request(
+    let reply = octet_engine::live::codex_stray_reply(
         &json!({"id":91,"method":"item/permissions/requestApproval","params":{}}),
     )
     .unwrap();
