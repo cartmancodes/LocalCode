@@ -29,23 +29,24 @@ pub(crate) async fn off_loop<T: Send + 'static>(
 pub(crate) fn palette_key(app: &mut App, key: &str) -> Action {
     match key {
         "Ctrl+G" => {
-            app.completion = None;
+            app.composer.completion = None;
             return Action::ExternalEditor;
         }
         "@" => {
-            let after_word = app.editor.text[..app.editor.cursor]
+            let after_word = app.composer.editor.text[..app.composer.editor.cursor]
                 .chars()
                 .next_back()
                 .is_some_and(|c| !c.is_whitespace());
             let mention = if after_word { " @" } else { "@" };
             if app.insert_or_warn(mention) {
-                if let Some((start, _)) = composer::mention_at(&app.editor.text, app.editor.cursor)
+                if let Some((start, _)) =
+                    composer::mention_at(&app.composer.editor.text, app.composer.editor.cursor)
                 {
                     open_mentions(app, start);
                 }
             }
         }
-        _ if app.editor.text.is_empty() => app.editor.set("!".into()),
+        _ if app.composer.editor.text.is_empty() => app.composer.editor.set("!".into()),
         _ => app.notice = "Clear the prompt to start a ! command".into(),
     }
     Action::Continue
@@ -53,10 +54,10 @@ pub(crate) fn palette_key(app: &mut App, key: &str) -> Action {
 /// Opens the `@` popup for the mention starting at `start`, asking for the
 /// index on first use.
 pub(crate) fn open_mentions(app: &mut App, start: usize) {
-    if matches!(app.files, files::Files::Unbuilt) {
-        app.files = files::Files::Wanted;
+    if matches!(app.composer.files, files::Files::Unbuilt) {
+        app.composer.files = files::Files::Wanted;
     }
-    app.completion = Some(composer::Completion {
+    app.composer.completion = Some(composer::Completion {
         kind: composer::Kind::File,
         items: Vec::new(),
         selected: 0,
@@ -67,15 +68,15 @@ pub(crate) fn open_mentions(app: &mut App, start: usize) {
 /// Re-ranks the `@` popup for the current draft, closing it when the cursor
 /// has left the mention.
 pub(crate) fn refresh_completion(app: &mut App) {
-    let Some(completion) = app.completion.as_mut() else {
+    let Some(completion) = app.composer.completion.as_mut() else {
         return;
     };
     if completion.kind != composer::Kind::File {
         return;
     }
-    match composer::mention_at(&app.editor.text, app.editor.cursor) {
+    match composer::mention_at(&app.composer.editor.text, app.composer.editor.cursor) {
         Some((start, query)) if start == completion.start => {
-            completion.items = match &app.files {
+            completion.items = match &app.composer.files {
                 files::Files::Ready(index) => {
                     index.rank(query).into_iter().map(str::to_owned).collect()
                 }
@@ -85,12 +86,12 @@ pub(crate) fn refresh_completion(app: &mut App) {
                 .selected
                 .min(completion.items.len().saturating_sub(1));
         }
-        _ => app.completion = None,
+        _ => app.composer.completion = None,
     }
 }
 /// Puts the selected suggestion into the draft and closes the popup.
 pub(crate) fn accept_completion(app: &mut App) {
-    let Some(completion) = app.completion.take() else {
+    let Some(completion) = app.composer.completion.take() else {
         return;
     };
     let Some(item) = completion.items.get(completion.selected) else {
@@ -127,20 +128,21 @@ pub(crate) fn size_label(bytes: usize) -> String {
 }
 /// Pasted text goes into the draft unless a dialog has focus.
 pub(crate) fn paste(app: &mut App, value: &str) {
-    if app.approvals.is_empty()
-        && !app.help
-        && !app.palette
-        && !app.editor.insert(&text::clean(value))
+    if app.overlay.approvals.is_empty()
+        && !app.overlay.help
+        && !app.overlay.palette
+        && !app.composer.editor.insert(&text::clean(value))
     {
         app.notice = "Paste exceeds the 64 KiB prompt limit; draft preserved".into();
     }
     // The file popup follows the pasted text; path and command popups close.
     if app
+        .composer
         .completion
         .as_ref()
         .is_some_and(|completion| completion.kind != composer::Kind::File)
     {
-        app.completion = None;
+        app.composer.completion = None;
     }
     refresh_completion(app);
 }
@@ -155,17 +157,17 @@ pub(crate) async fn key_action(app: &mut App, session: &Session, key: KeyEvent) 
     if ctrl(key, 'z') {
         return Action::Suspend;
     }
-    if app.help {
+    if app.overlay.help {
         help_key(app, key);
         return Action::Continue;
     }
     // Approval keys never leak into the composer. A queued modal takes priority.
-    if let Some((id, _)) = app.approvals.front() {
+    if let Some((id, _)) = app.overlay.approvals.front() {
         let id = *id;
         approval_key(app, session, key, id).await;
         return Action::Continue;
     }
-    if app.palette {
+    if app.overlay.palette {
         return palette_press(app, key).await;
     }
     if let Some(action) = completion_key(app, key) {
@@ -180,7 +182,7 @@ fn ctrl(key: KeyEvent, c: char) -> bool {
 fn help_key(app: &mut App, key: KeyEvent) {
     let ctrl_c = ctrl(key, 'c');
     if matches!(key.code, KeyCode::Esc | KeyCode::F(1)) || ctrl_c {
-        app.help = false;
+        app.overlay.help = false;
     }
 }
 async fn approval_key(app: &mut App, session: &Session, key: KeyEvent, id: u64) {
@@ -193,15 +195,15 @@ async fn approval_key(app: &mut App, session: &Session, key: KeyEvent, id: u64) 
     if let Some(allow) = answer {
         match session.handle.send(Command::Answer { id, allow }) {
             Ok(()) => {
-                app.approvals.pop_front();
-                app.approval_scroll = 0;
+                app.overlay.approvals.pop_front();
+                app.overlay.approval_scroll = 0;
             }
             Err(error) => app.notice = error.to_string(),
         }
     } else if key.code == KeyCode::PageDown {
-        app.approval_scroll = app.approval_scroll.saturating_add(8);
+        app.overlay.approval_scroll = app.overlay.approval_scroll.saturating_add(8);
     } else if key.code == KeyCode::PageUp {
-        app.approval_scroll = app.approval_scroll.saturating_sub(8);
+        app.overlay.approval_scroll = app.overlay.approval_scroll.saturating_sub(8);
     } else if ctrl_c {
         cancel_turn(app, session).await;
     }
@@ -209,18 +211,22 @@ async fn approval_key(app: &mut App, session: &Session, key: KeyEvent, id: u64) 
 async fn palette_press(app: &mut App, key: KeyEvent) -> Action {
     let ctrl_c = ctrl(key, 'c');
     match key.code {
-        _ if ctrl_c => app.palette = false,
-        KeyCode::Esc => app.palette = false,
-        KeyCode::Up => app.selection = app.selection.saturating_sub(1),
+        _ if ctrl_c => app.overlay.palette = false,
+        KeyCode::Esc => app.overlay.palette = false,
+        KeyCode::Up => app.overlay.selection = app.overlay.selection.saturating_sub(1),
         KeyCode::Down => {
-            app.selection = (app.selection + 1).min(view::palette_entries().count() - 1)
+            app.overlay.selection =
+                (app.overlay.selection + 1).min(view::palette_entries().count() - 1)
         }
         KeyCode::Enter => {
-            app.palette = false;
-            if let Some(spec) = COMMANDS.get(app.selection) {
+            app.overlay.palette = false;
+            if let Some(spec) = COMMANDS.get(app.overlay.selection) {
                 return command(app, spec.name).await;
             }
-            return palette_key(app, view::PALETTE_KEYS[app.selection - COMMANDS.len()].0);
+            return palette_key(
+                app,
+                view::PALETTE_KEYS[app.overlay.selection - COMMANDS.len()].0,
+            );
         }
         _ => {}
     }
@@ -228,7 +234,7 @@ async fn palette_press(app: &mut App, key: KeyEvent) -> Action {
 }
 /// Keys an open popup takes; `None` lets the key reach the draft.
 fn completion_key(app: &mut App, key: KeyEvent) -> Option<Action> {
-    let completion = app.completion.as_mut()?;
+    let completion = app.composer.completion.as_mut()?;
     match key.code {
         KeyCode::Up => completion.selected = completion.selected.saturating_sub(1),
         KeyCode::Down => {
@@ -236,12 +242,12 @@ fn completion_key(app: &mut App, key: KeyEvent) -> Option<Action> {
                 (completion.selected + 1).min(completion.items.len().saturating_sub(1));
         }
         KeyCode::Tab | KeyCode::Enter => accept_completion(app),
-        KeyCode::Esc => app.completion = None,
+        KeyCode::Esc => app.composer.completion = None,
         // Path and command popups close on any other key; the file popup
         // follows the edit below.
         _ => {
             if completion.kind != composer::Kind::File {
-                app.completion = None;
+                app.composer.completion = None;
             }
             return None;
         }
@@ -262,28 +268,28 @@ async fn composer_key(
         && (alt || key.modifiers.contains(KeyModifiers::SHIFT)))
         || (ctrl && key.code == KeyCode::Char('j'));
     match key.code {
-        KeyCode::F(1) => app.help = true,
+        KeyCode::F(1) => app.overlay.help = true,
         KeyCode::BackTab => return cycle_mode(app),
-        KeyCode::Char('p') if ctrl => app.palette = true,
+        KeyCode::Char('p') if ctrl => app.overlay.palette = true,
         KeyCode::Char('x') if ctrl => copy_reply(app),
         KeyCode::Char('g') if ctrl => {
             // The edited draft must not meet a popup about the old one.
-            app.completion = None;
+            app.composer.completion = None;
             return Action::ExternalEditor;
         }
         KeyCode::Char('u') if ctrl => {
-            app.editor.take();
+            app.composer.editor.take();
         }
         // Like Claude Code: stop what runs, else clear the draft, else ask
         // for a second press within the window to quit.
         KeyCode::Char('c') if ctrl => {
-            if app.shell_running {
+            if app.composer.shell_running {
                 return Action::CancelShell;
             } else if app.is_busy() {
                 cancel_turn(app, session).await;
                 app.notice = CANCELLING.into();
-            } else if !app.editor.text.is_empty() {
-                app.editor.take();
+            } else if !app.composer.editor.text.is_empty() {
+                app.composer.editor.take();
             } else if quit_armed.is_some_and(|deadline| Instant::now() < deadline) {
                 return Action::Exit(Exit::Quit);
             } else {
@@ -292,16 +298,16 @@ async fn composer_key(
             }
         }
         KeyCode::Esc => {
-            if app.shell_running {
+            if app.composer.shell_running {
                 return Action::CancelShell;
             } else if app.is_busy() {
                 cancel_turn(app, session).await;
                 app.notice = CANCELLING.into();
-            } else if app.editor.text.is_empty() && !app.attachments.is_empty() {
-                app.attachments.clear();
+            } else if app.composer.editor.text.is_empty() && !app.composer.attachments.is_empty() {
+                app.composer.attachments.clear();
                 app.notice = "Attachments removed".into();
             } else {
-                app.scroll = 0;
+                app.chat.scroll = 0;
             }
         }
         KeyCode::PageUp => app.scroll_by(10),
@@ -311,7 +317,7 @@ async fn composer_key(
             app.insert_or_warn("\n");
         }
         KeyCode::Enter => {
-            let draft = app.editor.text.trim().to_owned();
+            let draft = app.composer.editor.text.trim().to_owned();
             if draft.is_empty() {
                 return Action::Continue;
             }
@@ -324,12 +330,12 @@ async fn composer_key(
                     app.notice = "Type a command after !".into();
                     return Action::Continue;
                 }
-                if app.shell_running {
+                if app.composer.shell_running {
                     app.notice = "A command is already running".into();
                     return Action::Continue;
                 }
                 let command = command.to_owned();
-                app.editor.take();
+                app.composer.editor.take();
                 app.remember(draft);
                 return Action::RunShell { command, attach };
             }
@@ -342,21 +348,24 @@ async fn composer_key(
             if draft.starts_with('/') && draft != "/approval-demo" && !path_like {
                 return match try_command(app, &draft).await {
                     Some(action) => {
-                        app.editor.take();
+                        app.composer.editor.take();
                         action
                     }
                     None => Action::Continue,
                 };
             }
-            if !app.ready || app.running || app.stopped {
+            if !app.conn.ready || app.conn.running || app.conn.stopped {
                 app.notice = "Wait for the current turn, press Esc to cancel, or /reconnect".into();
                 return Action::Continue;
             }
-            let command = if app.attachments.is_empty() {
+            let command = if app.composer.attachments.is_empty() {
                 Command::Prompt(draft.clone())
             } else {
-                let (wire, display) =
-                    composer::with_attachments(&draft, &app.attachments, octet_core::PROMPT_LIMIT);
+                let (wire, display) = composer::with_attachments(
+                    &draft,
+                    &app.composer.attachments,
+                    octet_core::PROMPT_LIMIT,
+                );
                 if wire.len().max(display.len()) > octet_core::PROMPT_LIMIT {
                     app.notice = "The prompt and its attachments are over 64 KiB. \
                                   Shorten the prompt, or press Esc on an empty prompt to drop them"
@@ -367,30 +376,37 @@ async fn composer_key(
             };
             match session.handle.send(command) {
                 Ok(()) => {
-                    app.attachments.clear();
+                    app.composer.attachments.clear();
                     app.goals.user_prompt_sent();
-                    app.editor.take();
-                    app.running = true;
-                    app.status = "sending".into();
+                    app.composer.editor.take();
+                    app.conn.running = true;
+                    app.conn.status = "sending".into();
                     app.remember(draft);
                 }
                 Err(error) => app.notice = error.to_string(),
             }
         }
-        KeyCode::Up if app.editor.text.contains('\n') => app.editor.vertical(false),
-        KeyCode::Down if app.editor.text.contains('\n') => app.editor.vertical(true),
+        KeyCode::Up if app.composer.editor.text.contains('\n') => {
+            app.composer.editor.vertical(false)
+        }
+        KeyCode::Down if app.composer.editor.text.contains('\n') => {
+            app.composer.editor.vertical(true)
+        }
         KeyCode::Up => app.recall(true),
         KeyCode::Down => app.recall(false),
-        KeyCode::Left => app.editor.left(),
-        KeyCode::Right => app.editor.right(),
-        KeyCode::Home => app.editor.home(),
-        KeyCode::End => app.editor.end(),
-        KeyCode::Backspace => app.editor.backspace(),
-        KeyCode::Delete => app.editor.delete(),
+        KeyCode::Left => app.composer.editor.left(),
+        KeyCode::Right => app.composer.editor.right(),
+        KeyCode::Home => app.composer.editor.home(),
+        KeyCode::End => app.composer.editor.end(),
+        KeyCode::Backspace => app.composer.editor.backspace(),
+        KeyCode::Delete => app.composer.editor.delete(),
         KeyCode::Tab => {
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            let (text, cursor, root) =
-                (app.editor.text.clone(), app.editor.cursor, app.root.clone());
+            let (text, cursor, root) = (
+                app.composer.editor.text.clone(),
+                app.composer.editor.cursor,
+                app.composer.root.clone(),
+            );
             let tab = off_loop(TAB_WAIT, move || {
                 composer::tab(&text, cursor, &root, home.as_deref())
             })
@@ -401,10 +417,10 @@ async fn composer_key(
             }) {
                 composer::Tab::Replace { start, text, popup } => {
                     if app.replace_or_warn(start, &text) {
-                        app.completion = popup;
+                        app.composer.completion = popup;
                     }
                 }
-                composer::Tab::Popup(completion) => app.completion = Some(completion),
+                composer::Tab::Popup(completion) => app.composer.completion = Some(completion),
                 composer::Tab::Mention(start) => open_mentions(app, start),
                 composer::Tab::Nothing => {}
             }
@@ -414,8 +430,10 @@ async fn composer_key(
         }
         _ => {}
     }
-    if key.code == KeyCode::Char('@') && app.completion.is_none() {
-        if let Some((start, "")) = composer::mention_at(&app.editor.text, app.editor.cursor) {
+    if key.code == KeyCode::Char('@') && app.composer.completion.is_none() {
+        if let Some((start, "")) =
+            composer::mention_at(&app.composer.editor.text, app.composer.editor.cursor)
+        {
             open_mentions(app, start);
         }
     }
@@ -430,12 +448,12 @@ pub(crate) async fn cancel_turn(app: &mut App, session: &Session) {
     session.handle.interrupt();
 }
 pub(crate) fn cycle_mode(app: &mut App) -> Action {
-    if app.mode == octet_core::Mode::FullAccess {
+    if app.conn.mode == octet_core::Mode::FullAccess {
         app.notice = "Use /mode to leave full access".into();
-    } else if app.mode_pending.is_some() {
+    } else if app.conn.mode_pending.is_some() {
         app.notice = "Mode change pending; wait for the vendor to confirm".into();
     } else {
-        return Action::SetMode(app.mode.cycle());
+        return Action::SetMode(app.conn.mode.cycle());
     }
     Action::Continue
 }

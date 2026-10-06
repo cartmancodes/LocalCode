@@ -30,14 +30,14 @@ fn card(title: &str) -> Block<'_> {
         .title(Span::styled(title, Style::default().fg(MUTED)))
 }
 fn mode_chip(app: &App) -> Span<'static> {
-    let color = match app.mode {
+    let color = match app.conn.mode {
         octet_core::Mode::Ask => MUTED,
         octet_core::Mode::AcceptEdits | octet_core::Mode::Auto => ACCENT,
         octet_core::Mode::FullAccess => AMBER,
     };
-    let text = match app.mode_pending {
+    let text = match app.conn.mode_pending {
         Some(pending) => format!("{}…", pending.label()),
-        None => app.mode.label().to_owned(),
+        None => app.conn.mode.label().to_owned(),
     };
     Span::styled(text, Style::default().fg(color).bold())
 }
@@ -56,7 +56,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     // Laid out once per frame: its row count sizes the composer, and its
     // lines and cursor are drawn there.
-    let draft = app.editor.layout(draft_width(area.width));
+    let draft = app.composer.editor.layout(draft_width(area.width));
     let regions = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(3),
@@ -75,22 +75,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn header(frame: &mut Frame, area: Rect, app: &App) {
     let status = format!(
         "● {}",
-        if app.approvals.is_empty() {
-            app.status.as_str()
+        if app.overlay.approvals.is_empty() {
+            app.conn.status.as_str()
         } else {
             "approval needed"
         }
     );
     // Status and usage keep the right edge, sized to their text so a narrow
     // terminal never cuts them; the banner takes the rest.
-    let status_width = cells(status.width().max(app.usage.width())).clamp(12, 22);
+    let status_width = cells(status.width().max(app.conn.usage.width())).clamp(12, 22);
     let header = Layout::horizontal([Constraint::Min(6), Constraint::Length(status_width)])
         .spacing(1)
         .split(area);
     banner(frame, header[0], app);
-    let status_color = if !app.approvals.is_empty() {
+    let status_color = if !app.overlay.approvals.is_empty() {
         AMBER
-    } else if app.stopped {
+    } else if app.conn.stopped {
         MUTED
     } else {
         ACCENT
@@ -98,7 +98,10 @@ fn header(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(status, Style::default().fg(status_color))),
-            Line::from(Span::styled(app.usage.clone(), Style::default().fg(MUTED))),
+            Line::from(Span::styled(
+                app.conn.usage.clone(),
+                Style::default().fg(MUTED),
+            )),
         ])
         .alignment(Alignment::Right),
         header[1],
@@ -116,15 +119,15 @@ fn conversation(frame: &mut Frame, area: Rect, width: u16, app: &mut App) {
     let transcript = columns[0];
     // Before the first message the conversation area stays blank, reserved
     // for what the conversation will fill.
-    if !app.entries.is_empty() {
-        let block = card(if app.scroll > 0 {
+    if !app.chat.entries.is_empty() {
+        let block = card(if app.chat.scroll > 0 {
             " Conversation · scrollback "
         } else {
             " Conversation "
         });
         let inner = block.inner(transcript);
         frame.render_widget(block, transcript);
-        let lines = app.transcript(inner.width.saturating_sub(2), inner.height as usize);
+        let lines = app.visible_lines(inner.width.saturating_sub(2), inner.height as usize);
         frame.render_widget(
             Paragraph::new(lines),
             Rect {
@@ -146,17 +149,20 @@ fn composer(
     app: &App,
     draft: (Vec<String>, (usize, usize)),
 ) -> (u16, u16) {
-    let base = if app.running {
+    let base = if app.conn.running {
         " Compose next prompt · wait or Esc to cancel "
     } else {
         " Prompt "
     };
-    let title = match crate::composer::chip(&app.attachments) {
+    let title = match crate::composer::chip(&app.composer.attachments) {
         Some(chip) => format!("{} · {chip} ", base.trim_end()),
         None => base.to_owned(),
     };
-    let composer =
-        card(&title).border_style(Style::default().fg(if app.running { EDGE } else { ACCENT }));
+    let composer = card(&title).border_style(Style::default().fg(if app.conn.running {
+        EDGE
+    } else {
+        ACCENT
+    }));
     let inner = composer.inner(area);
     frame.render_widget(composer, area);
     // The hint line takes the last row only when the draft keeps one; at
@@ -170,7 +176,7 @@ fn composer(
     };
     let (lines, (col, row)) = draft;
     let offset = row.saturating_sub(input.height.saturating_sub(1) as usize);
-    if app.editor.text.is_empty() {
+    if app.composer.editor.text.is_empty() {
         frame.render_widget(
             Paragraph::new("Ask about this workspace, describe a change, or type /help…")
                 .style(Style::default().fg(MUTED)),
@@ -214,7 +220,7 @@ fn composer(
 fn status_line(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(if app.notice.is_empty() {
-            if app.engine == octet_core::Engine::Demo {
+            if app.conn.engine == octet_core::Engine::Demo {
                 " Offline demo · no model calls   |   Ctrl+C twice to quit".into()
             } else {
                 " Journal saved locally   |   F1 help   |   Ctrl+C twice to quit".into()
@@ -228,18 +234,18 @@ fn status_line(frame: &mut Frame, area: Rect, app: &App) {
 }
 /// Help, the palette or an approval over everything; else the cursor.
 fn overlays(frame: &mut Frame, area: Rect, app: &App, cursor: (u16, u16)) {
-    if app.help {
+    if app.overlay.help {
         help(frame, area);
-    } else if app.palette {
-        palette(frame, area, app.selection);
-    } else if let Some((id, detail)) = app.approvals.front() {
+    } else if app.overlay.palette {
+        palette(frame, area, app.overlay.selection);
+    } else if let Some((id, detail)) = app.overlay.approvals.front() {
         approval(
             frame,
             area,
             *id,
             detail,
-            app.approval_scroll,
-            app.approvals.len(),
+            app.overlay.approval_scroll,
+            app.overlay.approvals.len(),
         );
     } else {
         frame.set_cursor_position(cursor);
@@ -247,7 +253,7 @@ fn overlays(frame: &mut Frame, area: Rect, app: &App, cursor: (u16, u16)) {
 }
 /// The `@`, path or command suggestions, just above the prompt box.
 fn completion_popup(frame: &mut Frame, composer: Rect, app: &App) {
-    let Some(completion) = &app.completion else {
+    let Some(completion) = &app.composer.completion else {
         return;
     };
     let mut lines: Vec<Line> = completion
@@ -265,7 +271,7 @@ fn completion_popup(frame: &mut Frame, composer: Rect, app: &App) {
         })
         .collect();
     if lines.is_empty() {
-        let message = match (&completion.kind, &app.files) {
+        let message = match (&completion.kind, &app.composer.files) {
             (crate::composer::Kind::File, crate::files::Files::Ready(_)) => " No matching files",
             (crate::composer::Kind::File, _) => " Indexing files…",
             _ => " No matches",
@@ -275,7 +281,7 @@ fn completion_popup(frame: &mut Frame, composer: Rect, app: &App) {
             Style::default().fg(MUTED),
         )));
     }
-    if let crate::files::Files::Ready(index) = &app.files {
+    if let crate::files::Files::Ready(index) = &app.composer.files {
         if index.capped && completion.kind == crate::composer::Kind::File {
             lines.push(Line::from(Span::styled(
                 " Indexed the first 50,000 files",
@@ -335,14 +341,14 @@ fn banner(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             mode_chip(app),
             Span::styled(
-                format!("  ·  {}  /  {}", app.engine, app.model),
+                format!("  ·  {}  /  {}", app.conn.engine, app.conn.model),
                 Style::default().fg(MUTED),
             ),
         ]),
         Line::from(vec![
             Span::styled(app.mascot_state().label(), Style::default().fg(ACCENT)),
             Span::styled(
-                format!("  ·  {}", app.workspace),
+                format!("  ·  {}", app.conn.workspace),
                 Style::default().fg(MUTED),
             ),
         ]),
@@ -368,18 +374,18 @@ fn sidebar(frame: &mut Frame, area: Rect, app: &App) {
     let block = card(" Workspace ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let id = if app.session.is_empty() {
+    let id = if app.conn.session.is_empty() {
         "Waiting for session…"
     } else {
-        app.session.as_str()
+        app.conn.session.as_str()
     };
     let mut lines = vec![
         Line::default(),
         Line::from(Span::styled(" ENGINE", Style::default().fg(MUTED))),
-        Line::from(format!(" {}", app.engine)),
+        Line::from(format!(" {}", app.conn.engine)),
         Line::default(),
         Line::from(Span::styled(" MODEL", Style::default().fg(MUTED))),
-        Line::from(format!(" {}", app.model)),
+        Line::from(format!(" {}", app.conn.model)),
         Line::from(" /session for full details"),
         Line::default(),
         Line::from(Span::styled(" SESSION", Style::default().fg(MUTED))),

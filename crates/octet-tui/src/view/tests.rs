@@ -13,7 +13,7 @@ fn screen(width: u16, height: u16, app: &mut App) -> Vec<String> {
 fn following_the_latest_cancels_a_pending_catalog_scroll() {
     let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
-    app.models = (0..30)
+    app.conn.models = (0..30)
         .map(|i| octet_core::ModelInfo {
             selection: format!("m{i}"),
             id: Some(format!("m{i}")),
@@ -24,13 +24,16 @@ fn following_the_latest_cancels_a_pending_catalog_scroll() {
     app.show_models(1);
     app.follow_latest();
     screen(120, 36, &mut app);
-    assert_eq!(app.scroll, 0, "Ctrl+End before the next frame still wins");
+    assert_eq!(
+        app.chat.scroll, 0,
+        "Ctrl+End before the next frame still wins"
+    );
 }
 #[test]
 fn the_popup_keeps_the_selected_row_in_sight_on_a_short_screen() {
     let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
-    app.completion = Some(crate::composer::Completion {
+    app.composer.completion = Some(crate::composer::Completion {
         kind: crate::composer::Kind::File,
         items: (0..8).map(|i| format!("file{i}.rs")).collect(),
         selected: 7,
@@ -47,7 +50,7 @@ fn the_popup_keeps_the_selected_row_in_sight_on_a_short_screen() {
 fn the_popup_lists_suggestions_above_the_prompt() {
     let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
-    app.completion = Some(crate::composer::Completion {
+    app.composer.completion = Some(crate::composer::Completion {
         kind: crate::composer::Kind::File,
         items: vec!["src/main.rs".into(), "src/model.rs".into()],
         selected: 1,
@@ -56,7 +59,7 @@ fn the_popup_lists_suggestions_above_the_prompt() {
     let rows = screen(100, 30, &mut app);
     assert!(rows.iter().any(|row| row.contains("   src/main.rs")));
     assert!(rows.iter().any(|row| row.contains(" › src/model.rs")));
-    app.completion.as_mut().unwrap().items.clear();
+    app.composer.completion.as_mut().unwrap().items.clear();
     let rows = screen(100, 30, &mut app);
     assert!(rows.iter().any(|row| row.contains("Indexing files…")));
 }
@@ -93,7 +96,7 @@ fn an_empty_composer_gives_rows_back_to_the_conversation() {
 fn help_names_the_command_palette_key() {
     let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
-    app.help = true;
+    app.overlay.help = true;
     let rows = screen(100, 32, &mut app);
     assert!(
         rows.iter().any(|row| row.contains("Ctrl+P commands")),
@@ -106,7 +109,7 @@ fn help_names_the_command_palette_key() {
 fn the_draft_shows_at_the_minimum_size() {
     let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
-    assert!(app.editor.insert("VISIBLE"));
+    assert!(app.composer.editor.insert("VISIBLE"));
     for width in [38, 80] {
         let rows = screen(width, 12, &mut app);
         assert!(
@@ -120,7 +123,7 @@ fn the_draft_shows_at_the_minimum_size() {
 fn the_palette_shows_every_command_and_its_keys() {
     let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
-    app.palette = true;
+    app.overlay.palette = true;
     let rows = screen(80, 24, &mut app);
     let mut columns = Vec::new();
     for (name, description) in palette_entries() {
@@ -320,12 +323,12 @@ fn composer_grows_with_the_draft() {
     let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     assert_eq!(
-        composer_height(app.editor.layout(draft_width(80)).0.len()),
+        composer_height(app.composer.editor.layout(draft_width(80)).0.len()),
         4
     );
-    assert!(app.editor.insert("one\ntwo\nthree"));
+    assert!(app.composer.editor.insert("one\ntwo\nthree"));
     assert_eq!(
-        composer_height(app.editor.layout(draft_width(80)).0.len()),
+        composer_height(app.composer.editor.layout(draft_width(80)).0.len()),
         6
     );
 }
@@ -334,9 +337,9 @@ fn composer_counts_wrapped_rows() {
     let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     // 80 columns leave 74 for text: 100 characters wrap onto a second row.
-    assert!(app.editor.insert(&"x".repeat(100)));
+    assert!(app.composer.editor.insert(&"x".repeat(100)));
     assert_eq!(
-        composer_height(app.editor.layout(draft_width(80)).0.len()),
+        composer_height(app.composer.editor.layout(draft_width(80)).0.len()),
         5
     );
 }
@@ -344,9 +347,9 @@ fn composer_counts_wrapped_rows() {
 fn composer_height_is_capped() {
     let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
-    assert!(app.editor.insert(&"line\n".repeat(40)));
+    assert!(app.composer.editor.insert(&"line\n".repeat(40)));
     assert_eq!(
-        composer_height(app.editor.layout(draft_width(80)).0.len()),
+        composer_height(app.composer.editor.layout(draft_width(80)).0.len()),
         7
     );
 }
@@ -376,6 +379,7 @@ mod model_detail_tests {
         a.event(Event::ModelSelected(id.clone()));
         a.show_models(1);
         let details = a
+            .chat
             .entries
             .iter()
             .map(|e| e.text.as_str())
@@ -388,8 +392,8 @@ mod model_detail_tests {
             &octet_core::Config::new(octet_core::Engine::Codex, "codex", "/tmp"),
             "/tmp/new".into(),
         );
-        assert!(a.models.is_empty());
-        assert!(a.resolved_model.is_none());
+        assert!(a.conn.models.is_empty());
+        assert!(a.conn.resolved_model.is_none());
         assert!(!a.model_details().contains(&id));
     }
     #[test]
@@ -407,7 +411,7 @@ mod model_detail_tests {
         ));
         a.show_models(13);
         let visible = a
-            .transcript(72, 12)
+            .visible_lines(72, 12)
             .iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
@@ -415,27 +419,42 @@ mod model_detail_tests {
         assert!(visible.contains("claude catalog"));
         assert!(visible.contains("256 entries"));
         assert!(visible.contains("Name 240"));
-        assert!(a.scroll > 0);
-        assert!(a.entries.iter().any(|e| e.text.contains("full-id-255")));
+        assert!(a.chat.scroll > 0);
         assert!(a
+            .chat
+            .entries
+            .iter()
+            .any(|e| e.text.contains("full-id-255")));
+        assert!(a
+            .chat
             .entries
             .iter()
             .any(|e| e.text.contains("Requested selection")));
-        assert!(!a.entries.iter().any(|e| e.text.contains("full-id-0\n")));
-        let count = a.entries.len();
+        assert!(!a
+            .chat
+            .entries
+            .iter()
+            .any(|e| e.text.contains("full-id-0\n")));
+        let count = a.chat.entries.len();
         a.show_models(usize::MAX);
-        assert_eq!(a.entries.len(), count + 1);
+        assert_eq!(a.chat.entries.len(), count + 1);
     }
     #[test]
     fn stopped_session_clears_pending_mode() {
         let c = octet_core::Config::new(octet_core::Engine::Claude, "claude", "/tmp");
         let mut a = App::new(&c, "journal".into());
-        a.mode_pending = Some(octet_core::Mode::Auto);
+        a.conn.mode_pending = Some(octet_core::Mode::Auto);
         a.event(Event::ModeChanged(octet_core::Mode::Auto));
-        assert_eq!((a.mode, a.mode_pending), (octet_core::Mode::Auto, None));
-        a.mode_pending = Some(octet_core::Mode::Ask);
+        assert_eq!(
+            (a.conn.mode, a.conn.mode_pending),
+            (octet_core::Mode::Auto, None)
+        );
+        a.conn.mode_pending = Some(octet_core::Mode::Ask);
         a.event(Event::Stopped);
-        assert_eq!((a.mode, a.mode_pending), (octet_core::Mode::Auto, None));
+        assert_eq!(
+            (a.conn.mode, a.conn.mode_pending),
+            (octet_core::Mode::Auto, None)
+        );
     }
     #[test]
     fn header_shows_confirmed_and_pending_mode() {
@@ -456,7 +475,7 @@ mod model_detail_tests {
         t.draw(|f| draw(f, &mut a)).unwrap();
         assert!(screen(&t).contains("auto"));
         assert_eq!(mode_chip(&a).style.fg, Some(ACCENT));
-        a.mode_pending = Some(octet_core::Mode::Ask);
+        a.conn.mode_pending = Some(octet_core::Mode::Ask);
         t.draw(|f| draw(f, &mut a)).unwrap();
         assert!(screen(&t).contains("ask…"));
         a.event(Event::ModeChanged(octet_core::Mode::FullAccess));

@@ -148,8 +148,8 @@ pub(crate) async fn send_goal_prompt(app: &mut App, session: &Session, prompt: S
     match session.handle.send(command) {
         Ok(()) => {
             app.goals.goal_prompt_sent();
-            app.running = true;
-            app.status = "working on goal".into();
+            app.conn.running = true;
+            app.conn.status = "working on goal".into();
         }
         Err(error) => goal_send_failed(app, error).await,
     }
@@ -175,12 +175,12 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
     };
     match cmd {
         Cmd::Quit => return Some(Action::Exit(Exit::Quit)),
-        Cmd::Help => app.help = true,
+        Cmd::Help => app.overlay.help = true,
         Cmd::Copy => copy_reply(app),
         Cmd::Model => return Some(model_command(app, argument)),
         Cmd::Mode => return Some(mode_command(app, argument)),
         Cmd::New | Cmd::Reconnect => {
-            if app.running {
+            if app.conn.running {
                 app.notice = "Cancel the active turn before changing sessions".into();
             } else {
                 return Some(if cmd == Cmd::New {
@@ -193,13 +193,13 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
         Cmd::Session => app.notice(format!(
             "{}\nSession: {}\nJournal: {}\nWorkspace: {}",
             app.model_details(),
-            if app.session.is_empty() {
+            if app.conn.session.is_empty() {
                 "not assigned"
             } else {
-                &app.session
+                &app.conn.session
             },
-            app.journal.display(),
-            app.workspace
+            app.conn.journal.display(),
+            app.conn.workspace
         )),
         Cmd::Goal => return Some(goal_command(app, argument).await),
         Cmd::RemoteControl => match argument {
@@ -221,12 +221,12 @@ fn model_command(app: &mut App, argument: &str) -> Action {
                 Err(_) => app.notice("Use /model list <page number>"),
             },
         }
-    } else if app.running || !app.approvals.is_empty() {
+    } else if app.conn.running || !app.overlay.approvals.is_empty() {
         app.notice = "Cancel or finish the current turn before switching models".into();
     } else if app.is_connecting() {
         app.notice = "Wait for connection, or cancel it, before switching models".into();
     } else {
-        match octet_core::model::Selection::parse(argument, app.engine) {
+        match octet_core::model::Selection::parse(argument, app.conn.engine) {
             Ok(selection) => return Action::Exit(Exit::Model(selection)),
             Err(error) => app.notice(error),
         }
@@ -237,23 +237,23 @@ fn mode_command(app: &mut App, argument: &str) -> Action {
     use octet_core::Mode;
     if argument.is_empty() {
         app.notice(app.mode_details());
-    } else if app.mode_pending.is_some() {
+    } else if app.conn.mode_pending.is_some() {
         app.notice("Mode change pending; wait for the vendor to confirm");
     } else {
         match Mode::parse(argument) {
             None => app.notice(format!(
                 "Unknown mode {argument}. Use ask, accept-edits, auto or full-access."
             )),
-            Some(target) if target == app.mode && target == Mode::FullAccess => {
+            Some(target) if target == app.conn.mode && target == Mode::FullAccess => {
                 app.notice("Already in full-access mode")
             }
-            Some(target) if target == Mode::FullAccess || app.mode == Mode::FullAccess => {
-                if app.running || !app.approvals.is_empty() {
+            Some(target) if target == Mode::FullAccess || app.conn.mode == Mode::FullAccess => {
+                if app.conn.running || !app.overlay.approvals.is_empty() {
                     app.notice =
                         "Cancel or finish the current turn before changing full access".into();
                 }
                 // Tightening out of full access is always allowed once the vendor has stopped.
-                else if !app.ready && !(app.stopped && target != Mode::FullAccess) {
+                else if !app.conn.ready && !(app.conn.stopped && target != Mode::FullAccess) {
                     app.notice = "Wait for a ready session before changing full access".into();
                 } else {
                     return Action::Exit(Exit::Mode(target));
@@ -266,7 +266,7 @@ fn mode_command(app: &mut App, argument: &str) -> Action {
 }
 async fn goal_command(app: &mut App, argument: &str) -> Action {
     use octet_core::goal::{Goal, GoalStep};
-    let idle = !app.running && app.ready && !app.stopped;
+    let idle = !app.conn.running && app.conn.ready && !app.conn.stopped;
     match argument {
         "" | "status" => app.notice(
             app.goals
@@ -307,18 +307,18 @@ async fn goal_command(app: &mut App, argument: &str) -> Action {
     Action::Continue
 }
 async fn export_command(app: &mut App, argument: &str) -> Action {
-    if app.running {
+    if app.conn.running {
         app.notice = "Wait for completion or cancel before exporting".into();
         return Action::Continue;
     }
     let path = if argument.trim().is_empty() {
         std::env::current_dir()
             .unwrap_or_default()
-            .join(app.journal.file_name().unwrap_or_default())
+            .join(app.conn.journal.file_name().unwrap_or_default())
     } else {
         PathBuf::from(argument.trim())
     };
-    match octet_core::export_journal(&app.journal, &path).await {
+    match octet_core::export_journal(&app.conn.journal, &path).await {
         Ok(()) => app.notice(format!("Exported journal to {}", path.display())),
         Err(error) => app.notice(format!("Export failed: {error}")),
     }

@@ -177,13 +177,13 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         let result = run_session(&mut terminal, &guard, &mut app, &mut session).await;
         session.shutdown().await;
         // Carry the last vendor-confirmed mode, never an unconfirmed pending one.
-        config.mode = app.mode;
+        config.mode = app.conn.mode;
         match result? {
             Exit::Model(selection) => {
                 pause_active_goal(&mut app, "model switch").await;
                 let cross_provider = selection.provider != config.engine;
                 let binary = binaries.get(&selection.provider).cloned();
-                let next = selection.configure(&config, &app.session, binary);
+                let next = selection.configure(&config, &app.conn.session, binary);
                 binaries.insert(next.engine, next.binary.clone());
                 app.notice(format!(
                     "Model → {} / {}. {} Previous journal: {}",
@@ -194,14 +194,14 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                     } else {
                         "Resuming the same vendor context."
                     },
-                    app.journal.display()
+                    app.conn.journal.display()
                 ));
                 config = next;
                 retained_app = Some(app);
             }
             Exit::Mode(mode) => {
                 pause_active_goal(&mut app, "mode switch").await;
-                app.notice(full_access_notice(mode, config.engine, &app.session));
+                app.notice(full_access_notice(mode, config.engine, &app.conn.session));
                 config.mode = mode;
                 if let Some(id) = resume_id(&app, &config) {
                     config.resume = Some(id);
@@ -214,7 +214,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                     config.resume = Some(id);
                 }
                 pause_active_goal(&mut app, "reconnect").await;
-                app.notice(reconnect_notice(config.resume.is_some(), &app.journal));
+                app.notice(reconnect_notice(config.resume.is_some(), &app.conn.journal));
                 retained_app = Some(app);
             }
             Exit::Quit => break,
@@ -226,7 +226,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
 }
 /// The vendor session a reconnect resumes, once there is one.
 fn resume_id(app: &App, config: &Config) -> Option<String> {
-    (!app.session.is_empty() && config.engine.is_vendor()).then(|| app.session.clone())
+    (!app.conn.session.is_empty() && config.engine.is_vendor()).then(|| app.conn.session.clone())
 }
 /// Sizes ratatui to the terminal again after something else used it.
 fn fit(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> {
@@ -349,7 +349,7 @@ async fn run_session(
                 }
             } => {
                 index_task = None;
-                app.files = match index {
+                app.composer.files = match index {
                     Ok(index) => files::Files::Ready(index),
                     Err(_) => files::Files::Unbuilt,
                 };
@@ -379,7 +379,7 @@ async fn run_session(
                     let _ = disable_raw_mode();
                     regain_terminal(guard, terminal, &mut input)?;
                     match edit.finish(status.is_ok_and(|status| status.success())) {
-                        Ok(text) => app.editor.set(text),
+                        Ok(text) => app.composer.editor.set(text),
                         Err(error) => app.notice(error),
                     }
                 }
@@ -412,7 +412,7 @@ async fn run_session(
                     Action::GoalPrompt(prompt) => send_goal_prompt(app, session, prompt).await,
                     Action::RemoteControl => start_remote_check(app, &mut remote_check),
                     Action::ExternalEditor => {
-                        match external::prepare(&app.editor.text, external::editor_command()) {
+                        match external::prepare(&app.composer.editor.text, external::editor_command()) {
                             Err(error) => app.notice(error),
                             Ok(edit) => {
                                 // Stop reading keys so the editor gets them all.
@@ -438,8 +438,8 @@ async fn run_session(
                     }
                     Action::RunShell { command, attach } => {
                         let (cancel, cancelled) = tokio::sync::oneshot::channel();
-                        let root = app.root.clone();
-                        app.shell_running = true;
+                        let root = app.composer.root.clone();
+                        app.composer.shell_running = true;
                         app.notice = format!("Running {command} · Esc to stop");
                         shell_task = Some(ShellTask {
                             task: tokio::spawn(async move {
@@ -461,17 +461,17 @@ async fn run_session(
                         fit(terminal)?;
                     }
                     Action::SetMode(mode) => match session.handle.send(Command::SetMode(mode)) {
-                        Ok(()) => app.mode_pending = Some(mode),
+                        Ok(()) => app.conn.mode_pending = Some(mode),
                         Err(e) => app.notice(e.to_string()),
                     },
                     Action::Exit(exit) => return Ok(exit),
                 }
-                if matches!(app.files, files::Files::Wanted) {
-                    let root = app.root.clone();
+                if matches!(app.composer.files, files::Files::Wanted) {
+                    let root = app.composer.root.clone();
                     index_task = Some(tokio::task::spawn_blocking(move || {
                         files::Index::build(&root)
                     }));
-                    app.files = files::Files::Building;
+                    app.composer.files = files::Files::Building;
                 }
                 dirty = true;
             }
@@ -539,8 +539,8 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
             match session.handle.send(command) {
                 Ok(()) => {
                     app.goals.goal_prompt_sent();
-                    app.running = true;
-                    app.status = "continuing goal".into();
+                    app.conn.running = true;
+                    app.conn.status = "continuing goal".into();
                 }
                 Err(error) => goal_send_failed(app, error).await,
             }
@@ -570,7 +570,7 @@ async fn stop_editor(editing: &mut Option<(tokio::process::Child, external::Edit
 /// A `!` command's result: in the transcript, on the status line in place
 /// of "Running …", and attached when asked.
 fn shell_finished(app: &mut App, result: Result<shell::Ran, String>, attach: bool) {
-    app.shell_running = false;
+    app.composer.shell_running = false;
     match result {
         Ok(ran) => {
             app.shell_output(&ran);
@@ -602,7 +602,7 @@ fn show_remote_report(app: &mut App, checks: &remote::Checks) {
 /// Ring once when an approval starts waiting; a burst of requests behind it
 /// rings no more.
 fn should_alert(app: &App, event: &octet_core::Event) -> bool {
-    matches!(event, octet_core::Event::Approval { .. }) && app.approvals.is_empty()
+    matches!(event, octet_core::Event::Approval { .. }) && app.overlay.approvals.is_empty()
 }
 /// A bell plus a desktop notification (OSC 9) for an approval the user isn't
 /// watching. The bell passes through tmux and mosh to a phone; tmux drops the
