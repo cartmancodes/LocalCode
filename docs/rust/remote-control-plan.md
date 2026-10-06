@@ -1,7 +1,9 @@
 # `/remote-control`: mobile access to a live Rust session
 
-Planning date: 2026-10-04. Status: proposal; no implementation or deployment.
-User requirement: connect over the internet from anywhere.
+Planning date: 2026-10-04. Status: superseded. The web client this proposes
+was removed on 2026-10-04 (Rust terminal UI only); phone access is the SSH
+setup in [Use Octet from your phone](../remote-control.md).
+Original requirement: connect over the internet from anywhere.
 
 A zero-code alternative for a single user, the full TUI over tmux + Tailscale
 SSH + mosh from Blink or Termius, is evaluated in

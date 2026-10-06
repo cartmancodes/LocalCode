@@ -99,7 +99,6 @@ pub(super) async fn vendor(
         shutdown_grace: Duration::from_millis(150),
         term_grace: Duration::from_millis(250),
     })
-    .await
     .map_err(|e| format!("Cannot start {engine}: {e}. Install the CLI and sign in first."))?;
     let mut driver = Driver::new(protocol, config, limits, process, tx);
     let result = driver.run(&mut commands, &mut cancel, &mut stopping).await;
@@ -504,7 +503,8 @@ mod tests {
     }
     #[test]
     fn stray_request_replies_use_production_wording() {
-        let permission = json!({"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{}}});
+        let request = json!({"subtype": "can_use_tool", "tool_name": "Bash", "input": {}});
+        let permission = json!({"type": "control_request", "request_id": "r1", "request": request});
         let unknown = json!({"type":"control_request","request_id":"r2","request":{"subtype":"hook_callback"}});
         let codex = json!({"id":7,"method":"item/tool/requestUserInput","params":{}});
         for reply in [

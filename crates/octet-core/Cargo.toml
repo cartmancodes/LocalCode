@@ -13,3 +13,6 @@ serde_json.workspace = true
 
 [dev-dependencies]
 octet-testkit = { path = "../octet-testkit" }
+
+[lints]
+workspace = true

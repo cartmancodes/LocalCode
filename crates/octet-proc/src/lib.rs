@@ -141,7 +141,9 @@ pub struct Process {
 }
 
 impl Process {
-    pub async fn spawn(config: ProcessConfig) -> Result<Self, ProcessError> {
+    /// Starts the child and its reader tasks. Call it inside a Tokio runtime:
+    /// the pipes register with the runtime's reactor.
+    pub fn spawn(config: ProcessConfig) -> Result<Self, ProcessError> {
         if config.max_frame_bytes == 0 || config.max_frame_bytes > config.queue_bytes {
             return Err(ProcessError::InvalidConfig(
                 "max_frame_bytes must fit inside queue_bytes",
@@ -376,7 +378,10 @@ async fn read_frames<R: AsyncRead + Unpin>(
                     if byte == b'\n' {
                         let size = frame.len();
                         let permit = match Arc::clone(&permits)
-                            .acquire_many_owned(size.max(1) as u32)
+                            .acquire_many_owned(
+                                u32::try_from(size.max(1))
+                                    .expect("frame size fits u32: queue_bytes is checked at spawn"),
+                            )
                             .await
                         {
                             Ok(permit) => permit,

@@ -654,7 +654,7 @@ async fn main() {
     let mut failure_kind = None;
     let mut cleaned = false;
     let mut status =
-        match GateProcess::spawn(opt.binary.clone(), args.clone(), cwd.clone(), deadline).await {
+        match GateProcess::spawn(opt.binary.clone(), args.clone(), cwd.clone(), deadline) {
             Err(error) => format!("failed: {error}"),
             Ok(mut gate) => {
                 let result = if opt.engine == "claude" {
@@ -695,9 +695,7 @@ async fn main() {
                             resumed_args,
                             cwd.clone(),
                             deadline,
-                        )
-                        .await
-                        {
+                        ) {
                             Err(error) => outcome = format!("failed: {error}"),
                             Ok(mut second) => {
                                 let second_result = claude(&mut second, "simple", &cwd).await;

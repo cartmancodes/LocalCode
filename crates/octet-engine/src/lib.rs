@@ -42,7 +42,7 @@ pub struct GateProcess {
 }
 
 impl GateProcess {
-    pub async fn spawn(
+    pub fn spawn(
         executable: PathBuf,
         args: Vec<OsString>,
         cwd: PathBuf,
@@ -57,8 +57,7 @@ impl GateProcess {
             stderr_bytes: 4096,
             shutdown_grace: Duration::from_millis(150),
             term_grace: Duration::from_millis(250),
-        })
-        .await?;
+        })?;
         let sender = process.sender();
         Ok(Self {
             process,

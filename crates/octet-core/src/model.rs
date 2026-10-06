@@ -12,7 +12,12 @@ impl Selection {
         let vendor = |name: &str| Engine::parse(name).filter(|engine| engine.is_vendor());
         let parts: Vec<_> = input.split_whitespace().collect();
         let (provider, model) = match parts.as_slice() {
-            [] => return Err("Use /model <name>, /model codex <name>, /model claude <name>, or /model <provider> default".into()),
+            [] => {
+                return Err(
+                    "Use /model <name>, /model codex <name>, /model claude <name>, or /model <provider> default"
+                        .into(),
+                )
+            }
             [name] => match vendor(name) {
                 Some(engine) => (engine, "default"),
                 None => name

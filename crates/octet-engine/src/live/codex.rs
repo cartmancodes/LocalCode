@@ -13,9 +13,10 @@ pub(super) fn answer(wire: &Value, allow: bool) -> Value {
 }
 
 impl Driver<'_> {
-    pub(super) async fn codex_initialize(&mut self) -> Result<(), DriverError> {
+    pub(super) async fn codex_initialize(&self) -> Result<(), DriverError> {
         let client = json!({"name":"octet","version":"0.1.0"});
-        self.send(json!({"id":1,"method":"initialize","params":{"clientInfo":client,"capabilities":{"experimentalApi":true}}}))
+        let params = json!({"clientInfo": client, "capabilities": {"experimentalApi": true}});
+        self.send(json!({"id": 1, "method": "initialize", "params": params}))
             .await
     }
 
@@ -385,7 +386,13 @@ mod tests {
     }
     #[test]
     fn command_preview_leads_with_the_command_and_its_outcome() {
-        let item = json!({"type":"commandExecution","command":"cargo test","status":"failed","exitCode":101,"aggregatedOutput":"line 1\nline 2"});
+        let item = json!({
+            "type": "commandExecution",
+            "command": "cargo test",
+            "status": "failed",
+            "exitCode": 101,
+            "aggregatedOutput": "line 1\nline 2",
+        });
         assert_eq!(
             codex_tool_detail(&item, "finished"),
             "commandExecution · finished\n$ cargo test\nfailed · exit 101\nline 1\nline 2"
@@ -398,7 +405,8 @@ mod tests {
         let other = json!({"type":"fileChange","changes":[]});
         assert!(codex_tool_detail(&other, "finished").starts_with("fileChange · finished\n{"));
         // Long output keeps its end, where failures are reported.
-        let long = json!({"type":"commandExecution","command":"x","aggregatedOutput":format!("{}END", "y".repeat(EVENT_BYTES * 2))});
+        let output = format!("{}END", "y".repeat(EVENT_BYTES * 2));
+        let long = json!({"type": "commandExecution", "command": "x", "aggregatedOutput": output});
         let detail = codex_tool_detail(&long, "finished");
         assert!(
             detail.len() <= EVENT_BYTES

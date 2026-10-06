@@ -67,10 +67,22 @@ impl Goal {
     pub fn prompt(&self, step: GoalStep) -> String {
         let direction = match step {
             GoalStep::Begin => "Begin the objective.",
-            GoalStep::Audit => "Audit the entire objective against the work and tests. Fix remaining gaps before claiming completion.",
-            GoalStep::Continue => "Continue the objective from the existing vendor conversation. Make concrete progress and verify it.",
+            GoalStep::Audit => {
+                "Audit the entire objective against the work and tests. Fix remaining gaps before claiming completion."
+            }
+            GoalStep::Continue => {
+                "Continue the objective from the existing vendor conversation. Make concrete progress and verify it."
+            }
         };
-        format!("Octet active goal: {}\n\n{}\nIf and only if the entire objective is achieved, explain the evidence and put {} alone on the final line. Otherwise describe progress and what remains. Do not claim completion without verification.", self.objective, direction, COMPLETION_MARKER)
+        format!(
+            "Octet active goal: {}\n\n{direction}\n{}",
+            self.objective,
+            format_args!(
+                "If and only if the entire objective is achieved, explain the evidence and put {COMPLETION_MARKER} \
+                 alone on the final line. Otherwise describe progress and what remains. \
+                 Do not claim completion without verification."
+            )
+        )
     }
     /// Count one completed vendor turn and decide whether another turn is needed.
     /// A turn that ends after a pause still counts and may record completion,
@@ -477,6 +489,15 @@ mod tests {
         runner.goal_prompt_sent();
         runner.pause_running_turn().await.unwrap();
         assert!(!runner.is_active());
+    }
+    #[test]
+    fn the_goal_prompt_keeps_its_wording() {
+        assert_eq!(
+            Goal::new("Ship").unwrap().prompt(GoalStep::Begin),
+            "Octet active goal: Ship\n\nBegin the objective.\nIf and only if the entire objective is achieved, \
+             explain the evidence and put [[OCTET_GOAL_COMPLETE]] alone on the final line. Otherwise describe \
+             progress and what remains. Do not claim completion without verification."
+        );
     }
     #[test]
     fn prompts_name_their_step() {

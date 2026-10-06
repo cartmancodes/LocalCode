@@ -762,7 +762,7 @@ async fn quit_signal() {
 async fn unix_signal(signal: &mut tokio::signal::unix::Signal) {
     signal.recv().await;
 }
-async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Action {
+async fn key_action(app: &mut App, session: &Session, key: KeyEvent) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let ctrl_c = ctrl && key.code == KeyCode::Char('c');
@@ -958,7 +958,9 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
                 let (wire, display) =
                     composer::with_attachments(&draft, &app.attachments, octet_core::PROMPT_LIMIT);
                 if wire.len().max(display.len()) > octet_core::PROMPT_LIMIT {
-                    app.notice = "The prompt and its attachments are over 64 KiB. Shorten the prompt, or press Esc on an empty prompt to drop them".into();
+                    app.notice = "The prompt and its attachments are over 64 KiB. \
+                                  Shorten the prompt, or press Esc on an empty prompt to drop them"
+                        .into();
                     return Action::Continue;
                 }
                 Command::PromptWithDisplay { wire, display }
@@ -1234,7 +1236,10 @@ async fn try_command(app: &mut App, input: &str) -> Option<Action> {
             }
         }
         _ => {
-            app.notice(format!("Unknown command {name}. Use /help, or edit the draft: only a path such as /usr/lib can start a prompt with a slash."));
+            app.notice(format!(
+                "Unknown command {name}. Use /help, or edit the draft: \
+                 only a path such as /usr/lib can start a prompt with a slash."
+            ));
             return None;
         }
     }
@@ -1364,17 +1369,17 @@ mod model_tests {
     #[tokio::test]
     async fn at_opens_the_file_popup_and_enter_accepts() {
         let mut app = app();
-        let (_temp, mut session) = demo_session("octet-at").await;
+        let (_temp, session) = demo_session("octet-at").await;
         app.files = crate::files::Files::Ready(crate::files::Index::from_paths(vec![
             "README.md".into(),
             "src/main.rs".into(),
         ]));
         for c in "see @mai".chars() {
-            key_action(&mut app, &mut session, key(KeyCode::Char(c))).await;
+            key_action(&mut app, &session, key(KeyCode::Char(c))).await;
         }
         let completion = app.completion.as_ref().expect("popup open");
         assert_eq!(completion.items, ["src/main.rs"]);
-        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        key_action(&mut app, &session, key(KeyCode::Enter)).await;
         assert_eq!(app.editor.text, "see @src/main.rs ");
         assert!(app.completion.is_none());
         assert!(!app.running, "Enter accepted instead of sending");
@@ -1382,39 +1387,39 @@ mod model_tests {
     #[tokio::test]
     async fn the_palette_offers_the_editor_mentions_and_shell() {
         let mut app = app();
-        let (_temp, mut session) = demo_session("octet-palette-keys").await;
+        let (_temp, session) = demo_session("octet-palette-keys").await;
         let open_at = |app: &mut App, index: usize| {
             app.palette = true;
             app.selection = index;
         };
         open_at(&mut app, COMMANDS.len() + 1);
-        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        key_action(&mut app, &session, key(KeyCode::Enter)).await;
         assert_eq!(app.editor.text, "@");
         assert!(app.completion.is_some(), "@ opens the file popup");
         app.completion = None;
         app.editor.take();
         open_at(&mut app, COMMANDS.len() + 2);
-        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        key_action(&mut app, &session, key(KeyCode::Enter)).await;
         assert_eq!(app.editor.text, "!");
         open_at(&mut app, COMMANDS.len());
         assert!(matches!(
-            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            key_action(&mut app, &session, key(KeyCode::Enter)).await,
             Action::ExternalEditor
         ));
         app.palette = true;
         app.selection = 0;
         for _ in 0..40 {
-            key_action(&mut app, &mut session, key(KeyCode::Down)).await;
+            key_action(&mut app, &session, key(KeyCode::Down)).await;
         }
         assert_eq!(app.selection, COMMANDS.len() + view::PALETTE_KEYS.len() - 1);
     }
     #[tokio::test]
     async fn a_prompt_too_long_for_its_attachments_says_so() {
         let mut app = app();
-        let (_temp, mut session) = demo_session("octet-attach-limit").await;
+        let (_temp, session) = demo_session("octet-attach-limit").await;
         app.attach(ran("echo hi", "hi\n"));
         app.editor.set("x".repeat(octet_core::PROMPT_LIMIT - 6));
-        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        key_action(&mut app, &session, key(KeyCode::Enter)).await;
         assert_eq!(
             app.notice,
             "The prompt and its attachments are over 64 KiB. Shorten the prompt, or press Esc on an empty prompt to drop them"
@@ -1449,15 +1454,15 @@ mod model_tests {
     #[tokio::test]
     async fn the_popup_closes_before_the_editor_and_follows_a_paste() {
         let mut app = app();
-        let (_temp, mut session) = demo_session("octet-at-settle").await;
+        let (_temp, session) = demo_session("octet-at-settle").await;
         app.files =
             crate::files::Files::Ready(crate::files::Index::from_paths(vec!["src/main.rs".into()]));
         for c in "a long draft @ma".chars() {
-            key_action(&mut app, &mut session, key(KeyCode::Char(c))).await;
+            key_action(&mut app, &session, key(KeyCode::Char(c))).await;
         }
         assert!(app.completion.is_some());
         assert!(matches!(
-            key_action(&mut app, &mut session, ctrl('g')).await,
+            key_action(&mut app, &session, ctrl('g')).await,
             Action::ExternalEditor
         ));
         assert!(
@@ -1473,60 +1478,60 @@ mod model_tests {
         });
         paste(&mut app, "port the bug");
         assert!(app.completion.is_none(), "a paste closes a command popup");
-        key_action(&mut app, &mut session, key(KeyCode::Char('x'))).await;
+        key_action(&mut app, &session, key(KeyCode::Char('x'))).await;
         assert_eq!(app.editor.text, "/report the bugx");
     }
     #[tokio::test]
     async fn the_first_at_asks_for_the_index_and_esc_closes_the_popup() {
         let mut app = app();
-        let (_temp, mut session) = demo_session("octet-at-index").await;
-        key_action(&mut app, &mut session, key(KeyCode::Char('@'))).await;
+        let (_temp, session) = demo_session("octet-at-index").await;
+        key_action(&mut app, &session, key(KeyCode::Char('@'))).await;
         assert!(matches!(app.files, crate::files::Files::Wanted));
         assert!(app.completion.is_some());
-        key_action(&mut app, &mut session, key(KeyCode::Esc)).await;
+        key_action(&mut app, &session, key(KeyCode::Esc)).await;
         assert!(app.completion.is_none());
         assert_eq!(app.editor.text, "@");
     }
     #[tokio::test]
     async fn an_at_inside_a_word_opens_nothing() {
         let mut app = app();
-        let (_temp, mut session) = demo_session("octet-at-word").await;
+        let (_temp, session) = demo_session("octet-at-word").await;
         for c in "me@host".chars() {
-            key_action(&mut app, &mut session, key(KeyCode::Char(c))).await;
+            key_action(&mut app, &session, key(KeyCode::Char(c))).await;
         }
         assert!(app.completion.is_none());
     }
     #[tokio::test]
     async fn bang_lines_run_locally_and_double_bang_does_not_attach() {
         let mut app = app();
-        let (_temp, mut session) = demo_session("octet-bang").await;
+        let (_temp, session) = demo_session("octet-bang").await;
         app.editor.set("!echo hi".into());
         assert!(matches!(
-            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            key_action(&mut app, &session, key(KeyCode::Enter)).await,
             Action::RunShell { ref command, attach: true } if command == "echo hi"
         ));
         assert!(app.editor.text.is_empty());
         assert_eq!(app.history.back().map(String::as_str), Some("!echo hi"));
         app.editor.set("!!  pwd ".into());
         assert!(matches!(
-            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            key_action(&mut app, &session, key(KeyCode::Enter)).await,
             Action::RunShell { ref command, attach: false } if command == "pwd"
         ));
         app.editor.set("!".into());
         assert!(matches!(
-            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            key_action(&mut app, &session, key(KeyCode::Enter)).await,
             Action::Continue
         ));
         assert_eq!(app.notice, "Type a command after !");
         app.shell_running = true;
         app.editor.set("!ls".into());
         assert!(matches!(
-            key_action(&mut app, &mut session, key(KeyCode::Enter)).await,
+            key_action(&mut app, &session, key(KeyCode::Enter)).await,
             Action::Continue
         ));
         assert_eq!(app.notice, "A command is already running");
         assert!(matches!(
-            key_action(&mut app, &mut session, key(KeyCode::Esc)).await,
+            key_action(&mut app, &session, key(KeyCode::Esc)).await,
             Action::CancelShell
         ));
     }
@@ -1536,16 +1541,16 @@ mod model_tests {
         let (_temp, mut session) = demo_session("octet-attach").await;
         app.attach(ran("echo hi", "hi\n"));
         app.editor.set("explain".into());
-        key_action(&mut app, &mut session, key(KeyCode::Enter)).await;
+        key_action(&mut app, &session, key(KeyCode::Enter)).await;
         assert!(app.attachments.is_empty());
         assert_eq!(next_user_text(&mut session).await, "explain\n\n[+ echo hi]");
     }
     #[tokio::test]
     async fn esc_on_an_empty_idle_draft_removes_attachments() {
         let mut app = app();
-        let (_temp, mut session) = demo_session("octet-detach").await;
+        let (_temp, session) = demo_session("octet-detach").await;
         app.attach(ran("ls", ""));
-        key_action(&mut app, &mut session, key(KeyCode::Esc)).await;
+        key_action(&mut app, &session, key(KeyCode::Esc)).await;
         assert!(app.attachments.is_empty());
         assert_eq!(app.notice, "Attachments removed");
     }
@@ -1611,12 +1616,12 @@ mod model_tests {
         let mut app = app();
         let (_temp, mut session) = demo_session("octet-quit-twice").await;
         assert!(matches!(
-            key_action(&mut app, &mut session, ctrl('c')).await,
+            key_action(&mut app, &session, ctrl('c')).await,
             Action::Continue
         ));
         assert_eq!(app.notice, QUIT_HINT);
         assert!(matches!(
-            key_action(&mut app, &mut session, ctrl('c')).await,
+            key_action(&mut app, &session, ctrl('c')).await,
             Action::Exit(Exit::Quit)
         ));
         session.shutdown().await;
@@ -1627,17 +1632,17 @@ mod model_tests {
         let (_temp, mut session) = demo_session("octet-quit-draft").await;
         assert!(app.editor.insert("half-written prompt"));
         assert!(matches!(
-            key_action(&mut app, &mut session, ctrl('c')).await,
+            key_action(&mut app, &session, ctrl('c')).await,
             Action::Continue
         ));
         assert!(app.editor.text.is_empty());
         assert_ne!(app.notice, QUIT_HINT);
         assert!(matches!(
-            key_action(&mut app, &mut session, ctrl('c')).await,
+            key_action(&mut app, &session, ctrl('c')).await,
             Action::Continue
         ));
         assert!(matches!(
-            key_action(&mut app, &mut session, ctrl('c')).await,
+            key_action(&mut app, &session, ctrl('c')).await,
             Action::Exit(Exit::Quit)
         ));
         session.shutdown().await;
@@ -1646,18 +1651,18 @@ mod model_tests {
     async fn another_key_or_an_expired_window_disarms_quit() {
         let mut app = app();
         let (_temp, mut session) = demo_session("octet-quit-disarm").await;
-        key_action(&mut app, &mut session, ctrl('c')).await;
+        key_action(&mut app, &session, ctrl('c')).await;
         let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
-        key_action(&mut app, &mut session, left).await;
+        key_action(&mut app, &session, left).await;
         assert_ne!(app.notice, QUIT_HINT, "another key clears the hint");
         assert!(matches!(
-            key_action(&mut app, &mut session, ctrl('c')).await,
+            key_action(&mut app, &session, ctrl('c')).await,
             Action::Continue
         ));
         // The window has passed: the press arms again instead of quitting.
         app.quit_armed = Some(Instant::now() - Duration::from_millis(1));
         assert!(matches!(
-            key_action(&mut app, &mut session, ctrl('c')).await,
+            key_action(&mut app, &session, ctrl('c')).await,
             Action::Continue
         ));
         assert_eq!(app.notice, QUIT_HINT);
@@ -1669,13 +1674,13 @@ mod model_tests {
         let (_temp, mut session) = demo_session("octet-quit-overlay").await;
         app.help = true;
         assert!(matches!(
-            key_action(&mut app, &mut session, ctrl('c')).await,
+            key_action(&mut app, &session, ctrl('c')).await,
             Action::Continue
         ));
         assert!(!app.help);
         app.palette = true;
         assert!(matches!(
-            key_action(&mut app, &mut session, ctrl('c')).await,
+            key_action(&mut app, &session, ctrl('c')).await,
             Action::Continue
         ));
         assert!(!app.palette);
@@ -1689,7 +1694,7 @@ mod model_tests {
         app.running = true;
         for _ in 0..2 {
             assert!(matches!(
-                key_action(&mut app, &mut session, ctrl('c')).await,
+                key_action(&mut app, &session, ctrl('c')).await,
                 Action::Continue
             ));
             assert_eq!(app.notice, view::CANCELLING);
@@ -1701,7 +1706,7 @@ mod model_tests {
         let mut app = app();
         let (_temp, mut session) = demo_session("octet-quit-q").await;
         assert!(matches!(
-            key_action(&mut app, &mut session, ctrl('q')).await,
+            key_action(&mut app, &session, ctrl('q')).await,
             Action::Continue
         ));
         session.shutdown().await;
@@ -1719,7 +1724,7 @@ mod model_tests {
         let mut session = Session::open(config, directory.clone()).await.unwrap();
         key_action(
             &mut app,
-            &mut session,
+            &session,
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
         )
         .await;
@@ -1898,7 +1903,7 @@ mod model_tests {
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         assert!(app.editor.insert("/nope is not a command, keep my words"));
         assert!(matches!(
-            key_action(&mut app, &mut session, enter).await,
+            key_action(&mut app, &session, enter).await,
             Action::Continue
         ));
         assert_eq!(app.editor.text, "/nope is not a command, keep my words");
@@ -1910,7 +1915,7 @@ mod model_tests {
             .editor
             .insert("/usr/lib is where this breaks, please look"));
         assert!(matches!(
-            key_action(&mut app, &mut session, enter).await,
+            key_action(&mut app, &session, enter).await,
             Action::Continue
         ));
         assert!(app.editor.text.is_empty() && app.running, "{}", app.notice);
@@ -1922,7 +1927,7 @@ mod model_tests {
         // A prompt starting with a multi-byte character is an ordinary prompt.
         assert!(app.editor.insert("界 means world"));
         assert!(matches!(
-            key_action(&mut app, &mut session, enter).await,
+            key_action(&mut app, &session, enter).await,
             Action::Continue
         ));
         assert_eq!(
@@ -1932,7 +1937,7 @@ mod model_tests {
         app.running = false;
         assert!(app.editor.insert("/session"));
         assert!(matches!(
-            key_action(&mut app, &mut session, enter).await,
+            key_action(&mut app, &session, enter).await,
             Action::Continue
         ));
         assert!(app.editor.text.is_empty());

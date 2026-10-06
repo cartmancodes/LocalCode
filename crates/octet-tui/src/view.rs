@@ -230,7 +230,9 @@ impl App {
                 mode.describe(self.engine)
             ));
         }
-        text.push_str("\nShift+Tab cycles ask → accept-edits → auto. /mode full-access reconnects with every check off.");
+        text.push_str(
+            "\nShift+Tab cycles ask → accept-edits → auto. /mode full-access reconnects with every check off.",
+        );
         text
     }
     pub fn model_details(&self) -> String {
@@ -263,11 +265,16 @@ impl App {
         }
         self.notice(self.model_details());
         if self.models.is_empty() {
-            self.notice("No catalog reported yet. Explicit model IDs remain supported; /reconnect refreshes discovery.");
-        } else {
             self.notice(
-                format!("{} catalog · {} entries · page {page}/{pages}. PgUp/PgDn scroll; /model list <page>. Account access may vary.", self.engine, self.models.len() ),
+                "No catalog reported yet. Explicit model IDs remain supported; /reconnect refreshes discovery.",
             );
+        } else {
+            let engine = self.engine;
+            let count = self.models.len();
+            self.notice(format!(
+                "{engine} catalog · {count} entries · page {page}/{pages}. \
+                 PgUp/PgDn scroll; /model list <page>. Account access may vary."
+            ));
             // Page the catalog so large lists do not evict current details from scrollback.
             for model in self
                 .models
@@ -286,7 +293,10 @@ impl App {
                 ));
             }
         }
-        self.notice("/model <ID or alias> · /model codex <ID> · /model claude <ID>\n/model default uses the provider default. Switching providers starts fresh context.");
+        self.notice(
+            "/model <ID or alias> · /model codex <ID> · /model claude <ID>\n\
+             /model default uses the provider default. Switching providers starts fresh context.",
+        );
         if !self.models.is_empty() {
             self.catalog_focus = Some((self.models.len() - (page - 1) * 20).min(20) + 2);
         }
@@ -651,6 +661,11 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
     }
     rows
 }
+/// A count of rows or columns as a terminal coordinate, saturating instead
+/// of wrapping.
+fn cells(count: usize) -> u16 {
+    u16::try_from(count).unwrap_or(u16::MAX)
+}
 fn card(title: &str) -> Block<'_> {
     Block::default()
         .borders(Borders::ALL)
@@ -704,7 +719,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     // Status and usage keep the right edge, sized to their text so a narrow
     // terminal never cuts them; the banner takes the rest.
-    let status_width = (status.width().max(app.usage.width()) as u16).clamp(12, 22);
+    let status_width = cells(status.width().max(app.usage.width())).clamp(12, 22);
     let header = Layout::horizontal([Constraint::Min(6), Constraint::Length(status_width)])
         .spacing(1)
         .split(regions[0]);
@@ -842,8 +857,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
     } else {
         frame.set_cursor_position((
-            input.x + (col as u16).min(input.width.saturating_sub(1)),
-            input.y + ((row - offset) as u16).min(input.height.saturating_sub(1)),
+            input.x + cells(col).min(input.width.saturating_sub(1)),
+            input.y + cells(row - offset).min(input.height.saturating_sub(1)),
         ));
     }
 }
@@ -897,7 +912,7 @@ fn completion_popup(frame: &mut Frame, composer: Rect, app: &App) {
         let skip = completion.selected.saturating_sub(room - 1);
         lines = lines.into_iter().skip(skip).take(room).collect();
     }
-    let height = lines.len() as u16 + 2;
+    let height = cells(lines.len()).saturating_add(2);
     let area = Rect {
         x: composer.x,
         y: composer.y.saturating_sub(height),
@@ -922,7 +937,7 @@ fn draft_width(terminal_width: u16) -> usize {
 /// The bottom-line notice while a cancelled turn winds down.
 pub(crate) const CANCELLING: &str = "Cancelling…";
 fn composer_height(draft_rows: usize) -> u16 {
-    2 + draft_rows.clamp(1, 4) as u16 + 1
+    2 + cells(draft_rows.clamp(1, 4)) + 1
 }
 /// The top-left banner, after Claude Code's: the mini Octet (or a text mark
 /// without colour) beside three lines. The permission mode leads its line so
@@ -1012,15 +1027,6 @@ fn sidebar(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(" Esc         Cancel turn"),
         Line::from(" PgUp/PgDn   Read history"),
         Line::from(" Ctrl+C ×2   Save and quit"),
-        Line::default(),
-        Line::from(Span::styled(
-            " Preview · core migration",
-            Style::default().fg(MUTED),
-        )),
-        Line::from(Span::styled(
-            " remains in progress.",
-            Style::default().fg(MUTED),
-        )),
     ];
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
@@ -1088,8 +1094,8 @@ fn palette(frame: &mut Frame, area: Rect, selected: usize) {
     // borders, a blank line above and below the list, and the key line.
     let area = modal(
         area,
-        (name_width + description_width + 7) as u16,
-        palette_entries().count() as u16 + 5,
+        cells(name_width + description_width + 7),
+        cells(palette_entries().count()).saturating_add(5),
     );
     frame.render_widget(Clear, area);
     let mut lines = vec![Line::default()];
@@ -1124,7 +1130,13 @@ fn approval(frame: &mut Frame, area: Rect, id: u64, detail: &str, scroll: u16, c
         Constraint::Length(3),
     ])
     .split(area);
-    frame.render_widget(Paragraph::new(format!("Permission required  #{id}   ·   {count} pending\nReview the requested action before allowing it." )).style(Style::default().fg(AMBER).bg(PANEL)),parts[0]);
+    let heading = format!(
+        "Permission required  #{id}   ·   {count} pending\nReview the requested action before allowing it."
+    );
+    frame.render_widget(
+        Paragraph::new(heading).style(Style::default().fg(AMBER).bg(PANEL)),
+        parts[0],
+    );
     frame.render_widget(
         Paragraph::new(detail)
             .wrap(Wrap { trim: false })
