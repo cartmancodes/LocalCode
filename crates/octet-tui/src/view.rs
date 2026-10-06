@@ -403,6 +403,9 @@ impl App {
             Event::Usage(text) => self.usage = clean(&text),
             Event::Finished { outcome } => {
                 self.running = false;
+                if self.notice == CANCELLING {
+                    self.notice.clear();
+                }
                 self.status = clean(outcome.as_str());
                 self.activity = match outcome {
                     octet_core::Outcome::Completed => State::Success,
@@ -916,6 +919,8 @@ fn draft_width(terminal_width: u16) -> usize {
 }
 /// The composer's height from the draft's wrapped rows: borders, 1–4 draft
 /// rows, and the hint row. An empty prompt takes 4 rows, a long draft 7.
+/// The bottom-line notice while a cancelled turn winds down.
+pub(crate) const CANCELLING: &str = "Cancelling…";
 fn composer_height(draft_rows: usize) -> u16 {
     2 + draft_rows.clamp(1, 4) as u16 + 1
 }
@@ -1347,6 +1352,17 @@ mod tests {
         let rows = screen(44, 16, &mut app);
         // The composer's top border sits 4 rows above the status line.
         assert!(rows[16 - 6].starts_with(" ╭ Prompt"), "{}", rows[16 - 6]);
+    }
+    #[test]
+    fn a_finished_turn_clears_the_cancelling_notice() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.event(Event::Started);
+        app.notice = CANCELLING.into();
+        app.event(Event::Finished {
+            outcome: octet_core::Outcome::Interrupted,
+        });
+        assert_eq!(app.notice, "");
     }
     #[test]
     fn the_draft_shows_at_the_minimum_size() {

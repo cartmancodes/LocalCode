@@ -868,7 +868,7 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
                 return Action::CancelShell;
             } else if app.is_busy() {
                 cancel_turn(app, session).await;
-                app.notice = "Cancelling…".into();
+                app.notice = view::CANCELLING.into();
             } else if !app.editor.text.is_empty() {
                 app.editor.take();
             } else if quit_armed.is_some_and(|deadline| Instant::now() < deadline) {
@@ -883,7 +883,7 @@ async fn key_action(app: &mut App, session: &mut Session, key: KeyEvent) -> Acti
                 return Action::CancelShell;
             } else if app.is_busy() {
                 cancel_turn(app, session).await;
-                app.notice = "Cancelling…".into();
+                app.notice = view::CANCELLING.into();
             } else if app.editor.text.is_empty() && !app.attachments.is_empty() {
                 app.attachments.clear();
                 app.notice = "Attachments removed".into();
@@ -1692,7 +1692,7 @@ mod model_tests {
                 key_action(&mut app, &mut session, ctrl('c')).await,
                 Action::Continue
             ));
-            assert_eq!(app.notice, "Cancelling…");
+            assert_eq!(app.notice, view::CANCELLING);
         }
         session.shutdown().await;
     }
