@@ -1,12 +1,18 @@
 //! `octet`: parses the command line and starts the terminal interface.
 use octet_core::Config;
 use std::{io::IsTerminal, path::PathBuf};
+/// "a, b or c".
+fn or_list(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => (*only).to_owned(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
 /// `--help`: fixed usage and keys, then every command from the registry.
 fn help() -> String {
     const HEAD: &[&str] = &[
-        "Octet — terminal coding workspace (Rust preview)",
-        "",
-        "Usage: octet [--engine codex|claude|demo] [--cwd PATH]",
         "                 [--model MODEL] [--mode MODE] [--resume VENDOR_SESSION_ID]",
         "                 [--binary PATH] [--journal-dir PATH]",
         "                 [--approval-timeout SECONDS]",
@@ -21,7 +27,15 @@ fn help() -> String {
         "      Ctrl+G edit in $EDITOR · Ctrl+X copy the last reply",
         "",
     ];
-    let mut text = HEAD.join("\n");
+    let engines: Vec<&str> = octet_core::Engine::ALL
+        .iter()
+        .map(|engine| engine.as_str())
+        .collect();
+    let mut text = format!(
+        "Octet — terminal coding workspace (Rust preview)\n\nUsage: octet [--engine {}] [--cwd PATH]\n",
+        engines.join("|")
+    );
+    text.push_str(&HEAD.join("\n"));
     // "Commands: " then the names, wrapped at 76 columns under the first.
     let mut line = String::from("\nCommands: ");
     for (i, name) in octet_tui::command_names().enumerate() {
@@ -110,8 +124,13 @@ async fn run() -> Result<(), String> {
             _ => unreachable!("{arg} is checked against OPTIONS"),
         }
     }
-    let engine =
-        octet_core::Engine::parse(&engine).ok_or("Engine must be codex, claude or demo")?;
+    let engine = octet_core::Engine::parse(&engine).ok_or_else(|| {
+        let names: Vec<&str> = octet_core::Engine::ALL
+            .iter()
+            .map(|engine| engine.as_str())
+            .collect();
+        format!("Engine must be {}", or_list(&names))
+    })?;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(
             "The terminal UI requires an interactive terminal. Use --help for options.".into(),

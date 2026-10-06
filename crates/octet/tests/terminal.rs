@@ -801,6 +801,25 @@ fn a_new_approval_rings_and_notifies() {
 }
 
 #[test]
+fn help_and_errors_name_exactly_the_providers() {
+    let names: Vec<&str> = octet_core::Engine::ALL.iter().map(|e| e.as_str()).collect();
+    let help = Command::new(env!("CARGO_BIN_EXE_octet"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        help.contains(&format!("--engine {}", names.join("|"))),
+        "{help}"
+    );
+    let bad = Command::new(env!("CARGO_BIN_EXE_octet"))
+        .args(["--engine", "nope"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("Engine must be codex, claude or demo"));
+}
+
+#[test]
 fn help_lists_every_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_octet"))
         .arg("--help")
