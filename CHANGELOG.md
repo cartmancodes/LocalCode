@@ -54,6 +54,18 @@ Claude Code and Codex CLIs.
 - Stopping Octet (SIGTERM, SIGHUP) while an external editor is open asks the
   editor to quit instead of leaving it on the terminal.
 - Dual licensing under MIT or Apache-2.0.
+- CI on macOS and Ubuntu (`make rust-check`) plus a `cargo audit` job.
+
+### Changed
+
+- `@` suggestions rank about four times faster in large workspaces (under
+  25 ms for 50,000 files).
+- Help, the command palette, Tab completion, the sidebar and `octet --help`
+  are built from one command list; help shows one line per command and sizes
+  itself to fit narrow terminals.
+- A `!` command stopped by its time limit names that limit.
+- Release builds are about 40% smaller (thin LTO, stripped symbols).
+- The protocol gate moved to its own `octet-gate` crate.
 
 ### Fixed
 
