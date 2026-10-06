@@ -27,8 +27,24 @@ async fn run() -> Result<(), String> {
             println!("octet {} (Rust preview)", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        const OPTIONS: [&str; 8] = [
+            "--engine",
+            "--binary",
+            "--cwd",
+            "--model",
+            "--resume",
+            "--journal-dir",
+            "--mode",
+            "--approval-timeout",
+        ];
+        if !OPTIONS.contains(&arg.as_str()) {
+            return Err(format!("Unknown option {arg}. Use --help."));
+        }
+        // A value never starts with "--", so a forgotten value can't swallow
+        // the next option.
         let value = args
             .next()
+            .filter(|value| !value.starts_with("--"))
             .ok_or_else(|| format!("{arg} requires a value. Use --help."))?;
         match arg.as_str() {
             "--engine" => engine = value,
@@ -50,7 +66,7 @@ async fn run() -> Result<(), String> {
                     .map(std::time::Duration::from_secs)
                     .ok_or("Approval timeout must be a whole number of seconds from 10 to 3600")?
             }
-            _ => return Err(format!("Unknown option {arg}. Use --help.")),
+            _ => unreachable!("{arg} is checked against OPTIONS"),
         }
     }
     let engine =
