@@ -1,5 +1,7 @@
 //! Real PTY acceptance tests. No Python, browser, or vendor login is needed.
 #![cfg(unix)]
+// Test code: an unwrap that fails is the test failing.
+#![allow(clippy::unwrap_used)]
 use std::{
     fs::{self, File},
     io::{Read, Write},
@@ -43,6 +45,7 @@ impl Pty {
             ws_ypixel: 0,
         };
         assert_eq!(
+            // SAFETY: openpty writes two descriptors into the locals above; a null name and termios are allowed, and `size` lives through the call.
             unsafe {
                 libc::openpty(
                     &mut master,
@@ -54,9 +57,12 @@ impl Pty {
             },
             0
         );
+        // SAFETY: openpty succeeded, so `master` is an open descriptor owned by nothing else.
         let master = unsafe { File::from_raw_fd(master) };
+        // SAFETY: likewise `slave`.
         let slave = unsafe { File::from_raw_fd(slave) };
         let original = flags(&master);
+        // SAFETY: fcntl only changes the flags of the descriptor `master` owns.
         unsafe {
             assert_ne!(
                 libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK),
@@ -74,6 +80,7 @@ impl Pty {
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave.try_clone().unwrap()));
+        // SAFETY: the closure runs in the child before exec and calls only async-signal-safe functions (setsid, ioctl).
         unsafe {
             command.pre_exec(|| {
                 if libc::setsid() == -1 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
@@ -245,11 +252,13 @@ impl Pty {
 fn flags(file: &File) -> libc::tcflag_t {
     let mut term = std::mem::MaybeUninit::uninit();
     assert_eq!(
+        // SAFETY: tcgetattr fills `term` from an open descriptor; it is read only after a 0 return.
         unsafe { libc::tcgetattr(file.as_raw_fd(), term.as_mut_ptr()) },
         0
     );
     // PENDIN is kernel-owned pending-input state, not a terminal mode. macOS
     // may set it when canonical mode is restored with input in flight.
+    // SAFETY: tcgetattr returned 0 above, so `term` is initialised.
     unsafe { term.assume_init() }.c_lflag & !libc::PENDIN
 }
 impl Drop for Pty {
@@ -289,6 +298,7 @@ fn real_terminal_handles_paste_approval_resize_suspend_and_quit() {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
+    // SAFETY: TIOCSWINSZ reads `size`, a local winsize that outlives the call.
     unsafe {
         assert_eq!(
             libc::ioctl(p.master.as_raw_fd(), libc::TIOCSWINSZ as _, &size),
@@ -299,10 +309,12 @@ fn real_terminal_handles_paste_approval_resize_suspend_and_quit() {
     p.wait(|p| flags(&p.master) == p.original);
     let mut stopped = 0;
     assert_eq!(
+        // SAFETY: waitpid writes only into `stopped`, for our own child.
         unsafe { libc::waitpid(p.child.id() as i32, &mut stopped, libc::WUNTRACED) },
         p.child.id() as i32
     );
     assert!(libc::WIFSTOPPED(stopped));
+    // SAFETY: kill only signals our own child.
     unsafe {
         libc::kill(p.child.id() as i32, libc::SIGCONT);
     }
@@ -322,6 +334,7 @@ fn sigterm_restores_terminal_during_a_turn() {
     p.wait(|p| p.output.windows(5).any(|w| w == b"ready"));
     p.send(b"hello\r");
     p.wait(|p| p.count("started") == 1);
+    // SAFETY: kill only signals our own child.
     unsafe {
         libc::kill(p.child.id() as i32, libc::SIGTERM);
     }
@@ -725,6 +738,7 @@ fn reconnect_keeps_the_visible_conversation() {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
+    // SAFETY: TIOCSWINSZ reads `size`, a local winsize that outlives the call.
     unsafe {
         assert_eq!(
             libc::ioctl(p.master.as_raw_fd(), libc::TIOCSWINSZ as _, &size),
@@ -1077,6 +1091,7 @@ fn a_suspend_while_editing_leaves_the_terminal_usable() {
     let deadline = Instant::now() + Duration::from_secs(8);
     while !p.screen_shows("after stop") {
         assert!(Instant::now() < deadline, "the edit never came back");
+        // SAFETY: kill only signals the child this test started.
         unsafe {
             libc::kill(pid, libc::SIGCONT);
         }
@@ -1119,6 +1134,7 @@ fn terminating_octet_while_editing_stops_the_editor() {
         "the editor never started"
     );
     let editor_pid = read_pid().unwrap();
+    // SAFETY: kill only signals the child this test started.
     unsafe {
         libc::kill(p.child.id() as libc::pid_t, libc::SIGTERM);
     }

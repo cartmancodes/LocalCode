@@ -482,6 +482,7 @@ dependencies = [
  "octet-testkit",
  "ratatui",
  "serde_json",
+ "thiserror 2.0.21",
  "tokio",
  "unicode-segmentation",
  "unicode-width",

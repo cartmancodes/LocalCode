@@ -1,3 +1,7 @@
+//! The live driver against the fake vendor: connection, turns, approvals,
+//! modes, timeouts and shutdown for both protocols.
+// Test code: an unwrap that fails is the test failing.
+#![allow(clippy::unwrap_used)]
 use octet_engine::live::{
     spawn, spawn_with_limits, Command, Config, Engine, Event, Limits, Mode, Outcome,
 };

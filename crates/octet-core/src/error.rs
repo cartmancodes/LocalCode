@@ -6,32 +6,46 @@ use thiserror::Error;
 /// A goal could not be set, loaded, saved or changed.
 #[derive(Debug, Error)]
 pub enum GoalError {
+    /// The objective is empty, too long, or not one line.
     #[error("Goal must be 1–8192 bytes on one line")]
     InvalidObjective,
+    /// The goal file could not be read.
     #[error("Cannot read goal: {0}")]
     Read(#[source] io::Error),
+    /// The goal file is larger than a goal can be.
     #[error("Goal file exceeds 48 KiB")]
     TooLarge,
+    /// The goal file is not valid JSON.
     #[error("Invalid goal file: {0}")]
     Parse(#[source] serde_json::Error),
+    /// The goal file has no objective.
     #[error("Goal objective missing")]
     MissingObjective,
+    /// The goal file's status is not one Octet writes.
     #[error("Invalid goal status")]
     InvalidStatus,
+    /// The goal file's turn count is missing or out of range.
     #[error("Invalid goal turn count")]
     InvalidTurns,
+    /// The goal path has no parent directory.
     #[error("Invalid goal path")]
     InvalidPath,
+    /// The goal could not be written.
     #[error("Cannot save goal: {0}")]
     Save(#[source] io::Error),
+    /// The goal file could not be removed.
     #[error("Cannot clear goal: {0}")]
     Clear(#[source] io::Error),
+    /// A goal is already active.
     #[error("Pause or clear the active goal before replacing it")]
     AlreadyActive,
+    /// There is no goal to act on.
     #[error("No goal set")]
     NoGoal,
+    /// The goal is already complete.
     #[error("Goal is already complete; set a new goal to continue.")]
     Complete,
+    /// The goal used all its turns.
     #[error("Goal reached the 200-turn guard. Set a new goal to continue.")]
     TurnGuard,
     /// A new goal was not kept because saving it failed.
@@ -45,12 +59,16 @@ pub enum GoalError {
 /// A `/model` argument that names no usable model.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SelectionError {
+    /// No model or provider was given.
     #[error("Use /model <name>, /model codex <name>, /model claude <name>, or /model <provider> default")]
     Empty,
+    /// The words do not form a model selection.
     #[error("Use /model <name> or /model <codex|claude> <name>")]
     Syntax,
+    /// The demo has no models to select.
     #[error("Choose a real provider: /model codex or /model claude. Demo has no model.")]
     Demo,
+    /// The model name is empty, too long, or has control characters.
     #[error("Model must be a non-empty vendor model name, at most 256 bytes")]
     InvalidModel,
 }
@@ -58,8 +76,10 @@ pub enum SelectionError {
 /// A session's journal could not be started.
 #[derive(Debug, Error)]
 pub enum SessionError {
+    /// The journal file could not be created.
     #[error("Cannot create transcript journal: {0}")]
     Create(#[source] io::Error),
+    /// The journal's first record could not be written.
     #[error("Cannot write transcript journal: {0}")]
     Write(#[source] io::Error),
 }
@@ -67,12 +87,30 @@ pub enum SessionError {
 /// `/export` could not copy the journal.
 #[derive(Debug, Error)]
 pub enum ExportError {
+    /// The journal could not be read.
     #[error("Cannot read journal {}: {source}", path.display())]
-    Read { path: PathBuf, source: io::Error },
+    Read {
+        /// The file involved.
+        path: PathBuf,
+        /// What the OS said.
+        source: io::Error,
+    },
+    /// The export file could not be created (it may already exist).
     #[error("Cannot create {}: {source}", path.display())]
-    Create { path: PathBuf, source: io::Error },
+    Create {
+        /// The file involved.
+        path: PathBuf,
+        /// What the OS said.
+        source: io::Error,
+    },
+    /// The export file could not be written.
     #[error("Cannot write {}: {source}", path.display())]
-    Write { path: PathBuf, source: io::Error },
+    Write {
+        /// The file involved.
+        path: PathBuf,
+        /// What the OS said.
+        source: io::Error,
+    },
 }
 
 #[cfg(test)]

@@ -10,6 +10,10 @@ use tokio::{
 };
 const LIMIT: u64 = 64 * 1024 * 1024;
 /// Opens a new owner-only file for writing; fails if `path` exists.
+///
+/// # Errors
+///
+/// Fails if `path` exists or cannot be created.
 pub async fn create_private(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .write(true)
@@ -18,13 +22,21 @@ pub async fn create_private(path: &Path) -> io::Result<File> {
         .open(path)
         .await
 }
+/// One session's append-only JSONL record, owner-only and capped at 64 MiB.
 pub struct Journal {
     file: File,
+    /// Where the journal is on disk.
     pub path: PathBuf,
     bytes: u64,
     sequence: u64,
 }
 impl Journal {
+    /// Creates a new journal in `directory`, named by time and process ID so
+    /// two sessions never share one.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `directory` cannot be created or the file cannot be opened.
     pub async fn create(directory: &Path) -> io::Result<Self> {
         fs::create_dir_all(directory).await?;
         let nonce = SystemTime::now()
@@ -40,6 +52,12 @@ impl Journal {
             sequence: 0,
         })
     }
+    /// Appends one record of type `kind`; `durable` also flushes it to disk,
+    /// for records that must survive a crash (turn ends, shutdown).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the write fails or would take the journal past 64 MiB.
     pub async fn append(
         &mut self,
         kind: &str,

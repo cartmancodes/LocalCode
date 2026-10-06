@@ -1,3 +1,5 @@
+//! The terminal interface: the session loop that joins keys, vendor events,
+//! `!` commands and the screen.
 mod app;
 mod clipboard;
 mod commands;
@@ -152,6 +154,13 @@ pub(crate) enum Exit {
 pub fn command_names() -> impl Iterator<Item = &'static str> {
     COMMANDS.iter().map(|spec| spec.name)
 }
+/// Runs the interface until the user quits, reconnecting for `/new`,
+/// `/reconnect`, `/model` and full-access changes. Journals go in `directory`.
+///
+/// # Errors
+///
+/// Fails if the terminal cannot be set up or read, or a session cannot
+/// start (for example, the journal directory is not writable).
 pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     let old = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -269,7 +278,7 @@ async fn attach_goal_store(app: &mut App, store: octet_core::goal::GoalStore) {
 }
 /// A `!` command running in the background.
 struct ShellTask {
-    task: tokio::task::JoinHandle<Result<shell::Ran, String>>,
+    task: tokio::task::JoinHandle<Result<shell::Ran, shell::ShellError>>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
     attach: bool,
 }
@@ -363,7 +372,7 @@ async fn run_session(
                 }
             } => {
                 let attach = shell_task.take().is_some_and(|running| running.attach);
-                let result = result.unwrap_or_else(|error| Err(format!("The command failed: {error}")));
+                let result = result.unwrap_or_else(|error| Err(error.into()));
                 shell_finished(app, result, attach);
                 dirty = true;
             }
@@ -380,7 +389,7 @@ async fn run_session(
                     regain_terminal(guard, terminal, &mut input)?;
                     match edit.finish(status.is_ok_and(|status| status.success())) {
                         Ok(text) => app.composer.editor.set(text),
-                        Err(error) => app.notice(error),
+                        Err(error) => app.notice(error.to_string()),
                     }
                 }
                 dirty = true;
@@ -413,7 +422,7 @@ async fn run_session(
                     Action::RemoteControl => start_remote_check(app, &mut remote_check),
                     Action::ExternalEditor => {
                         match external::prepare(&app.composer.editor.text, external::editor_command()) {
-                            Err(error) => app.notice(error),
+                            Err(error) => app.notice(error.to_string()),
                             Ok(edit) => {
                                 // Stop reading keys so the editor gets them all.
                                 input = None;
@@ -569,7 +578,7 @@ async fn stop_editor(editing: &mut Option<(tokio::process::Child, external::Edit
 }
 /// A `!` command's result: in the transcript, on the status line in place
 /// of "Running …", and attached when asked.
-fn shell_finished(app: &mut App, result: Result<shell::Ran, String>, attach: bool) {
+fn shell_finished(app: &mut App, result: Result<shell::Ran, shell::ShellError>, attach: bool) {
     app.composer.shell_running = false;
     match result {
         Ok(ran) => {
@@ -579,7 +588,7 @@ fn shell_finished(app: &mut App, result: Result<shell::Ran, String>, attach: boo
                 app.attach(ran);
             }
         }
-        Err(error) => app.error(error),
+        Err(error) => app.error(error.to_string()),
     }
 }
 /// Starts the `/remote-control` checks in the background. They take up to

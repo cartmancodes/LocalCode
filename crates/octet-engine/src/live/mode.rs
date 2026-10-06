@@ -9,16 +9,30 @@ use tokio::sync::mpsc;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
     #[default]
+    /// Ask before edits and commands.
     Ask,
+    /// Edits proceed; other actions ask.
     AcceptEdits,
+    /// The vendor's own reviewer decides each approval.
     Auto,
+    /// No checks at all; only reached by reconnecting.
     FullAccess,
 }
 impl Mode {
+    /// Every mode, from strictest to most open.
     pub const ALL: [Mode; 4] = [Mode::Ask, Mode::AcceptEdits, Mode::Auto, Mode::FullAccess];
+    /// The mode named by its label.
+    ///
+    /// ```
+    /// use octet_engine::live::Mode;
+    ///
+    /// assert_eq!(Mode::parse("accept-edits"), Some(Mode::AcceptEdits));
+    /// assert_eq!(Mode::parse("bypassPermissions"), None);
+    /// ```
     pub fn parse(value: &str) -> Option<Mode> {
         Self::ALL.into_iter().find(|mode| mode.label() == value)
     }
+    /// The name users type and the header shows.
     pub fn label(self) -> &'static str {
         match self {
             Mode::Ask => "ask",
@@ -36,6 +50,7 @@ impl Mode {
             Mode::FullAccess => Mode::FullAccess,
         }
     }
+    /// What this mode means for `engine`, for `/mode`.
     pub fn describe(self, engine: Engine) -> &'static str {
         match (engine, self) {
             (Engine::Claude, Mode::Ask) => "Claude asks before edits and commands (permission mode default)",

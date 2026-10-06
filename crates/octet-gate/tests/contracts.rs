@@ -1,3 +1,5 @@
+//! The gate's fixture replies: each allows only the exact request its
+//! scenario expects.
 use octet_gate::{
     claude_fixture_allow, claude_fixture_hook_response, claude_fixture_mcp_response,
     claude_fixture_mcp_tool_allow, codex_fixture_allow, codex_fixture_user_input,

@@ -1,3 +1,4 @@
+//! `octet`: parses the command line and starts the terminal interface.
 use octet_core::Config;
 use std::{io::IsTerminal, path::PathBuf};
 /// `--help`: fixed usage and keys, then every command from the registry.

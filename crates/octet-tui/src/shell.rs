@@ -53,8 +53,25 @@ pub fn duration_text(limit: Duration) -> String {
     }
 }
 
+/// Why a `!` command could not run to completion.
+#[derive(Debug, thiserror::Error)]
+pub enum ShellError {
+    #[error("Cannot run {shell}: {source}")]
+    Run {
+        shell: String,
+        source: std::io::Error,
+    },
+    /// The task running the command panicked or was cancelled.
+    #[error("The command failed: {0}")]
+    Task(#[from] tokio::task::JoinError),
+}
+
 /// Runs `command` with the user's shell (`$SHELL`, else `sh`).
-pub async fn run(command: &str, cwd: &Path, cancel: oneshot::Receiver<()>) -> Result<Ran, String> {
+pub async fn run(
+    command: &str,
+    cwd: &Path,
+    cancel: oneshot::Receiver<()>,
+) -> Result<Ran, ShellError> {
     let shell = std::env::var("SHELL")
         .ok()
         .filter(|shell| !shell.is_empty())
@@ -68,8 +85,11 @@ async fn run_with(
     cwd: &Path,
     mut cancel: oneshot::Receiver<()>,
     limit: Duration,
-) -> Result<Ran, String> {
-    let fail = |e: std::io::Error| format!("Cannot run {shell}: {e}");
+) -> Result<Ran, ShellError> {
+    let fail = |source| ShellError::Run {
+        shell: shell.to_owned(),
+        source,
+    };
     // One pipe for stdout and stderr keeps their order.
     let (reader, writer) = std::io::pipe().map_err(fail)?;
     let mut child = {
@@ -144,9 +164,10 @@ fn wait_exit(pid: Option<u32>) {
         return;
     };
     loop {
+        // SAFETY: siginfo_t is plain C data, for which all zeroes is valid.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
         // SAFETY: waitid writes only into `info`; WNOWAIT leaves the child
         // for tokio to reap.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
         let result =
             unsafe { libc::waitid(libc::P_PID, pid, &mut info, libc::WEXITED | libc::WNOWAIT) };
         if result == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
@@ -354,6 +375,10 @@ mod tests {
         let error = run_with("/no/such/shell", "true", Path::new("."), cancel, TIME_LIMIT)
             .await
             .unwrap_err();
-        assert!(error.contains("/no/such/shell"), "{error}");
+        assert!(matches!(error, ShellError::Run { .. }));
+        assert!(
+            error.to_string().starts_with("Cannot run /no/such/shell: "),
+            "{error}"
+        );
     }
 }

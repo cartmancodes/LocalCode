@@ -2,12 +2,28 @@
 use crate::{Config, Engine, SelectionError};
 use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A `/model` choice: which provider, and which of its models.
 pub struct Selection {
     /// Claude or Codex; `parse` never yields `Demo`.
     pub provider: Engine,
+    /// The model name; `None` uses the provider's default.
     pub model: Option<String>,
 }
 impl Selection {
+    /// Parses a `/model` argument; a bare model name keeps the `current`
+    /// provider.
+    ///
+    /// ```
+    /// use octet_core::{model::Selection, Engine};
+    ///
+    /// let both = Selection::parse("claude sonnet", Engine::Codex).unwrap();
+    /// assert_eq!(both, Selection::parse("claude/sonnet", Engine::Codex).unwrap());
+    /// assert_eq!(Selection::parse("codex", Engine::Claude).unwrap().model, None);
+    /// ```
+    /// # Errors
+    ///
+    /// Fails for empty or malformed input, the demo engine, or an invalid
+    /// model name.
     pub fn parse(input: &str, current: Engine) -> Result<Self, SelectionError> {
         let vendor = |name: &str| Engine::parse(name).filter(|engine| engine.is_vendor());
         let parts: Vec<_> = input.split_whitespace().collect();
@@ -37,6 +53,8 @@ impl Selection {
             model: (model != "default").then(|| model.into()),
         })
     }
+    /// The configuration for the next connection: the same provider resumes
+    /// `session` and keeps its binary; another provider starts fresh.
     pub fn configure(&self, current: &Config, session: &str, binary: Option<PathBuf>) -> Config {
         let same = self.provider == current.engine;
         Config {

@@ -38,6 +38,15 @@ This is the gate every change must pass. It runs, in order:
 2. `cargo test --locked --workspace`
 3. `cargo clippy --locked --workspace --all-targets -- -D warnings`
 
+Clippy also enforces the house Rust rules, set as workspace lints in
+`Cargo.toml`: no `unwrap()` outside tests (use `?` or `expect` with the reason
+it cannot fail), a `// SAFETY:` comment on every `unsafe` block, docs on every
+public item with `# Errors` and `# Panics` sections where they apply, and
+borrowing over taking ownership you do not need. The full guidance is the
+[rust-engineer skill](.claude/skills/rust-engineer/SKILL.md), which Claude Code
+loads when it works on this repository; its "In this repository" section
+lists what applies here.
+
 The tests include real pseudoterminal tests in `crates/octet/tests/terminal.rs`
 that start the `octet` binary and read its screen, so run them in a normal
 terminal session. Tests marked `#[ignore]` either need the real vendor CLIs

@@ -1,3 +1,5 @@
+//! The session boundary end to end: events reach the journal before the
+//! interface, and shutdown drains them.
 use octet_core::{Command, Config, Engine, Event, Session};
 use std::time::Duration;
 #[tokio::test]

@@ -18,6 +18,7 @@ use demo::demo;
 use driver::vendor;
 pub use mode::Mode;
 
+/// The longest prompt, in bytes, Octet sends to a vendor.
 pub const PROMPT_LIMIT: usize = 64 * 1024;
 const EVENT_CAPACITY: usize = 128;
 const EVENT_BYTES: usize = 32 * 1024;
@@ -55,18 +56,31 @@ impl Default for Limits {
 /// The backend a session drives. Journals and the CLI use `as_str()`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Engine {
+    /// Claude Code, over its stream-json protocol.
     Claude,
+    /// Codex, over its app-server JSON-RPC protocol.
     Codex,
     /// Offline preview; no vendor process.
     Demo,
 }
 impl Engine {
+    /// Every engine, in the order help lists them.
     pub const ALL: [Engine; 3] = [Engine::Codex, Engine::Claude, Engine::Demo];
+    /// The engine named `value` (`codex`, `claude` or `demo`), exactly as
+    /// spelled.
+    ///
+    /// ```
+    /// use octet_engine::live::Engine;
+    ///
+    /// assert_eq!(Engine::parse("claude"), Some(Engine::Claude));
+    /// assert_eq!(Engine::parse("Claude"), None);
+    /// ```
     pub fn parse(value: &str) -> Option<Engine> {
         Self::ALL
             .into_iter()
             .find(|engine| engine.as_str() == value)
     }
+    /// The CLI and journal spelling.
     pub fn as_str(self) -> &'static str {
         match self {
             Engine::Claude => "claude",
@@ -74,6 +88,7 @@ impl Engine {
             Engine::Demo => "demo",
         }
     }
+    /// A real vendor CLI, not the offline demo.
     pub fn is_vendor(self) -> bool {
         self != Engine::Demo
     }
@@ -85,12 +100,19 @@ impl std::fmt::Display for Engine {
 }
 
 #[derive(Clone, Debug)]
+/// Everything needed to start one session.
 pub struct Config {
+    /// Which backend.
     pub engine: Engine,
+    /// The vendor CLI to run.
     pub binary: PathBuf,
+    /// The workspace the vendor works in.
     pub cwd: PathBuf,
+    /// A model to request; `None` takes the vendor's default.
     pub model: Option<String>,
+    /// A vendor session to resume; `None` starts a new one.
     pub resume: Option<String>,
+    /// The permission mode to start in.
     pub mode: Mode,
     /// How long an approval waits for an answer before it is denied.
     pub approval_timeout: Duration,
@@ -112,9 +134,13 @@ impl Config {
 /// Provider-owned picker metadata; selection and resolved ID can differ.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelInfo {
+    /// What to pass the vendor to select this model.
     pub selection: String,
+    /// The full model ID it resolves to, when the vendor says.
     pub id: Option<String>,
+    /// The display name.
     pub name: String,
+    /// The vendor's description.
     pub description: String,
 }
 
@@ -161,13 +187,24 @@ fn model_catalog(value: &Value, claude: bool) -> Vec<ModelInfo> {
 /// How a turn ended. Journals and the status line use `as_str()`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
+    /// The turn finished normally.
     Completed,
+    /// The user cancelled it.
     Interrupted,
+    /// The vendor reported a failure.
     Failed,
     /// A status Octet does not map, exactly as the vendor sent it.
     Other(String),
 }
 impl Outcome {
+    /// Maps a vendor status string, keeping unknown ones verbatim.
+    ///
+    /// ```
+    /// use octet_engine::live::Outcome;
+    ///
+    /// assert_eq!(Outcome::from_vendor("completed"), Outcome::Completed);
+    /// assert_eq!(Outcome::from_vendor("inProgress").as_str(), "inProgress");
+    /// ```
     pub fn from_vendor(status: &str) -> Outcome {
         match status {
             "completed" => Outcome::Completed,
@@ -176,6 +213,7 @@ impl Outcome {
             other => Outcome::Other(other.to_owned()),
         }
     }
+    /// The journal and status-line spelling.
     pub fn as_str(&self) -> &str {
         match self {
             Outcome::Completed => "completed",
@@ -192,28 +230,71 @@ impl std::fmt::Display for Outcome {
 }
 
 #[derive(Clone, Debug)]
+/// What a session reports to the interface, in order.
 pub enum Event {
-    Ready { session: String },
+    /// Connected: the vendor session ID (empty until the vendor reports one).
+    Ready {
+        /// The vendor's session or thread ID.
+        session: String,
+    },
+    /// The vendor's model catalog.
     Models(Vec<ModelInfo>),
+    /// The model the vendor confirmed it is using.
     ModelSelected(String),
+    /// The permission mode the vendor confirmed.
     ModeChanged(Mode),
+    /// The user's prompt, as the transcript shows it.
     User(String),
+    /// A turn began.
     Started,
+    /// Streamed reply text.
     Text(String),
+    /// A tool call or result, as a preview.
     Tool(String),
-    Approval { id: u64, detail: String },
+    /// The vendor asks to run something and waits for the user.
+    Approval {
+        /// Octet's ID for answering it.
+        id: u64,
+        /// The full request, as shown to the user.
+        detail: String,
+    },
+    /// An approval was answered, timed out or withdrawn.
     ApprovalClosed(u64),
+    /// Token or cost usage, ready to display.
     Usage(String),
-    Finished { outcome: Outcome },
+    /// The turn ended.
+    Finished {
+        /// How it ended.
+        outcome: Outcome,
+    },
+    /// Something the user should know that is not an error.
     Notice(String),
+    /// Something failed; the text says what.
     Error(String),
+    /// The session ended; no more events follow.
     Stopped,
 }
 #[derive(Debug)]
+/// What the interface asks a session to do.
 pub enum Command {
+    /// Send a prompt, shown as sent.
     Prompt(String),
-    PromptWithDisplay { wire: String, display: String },
-    Answer { id: u64, allow: bool },
+    /// A prompt whose sent text differs from what the transcript shows
+    /// (attachments, goal prompts).
+    PromptWithDisplay {
+        /// What the vendor receives.
+        wire: String,
+        /// What the transcript and journal show.
+        display: String,
+    },
+    /// The user's answer to an approval.
+    Answer {
+        /// The approval's ID from `Event::Approval`.
+        id: u64,
+        /// Allow once, or deny.
+        allow: bool,
+    },
+    /// Switch the permission mode.
     SetMode(Mode),
 }
 impl Command {
@@ -229,8 +310,10 @@ impl Command {
 /// Why a command was not queued.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SendError {
+    /// The prompt is over `PROMPT_LIMIT`.
     #[error("Prompt exceeds the 64 KiB limit")]
     PromptTooLong,
+    /// The command queue is full, or the session has stopped.
     #[error("Session is busy or closed; try again")]
     Busy,
 }
@@ -258,21 +341,30 @@ impl From<&str> for DriverError {
     }
 }
 #[derive(Clone)]
+/// Sends commands to a running session; cheap to clone.
 pub struct Handle {
     commands: mpsc::Sender<Command>,
     interrupt: watch::Sender<u64>,
     stop: watch::Sender<bool>,
 }
 impl Handle {
+    /// Queues `command` without waiting for it to run.
+    ///
+    /// # Errors
+    ///
+    /// `PromptTooLong` for an oversized prompt, or `Busy` if the queue is
+    /// full or the session has stopped.
     pub fn send(&self, command: Command) -> Result<(), SendError> {
         if command.prompt_bytes() > PROMPT_LIMIT {
             return Err(SendError::PromptTooLong);
         }
         self.commands.try_send(command).map_err(|_| SendError::Busy)
     }
+    /// Cancels the running turn, or the connection while it is being made.
     pub fn interrupt(&self) {
         self.interrupt.send_modify(|n| *n = n.wrapping_add(1));
     }
+    /// Stops the session.
     pub fn shutdown(&self) {
         let _ = self.stop.send(true);
     }
@@ -314,6 +406,8 @@ fn limited(text: &str) -> String {
         format!("{}\n[detail exceeds preview limit]", &text[..end])
     }
 }
+/// Starts a session for `config` with the default time limits. Returns
+/// the command handle, the event stream and the driver task.
 pub fn spawn(config: Config) -> (Handle, mpsc::Receiver<Event>, tokio::task::JoinHandle<()>) {
     let limits = Limits {
         approval: config.approval_timeout,

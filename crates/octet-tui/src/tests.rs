@@ -198,7 +198,11 @@ fn a_finished_command_replaces_the_running_notice() {
     assert!(!app.composer.shell_running);
     assert_eq!(app.notice, "$ echo hi · exit 0");
     assert_eq!(app.composer.attachments.len(), 1);
-    shell_finished(&mut app, Err("Cannot run /x: gone".into()), false);
+    let gone = shell::ShellError::Run {
+        shell: "/x".into(),
+        source: std::io::Error::other("gone"),
+    };
+    shell_finished(&mut app, Err(gone), false);
     assert_eq!(app.notice, "Cannot run /x: gone");
 }
 #[tokio::test]
