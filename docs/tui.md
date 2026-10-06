@@ -288,6 +288,20 @@ make rust-check
 scripts/rust-env.sh cargo test --release -p octet terminal_idle_diagnostic -- --ignored --nocapture
 ```
 
+To check the real providers using their existing logins, run the live terminal
+tests explicitly. They make inference calls and use your subscriptions:
+
+```sh
+scripts/rust-env.sh cargo test --release --locked -p octet --test terminal installed_providers_ -- --ignored --nocapture
+```
+
+These check a persistent file-creation goal and a shell attachment reaching the
+provider, followed by copying its reply through OSC 52. Set `OCTET_LIVE_ENGINE`
+to `claude` or `codex` to run just one provider. Optional
+`OCTET_LIVE_CLAUDE_MODEL` and `OCTET_LIVE_CODEX_MODEL` select the models; otherwise
+each CLI uses its default. Provider usage limits and login errors fail these
+checks visibly.
+
 Tests include real pseudoterminals, Unicode paste, approval responses, resize,
 suspension, SIGTERM, terminal mode restoration, duplicate/stale events, cancellation
 and non-overwriting journal export. Live CLI tests are separate from the offline

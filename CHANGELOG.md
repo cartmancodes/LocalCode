@@ -55,4 +55,10 @@ Claude Code and Codex CLIs.
   editor to quit instead of leaving it on the terminal.
 - Dual licensing under MIT or Apache-2.0.
 
+### Fixed
+
+- PTY acceptance tests stop sending Ctrl+C after terminal restoration and
+  capture trailing shutdown output, avoiding false cleanup failures with live
+  providers.
+
 [0.1.0]: https://github.com/cartmancodes/octet/commits/master

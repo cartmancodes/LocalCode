@@ -204,7 +204,12 @@ impl Pty {
         let deadline = Instant::now() + Duration::from_secs(10);
         while self.child.try_wait().unwrap().is_none() {
             assert!(Instant::now() < deadline, "Ctrl+C did not quit Octet");
-            self.send(b"\x03");
+            // Once Octet restores canonical mode, another Ctrl+C is a
+            // terminal signal that can flush its final restoration output.
+            // Let shutdown finish without injecting keys into the shell.
+            if flags(&self.master) != self.original {
+                self.send(b"\x03");
+            }
             for _ in 0..15 {
                 self.drain();
                 std::thread::sleep(Duration::from_millis(10));
@@ -227,7 +232,14 @@ impl Pty {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(self.output.windows(8).any(|w| w == b"\x1b[?1049l"));
+        // The child can finish between drain() and try_wait(). Capture the
+        // terminal restoration bytes it wrote in that interval as well.
+        self.drain();
+        assert!(
+            self.output.windows(8).any(|w| w == b"\x1b[?1049l"),
+            "alternate screen was not restored; output tail={:?}",
+            String::from_utf8_lossy(&self.output[self.output.len().saturating_sub(512)..])
+        );
     }
 }
 fn flags(file: &File) -> libc::tcflag_t {
@@ -567,6 +579,58 @@ fn installed_providers_complete_a_goal_in_auto_mode() {
         fs::remove_dir_all(workspace).unwrap();
     }
 }
+#[test]
+#[ignore = "uses installed vendor CLIs and their subscriptions"]
+fn installed_providers_receive_shell_attachments_and_copy_the_reply() {
+    let chosen = std::env::var("OCTET_LIVE_ENGINE").ok();
+    for engine in ["codex", "claude"]
+        .into_iter()
+        .filter(|engine| chosen.as_deref().is_none_or(|chosen| chosen == *engine))
+    {
+        let workspace = octet_testkit::TempDir::new("octet-live-attachment");
+        fs::create_dir_all(workspace.path()).unwrap();
+        let cwd = workspace.path().to_str().unwrap();
+        let mut args = vec!["--engine", engine, "--binary", engine, "--cwd", cwd];
+        let model = std::env::var(format!("OCTET_LIVE_{}_MODEL", engine.to_uppercase())).ok();
+        if let Some(model) = &model {
+            args.extend(["--model", model.as_str()]);
+        }
+        let mut p = Pty::spawn_with(&args);
+        p.wait_for(Duration::from_secs(45), |p| {
+            p.shows("● ready") || p.count("error") > 0
+        });
+        assert_eq!(p.count("error"), 0, "{engine}: {:?}", p.records());
+        p.send(b"!printf OCTET_ATTACHMENT_OK\r");
+        p.wait(|p| p.screen_shows("+ printf OCTET_ATTACHMENT_OK (exit 0)"));
+        // The marker is absent from the question: only the attachment supplies it.
+        p.send(b"Reply with only the exact output of the attached command. Do not use tools.\r");
+        p.wait_for(Duration::from_secs(90), |p| {
+            p.count("finished") == 1 || p.count("error") > 0
+        });
+        assert_eq!(p.count("error"), 0, "{engine}: {:?}", p.records());
+        let records = p.records();
+        let reply: String = records
+            .iter()
+            .filter(|record| record["type"] == "text")
+            .filter_map(|record| record["data"].as_str())
+            .collect();
+        assert_eq!(reply.trim(), "OCTET_ATTACHMENT_OK", "{engine}");
+        assert!(records.iter().any(|record| {
+            record["type"] == "user"
+                && record["data"]
+                    .as_str()
+                    .is_some_and(|text| text.ends_with("[+ printf OCTET_ATTACHMENT_OK]"))
+        }));
+        p.wait(|p| p.shows("● completed"));
+        p.send(b"/copy\r");
+        // OSC 52 contains base64 of the full marker, as read from the live reply.
+        let clipboard = b"\x1b]52;c;T0NURVRfQVRUQUNITUVOVF9PSw==";
+        p.wait(|p| p.output.windows(clipboard.len()).any(|w| w == clipboard));
+        p.quit();
+        p.finish();
+    }
+}
+
 #[test]
 fn auto_mode_skips_the_demo_dialog_and_shift_tab_cycles() {
     let mut p = Pty::spawn_with(&["--mode", "auto"]);
