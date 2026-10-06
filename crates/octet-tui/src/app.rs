@@ -327,8 +327,8 @@ impl App {
             self.chat.catalog_focus = Some((self.conn.models.len() - (page - 1) * 20).min(20) + 2);
         }
     }
-    fn add(&mut self, role: Role, text: String) {
-        let mut text = clean(&text);
+    fn add(&mut self, role: Role, text: &str) {
+        let mut text = clean(text);
         if text.len() > BLOCK_BYTES {
             let start = text.ceil_char_boundary(text.len() - BLOCK_BYTES);
             text = format!("[Earlier output is in the journal]\n{}", &text[start..]);
@@ -355,7 +355,7 @@ impl App {
     pub fn error(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.notice = clean(&text);
-        self.add(Role::Error, text);
+        self.add(Role::Error, &text);
     }
     #[cfg(test)]
     pub fn last_role(&self) -> Option<Role> {
@@ -364,7 +364,7 @@ impl App {
     pub fn notice(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.notice = clean(&text);
-        self.add(Role::Notice, text);
+        self.add(Role::Notice, &text);
     }
     pub fn event(&mut self, event: Event) {
         match event {
@@ -390,7 +390,7 @@ impl App {
                 }
             }
             Event::User(text) => {
-                self.add(Role::User, text);
+                self.add(Role::User, &text);
                 self.chat.scroll = 0;
             }
             Event::Started => {
@@ -411,9 +411,13 @@ impl App {
                     .back()
                     .is_none_or(|e| e.role != Role::Assistant)
                 {
-                    self.add(Role::Assistant, String::new());
+                    self.add(Role::Assistant, "");
                 }
-                let e = self.chat.entries.back_mut().unwrap();
+                let e = self
+                    .chat
+                    .entries
+                    .back_mut()
+                    .expect("an assistant entry was just ensured");
                 e.text.push_str(&text);
                 self.chat.bytes += text.len();
                 e.width = 0;
@@ -427,7 +431,7 @@ impl App {
             Event::Tool(text) => {
                 self.chat.reply_break = true;
                 self.conn.activity = State::tool(&text);
-                self.add(Role::Tool, text);
+                self.add(Role::Tool, &text);
             }
             Event::Approval { id, detail } => {
                 self.overlay.approvals.push_back((id, clean(&detail)));
@@ -452,7 +456,7 @@ impl App {
             }
             Event::Notice(text) => self.notice(text),
             Event::Error(text) => {
-                self.add(Role::Error, text);
+                self.add(Role::Error, &text);
                 self.conn.status = "error".into();
                 self.conn.activity = State::Error;
             }
@@ -491,7 +495,7 @@ impl App {
         };
         self.add(
             role,
-            format!("$ {}\n{output}{newline}{}", ran.command, ran.summary()),
+            &format!("$ {}\n{output}{newline}{}", ran.command, ran.summary()),
         );
     }
     /// Keeps `ran` for the next prompt, dropping the oldest attachments
@@ -715,7 +719,9 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
             if col == 0 && rows.len() > 1 && word.trim().is_empty() {
                 continue;
             }
-            rows.last_mut().unwrap().push_str(word);
+            rows.last_mut()
+                .expect("rows starts non-empty")
+                .push_str(word);
             col += word_width;
         } else {
             for g in word.graphemes(true) {
@@ -724,7 +730,7 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
                     rows.push(String::new());
                     col = 0;
                 }
-                rows.last_mut().unwrap().push_str(g);
+                rows.last_mut().expect("rows starts non-empty").push_str(g);
                 col += g_width;
             }
         }

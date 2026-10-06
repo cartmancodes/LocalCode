@@ -8,13 +8,22 @@ use octet_store::Journal;
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
 use tokio::{sync::mpsc, time::timeout};
+/// A running session: commands go in through `handle`, journaled events
+/// come out of `events`.
 pub struct Session {
+    /// Sends prompts, answers and mode changes.
     pub handle: Handle,
+    /// Events, each already in the journal.
     pub events: mpsc::Receiver<Event>,
+    /// This session's journal file.
     pub journal: PathBuf,
     task: tokio::task::JoinHandle<()>,
 }
 impl Session {
+    /// Starts a session for `config`, journaling to a new file in `directory`.
+    /// # Errors
+    ///
+    /// Fails if the journal cannot be created or its first record written.
     pub async fn open(config: Config, directory: PathBuf) -> Result<Self, SessionError> {
         let mut journal = Journal::create(&directory)
             .await
@@ -93,6 +102,7 @@ impl Session {
             task,
         })
     }
+    /// Stops the vendor and waits for the last events to be journaled.
     pub async fn shutdown(&mut self) {
         self.handle.shutdown();
         // Keep draining so shutdown and durable terminal events cannot wait on UI.
@@ -148,6 +158,11 @@ fn record(event: &Event) -> (&'static str, Value) {
 }
 
 /// Export a bounded journal snapshot without overwriting any existing file.
+///
+/// # Errors
+///
+/// Fails if the journal cannot be read, or `target` exists or cannot be
+/// written.
 pub async fn export_journal(
     source: &std::path::Path,
     target: &std::path::Path,

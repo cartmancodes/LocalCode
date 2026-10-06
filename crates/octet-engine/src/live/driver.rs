@@ -86,7 +86,7 @@ pub(super) async fn vendor(
         Engine::Demo => return Err("The demo engine has no vendor process".into()),
     };
     let engine = config.engine;
-    let process = Process::spawn(ProcessConfig {
+    let process = Process::spawn(&ProcessConfig {
         executable: config.binary.clone(),
         args: match protocol {
             Protocol::Claude => claude::launch_args(&config),

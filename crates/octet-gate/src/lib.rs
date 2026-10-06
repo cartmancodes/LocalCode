@@ -9,31 +9,51 @@ use thiserror::Error;
 use tokio::time::{timeout, Instant};
 
 #[derive(Debug, Error)]
+/// Why a gate scenario could not finish.
 pub enum GateError {
+    /// The transport failed.
     #[error("transport: {0}")]
     Transport(#[from] ProcessError),
+    /// The scenario ran past its deadline.
     #[error("deadline exceeded")]
     Deadline,
+    /// The vendor exited before the event the scenario waits for.
     #[error("child closed before the expected protocol event")]
     Eof,
+    /// The vendor broke the expected protocol, as described.
     #[error("protocol: {0}")]
     Protocol(&'static str),
 }
 
+/// A vendor process under a scenario, with counters for the contract evidence.
 pub struct GateProcess {
+    /// The vendor process.
     pub process: Process,
+    /// Writes to the vendor.
     pub sender: ProcessSender,
+    /// When the whole scenario must be done.
     pub deadline: Instant,
+    /// Frames received.
     pub event_count: u64,
+    /// Approval requests the vendor sent.
     pub approval_requests: u64,
+    /// MCP tool calls answered.
     pub mcp_calls: u64,
+    /// Hook callbacks answered.
     pub hook_calls: u64,
+    /// Questions the vendor asked the user.
     pub user_questions: u64,
+    /// The vendor's failure kind, when a turn failed.
     pub failure_kind: Option<&'static str>,
+    /// The vendor session ID, once reported.
     pub session_id: Option<String>,
+    /// Context compactions the vendor reported.
     pub compact_boundaries: u64,
+    /// Completed assistant messages.
     pub agent_messages: u64,
+    /// Turns whose usage arrived after their last message.
     pub late_usage_turns: u64,
+    /// Turns with tool items but no assistant message.
     pub tool_only_turns: u64,
     turn_agent_messages: u64,
     turn_tool_items: u64,
@@ -42,13 +62,19 @@ pub struct GateProcess {
 }
 
 impl GateProcess {
+    /// Starts `executable` with `args` in `cwd`; the scenario must end by
+    /// `deadline`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the vendor cannot start.
     pub fn spawn(
         executable: PathBuf,
         args: Vec<OsString>,
         cwd: PathBuf,
         deadline: Instant,
     ) -> Result<Self, GateError> {
-        let process = Process::spawn(ProcessConfig {
+        let process = Process::spawn(&ProcessConfig {
             executable,
             args,
             cwd: Some(cwd),
@@ -81,6 +107,11 @@ impl GateProcess {
         })
     }
 
+    /// Sends one frame before the deadline.
+    ///
+    /// # Errors
+    ///
+    /// `Deadline` if time runs out, or `Transport` if the write fails.
     pub async fn send(&self, value: &Value) -> Result<(), GateError> {
         timeout(
             self.deadline.saturating_duration_since(Instant::now()),
@@ -91,6 +122,12 @@ impl GateProcess {
         Ok(())
     }
 
+    /// The next frame, counted into the evidence.
+    ///
+    /// # Errors
+    ///
+    /// `Deadline` if time runs out, `Eof` if the vendor exits, or
+    /// `Transport` for a bad frame.
     pub async fn receive(&mut self) -> Result<Value, GateError> {
         let value = timeout(
             self.deadline.saturating_duration_since(Instant::now()),
@@ -158,6 +195,7 @@ impl GateProcess {
         Ok(value)
     }
 
+    /// Stops the vendor and its process group.
     pub async fn shutdown(&mut self) -> ShutdownReport {
         self.process.shutdown().await
     }
@@ -183,6 +221,7 @@ pub fn codex_fixture_allow(value: &Value, expected_cwd: &std::path::Path) -> Opt
     Some(json!({"id":value.get("id")?,"result":{"decision":"accept"}}))
 }
 
+/// Answers a Codex question with each question's first option.
 pub fn codex_fixture_user_input(value: &Value) -> Option<Value> {
     if value.get("method")?.as_str()? != "item/tool/requestUserInput" {
         return None;
@@ -230,6 +269,8 @@ pub fn claude_fixture_allow(value: &Value, expected_cwd: &std::path::Path) -> Op
     )
 }
 
+/// Answers the fixture MCP server's messages; the flag is true for a tool
+/// call.
 pub fn claude_fixture_mcp_response(value: &Value) -> Option<(Value, bool)> {
     if value.get("type")?.as_str()? != "control_request"
         || value.pointer("/request/subtype")?.as_str()? != "mcp_message"
@@ -284,6 +325,7 @@ pub fn claude_fixture_mcp_response(value: &Value) -> Option<(Value, bool)> {
     ))
 }
 
+/// Allows only the fixture MCP tool.
 pub fn claude_fixture_mcp_tool_allow(value: &Value) -> Option<Value> {
     if value.pointer("/request/subtype")?.as_str()? != "can_use_tool"
         || value.pointer("/request/tool_name")?.as_str()? != "mcp__fixture__fixture_echo"
@@ -296,6 +338,7 @@ pub fn claude_fixture_mcp_tool_allow(value: &Value) -> Option<Value> {
     )
 }
 
+/// Continues the fixture hook callback, and nothing else.
 pub fn claude_fixture_hook_response(value: &Value) -> Option<Value> {
     if value.pointer("/request/subtype")?.as_str()? != "hook_callback"
         || value.pointer("/request/callback_id")?.as_str()? != "hook_0"

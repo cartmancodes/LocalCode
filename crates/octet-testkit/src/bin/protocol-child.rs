@@ -1,3 +1,7 @@
+//! A fake Codex/Claude vendor for tests: it speaks just enough of each
+//! protocol to drive Octet through scripted scenarios.
+// Test fixture: a panic here fails the test that started it.
+#![allow(clippy::unwrap_used)]
 use serde_json::{json, Value};
 use std::{
     env,

@@ -81,12 +81,14 @@ fn testkit_bin(name: &str) -> PathBuf {
 /// failing test does not leave it behind. The path is not created.
 pub struct TempDir(PathBuf);
 impl TempDir {
+    /// A fresh path named after `prefix`, unique within this test run.
     pub fn new(prefix: &str) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("{prefix}-{}-{n}", std::process::id()));
         Self(path)
     }
+    /// The path; the directory exists only once a test creates it.
     pub fn path(&self) -> &Path {
         &self.0
     }

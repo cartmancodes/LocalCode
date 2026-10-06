@@ -3,6 +3,8 @@
 //! names a credential store or a secret-looking environment variable.
 //! It replaces the Python guard (`backend/app/invariants.py`) removed with the
 //! Python code; the marker list is unchanged.
+// Test code: an unwrap that fails is the test failing.
+#![allow(clippy::unwrap_used)]
 use std::path::{Path, PathBuf};
 
 const MARKERS: [&str; 12] = [

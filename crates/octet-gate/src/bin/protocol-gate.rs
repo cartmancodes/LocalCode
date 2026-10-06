@@ -1,3 +1,5 @@
+//! `protocol-gate`: runs one scenario against a real vendor CLI and prints
+//! the contract evidence as JSON.
 use octet_gate::{
     claude_fixture_allow, claude_fixture_hook_response, claude_fixture_mcp_response,
     claude_fixture_mcp_tool_allow, codex_fixture_allow, codex_fixture_user_input, GateError,
@@ -585,7 +587,7 @@ async fn main() {
     };
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .expect("the clock is after 1970")
         .as_nanos();
     let temporary = opt.workdir.is_none();
     let cwd = opt.workdir.clone().unwrap_or_else(|| {
@@ -754,7 +756,8 @@ async fn main() {
         status = "failed: denied or interrupted fixture write occurred".into();
     }
     let evidence = json!({"engine":opt.engine,"scenario":opt.scenario,"version":version(&opt.binary).await,"host":env::consts::OS,"arch":env::consts::ARCH,"status":status,"events":events,"approval_requests":approvals,"mcp_calls":mcp_calls,"hook_calls":hook_calls,"compact_boundaries":compact_boundaries,"agent_messages":agent_messages,"late_usage_turns":late_usage_turns,"tool_only_turns":tool_only_turns,"user_questions":user_questions,"failure_kind":failure_kind,"fixture_write":fixture_write,"child_cleanup":cleaned,"elapsed_ms":started.elapsed().as_millis()});
-    let serialized = serde_json::to_string_pretty(&evidence).unwrap();
+    let serialized =
+        serde_json::to_string_pretty(&evidence).expect("evidence is plain JSON values");
     if let Some(path) = opt.output {
         if fs::write(path, &serialized).is_err() {
             eprintln!("cannot write evidence");

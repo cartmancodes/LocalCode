@@ -22,9 +22,13 @@ use tokio::{
 };
 
 #[derive(Clone, Debug)]
+/// How to start a vendor process and how much of it to hold in memory.
 pub struct ProcessConfig {
+    /// The program to run.
     pub executable: PathBuf,
+    /// Its arguments.
     pub args: Vec<OsString>,
+    /// Its working directory; `None` keeps the caller's.
     pub cwd: Option<PathBuf>,
     /// Maximum number of bytes in one JSON payload, excluding LF.
     pub max_frame_bytes: usize,
@@ -39,17 +43,27 @@ pub struct ProcessConfig {
 }
 
 #[derive(Debug, Error)]
+/// Why the transport could not start, read or write.
 pub enum ProcessError {
+    /// The configuration's limits contradict each other.
     #[error("invalid process configuration: {0}")]
     InvalidConfig(&'static str),
+    /// Spawning, reading or writing the child failed.
     #[error("process I/O failed: {0}")]
     Io(#[from] io::Error),
+    /// A frame, sent or received, is over `max_frame_bytes`.
     #[error("JSON frame exceeds {limit} bytes")]
-    FrameTooLarge { limit: usize },
+    FrameTooLarge {
+        /// The limit it exceeded.
+        limit: usize,
+    },
+    /// A received line is not valid JSON.
     #[error("invalid JSON frame: {0}")]
     InvalidJson(#[from] serde_json::Error),
+    /// The reader stopped, so no more frames can arrive.
     #[error("process output queue closed")]
     QueueClosed,
+    /// The child's stdin is gone: it exited, or shutdown began.
     #[error("process stdin is closed")]
     StdinClosed,
 }
@@ -60,12 +74,19 @@ enum FrameEvent {
 }
 
 #[derive(Clone)]
+/// A cloneable handle that writes frames to the child's stdin.
 pub struct ProcessSender {
     stdin: Arc<AsyncMutex<Option<ChildStdin>>>,
     max_frame_bytes: usize,
 }
 
 impl ProcessSender {
+    /// Writes `value` as one JSON line.
+    ///
+    /// # Errors
+    ///
+    /// `FrameTooLarge` if it serializes past the frame limit, `StdinClosed`
+    /// once the child's stdin is gone, or `Io` if the write fails.
     pub async fn send(&self, value: &Value) -> Result<(), ProcessError> {
         // Serialize under the lock so concurrent senders cannot retain payload buffers.
         let mut guard = self.stdin.lock().await;
@@ -110,21 +131,30 @@ impl io::Write for LimitedPayload {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// How far shutdown had to go.
 pub enum ShutdownStage {
+    /// The child exited on its own once stdin closed.
     AlreadyExited,
+    /// The process group needed SIGTERM.
     Term,
+    /// The process group needed SIGKILL.
     Kill,
 }
 
 #[derive(Clone, Debug)]
+/// What shutdown did, for callers that must confirm nothing is left running.
 pub struct ShutdownReport {
+    /// The child itself was waited for.
     pub reaped: bool,
+    /// The strongest step taken.
     pub stage: ShutdownStage,
     /// Whether the owned process group was no longer observable after shutdown.
     pub descendants_stopped: bool,
+    /// The last bytes the child wrote to stderr, for error messages.
     pub stderr_tail: Vec<u8>,
 }
 
+/// A vendor CLI in its own process group, read as bounded JSON lines.
 pub struct Process {
     child: Child,
     sender: ProcessSender,
@@ -143,7 +173,16 @@ pub struct Process {
 impl Process {
     /// Starts the child and its reader tasks. Call it inside a Tokio runtime:
     /// the pipes register with the runtime's reactor.
-    pub fn spawn(config: ProcessConfig) -> Result<Self, ProcessError> {
+    ///
+    /// # Errors
+    ///
+    /// `InvalidConfig` if the limits contradict each other, or `Io` if the
+    /// child cannot start.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the OS reports no process ID for the child it just started.
+    pub fn spawn(config: &ProcessConfig) -> Result<Self, ProcessError> {
         if config.max_frame_bytes == 0 || config.max_frame_bytes > config.queue_bytes {
             return Err(ProcessError::InvalidConfig(
                 "max_frame_bytes must fit inside queue_bytes",
@@ -215,10 +254,17 @@ impl Process {
         })
     }
 
+    /// A handle for writing to the child.
     pub fn sender(&self) -> ProcessSender {
         self.sender.clone()
     }
 
+    /// The next JSON line from the child; `None` once its output ends.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidJson` or `FrameTooLarge` for a bad line, or `Io` if reading
+    /// fails. After an error the stream ends.
     pub async fn next_frame(&mut self) -> Result<Option<Value>, ProcessError> {
         if self.receive_failed {
             return Ok(None);
@@ -244,6 +290,13 @@ impl Process {
         }
     }
 
+    /// Stops the child and its group: closes stdin, waits `shutdown_grace`,
+    /// then SIGTERM and SIGKILL as needed. Calling it again returns the first
+    /// report.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stderr reader panicked while holding its buffer.
     #[must_use = "a failed cleanup is only visible in the report"]
     pub async fn shutdown(&mut self) -> ShutdownReport {
         if let Some(report) = &self.shutdown_report {

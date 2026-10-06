@@ -122,7 +122,10 @@ impl Editor {
                 lines.push(String::new());
                 col = 0;
             } else {
-                lines.last_mut().unwrap().push_str(g);
+                lines
+                    .last_mut()
+                    .expect("lines starts non-empty")
+                    .push_str(g);
                 col += g.width();
             }
             byte += g.len();
