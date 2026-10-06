@@ -1109,24 +1109,24 @@ fn terminating_octet_while_editing_stops_the_editor() {
     let mut p = Pty::spawn_with_env(&[], &[("EDITOR", editor.to_str().unwrap()), ("VISUAL", "")]);
     p.wait(|p| p.shows("● ready"));
     p.send(b"\x07");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let editor_pid = loop {
-        if let Ok(text) = fs::read_to_string(&pid_file) {
-            if let Ok(pid) = text.trim().parse::<libc::pid_t>() {
-                break pid;
-            }
-        }
-        assert!(Instant::now() < deadline, "the editor never started");
-        std::thread::sleep(Duration::from_millis(20));
+    let read_pid = || {
+        fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse::<libc::pid_t>().ok())
     };
+    assert!(
+        octet_testkit::wait_until(Duration::from_secs(5), || read_pid().is_some()),
+        "the editor never started"
+    );
+    let editor_pid = read_pid().unwrap();
     unsafe {
         libc::kill(p.child.id() as libc::pid_t, libc::SIGTERM);
     }
     p.finish();
-    let deadline = Instant::now() + Duration::from_secs(3);
     // SAFETY: signal 0 only checks that the process exists.
-    while unsafe { libc::kill(editor_pid, 0) } == 0 {
-        assert!(Instant::now() < deadline, "the editor outlived Octet");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let gone = || unsafe { libc::kill(editor_pid, 0) } != 0;
+    assert!(
+        octet_testkit::wait_until(Duration::from_secs(3), gone),
+        "the editor outlived Octet"
+    );
 }

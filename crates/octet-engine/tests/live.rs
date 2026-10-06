@@ -789,6 +789,7 @@ async fn other_thread_chatter_does_not_keep_a_silent_turn_alive() {
         }
     };
     assert!(error.contains("sent nothing for 1 second"), "{error}");
+    // The 1 s idle limit fired, not a longer one.
     assert!(
         sent.elapsed() < Duration::from_millis(2200),
         "{:?}",

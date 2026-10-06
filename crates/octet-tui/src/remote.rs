@@ -650,6 +650,7 @@ esac
     async fn run_gives_up_after_the_timeout() {
         let started = std::time::Instant::now();
         assert_eq!(run("sleep", &["10"]).await, None);
+        // Stopped at the 2 s check limit, not after the 10 s sleep.
         assert!(started.elapsed() < std::time::Duration::from_secs(4));
         assert_eq!(run("echo", &["hi"]).await.as_deref(), Some("hi\n"));
         assert_eq!(run("octet-no-such-program", &[]).await, None);

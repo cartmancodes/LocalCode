@@ -262,7 +262,12 @@ mod tests {
         let started = std::time::Instant::now();
         // Without the fix this waits the full 60 s; the bound leaves room
         // for a machine busy with the rest of the suite.
-        let ran = sh("perl -MPOSIX -e 'setsid(); sleep 60' & sleep 0.5; echo started").await;
+        let escaped = octet_testkit::detached_sleep();
+        let ran = sh(&format!(
+            "'{}' 60 & sleep 0.5; echo started",
+            escaped.display()
+        ))
+        .await;
         assert!(ran.output.contains("started"), "{}", ran.output);
         assert!(
             started.elapsed() < Duration::from_secs(30),
@@ -274,14 +279,14 @@ mod tests {
     async fn commands_reading_stdin_finish_at_once() {
         let started = std::time::Instant::now();
         assert_eq!(sh("cat").await.status, Status::Exited(0));
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < octet_testkit::QUICK);
     }
     #[tokio::test]
     async fn background_children_do_not_hold_it_open() {
         let started = std::time::Instant::now();
         let ran = sh("sleep 30 & echo done").await;
         assert_eq!(ran.output, "done\n");
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < octet_testkit::QUICK);
     }
     #[tokio::test]
     async fn cancel_stops_the_whole_pipeline() {
@@ -302,7 +307,7 @@ mod tests {
         let ran = task.await.unwrap().unwrap();
         assert_eq!(ran.status, Status::Cancelled);
         assert_eq!(ran.summary(), "cancelled");
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < octet_testkit::QUICK);
     }
     #[tokio::test]
     async fn times_out() {

@@ -210,6 +210,7 @@ async fn slow_work_off_the_loop_gives_up_at_its_limit() {
     })
     .await;
     assert_eq!(slow, None);
+    // Gave up at its 50 ms limit, long before the 2 s of work would end.
     assert!(started.elapsed() < Duration::from_secs(1));
     assert_eq!(off_loop(Duration::from_secs(1), || 5).await, Some(5));
 }

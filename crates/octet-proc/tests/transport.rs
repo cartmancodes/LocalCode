@@ -292,7 +292,7 @@ async fn oversized_send_does_not_close_healthy_pipe() {
 
 /// Explicit diagnostic, excluded from correctness tests to avoid timing flakes.
 #[tokio::test]
-#[ignore]
+#[ignore = "timing benchmark; run explicitly"]
 async fn transport_roundtrip_benchmark() {
     let mut process = Process::spawn(config("echo")).unwrap();
     let sender = process.sender();
