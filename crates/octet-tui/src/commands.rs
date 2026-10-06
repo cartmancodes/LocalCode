@@ -1,5 +1,8 @@
 //! Every slash command, once. The palette, help, Tab, the sidebar and the
 //! CLI help are built from this table; `try_command` dispatches on `Cmd`.
+use crate::{app::App, input::copy_reply, Action, Exit};
+use octet_core::{Command, Session};
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cmd {
@@ -135,6 +138,194 @@ impl Cmd {
             .find(|spec| spec.name == name || spec.aliases.contains(&name))
             .map(|spec| spec.id)
     }
+}
+
+pub(crate) async fn send_goal_prompt(app: &mut App, session: &Session, prompt: String) {
+    let command = Command::PromptWithDisplay {
+        wire: prompt,
+        display: app.goals.prompt_display(),
+    };
+    match session.handle.send(command) {
+        Ok(()) => {
+            app.goals.goal_prompt_sent();
+            app.running = true;
+            app.status = "working on goal".into();
+        }
+        Err(error) => goal_send_failed(app, error).await,
+    }
+}
+/// Pauses the goal whose prompt could not be sent and says why.
+pub(crate) async fn goal_send_failed(app: &mut App, error: octet_core::SendError) {
+    app.notice(format!("Goal paused: {error}"));
+    if let Err(error) = app.goals.send_failed().await {
+        app.notice(format!("Goal persistence failed: {error}"));
+    }
+}
+/// Runs a slash command. `None` means the name is not a command, so the caller
+/// keeps the draft: it may be a prompt that merely starts with a slash.
+pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
+    let (name, argument) = input.split_once(' ').unwrap_or((input, ""));
+    let argument = argument.trim();
+    let Some(cmd) = Cmd::parse(name) else {
+        app.notice(format!(
+            "Unknown command {name}. Use /help, or edit the draft: \
+             only a path such as /usr/lib can start a prompt with a slash."
+        ));
+        return None;
+    };
+    match cmd {
+        Cmd::Quit => return Some(Action::Exit(Exit::Quit)),
+        Cmd::Help => app.help = true,
+        Cmd::Copy => copy_reply(app),
+        Cmd::Model => return Some(model_command(app, argument)),
+        Cmd::Mode => return Some(mode_command(app, argument)),
+        Cmd::New | Cmd::Reconnect => {
+            if app.running {
+                app.notice = "Cancel the active turn before changing sessions".into();
+            } else {
+                return Some(if cmd == Cmd::New {
+                    Action::Exit(Exit::New)
+                } else {
+                    Action::Exit(Exit::Reconnect)
+                });
+            }
+        }
+        Cmd::Session => app.notice(format!(
+            "{}\nSession: {}\nJournal: {}\nWorkspace: {}",
+            app.model_details(),
+            if app.session.is_empty() {
+                "not assigned"
+            } else {
+                &app.session
+            },
+            app.journal.display(),
+            app.workspace
+        )),
+        Cmd::Goal => return Some(goal_command(app, argument).await),
+        Cmd::RemoteControl => match argument {
+            "" | "status" => return Some(Action::RemoteControl),
+            _ => app.notice("Use /remote-control or /remote-control status"),
+        },
+        Cmd::Export => return Some(export_command(app, argument).await),
+    }
+    Some(Action::Continue)
+}
+fn model_command(app: &mut App, argument: &str) -> Action {
+    if argument.trim().is_empty() {
+        app.show_models(1);
+    } else if argument == "list" || argument.starts_with("list ") {
+        match argument.strip_prefix("list").unwrap_or("").trim() {
+            "" => app.show_models(1),
+            page => match page.parse::<usize>() {
+                Ok(page) => app.show_models(page),
+                Err(_) => app.notice("Use /model list <page number>"),
+            },
+        }
+    } else if app.running || !app.approvals.is_empty() {
+        app.notice = "Cancel or finish the current turn before switching models".into();
+    } else if app.is_connecting() {
+        app.notice = "Wait for connection, or cancel it, before switching models".into();
+    } else {
+        match octet_core::model::Selection::parse(argument, app.engine) {
+            Ok(selection) => return Action::Exit(Exit::Model(selection)),
+            Err(error) => app.notice(error),
+        }
+    }
+    Action::Continue
+}
+fn mode_command(app: &mut App, argument: &str) -> Action {
+    use octet_core::Mode;
+    if argument.is_empty() {
+        app.notice(app.mode_details());
+    } else if app.mode_pending.is_some() {
+        app.notice("Mode change pending; wait for the vendor to confirm");
+    } else {
+        match Mode::parse(argument) {
+            None => app.notice(format!(
+                "Unknown mode {argument}. Use ask, accept-edits, auto or full-access."
+            )),
+            Some(target) if target == app.mode && target == Mode::FullAccess => {
+                app.notice("Already in full-access mode")
+            }
+            Some(target) if target == Mode::FullAccess || app.mode == Mode::FullAccess => {
+                if app.running || !app.approvals.is_empty() {
+                    app.notice =
+                        "Cancel or finish the current turn before changing full access".into();
+                }
+                // Tightening out of full access is always allowed once the vendor has stopped.
+                else if !app.ready && !(app.stopped && target != Mode::FullAccess) {
+                    app.notice = "Wait for a ready session before changing full access".into();
+                } else {
+                    return Action::Exit(Exit::Mode(target));
+                }
+            }
+            Some(target) => return Action::SetMode(target),
+        }
+    }
+    Action::Continue
+}
+async fn goal_command(app: &mut App, argument: &str) -> Action {
+    use octet_core::goal::{Goal, GoalStep};
+    let idle = !app.running && app.ready && !app.stopped;
+    match argument {
+        "" | "status" => app.notice(
+            app.goals
+                .goal
+                .as_ref()
+                .map(Goal::summary)
+                .unwrap_or_else(|| "No goal set. Use /goal <objective>.".into()),
+        ),
+        "pause" => match app.goals.pause().await {
+            Ok(notice) => app.notice(notice),
+            // The goal is paused in memory even though the file is stale.
+            Err(error) => app.notice(format!("Goal paused, but saving it failed: {error}")),
+        },
+        "clear" => match app.goals.clear().await {
+            Ok(()) => app.notice("Goal cleared. Current vendor turn may finish."),
+            Err(error) => app.notice(format!("Goal persistence failed: {error}")),
+        },
+        "resume" | "complete" if !idle => {
+            app.notice("Wait for a ready, idle session before resuming or auditing a goal")
+        }
+        "resume" | "complete" => {
+            let step = if argument == "complete" {
+                GoalStep::Audit
+            } else {
+                GoalStep::Continue
+            };
+            match app.goals.resume(step).await {
+                Ok(prompt) => return Action::GoalPrompt(prompt),
+                Err(error) => app.notice(error),
+            }
+        }
+        _ if !idle => app.notice("Wait for a ready, idle session before starting a goal"),
+        objective => match app.goals.start(objective).await {
+            Ok(prompt) => return Action::GoalPrompt(prompt),
+            Err(error) => app.notice(error),
+        },
+    }
+    Action::Continue
+}
+async fn export_command(app: &mut App, argument: &str) -> Action {
+    if app.running {
+        app.notice = "Wait for completion or cancel before exporting".into();
+        return Action::Continue;
+    }
+    let path = if argument.trim().is_empty() {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join(app.journal.file_name().unwrap_or_default())
+    } else {
+        PathBuf::from(argument.trim())
+    };
+    match octet_core::export_journal(&app.journal, &path).await {
+        Ok(()) => app.notice(format!("Exported journal to {}", path.display())),
+        Err(error) => app.notice(format!("Export failed: {error}")),
+    }
+    Action::Continue
+}
+pub(crate) async fn command(app: &mut App, input: &str) -> Action {
+    try_command(app, input).await.unwrap_or(Action::Continue)
 }
 
 #[cfg(test)]
