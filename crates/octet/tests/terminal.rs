@@ -390,7 +390,10 @@ fn unknown_engine_is_a_startup_error() {
 #[test]
 fn unknown_options_and_missing_values_are_named_at_startup() {
     for (args, error) in [
-        (&["--engine", "demo", "--bogus"][..], "Unknown option --bogus"),
+        (
+            &["--engine", "demo", "--bogus"][..],
+            "Unknown option --bogus",
+        ),
         (&["--engine", "demo", "stray"][..], "Unknown option stray"),
         (
             &["--engine", "demo", "--cwd", "--journal-dir", "/tmp"][..],
