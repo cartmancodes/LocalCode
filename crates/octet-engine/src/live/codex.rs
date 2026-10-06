@@ -4,7 +4,7 @@ use super::{
     limited,
     mode::{codex_reported, codex_thread_params, codex_turn_overrides, confirm_mode},
     model_catalog_with,
-    protocol::{Core, Protocol},
+    protocol::{Core, Phase, Protocol},
     valid_identifier, BoxFuture, Channels, Config, DriverError, Event, Limits, Mode, ModelInfo,
     Outcome, Provider, EVENT_BYTES,
 };
@@ -109,7 +109,7 @@ impl Protocol for CodexProtocol {
     async fn set_mode(&mut self, core: &mut Core, target: Mode) -> Result<(), DriverError> {
         core.mode = target;
         core.emit(Event::ModeChanged(core.mode))?;
-        if core.running {
+        if core.phase.is_running() {
             core.emit(Event::Notice("Mode applies from the next turn".into()))?;
         }
         Ok(())
@@ -126,12 +126,12 @@ impl Protocol for CodexProtocol {
         if v.pointer("/params/threadId").and_then(Value::as_str) != Some(core.session.as_str()) {
             return Ok(());
         }
-        if method == "turn/started" && core.running {
+        if method == "turn/started" && core.phase.is_running() {
             self.turn = v
                 .pointer("/params/turn/id")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            if core.interrupt_pending {
+            if core.phase == Phase::Interrupting {
                 self.request_interrupt(core).await?;
             }
         }
@@ -142,7 +142,7 @@ impl Protocol for CodexProtocol {
                 .unwrap_or(0);
             core.emit(Event::Usage(format!("{total} tokens")))?;
         }
-        if !core.running {
+        if !core.phase.is_running() {
             return Ok(());
         }
         if let Some(event_turn) = v.pointer("/params/turnId").and_then(Value::as_str) {
@@ -188,7 +188,7 @@ impl Protocol for CodexProtocol {
                 if self.turn.is_none() || completed != self.turn.as_deref() {
                     return Ok(());
                 }
-                core.running = false;
+                core.phase = Phase::Idle;
                 core.close_all_pending()?;
                 let status = v
                     .pointer("/params/turn/status")
@@ -223,7 +223,7 @@ impl CodexProtocol {
             if v.get("error").is_some() {
                 return Err("Codex initialization failed".into());
             }
-            core.initialized = true;
+            core.phase = Phase::Handshaken;
             core.send(json!({"method":"initialized","params":{}}))
                 .await?;
             let mut params = codex_thread_params(core.mode);
@@ -251,7 +251,7 @@ impl CodexProtocol {
                 .and_then(Value::as_str)
                 .ok_or("Codex could not open the session")?
                 .into();
-            core.ready = true;
+            core.phase = Phase::Idle;
             core.emit(Event::Ready {
                 session: core.session.clone(),
             })?;
@@ -277,7 +277,7 @@ impl CodexProtocol {
         } else if self.start_request.is_some() && v["id"].as_u64() == self.start_request {
             self.start_request = None;
             if v.get("error").is_some() {
-                core.running = false;
+                core.phase = Phase::Idle;
                 core.emit(Event::Error(error_text(&v["error"])))?;
                 core.emit(Event::Finished {
                     outcome: Outcome::Failed,
@@ -342,12 +342,7 @@ impl CodexProtocol {
             == Some(core.session.as_str())
             && self.turn.is_some()
             && v.pointer("/params/turnId").and_then(Value::as_str) == self.turn.as_deref();
-        if approval
-            && core.running
-            && !core.interrupt_pending
-            && core.pending.len() < 8
-            && this_turn
-        {
+        if approval && core.phase == Phase::InTurn && core.pending.len() < 8 && this_turn {
             let detail = serde_json::to_string_pretty(&v["params"]).unwrap_or_default();
             return core.queue_approval(v, detail).await;
         }

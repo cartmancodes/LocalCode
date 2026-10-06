@@ -10,6 +10,37 @@ use tokio::{
     time::{timeout, Instant},
 };
 
+/// Where a vendor connection is. Each stage is a state the old flags could
+/// combine; impossible combinations can no longer be written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Phase {
+    /// The process is up; the handshake is unanswered.
+    Starting,
+    /// The handshake is answered but the session is not open (Codex).
+    Handshaken,
+    /// Ready, with no turn running.
+    Idle,
+    /// A turn is running.
+    InTurn,
+    /// A cancel was sent; waiting for the turn's end.
+    Interrupting,
+}
+impl Phase {
+    /// The session is open.
+    pub(crate) fn is_ready(self) -> bool {
+        self >= Phase::Idle
+    }
+    /// A turn is running, possibly being cancelled.
+    pub(crate) fn is_running(self) -> bool {
+        matches!(self, Phase::InTurn | Phase::Interrupting)
+    }
+    /// The connect/turn silence watchdog applies (it is also paused while
+    /// an approval waits).
+    pub(crate) fn watchdog_applies(self) -> bool {
+        self != Phase::Idle
+    }
+}
+
 /// A vendor approval shown to the user, denied when its deadline passes.
 pub(super) struct Pending {
     pub(super) wire: Value,
@@ -23,14 +54,9 @@ pub(crate) struct Core {
     pub(super) limits: Limits,
     pub(super) process: Process,
     pub(super) tx: mpsc::Sender<Event>,
-    // Connection
-    pub(super) initialized: bool,
-    pub(super) ready: bool,
+    pub(super) phase: Phase,
     pub(super) session: String,
     pub(super) mode: Mode,
-    // Turn
-    pub(super) running: bool,
-    pub(super) interrupt_pending: bool,
     /// Connect deadline, then the turn's silence watchdog.
     pub(super) deadline: Instant,
     pub(super) request_id: u64,
@@ -52,11 +78,8 @@ impl Core {
             limits,
             process,
             tx,
-            initialized: false,
-            ready: false,
+            phase: Phase::Starting,
             session: String::new(),
-            running: false,
-            interrupt_pending: false,
             deadline: Instant::now() + limits.connect,
             request_id: 10,
             pending: HashMap::new(),
@@ -82,7 +105,7 @@ impl Core {
 
     /// Restarts the silence watchdog once no approval is waiting on the user.
     pub(super) fn resume_watchdog(&mut self) {
-        if self.pending.is_empty() && self.running && !self.interrupt_pending {
+        if self.pending.is_empty() && self.phase == Phase::InTurn {
             self.deadline = Instant::now() + self.limits.turn_idle;
         }
     }
@@ -188,4 +211,25 @@ pub(crate) trait Protocol: Default + Send {
     }
     /// A turn is starting: clears per-turn protocol state.
     fn turn_started(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn phase_answers_the_old_flag_questions() {
+        use Phase::*;
+        for (phase, ready, running, interrupting) in [
+            (Starting, false, false, false),
+            (Handshaken, false, false, false),
+            (Idle, true, false, false),
+            (InTurn, true, true, false),
+            (Interrupting, true, true, true),
+        ] {
+            assert_eq!(phase.is_ready(), ready, "{phase:?}");
+            assert_eq!(phase.is_running(), running, "{phase:?}");
+            assert_eq!(phase == Interrupting, interrupting, "{phase:?}");
+            assert_eq!(phase.watchdog_applies(), phase != Idle, "{phase:?}");
+        }
+    }
 }

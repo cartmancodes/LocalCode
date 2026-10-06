@@ -2,7 +2,7 @@
 //! lives in its own file as a `Protocol`; this loop owns the timers,
 //! approvals and commands, and calls the protocol for the rest.
 use super::{
-    protocol::{Core, Protocol},
+    protocol::{Core, Phase, Protocol},
     Channels, Command, Config, DriverError, Engine, Event, Limits, Mode,
 };
 use octet_proc::{Process, ProcessConfig};
@@ -98,7 +98,7 @@ impl<P: Protocol> Driver<P> {
     fn next_wake(&self) -> Instant {
         let core = &self.core;
         let watchdog =
-            ((!core.ready || core.running) && core.pending.is_empty()).then_some(core.deadline);
+            (core.phase.watchdog_applies() && core.pending.is_empty()).then_some(core.deadline);
         core.pending
             .values()
             .map(|pending| pending.deadline)
@@ -110,20 +110,19 @@ impl<P: Protocol> Driver<P> {
 
     fn timers_armed(&self) -> bool {
         let core = &self.core;
-        !core.ready
-            || core.running
+        core.phase.watchdog_applies()
             || !core.pending.is_empty()
             || self.protocol.deadline().is_some()
     }
 
     async fn on_cancel(&mut self) -> Result<(), DriverError> {
-        if !self.core.ready {
+        if !self.core.phase.is_ready() {
             return Err(DriverError::Cancelled);
         }
-        if !self.core.running {
+        if !self.core.phase.is_running() {
             return Ok(());
         }
-        self.core.interrupt_pending = true;
+        self.core.phase = Phase::Interrupting;
         self.protocol.interrupt(&mut self.core).await?;
         self.core.deadline = Instant::now() + self.core.limits.interrupt;
         self.core.deny_all_pending().await
@@ -133,7 +132,7 @@ impl<P: Protocol> Driver<P> {
         // The connect/turn deadline only applies while connecting or in a turn;
         // when idle it is stale and other timers can wake this branch.
         let core = &mut self.core;
-        if (!core.ready || core.running)
+        if core.phase.watchdog_applies()
             && core.pending.is_empty()
             && Instant::now() >= core.deadline
         {
@@ -159,12 +158,12 @@ impl<P: Protocol> Driver<P> {
 
     fn watchdog_error(&self) -> String {
         let core = &self.core;
-        if !core.ready {
+        if !core.phase.is_ready() {
             format!(
                 "Vendor did not finish connecting within {}; session stopped.",
                 seconds(core.limits.connect)
             )
-        } else if core.interrupt_pending {
+        } else if core.phase == Phase::Interrupting {
             format!(
                 "Vendor did not stop within {} of the interrupt; session stopped. Resume using the session ID.",
                 seconds(core.limits.interrupt)
@@ -187,14 +186,13 @@ impl<P: Protocol> Driver<P> {
     }
 
     async fn start_turn(&mut self, wire: String, display: String) -> Result<(), DriverError> {
-        if !self.core.ready || self.core.running {
+        if !self.core.phase.is_ready() || self.core.phase.is_running() {
             return self.core.emit(Event::Notice(
                 "Wait for the current operation, or cancel it first".into(),
             ));
         }
-        self.core.running = true;
+        self.core.phase = Phase::InTurn;
         self.protocol.turn_started();
-        self.core.interrupt_pending = false;
         self.core.deadline = Instant::now() + self.core.limits.turn_idle;
         self.core.emit(Event::User(display))?;
         self.core.emit(Event::Started)?;
@@ -221,7 +219,7 @@ impl<P: Protocol> Driver<P> {
                 "Full access is changed by reconnecting; use /mode".into(),
             ))?;
             core.emit(Event::ModeChanged(core.mode))
-        } else if !core.ready {
+        } else if !core.phase.is_ready() {
             core.emit(Event::Notice(
                 "Wait for the connection before changing modes".into(),
             ))?;
@@ -239,14 +237,10 @@ impl<P: Protocol> Driver<P> {
         // The turn limit is a silence watchdog, not a cap on turn length. Only
         // frames the protocol counts as progress reset it.
         let ours = self.protocol.is_progress(&self.core, &frame);
-        if self.core.running && !self.core.interrupt_pending && ours {
+        if self.core.phase == Phase::InTurn && ours {
             self.core.deadline = Instant::now() + self.core.limits.turn_idle;
         }
-        self.protocol.on_frame(&mut self.core, frame).await?;
-        if !self.core.initialized && self.core.ready {
-            return Err("Unexpected protocol initialization order".into());
-        }
-        Ok(())
+        self.protocol.on_frame(&mut self.core, frame).await
     }
 }
 

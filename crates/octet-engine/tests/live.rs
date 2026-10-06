@@ -21,6 +21,34 @@ async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
         .unwrap()
 }
 #[tokio::test]
+async fn cancel_while_starting_is_cancelled() {
+    // A vendor that never answers the handshake.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = octet_testkit::TempDir::new("octet-live-silent");
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let silent = dir.path().join("silent-vendor");
+    std::fs::write(&silent, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    std::fs::set_permissions(&silent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (handle, mut events, task) =
+        spawn(Config::new(Engine::CODEX, silent, std::env::temp_dir()));
+    handle.interrupt();
+    loop {
+        match next(&mut events).await {
+            Event::Error(error) => {
+                assert_eq!(error, "Connection cancelled");
+                break;
+            }
+            Event::Ready { .. } => panic!("the silent vendor cannot be ready"),
+            _ => {}
+        }
+    }
+    assert!(matches!(next(&mut events).await, Event::Stopped));
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
 async fn live_driver_keeps_turns_separate_and_waits_for_terminal_after_usage() {
     let (handle, mut events, task) = spawn(config());
     assert!(matches!(next(&mut events).await, Event::Ready { .. }));

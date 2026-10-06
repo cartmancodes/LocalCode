@@ -4,7 +4,7 @@ use super::{
     limited,
     mode::{claude_mode, claude_permission_args, claude_reported_mode, confirm_mode},
     model_catalog_with,
-    protocol::{Core, Protocol},
+    protocol::{Core, Phase, Protocol},
     valid_identifier, BoxFuture, Channels, Config, DriverError, Event, Limits, Mode, ModelInfo,
     Outcome, Provider,
 };
@@ -200,7 +200,7 @@ impl Protocol for ClaudeProtocol {
         if kind == "control_request" {
             let permission =
                 v.pointer("/request/subtype").and_then(Value::as_str) == Some("can_use_tool");
-            if permission && core.running && !core.interrupt_pending {
+            if permission && core.phase == Phase::InTurn {
                 if core.pending.len() >= 8 {
                     return core.send(Self::answer(&v, false)).await;
                 }
@@ -225,7 +225,7 @@ impl Protocol for ClaudeProtocol {
             }
             core.resume_watchdog();
         }
-        if !core.running {
+        if !core.phase.is_running() {
             return Ok(());
         }
         match kind {
@@ -303,8 +303,7 @@ impl ClaudeProtocol {
             if !succeeded {
                 return Err("Claude initialization failed".into());
             }
-            core.initialized = true;
-            core.ready = true;
+            core.phase = Phase::Idle;
             core.emit(Event::Ready {
                 session: core.config.resume.clone().unwrap_or_default(),
             })?;
@@ -320,15 +319,16 @@ impl ClaudeProtocol {
     }
 
     fn result(&self, core: &mut Core, v: &Value) -> Result<(), DriverError> {
-        if v["is_error"].as_bool() != Some(false) && !core.interrupt_pending {
+        let interrupted = core.phase == Phase::Interrupting;
+        if v["is_error"].as_bool() != Some(false) && !interrupted {
             core.emit(Event::Error(claude_result_error(v)))?;
         }
         if let Some(cost) = v["total_cost_usd"].as_f64() {
             core.emit(Event::Usage(format!("${cost:.4} session cost")))?;
         }
-        core.running = false;
+        core.phase = Phase::Idle;
         core.close_all_pending()?;
-        let outcome = if core.interrupt_pending {
+        let outcome = if interrupted {
             Outcome::Interrupted
         } else if v["is_error"] == true {
             Outcome::Failed
