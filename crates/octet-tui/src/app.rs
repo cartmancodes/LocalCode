@@ -298,22 +298,25 @@ impl App {
                  PgUp/PgDn scroll; /model list <page>. Account access may vary."
             ));
             // Page the catalog so large lists do not evict current details from scrollback.
-            for model in self
+            let entries: Vec<String> = self
                 .conn
                 .models
-                .clone()
-                .into_iter()
+                .iter()
                 .skip((page - 1) * 20)
                 .take(20)
-            {
-                self.notice(format!(
-                    "{}\nModel ID: {}\n{}\nSelect: /model {} {}",
-                    model.name,
-                    model.id.as_deref().unwrap_or("unresolved alias"),
-                    model.description,
-                    self.conn.engine,
-                    model.selection
-                ));
+                .map(|model| {
+                    format!(
+                        "{}\nModel ID: {}\n{}\nSelect: /model {} {}",
+                        model.name,
+                        model.id.as_deref().unwrap_or("unresolved alias"),
+                        model.description,
+                        self.conn.engine,
+                        model.selection
+                    )
+                })
+                .collect();
+            for entry in entries {
+                self.notice(entry);
             }
         }
         self.notice(
@@ -624,23 +627,28 @@ impl App {
             }
             self.chat.scroll = rows.saturating_sub(height);
         }
-        let mut lines = Vec::new();
         let needed = self.chat.scroll.saturating_add(height);
+        // First bring the caches up to date as far back as the view reaches,
+        // then borrow rows from them and clone only those on screen.
+        let mut available = 0usize;
         for entry in self.chat.entries.iter_mut().rev() {
             if entry.width != width {
                 entry.cache = entry_lines(entry.role, &entry.text, width);
                 entry.width = width;
             }
-            for line in entry.cache.iter().rev() {
-                lines.push(line.clone());
-                if lines.len() >= needed {
-                    break;
-                }
-            }
-            if lines.len() >= needed {
+            available += entry.cache.len();
+            if available >= needed {
                 break;
             }
         }
+        let lines: Vec<&Line<'static>> = self
+            .chat
+            .entries
+            .iter()
+            .rev()
+            .flat_map(|entry| entry.cache.iter().rev())
+            .take(needed)
+            .collect();
         // Clamp the scroll to the actual cached history rather than showing emptiness.
         if self.chat.scroll >= lines.len() {
             self.chat.scroll = lines.len().saturating_sub(height);
@@ -649,9 +657,8 @@ impl App {
             .into_iter()
             .skip(self.chat.scroll)
             .take(height)
-            .collect::<Vec<_>>()
-            .into_iter()
             .rev()
+            .cloned()
             .collect()
     }
 }
@@ -699,8 +706,9 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut rows = vec![String::new()];
     let mut col = 0;
     for word in text.split_word_bounds() {
-        if word.width() <= width {
-            if col + word.width() > width && col > 0 {
+        let word_width = word.width();
+        if word_width <= width {
+            if col + word_width > width && col > 0 {
                 rows.push(String::new());
                 col = 0;
             }
@@ -708,15 +716,16 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
                 continue;
             }
             rows.last_mut().unwrap().push_str(word);
-            col += word.width();
+            col += word_width;
         } else {
             for g in word.graphemes(true) {
-                if col + g.width() > width && col > 0 {
+                let g_width = g.width();
+                if col + g_width > width && col > 0 {
                     rows.push(String::new());
                     col = 0;
                 }
                 rows.last_mut().unwrap().push_str(g);
-                col += g.width();
+                col += g_width;
             }
         }
     }

@@ -82,6 +82,35 @@ async fn oversized_line_fails_with_explicit_limit() {
     assert!(process.shutdown().await.reaped);
 }
 
+/// The `oversize` child writes one frame of 6 + 8192 + 2 bytes.
+const OVERSIZE_FRAME: usize = 8200;
+
+#[tokio::test]
+async fn frame_at_the_limit_passes_and_one_more_byte_fails() {
+    let mut at_limit = config("oversize");
+    at_limit.max_frame_bytes = OVERSIZE_FRAME;
+    at_limit.queue_bytes = 2 * OVERSIZE_FRAME;
+    let mut process = Process::spawn(at_limit).unwrap();
+    let frame = timeout(Duration::from_secs(2), process.next_frame())
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("a frame exactly at the limit arrives");
+    assert_eq!(frame["x"].as_str().map(str::len), Some(8192));
+    assert!(process.shutdown().await.reaped);
+
+    let mut over = config("oversize");
+    over.max_frame_bytes = OVERSIZE_FRAME - 1;
+    over.queue_bytes = 2 * OVERSIZE_FRAME;
+    let mut process = Process::spawn(over).unwrap();
+    let error = timeout(Duration::from_secs(2), process.next_frame())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(error, ProcessError::FrameTooLarge { limit } if limit == OVERSIZE_FRAME - 1));
+    assert!(process.shutdown().await.reaped);
+}
+
 #[tokio::test]
 async fn malformed_json_is_reported() {
     let mut process = Process::spawn(config("malformed")).unwrap();
