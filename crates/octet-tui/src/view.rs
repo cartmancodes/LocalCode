@@ -765,10 +765,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         card(&title).border_style(Style::default().fg(if app.running { EDGE } else { ACCENT }));
     let inner = composer.inner(regions[2]);
     frame.render_widget(composer, regions[2]);
+    // The hint line takes the last row only when the draft keeps one; at
+    // the minimum height the box has a single row and the draft gets it.
+    let hint_rows = u16::from(inner.height >= 2);
     let input = Rect {
         x: inner.x + 1,
         width: inner.width.saturating_sub(2),
-        height: inner.height.saturating_sub(1),
+        height: inner.height - hint_rows,
         ..inner
     };
     let (lines, (col, row)) = draft;
@@ -796,7 +799,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         x: input.x,
         y: inner.bottom().saturating_sub(1),
         width: input.width,
-        height: 1,
+        height: hint_rows,
     };
     frame.render_widget(
         Paragraph::new(if area.width >= 80 {
@@ -1344,6 +1347,20 @@ mod tests {
         let rows = screen(44, 16, &mut app);
         // The composer's top border sits 4 rows above the status line.
         assert!(rows[16 - 6].starts_with(" ╭ Prompt"), "{}", rows[16 - 6]);
+    }
+    #[test]
+    fn the_draft_shows_at_the_minimum_size() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        assert!(app.editor.insert("VISIBLE"));
+        for width in [38, 80] {
+            let rows = screen(width, 12, &mut app);
+            assert!(
+                rows.iter().any(|row| row.contains("VISIBLE")),
+                "{width}x12:\n{}",
+                rows.join("\n")
+            );
+        }
     }
     #[test]
     fn the_palette_shows_every_command_and_its_keys() {
