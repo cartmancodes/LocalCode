@@ -12,6 +12,7 @@ mod codex;
 mod demo;
 mod driver;
 mod mode;
+mod protocol;
 pub use claude::claude_stray_reply;
 pub use codex::codex_stray_reply;
 pub use mode::Mode;
@@ -212,19 +213,21 @@ pub fn valid_identifier(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
 }
 
-fn model_catalog(value: &Value, claude: bool) -> Vec<ModelInfo> {
+/// A vendor catalog: `selection_key` names what to pass the vendor,
+/// `id_key` the full model ID it resolves to.
+fn model_catalog_with(value: &Value, selection_key: &str, id_key: &str) -> Vec<ModelInfo> {
     value
         .as_array()
         .into_iter()
         .flatten()
         .take(256)
         .filter_map(|v| {
-            let selection = v[if claude { "value" } else { "model" }].as_str()?;
+            let selection = v[selection_key].as_str()?;
             // Bound untrusted metadata without silently truncating model identifiers.
             if !valid_identifier(selection) {
                 return None;
             }
-            let id = v[if claude { "resolvedModel" } else { "model" }]
+            let id = v[id_key]
                 .as_str()
                 .filter(|id| valid_identifier(id))
                 .map(str::to_owned);
@@ -524,20 +527,21 @@ mod tests {
     }
     #[test]
     fn catalog_rejects_invalid_identifiers_and_bounds_metadata() {
-        let models = model_catalog(
+        let models = model_catalog_with(
             &json!([
                 {"value":"sonnet","displayName":"Sonnet"},
                 {"value":"bad\u{1b}id"},
                 {"value":"x".repeat(257)},
                 {"value":"custom","resolvedModel":"full-id","description":"x".repeat(2049)}
             ]),
-            true,
+            "value",
+            "resolvedModel",
         );
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].id, None);
         assert_eq!(models[1].id.as_deref(), Some("full-id"));
         assert!(models[1].description.is_empty());
-        assert!(model_catalog(&Value::Null, false).is_empty());
+        assert!(model_catalog_with(&Value::Null, "model", "model").is_empty());
     }
     #[test]
     fn unknown_vendor_status_is_kept_verbatim() {
