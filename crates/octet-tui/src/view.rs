@@ -403,6 +403,9 @@ impl App {
             Event::Usage(text) => self.usage = clean(&text),
             Event::Finished { outcome } => {
                 self.running = false;
+                if self.notice == CANCELLING {
+                    self.notice.clear();
+                }
                 self.status = clean(outcome.as_str());
                 self.activity = match outcome {
                     octet_core::Outcome::Completed => State::Success,
@@ -765,10 +768,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         card(&title).border_style(Style::default().fg(if app.running { EDGE } else { ACCENT }));
     let inner = composer.inner(regions[2]);
     frame.render_widget(composer, regions[2]);
+    // The hint line takes the last row only when the draft keeps one; at
+    // the minimum height the box has a single row and the draft gets it.
+    let hint_rows = u16::from(inner.height >= 2);
     let input = Rect {
         x: inner.x + 1,
         width: inner.width.saturating_sub(2),
-        height: inner.height.saturating_sub(1),
+        height: inner.height - hint_rows,
         ..inner
     };
     let (lines, (col, row)) = draft;
@@ -796,7 +802,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         x: input.x,
         y: inner.bottom().saturating_sub(1),
         width: input.width,
-        height: 1,
+        height: hint_rows,
     };
     frame.render_widget(
         Paragraph::new(if area.width >= 80 {
@@ -913,6 +919,8 @@ fn draft_width(terminal_width: u16) -> usize {
 }
 /// The composer's height from the draft's wrapped rows: borders, 1–4 draft
 /// rows, and the hint row. An empty prompt takes 4 rows, a long draft 7.
+/// The bottom-line notice while a cancelled turn winds down.
+pub(crate) const CANCELLING: &str = "Cancelling…";
 fn composer_height(draft_rows: usize) -> u16 {
     2 + draft_rows.clamp(1, 4) as u16 + 1
 }
@@ -1029,7 +1037,7 @@ fn modal(area: Rect, width: u16, height: u16) -> Rect {
 fn help(frame: &mut Frame, area: Rect) {
     let area = modal(area, 76, 28);
     frame.render_widget(Clear, area);
-    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/copy or Ctrl+X: copy the last reply to the clipboard\n!cmd run and attach output · !!cmd run only · Esc stops\n@ mention a file · Tab completes paths and /commands\nCtrl+G write the prompt in $EDITOR\n/remote-control: check phone access setup\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
+    let text="Octet terminal preview\n\nEnter send · Alt+Enter / Ctrl+J newline\nArrows, Home, End edit; ↑ ↓ browse prompt history\nCtrl+U clear draft · PgUp/PgDn scroll conversation\nCtrl+End follow · Esc/Ctrl+C cancel turn\nCtrl+C twice quit · Ctrl+Z suspend (return with fg)\n\n/model [provider] <name> · /model default\n/mode [ask|accept-edits|auto|full-access] · Shift+Tab cycles\n/goal <objective> · /goal status|pause|resume\n/goal complete (audit) · /goal clear\n/new · /reconnect · /session · /export [path]\n/copy or Ctrl+X: copy the last reply to the clipboard\n!cmd run and attach output · !!cmd run only · Esc stops\n@ mention a file · Tab completes paths and /commands\nCtrl+P commands · Ctrl+G write the prompt in $EDITOR\n/remote-control: check phone access setup\n/approval-demo: offline permission dialog\n\nApproval: A allow once · D/Esc deny\nJournals retain older output beyond the viewport.\nEsc or F1 closes help";
     frame.render_widget(
         Paragraph::new(text)
             .block(card(" Help "))
@@ -1344,6 +1352,44 @@ mod tests {
         let rows = screen(44, 16, &mut app);
         // The composer's top border sits 4 rows above the status line.
         assert!(rows[16 - 6].starts_with(" ╭ Prompt"), "{}", rows[16 - 6]);
+    }
+    #[test]
+    fn help_names_the_command_palette_key() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.help = true;
+        let rows = screen(100, 32, &mut app);
+        assert!(
+            rows.iter().any(|row| row.contains("Ctrl+P commands")),
+            "{}",
+            rows.join("\n")
+        );
+        assert!(rows.iter().any(|row| row.contains("Esc or F1 closes help")));
+    }
+    #[test]
+    fn a_finished_turn_clears_the_cancelling_notice() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.event(Event::Started);
+        app.notice = CANCELLING.into();
+        app.event(Event::Finished {
+            outcome: octet_core::Outcome::Interrupted,
+        });
+        assert_eq!(app.notice, "");
+    }
+    #[test]
+    fn the_draft_shows_at_the_minimum_size() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        assert!(app.editor.insert("VISIBLE"));
+        for width in [38, 80] {
+            let rows = screen(width, 12, &mut app);
+            assert!(
+                rows.iter().any(|row| row.contains("VISIBLE")),
+                "{width}x12:\n{}",
+                rows.join("\n")
+            );
+        }
     }
     #[test]
     fn the_palette_shows_every_command_and_its_keys() {

@@ -388,6 +388,30 @@ fn unknown_engine_is_a_startup_error() {
 }
 
 #[test]
+fn unknown_options_and_missing_values_are_named_at_startup() {
+    for (args, error) in [
+        (
+            &["--engine", "demo", "--bogus"][..],
+            "Unknown option --bogus",
+        ),
+        (&["--engine", "demo", "stray"][..], "Unknown option stray"),
+        (
+            &["--engine", "demo", "--cwd", "--journal-dir", "/tmp"][..],
+            "--cwd requires a value",
+        ),
+        (&["--engine", "demo", "--cwd"][..], "--cwd requires a value"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_octet"))
+            .args(args)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(stderr.contains(error), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
 fn corrupt_goal_does_not_prevent_chat_or_explicit_recovery() {
     let directory = std::env::temp_dir().join(format!("octet-corrupt-goal-{}", std::process::id()));
     let workspace = std::env::current_dir().unwrap().canonicalize().unwrap();
