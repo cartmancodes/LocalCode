@@ -198,15 +198,15 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                 pause_active_goal(&mut app, "mode switch").await;
                 app.notice(full_access_notice(mode, config.engine, &app.session));
                 config.mode = mode;
-                if !app.session.is_empty() && config.engine.is_vendor() {
-                    config.resume = Some(app.session.clone());
+                if let Some(id) = resume_id(&app, &config) {
+                    config.resume = Some(id);
                 }
                 retained_app = Some(app);
             }
             Exit::New => config.resume = None,
             Exit::Reconnect => {
-                if !app.session.is_empty() && config.engine.is_vendor() {
-                    config.resume = Some(app.session.clone());
+                if let Some(id) = resume_id(&app, &config) {
+                    config.resume = Some(id);
                 }
                 pause_active_goal(&mut app, "reconnect").await;
                 app.notice(reconnect_notice(config.resume.is_some(), &app.journal));
@@ -217,6 +217,26 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     }
     drop(terminal);
     drop(guard);
+    Ok(())
+}
+/// The vendor session a reconnect resumes, once there is one.
+fn resume_id(app: &App, config: &Config) -> Option<String> {
+    (!app.session.is_empty() && config.engine.is_vendor()).then(|| app.session.clone())
+}
+/// Sizes ratatui to the terminal again after something else used it.
+fn fit(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> {
+    terminal.resize(terminal.size()?.into())
+}
+/// Takes the terminal back from the editor: raw mode, a fresh frame and a
+/// new key reader.
+fn regain_terminal(
+    guard: &TerminalGuard,
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    input: &mut Option<InputReader>,
+) -> io::Result<()> {
+    guard.resume()?;
+    fit(terminal)?;
+    *input = Some(InputReader::new());
     Ok(())
 }
 /// Loads the stored goal on the first connection. A load failure leaves chat
@@ -352,9 +372,7 @@ async fn run_session(
                     // The editor may have changed the terminal behind
                     // crossterm's record of it; clear the record first.
                     let _ = disable_raw_mode();
-                    guard.resume()?;
-                    terminal.resize(terminal.size()?.into())?;
-                    input = Some(InputReader::new());
+                    regain_terminal(guard, terminal, &mut input)?;
                     match edit.finish(status.is_ok_and(|status| status.success())) {
                         Ok(text) => app.editor.set(text),
                         Err(error) => app.notice(error),
@@ -377,7 +395,7 @@ async fn run_session(
                         Action::Continue
                     }
                     Some(Ok(Input::Resize(_, _))) => {
-                        terminal.resize(terminal.size()?.into())?;
+                        fit(terminal)?;
                         Action::Continue
                     }
                     Some(Err(e)) => return Err(e),
@@ -403,9 +421,7 @@ async fn run_session(
                                 {
                                     Ok(child) => editing = Some((child, edit)),
                                     Err(error) => {
-                                        guard.resume()?;
-                                        terminal.resize(terminal.size()?.into())?;
-                                        input = Some(InputReader::new());
+                                        regain_terminal(guard, terminal, &mut input)?;
                                         app.notice(format!(
                                             "Cannot start {}: {error}",
                                             edit.program
@@ -437,7 +453,7 @@ async fn run_session(
                     }
                     Action::Suspend => {
                         guard.suspend()?;
-                        terminal.resize(terminal.size()?.into())?;
+                        fit(terminal)?;
                     }
                     Action::SetMode(mode) => match session.handle.send(Command::SetMode(mode)) {
                         Ok(()) => app.mode_pending = Some(mode),
@@ -478,7 +494,7 @@ async fn run_session(
                     }
                 } else {
                     guard.suspend()?;
-                    terminal.resize(terminal.size()?.into())?;
+                    fit(terminal)?;
                     dirty = true;
                 }
             }
@@ -589,12 +605,11 @@ fn palette_key(app: &mut App, key: &str) -> Action {
                 .next_back()
                 .is_some_and(|c| !c.is_whitespace());
             let mention = if after_word { " @" } else { "@" };
-            if !app.editor.insert(mention) {
-                app.notice = "Prompt limit reached".into();
-            } else if let Some((start, _)) =
-                composer::mention_at(&app.editor.text, app.editor.cursor)
-            {
-                open_mentions(app, start);
+            if app.insert_or_warn(mention) {
+                if let Some((start, _)) = composer::mention_at(&app.editor.text, app.editor.cursor)
+                {
+                    open_mentions(app, start);
+                }
             }
         }
         _ if app.editor.text.is_empty() => app.editor.set("!".into()),
@@ -653,9 +668,7 @@ fn accept_completion(app: &mut App) {
         composer::Kind::Path => item.clone(),
         composer::Kind::Command => format!("{item} "),
     };
-    if !app.editor.replace(completion.start, &text) {
-        app.notice = "Prompt limit reached".into();
-    }
+    app.replace_or_warn(completion.start, &text);
 }
 /// Starts the `/remote-control` checks in the background. They take up to
 /// about 2.5 seconds, and the loop must keep draining vendor events meanwhile.
@@ -766,6 +779,10 @@ async fn key_action(app: &mut App, session: &Session, key: KeyEvent) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let ctrl_c = ctrl && key.code == KeyCode::Char('c');
+    // Alt+Enter, Shift+Enter or Ctrl+J: phone keyboards rarely send the first two.
+    let newline = (key.code == KeyCode::Enter
+        && (alt || key.modifiers.contains(KeyModifiers::SHIFT)))
+        || (ctrl && key.code == KeyCode::Char('j'));
     // Any key ends a pending quit; only a second Ctrl+C in time completes it.
     let quit_armed = app.quit_armed.take();
     if quit_armed.is_some() && app.notice == QUIT_HINT {
@@ -894,15 +911,8 @@ async fn key_action(app: &mut App, session: &Session, key: KeyEvent) -> Action {
         KeyCode::PageUp => app.scroll_by(10),
         KeyCode::PageDown => app.scroll_by(-10),
         KeyCode::End if ctrl => app.follow_latest(),
-        KeyCode::Enter if alt || key.modifiers.contains(KeyModifiers::SHIFT) => {
-            if !app.editor.insert("\n") {
-                app.notice = "Prompt limit reached".into();
-            }
-        }
-        KeyCode::Char('j') if ctrl => {
-            if !app.editor.insert("\n") {
-                app.notice = "Prompt limit reached".into();
-            }
+        _ if newline => {
+            app.insert_or_warn("\n");
         }
         KeyCode::Enter => {
             let draft = app.editor.text.trim().to_owned();
@@ -924,13 +934,7 @@ async fn key_action(app: &mut App, session: &Session, key: KeyEvent) -> Action {
                 }
                 let command = command.to_owned();
                 app.editor.take();
-                app.history_index = None;
-                if app.history.back() != Some(&draft) {
-                    app.history.push_back(draft);
-                    if app.history.len() > 50 {
-                        app.history.pop_front();
-                    }
-                }
+                app.remember(draft);
                 return Action::RunShell { command, attach };
             }
             // "/usr/lib is broken" is a prompt: no command name contains a slash.
@@ -972,13 +976,7 @@ async fn key_action(app: &mut App, session: &Session, key: KeyEvent) -> Action {
                     app.editor.take();
                     app.running = true;
                     app.status = "sending".into();
-                    app.history_index = None;
-                    if app.history.back() != Some(&draft) {
-                        app.history.push_back(draft);
-                        if app.history.len() > 50 {
-                            app.history.pop_front();
-                        }
-                    }
+                    app.remember(draft);
                 }
                 Err(error) => app.notice = error.to_string(),
             }
@@ -1006,10 +1004,8 @@ async fn key_action(app: &mut App, session: &Session, key: KeyEvent) -> Action {
                 composer::Tab::Nothing
             }) {
                 composer::Tab::Replace { start, text, popup } => {
-                    if app.editor.replace(start, &text) {
+                    if app.replace_or_warn(start, &text) {
                         app.completion = popup;
-                    } else {
-                        app.notice = "Prompt limit reached".into();
                     }
                 }
                 composer::Tab::Popup(completion) => app.completion = Some(completion),
@@ -1017,8 +1013,8 @@ async fn key_action(app: &mut App, session: &Session, key: KeyEvent) -> Action {
                 composer::Tab::Nothing => {}
             }
         }
-        KeyCode::Char(c) if !ctrl && !alt && !app.editor.insert(&c.to_string()) => {
-            app.notice = "Prompt limit reached".into();
+        KeyCode::Char(c) if !ctrl && !alt => {
+            app.insert_or_warn(&c.to_string());
         }
         _ => {}
     }

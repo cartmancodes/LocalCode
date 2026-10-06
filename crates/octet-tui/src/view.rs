@@ -22,6 +22,10 @@ pub const ACCENT: Color = Color::Rgb(216, 124, 130);
 pub const AMBER: Color = Color::Rgb(224, 180, 119);
 const SELECTED: Color = Color::Rgb(64, 36, 44);
 const MAX_BYTES: usize = 512 * 1024;
+/// Prompts kept for Up/Down.
+const HISTORY_LIMIT: usize = 50;
+/// Shown when an edit would push the draft past the prompt limit.
+pub const PROMPT_FULL: &str = "Prompt limit reached";
 const BLOCK_BYTES: usize = 64 * 1024;
 #[derive(Clone, Copy, PartialEq)]
 pub enum Role {
@@ -526,6 +530,32 @@ impl App {
             .map(|entry| entry.text.as_str())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+    /// A sent draft joins the history unless it repeats the last one.
+    pub fn remember(&mut self, draft: String) {
+        self.history_index = None;
+        if self.history.back() != Some(&draft) {
+            self.history.push_back(draft);
+            if self.history.len() > HISTORY_LIMIT {
+                self.history.pop_front();
+            }
+        }
+    }
+    /// Inserts at the cursor, or says the prompt is full.
+    pub fn insert_or_warn(&mut self, text: &str) -> bool {
+        let fits = self.editor.insert(text);
+        if !fits {
+            self.notice = PROMPT_FULL.into();
+        }
+        fits
+    }
+    /// Replaces the word before the cursor, or says the prompt is full.
+    pub fn replace_or_warn(&mut self, start: usize, text: &str) -> bool {
+        let fits = self.editor.replace(start, text);
+        if !fits {
+            self.notice = PROMPT_FULL.into();
+        }
+        fits
     }
     pub fn recall(&mut self, older: bool) {
         if self.history.is_empty() {
@@ -1364,6 +1394,27 @@ mod tests {
         let rows = screen(44, 16, &mut app);
         // The composer's top border sits 4 rows above the status line.
         assert!(rows[16 - 6].starts_with(" ╭ Prompt"), "{}", rows[16 - 6]);
+    }
+    #[test]
+    fn history_skips_repeats_and_keeps_fifty() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        app.remember("same".into());
+        app.remember("same".into());
+        assert_eq!(app.history.len(), 1);
+        for i in 0..60 {
+            app.remember(format!("p{i}"));
+        }
+        assert_eq!(app.history.len(), 50);
+        assert_eq!(app.history.back().map(String::as_str), Some("p59"));
+    }
+    #[test]
+    fn a_full_prompt_warns_instead_of_inserting() {
+        let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+        let mut app = App::new(&config, "journal".into());
+        assert!(!app.insert_or_warn(&"x".repeat(octet_core::PROMPT_LIMIT + 1)));
+        assert_eq!(app.notice, "Prompt limit reached");
+        assert!(app.insert_or_warn("ok"));
     }
     #[test]
     fn help_names_the_command_palette_key() {
