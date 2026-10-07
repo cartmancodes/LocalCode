@@ -30,6 +30,8 @@ pub(super) const PROVIDER: Provider = Provider {
     modes: [                        // /mode descriptions, in Mode::ALL order
         "…ask…", "…accept-edits…", "…auto…", "…full-access…",
     ],
+    steer: false,                   // true if a running turn takes more input
+    effort_live: false,             // true if effort is sent per turn, not at launch
     start,
 };
 
@@ -51,13 +53,15 @@ pub(super) struct GeminiProtocol { /* this vendor's state only */ }
 impl Protocol for GeminiProtocol {
     fn launch_args(config: &Config) -> Vec<OsString> { … }
     async fn initialize(&mut self, core: &mut Core) -> Result<(), DriverError> { … }
-    async fn send_prompt(&mut self, core: &mut Core, text: &str) -> Result<(), DriverError> { … }
+    async fn send_prompt(&mut self, core: &mut Core, text: &str, images: &[ImageAttachment])
+        -> Result<(), DriverError> { … }
+    async fn compact(&mut self, core: &mut Core) -> Result<(), DriverError> { … }
     async fn interrupt(&mut self, core: &mut Core) -> Result<(), DriverError> { … }
     async fn set_mode(&mut self, core: &mut Core, target: Mode) -> Result<(), DriverError> { … }
     async fn on_frame(&mut self, core: &mut Core, frame: Value) -> Result<(), DriverError> { … }
     fn answer(wire: &Value, allow: bool) -> Value { … }
     fn stray_reply(request: &Value) -> Option<Value> { … }
-    // Optional: is_progress, mode_change_pending, deadline, on_deadline, turn_started.
+    // Optional: is_progress, mode_change_pending, deadline, on_deadline, turn_started, steer.
 }
 ```
 
@@ -102,7 +106,10 @@ scenarios are per vendor.
 | --- | --- |
 | `launch_args` | The CLI's arguments for `config`: model, resume ID, the permission mode at launch. |
 | `initialize` | Send the handshake. When its reply arrives (in `on_frame`): set `core.phase = Phase::Idle`, emit `Event::Ready` with the session ID, confirm the mode (`confirm_mode`) and emit `Event::ModeChanged`. A two-step handshake passes through `Phase::Handshaken`. **Only move the phase forward**: ignore a repeated reply, and treat a step that arrives early as a protocol error, as Codex and Claude do. |
-| `send_prompt` | Send the user's text. The driver has already set `Phase::InTurn` and emitted `User` and `Started`. |
+| `launch_args` (more) | Also: `config.effort` when the vendor takes effort at launch, and `config.fork` (open `resume` as a new session). |
+| `send_prompt` | Send the user's text, then its images (`ImageAttachment`: path, media type, name; `read_base64` reads the bytes). The driver has already set `Phase::InTurn` and emitted `User` and `Started`. If an image cannot be read, fail the turn: `phase = Idle`, `Event::Error`, `Event::Finished { Failed }`. |
+| `compact` | Ask the vendor to compact its context, as a turn: the driver has set `Phase::InTurn` and emitted `User("/compact")` and `Started`. |
+| `steer` | Add text to the running turn; `Ok(false)` (the default) means the vendor cannot, and the interface queues the text instead. Set the row's `steer` to match. |
 | `interrupt` | Ask the vendor to stop the turn. The driver has set `Phase::Interrupting`, and denies pending approvals after this returns. |
 | `set_mode` | Switch a live session to `target`. The driver has refused full access, an unready session, a pending switch and a no-op. Emit `Event::ModeChanged` once the vendor confirms. |
 | `on_frame` | Turn vendor output into `Text`, `Tool`, `Usage`, `Approval` (through `core.queue_approval`) and, at the turn's end, `core.close_all_pending()`, `phase = Idle` and `Event::Finished`. Ignore output for other sessions or turns. |

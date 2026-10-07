@@ -37,7 +37,22 @@ running across turns, and pick the session up from your phone.
   `!` attachment or a goal changes what a model would receive, the demo's
   reply shows that text too.
 - `/new` starts fresh context; `/reconnect` and `--resume ID` reopen a vendor
-  session.
+  session. `/sessions` lists this workspace's recent sessions and `/resume N`
+  reopens one, with either vendor.
+- While a turn runs, Enter queues the next prompt (up to 8); `/steer` adds to
+  the running Codex turn.
+- `/fork` continues the conversation in a new vendor session, `/compact` asks
+  the vendor to compact its context, and `--effort` or `/effort` sets the
+  reasoning effort.
+- `/image PATH` attaches PNG, JPEG, GIF or WebP images to the next prompt.
+
+**Scripts and other programs**
+
+- `octet --print "PROMPT"` runs one turn and writes the reply; `--output
+  json` writes every event as a JSON line. `octet --rpc` takes JSON-line
+  commands on stdin. Neither needs a terminal, and approvals fail closed.
+- Tagged versions publish prebuilt archives for macOS (Apple silicon) and
+  Linux (x86-64 and ARM64).
 
 **Models and providers**
 
@@ -100,11 +115,10 @@ end to end against Claude Code 2.1.270 and Codex CLI 0.154: streaming, tool
 approvals, interrupts, all four permission modes, model switching, resume,
 goals, export and clean shutdown.
 
-Not yet supported: image input, steering and follow-up queues, thinking and
-compaction controls, the vendors' plugin, hook and resource surfaces, session
-browsing, multi-agent orchestration, print/JSON/RPC modes and prebuilt
-release archives. The [parity matrix](docs/rust/parity-matrix.md) tracks what
-remains.
+Not yet supported: multi-agent (fleet) orchestration and quota routing, the
+vendors' plugin, hook and resource surfaces, Octet-owned history with
+branching and labels, and the Python era's RPC envelope. The
+[parity matrix](docs/rust/parity-matrix.md) says why each waits.
 
 ## Requirements
 

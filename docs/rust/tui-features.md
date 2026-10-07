@@ -79,12 +79,15 @@ displayed messages for reference, but the new provider starts without them.
 
 ## Preview boundaries
 
-- There is no browser for old journals, automatic local transcript replay after
-  reconnect, or crash recovery for an incomplete journal tail. Sessions from the
-  earlier Python application are not read.
-- Images, steer and follow-up queues, full thinking and compaction controls,
-  fleet orchestration, quota routing, resources, general plugin parity, and compatible
-  print/JSON/RPC modes remain to be implemented in Rust.
+- `/sessions` lists recent vendor sessions from the journals and `/resume N`
+  reopens one, but Octet does not replay an old transcript into the view or
+  repair an incomplete journal tail. Sessions from the earlier Python
+  application are not read.
+- Done on 2026-10-07: images, steering and the follow-up queue, reasoning
+  effort, fork, compaction, and print/JSON/RPC modes.
+- Fleet orchestration, quota routing, the vendors' plugin, hook and resource
+  surfaces, and Octet-owned history with branching remain; the
+  [acceptance matrix](parity-matrix.md) gives the reason for each.
 - The Rust preview does not execute Python extensions. This is an accepted
   compatibility break for the Rust design; the earlier Python application was
   removed from the repository on 2026-10-04.

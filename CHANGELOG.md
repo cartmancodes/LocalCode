@@ -38,6 +38,20 @@ Claude Code and Codex CLIs.
   on exit, signals and panic.
 - Octet, the header mascot, whose pose follows the agent's activity.
 - A build-time guard that fails if any crate names a vendor credential store.
+- A follow-up queue: Enter during a turn queues the prompt (up to 8), and
+  `/queue` lists or clears it.
+- `/steer TEXT` adds to the running Codex turn; for Claude it queues the text.
+- Reasoning effort with `--effort LEVEL` and `/effort`.
+- `/fork` continues a conversation in a new vendor session; `/compact` asks
+  the vendor to compact its context.
+- `/image PATH` attaches PNG, JPEG, GIF or WebP images (up to 5 MiB, 4 per
+  prompt).
+- `/sessions` lists this workspace's recent vendor sessions and `/resume N`
+  reopens one.
+- `--print` (`-p`), `--output json` and `--rpc` run Octet without the
+  interface, for scripts and other programs.
+- Release archives with SHA-256 files for macOS (Apple silicon) and Linux
+  (x86-64, ARM64), built when a version is tagged.
 - `@` file mentions, Tab completion for paths and commands, `!`/`!!` shell
   commands with output attached to the next prompt, Ctrl+G to write the
   prompt in an external editor, and `/copy` (Ctrl+X) through OSC 52.

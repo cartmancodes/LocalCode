@@ -29,7 +29,43 @@ scripts/rust-env.sh cargo install --locked --path crates/octet --root "$HOME/.lo
 
 The install command deliberately omits `--force`: resolve any existing `octet`
 binary before replacing it. The optimized executable can also be run directly.
-Published musl archives and cross-architecture installation gates remain pending.
+A pushed `v*` tag builds archives for `aarch64-apple-darwin`,
+`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, each with a
+SHA-256 file, and attaches them to a GitHub release
+(`.github/workflows/release.yml`).
+
+`--effort LEVEL` sets the reasoning effort (see below).
+
+### Without the interface: print, JSON and RPC
+
+These modes need no terminal, so scripts and other programs can drive a
+session.
+
+```sh
+octet --engine claude --print "Summarise the README"    # the reply, on stdout
+git diff | octet -p - --output json                      # every event, one JSON line each
+octet --rpc                                              # JSON-line commands on stdin
+```
+
+- **`--print PROMPT` (`-p`)** runs one turn and writes the reply text to
+  stdout; notices and errors go to stderr. `-` reads the prompt from stdin.
+  The exit code is 0 when the turn completes, 1 when it fails, and 130 after
+  Ctrl+C (SIGINT), which cancels the turn first.
+- **`--output json`** writes every event as one JSON line in the journal's
+  shape, `{"type": …, "data": …}`, ending with `{"type":"finished",…}`.
+- **Approvals in print mode are denied**, with a note on stderr. For
+  unattended runs choose the policy up front with `--mode auto` (the
+  vendor's reviewer decides) or `--mode full-access`.
+- **`--rpc`** reads one JSON command per line and writes events as JSON
+  lines. Commands: `{"type":"prompt","text":…}`,
+  `{"type":"answer","id":N,"allow":true|false}`, `{"type":"interrupt"}`,
+  `{"type":"mode","mode":"auto"}`, `{"type":"effort","level":"high"}` (or
+  `null` for the vendor default) and `{"type":"quit"}`. An approval arrives
+  as an `approval` event with its `id`; unanswered, it is denied when the
+  approval window ends. A command that cannot be read gets an `error` line.
+  RPC exits 0 on `quit` or the end of stdin, and 1 if the vendor stops.
+
+Every headless run is journaled like an interactive one.
 
 ## Interaction
 
@@ -104,7 +140,9 @@ It uses the OSC 52 escape. Inside tmux it needs
 `set -g set-clipboard on`; mosh 1.4 and later pass it on; terminal and
 phone apps vary in whether they accept it.
 
-Commands: `/help`, `/model`, `/mode`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/copy`, `/remote-control`, `/quit`.
+Commands: `/help`, `/model`, `/mode`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/copy`,
+`/remote-control`, `/queue`, `/steer`, `/effort`, `/fork`, `/compact`, `/image`, `/sessions`, `/resume`, `/quit`.
+Help (F1) and the command palette (Ctrl+P) scroll when the screen is short.
 `/remote-control` checks, without changing anything, whether this session can be
 reached from a phone over tmux, Tailscale SSH and mosh, and prints the phone
 command. Setup steps: [Use Octet from your phone](remote-control.md).
@@ -115,6 +153,47 @@ full text a model would receive. `/approval-demo` exercises
 the dialog in offline demo mode. Unknown preview commands return a visible error and leave the draft in place. A
 prompt may start with a path such as `/usr/lib`; it is sent, not treated as a command.
 `/reconnect` keeps the visible conversation and prompt history; `/new` clears them.
+
+## During and between turns
+
+**The follow-up queue.** While a turn runs, Enter queues the draft instead of
+sending it; the prompt box title shows `+N queued`. When the turn finishes,
+the next queued prompt goes, with the `!` output and images attached when it
+was queued. The queue holds 8 prompts. Esc or Ctrl+C cancels the turn and
+drops the queue ("Dropped N queued prompts"). `/queue` lists it and
+`/queue clear` empties it. An active goal's continuation goes first.
+
+**Steering.** `/steer TEXT` adds TEXT to the running turn. Codex takes it
+into the same turn (`turn/steer`). Claude has no steering request, so the
+text is queued as the next prompt, and Octet says so. With no turn running,
+`/steer` sends the text as a prompt.
+
+**Reasoning effort.** `--effort LEVEL` at launch, or `/effort LEVEL` later;
+`/effort` alone shows it and `/effort default` returns to the vendor's
+default. The level is passed as given, so the vendor decides which it
+accepts; `low`, `medium`, `high`, `xhigh` and `max` are the usual ones.
+Codex takes it with each turn, so a change applies from the next turn.
+Claude takes it at launch, so a change reconnects to the same session. The
+level carries across `/model`, `/new` and `/reconnect`.
+
+**Fork.** `/fork` continues this conversation in a new vendor session and
+leaves the original as it was (Codex `thread/fork`, Claude
+`--resume ID --fork-session`). The transcript stays on screen, a notice names
+the session it came from, and the new session's ID replaces the old one. It
+needs an idle session that the vendor has already named.
+
+**Compaction.** `/compact` asks the vendor to compact its context (Codex
+`thread/compact/start`, Claude's own `/compact`). It runs as a turn: its
+output streams as usual and Esc cancels it.
+
+**Images.** `/image PATH` attaches an image to the next prompt; the prompt
+box title shows `+ image name.png` (or `+N images`). PNG, JPEG, GIF and WebP
+are accepted, by extension, up to 5 MiB each and 4 per prompt. A relative
+path is in the workspace, and `~/` is your home folder. Codex receives the
+file's path and reads it itself. Claude receives the bytes, read when the
+prompt is sent; if the file has gone or grown past 5 MiB by then, the turn
+fails with a message. The transcript and journal show `[+ image name.png]`,
+never the image. Esc on an empty prompt drops attached images and `!` output.
 
 ## Permission modes
 
@@ -230,6 +309,11 @@ See [the goal workflow guide](rust/goals.md).
 
 `/session` shows the vendor session ID and journal path. `/reconnect` reopens that
 vendor context; `--resume VENDOR_SESSION_ID` does the same on a later launch.
+`/sessions` lists up to 20 recent vendor sessions in this workspace, newest
+first: provider, session ID, model, age and first prompt. `/resume N` reopens
+entry N, switching provider when it belongs to the other vendor, in a fresh
+view. The list comes from Octet's own journals (at most the first 64 KiB of
+each, skipping a torn last line); reconnects of one session show as one entry.
 Reconnection does not load the earlier local transcript into the viewport yet.
 `/new` starts fresh vendor context without deleting previous journals.
 
@@ -270,11 +354,14 @@ model selection and in-session switching, multiline editing, history,
 scrollback, new sessions, journal export, terminal restoration, persistent
 goals, phone-access checks (`/remote-control`), `@` file mentions, Tab
 completion, `!` shell commands with attachments, an external editor (Ctrl+G),
-`/copy`, and an offline demo.
+`/copy`, a follow-up queue, steering, reasoning effort, fork, compaction,
+images, a session browser, print/JSON/RPC modes, release archives, and an
+offline demo.
 
-Pending: pi v3 session browsing/recovery, images, steer/follow-up queues, full
-thinking/compaction controls, fleet, quota routing, resources, plugins, legacy
-session semantics, compatible print/JSON/RPC, and distributable release archives.
+Pending, each for a reason the [acceptance matrix](rust/parity-matrix.md)
+gives: fleet orchestration and quota routing, the vendors' plugin, hook and
+resource surfaces, Octet-owned history with branching and labels, and the
+Python era's RPC envelope.
 The earlier Python application was removed from the repository on 2026-10-04;
 Python extensions remain the explicitly accepted compatibility break.
 
