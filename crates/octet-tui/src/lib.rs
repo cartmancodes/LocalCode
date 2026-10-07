@@ -11,118 +11,30 @@ mod input;
 mod jobs;
 mod mascot;
 mod reconnect;
+mod registry;
 mod remote;
 mod shell;
+mod terminal;
 mod text;
 mod vendor;
 mod view;
 use app::App;
-use commands::{goal_send_failed, COMMANDS};
-use crossterm::{
-    event::{DisableBracketedPaste, EnableBracketedPaste, Event as Input, KeyEventKind},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
+use commands::goal_send_failed;
+use crossterm::event::{Event as Input, KeyEventKind};
 use input::{key_action, paste, refresh_completion};
 use octet_core::goal::Next;
 use octet_core::{Command, Config, Session};
 use ratatui::{backend::CrosstermBackend, Terminal};
+use registry::COMMANDS;
 use std::{
     io::{self, Stdout},
     path::PathBuf,
     time::Duration,
 };
+pub(crate) use terminal::write_terminal;
+use terminal::{alert, fit, regain_terminal, unix_signal, InputReader, TerminalGuard};
 use tokio::time::Instant;
 use vendor::{By, Vendor};
-// One thread owns both poll and read. A finite poll deadline avoids stale
-// wakeups after SIGCONT without adding any timer to the render loop.
-// Crossterm use-dev-tty selects level-triggered poll: resize and keyboard
-// readiness cannot consume each other's edge notification.
-struct InputReader {
-    events: tokio::sync::mpsc::Receiver<io::Result<Input>>,
-    stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    task: Option<std::thread::JoinHandle<()>>,
-}
-impl InputReader {
-    fn new() -> Self {
-        use std::sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc,
-        };
-        let (tx, events) = tokio::sync::mpsc::channel(64);
-        let stopping = Arc::new(AtomicBool::new(false));
-        let stop = Arc::clone(&stopping);
-        let task = std::thread::spawn(move || {
-            while !stop.load(Ordering::Relaxed) {
-                match crossterm::event::poll(Duration::from_millis(100)) {
-                    Ok(false) => {}
-                    Ok(true) => {
-                        if tx.blocking_send(crossterm::event::read()).is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                    Err(e) => {
-                        let _ = tx.blocking_send(Err(e));
-                        break;
-                    }
-                }
-            }
-        });
-        Self {
-            events,
-            stopping,
-            task: Some(task),
-        }
-    }
-}
-impl Drop for InputReader {
-    fn drop(&mut self) {
-        self.stopping
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        self.events.close();
-        if let Some(task) = self.task.take() {
-            let _ = task.join();
-        }
-    }
-}
-struct TerminalGuard;
-impl TerminalGuard {
-    fn enter() -> io::Result<Self> {
-        enable_raw_mode()?;
-        if let Err(e) = execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste) {
-            Self::restore();
-            return Err(e);
-        }
-        Ok(Self)
-    }
-    fn restore() {
-        let _ = execute!(
-            io::stdout(),
-            DisableBracketedPaste,
-            LeaveAlternateScreen,
-            crossterm::cursor::Show
-        );
-        let _ = disable_raw_mode();
-    }
-    fn resume(&self) -> io::Result<()> {
-        enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)
-    }
-    fn suspend(&self) -> io::Result<()> {
-        Self::restore();
-        // SAFETY: raise only delivers SIGSTOP to this process.
-        unsafe {
-            libc::raise(libc::SIGSTOP);
-        }
-        self.resume()
-    }
-}
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        Self::restore();
-    }
-}
 /// Shown after the first Ctrl+C on an idle, empty prompt, as in Claude Code.
 pub(crate) const QUIT_HINT: &str = "Press Ctrl+C again to quit";
 /// How long that first press stays armed.
@@ -225,22 +137,6 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     }
     drop(terminal);
     drop(guard);
-    Ok(())
-}
-/// Sizes ratatui to the terminal again after something else used it.
-fn fit(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> {
-    terminal.resize(terminal.size()?.into())
-}
-/// Takes the terminal back from the editor: raw mode, a fresh frame and a
-/// new key reader.
-fn regain_terminal(
-    guard: &TerminalGuard,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    input: &mut Option<InputReader>,
-) -> io::Result<()> {
-    guard.resume()?;
-    fit(terminal)?;
-    *input = Some(InputReader::new());
     Ok(())
 }
 /// Loads the stored goal on the first connection. A load failure leaves chat
@@ -380,7 +276,7 @@ async fn run_session(
                 if let Some((_, edit)) = editing.take() {
                     // The editor may have changed the terminal behind
                     // crossterm's record of it; clear the record first.
-                    let _ = disable_raw_mode();
+                    let _ = crossterm::terminal::disable_raw_mode();
                     regain_terminal(guard, terminal, &mut input)?;
                     match edit.finish(status.is_ok_and(|status| status.success())) {
                         Ok(text) => app.composer.editor.set(text),
@@ -604,30 +500,10 @@ fn shell_finished(app: &mut App, result: Result<shell::Ran, shell::ShellError>, 
         Err(error) => app.error(error.to_string()),
     }
 }
-/// Starts the `/remote-control` checks in the background. They take up to
-/// about 2.5 seconds, and the loop must keep draining vendor events meanwhile.
 /// Ring once when an approval starts waiting; a burst of requests behind it
 /// rings no more.
 fn should_alert(app: &App, event: &octet_core::Event) -> bool {
     matches!(event, octet_core::Event::Approval { .. }) && app.overlay.approvals.is_empty()
-}
-/// A bell plus a desktop notification (OSC 9) for an approval the user isn't
-/// watching. The bell passes through tmux and mosh to a phone; tmux drops the
-/// OSC 9, which helps only a desktop terminal connected directly. Write errors
-/// are ignored: the alert is a courtesy, never a reason to stop.
-const ALERT: &[u8] = b"\x07\x1b]9;Octet: approval needed\x07";
-fn alert() {
-    write_terminal(ALERT);
-}
-/// Writes control bytes straight to the terminal, outside a frame. Errors are
-/// ignored: these are courtesies, never a reason to stop.
-pub(crate) fn write_terminal(bytes: &[u8]) {
-    use std::io::Write;
-    let mut stdout = io::stdout();
-    let _ = stdout.write_all(bytes).and_then(|()| stdout.flush());
-}
-async fn unix_signal(signal: &mut tokio::signal::unix::Signal) {
-    signal.recv().await;
 }
 /// A new connection must never continue an autonomous goal by itself.
 async fn pause_active_goal(app: &mut App, why: &str) {

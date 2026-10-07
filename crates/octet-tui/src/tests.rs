@@ -4,6 +4,7 @@ use crate::{
     commands::{self, *},
     input::*,
     reconnect::*,
+    registry::*,
     vendor::{Prompt, RecordingVendor},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

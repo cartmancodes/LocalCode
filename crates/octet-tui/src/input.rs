@@ -2,8 +2,10 @@
 use crate::{
     app::{App, CANCELLING, QUEUE_LIMIT},
     clipboard,
-    commands::{command, try_command, COMMANDS},
-    composer, files, text, view, write_terminal, Action, Exit, QUIT_HINT, QUIT_WINDOW,
+    commands::{command, try_command},
+    composer, files,
+    registry::COMMANDS,
+    text, view, write_terminal, Action, Exit, QUIT_HINT, QUIT_WINDOW,
 };
 use crate::{
     commands::switch_mode,
@@ -498,7 +500,7 @@ pub(crate) fn compose(app: &App, draft: &str) -> Result<Prompt, &'static str> {
 /// when it could not go.
 pub(crate) fn submit(app: &mut App, vendor: &dyn Vendor, draft: String) -> bool {
     if !app.is_idle() && !app.conn.is_running() {
-        app.hint(crate::commands::NOT_CONNECTED);
+        app.hint(crate::registry::NOT_CONNECTED);
         return false;
     }
     if app.conn.is_running() && app.composer.queue.len() >= QUEUE_LIMIT {

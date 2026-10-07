@@ -2,8 +2,8 @@
 //! state they draw is in `app`.
 use crate::{
     app::App,
-    commands::{Cmd, COMMANDS},
     mascot,
+    registry::{Cmd, COMMANDS},
 };
 use ratatui::{
     prelude::*,
@@ -501,7 +501,7 @@ fn help(frame: &mut Frame, area: Rect, scroll: &mut u16) {
     let inner = usize::from(width.saturating_sub(2));
     let rows: usize = lines
         .iter()
-        .map(|line| crate::app::wrap(line, inner).len())
+        .map(|line| transcript::wrap(line, inner).len())
         .sum();
     let area = modal(area, 76, cells(rows).saturating_add(2));
     let visible = area.height.saturating_sub(2);
@@ -605,6 +605,8 @@ fn approval(frame: &mut Frame, area: Rect, id: u64, detail: &str, scroll: u16, c
         parts[2],
     );
 }
+
+mod transcript;
 
 #[cfg(test)]
 mod tests;
