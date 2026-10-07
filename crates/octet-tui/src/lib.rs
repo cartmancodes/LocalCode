@@ -12,9 +12,10 @@ mod mascot;
 mod remote;
 mod shell;
 mod text;
+mod vendor;
 mod view;
 use app::App;
-use commands::{goal_send_failed, send_goal_prompt, COMMANDS};
+use commands::{goal_send_failed, COMMANDS};
 use crossterm::{
     event::{DisableBracketedPaste, EnableBracketedPaste, Event as Input, KeyEventKind},
     execute,
@@ -30,6 +31,7 @@ use std::{
     time::Duration,
 };
 use tokio::time::Instant;
+use vendor::{By, Vendor};
 // One thread owns both poll and read. A finite poll deadline avoids stale
 // wakeups after SIGCONT without adding any timer to the render loop.
 // Crossterm use-dev-tty selects level-triggered poll: resize and keyboard
@@ -127,8 +129,6 @@ pub(crate) const QUIT_WINDOW: Duration = Duration::from_millis(1500);
 pub(crate) enum Action {
     Continue,
     Suspend,
-    SetMode(octet_core::Mode),
-    GoalPrompt(String),
     /// Run a `!` line; `attach` keeps its output for the next prompt.
     RunShell {
         command: String,
@@ -138,12 +138,6 @@ pub(crate) enum Action {
     CancelShell,
     /// Run the `/remote-control` checks off the event loop.
     RemoteControl,
-    /// Add text to the running turn, queue it, or send it (`/steer`).
-    Steer(String),
-    /// Change the reasoning effort live (`/effort`, Codex).
-    Effort(Option<String>),
-    /// Compact the vendor's context (`/compact`).
-    Compact,
     /// Hand the terminal to the user's editor for the draft.
     ExternalEditor,
     Exit(Exit),
@@ -449,7 +443,7 @@ async fn run_session(
                         if matches!(event, octet_core::Event::Finished { .. } | octet_core::Event::Error(_)) {
                             last_paint = Instant::now() - frame_time;
                         }
-                        session_event(app, session, event).await;
+                        session_event(app, &session.handle, event).await;
                     }
                     None => {
                         events_open = false;
@@ -522,7 +516,7 @@ async fn run_session(
             } => {
                 let action = match event {
                     Some(Ok(Input::Key(key))) if key.kind != KeyEventKind::Release => {
-                        key_action(app, session, key).await
+                        key_action(app, &session.handle, key).await
                     }
                     Some(Ok(Input::Paste(value))) => {
                         paste(app, &value);
@@ -538,21 +532,7 @@ async fn run_session(
                 };
                 match action {
                     Action::Continue => {}
-                    Action::GoalPrompt(prompt) => send_goal_prompt(app, session, prompt).await,
                     Action::RemoteControl => start_remote_check(app, &mut remote_check),
-                    Action::Steer(text) => steer(app, session, text),
-                    Action::Compact => match session.handle.send(Command::Compact) {
-                        Ok(()) => {
-                            app.goals.user_prompt_sent();
-                            app.conn.start_turn();
-                            app.conn.status = "compacting".into();
-                        }
-                        Err(error) => app.notice(error.to_string()),
-                    },
-                    Action::Effort(level) => match session.handle.send(Command::SetEffort(level.clone())) {
-                        Ok(()) => app.conn.effort = level,
-                        Err(error) => app.notice(error.to_string()),
-                    },
                     Action::ExternalEditor => {
                         match external::prepare(&app.composer.editor.text, external::editor_command()) {
                             Err(error) => app.notice(error.to_string()),
@@ -602,10 +582,6 @@ async fn run_session(
                         guard.suspend()?;
                         fit(terminal)?;
                     }
-                    Action::SetMode(mode) => match session.handle.send(Command::SetMode(mode)) {
-                        Ok(()) => app.conn.mode_pending = Some(mode),
-                        Err(e) => app.notice(e.to_string()),
-                    },
                     Action::Exit(exit) => return Ok(exit),
                 }
                 if matches!(app.composer.files, files::Files::Wanted) {
@@ -649,7 +625,7 @@ async fn run_session(
     }
 }
 /// Applies a vendor event, then advances a goal whose turn just ended.
-async fn session_event(app: &mut App, session: &Session, event: octet_core::Event) {
+async fn session_event(app: &mut App, vendor: &dyn Vendor, event: octet_core::Event) {
     if let octet_core::Event::Text(text) = &event {
         app.goals.observe_text(text);
     }
@@ -671,10 +647,10 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
         return;
     };
     match app.goals.turn_finished(&outcome).await {
-        Ok(Next::Idle) => send_queued(app, session),
+        Ok(Next::Idle) => send_queued(app, vendor),
         Ok(Next::Stopped(summary)) => {
             app.notice(summary);
-            send_queued(app, session);
+            send_queued(app, vendor);
         }
         Ok(Next::Continue { prompt, display }) => {
             let command = Command::PromptWithDisplay {
@@ -682,76 +658,27 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
                 display,
                 images: Vec::new(),
             };
-            match session.handle.send(command) {
-                Ok(()) => {
-                    app.goals.goal_prompt_sent();
-                    app.conn.start_turn();
-                    app.conn.status = "continuing goal".into();
-                }
-                Err(error) => {
-                    goal_send_failed(app, error).await;
-                    send_queued(app, session);
-                }
+            if let Err(error) = app.begin_turn(vendor, command, By::Goal, "continuing goal") {
+                goal_send_failed(app, error).await;
+                send_queued(app, vendor);
             }
         }
         Err(error) => {
             app.notice(format!("Goal persistence failed; paused: {error}"));
-            send_queued(app, session);
+            send_queued(app, vendor);
         }
-    }
-}
-/// `/steer`: adds `text` to the running turn where the provider can, queues
-/// it as a follow-up where it cannot, and sends it as a prompt when idle.
-fn steer(app: &mut App, session: &Session, text: String) {
-    if app.conn.is_running() {
-        if app.conn.cancelling && app.composer.queue.len() < app::QUEUE_LIMIT {
-            app.composer.queue.push_back(Command::Prompt(text));
-            app.notice("The turn is stopping; queued the steer as the next prompt");
-        } else if app.conn.engine.provider().steer && !app.conn.cancelling {
-            if let Err(error) = session.handle.send(Command::Steer(text)) {
-                app.notice(error.to_string());
-            }
-        } else if app.composer.queue.len() >= app::QUEUE_LIMIT {
-            app.notice(format!(
-                "The queue is full ({} prompts); wait for the turn or press Esc",
-                app::QUEUE_LIMIT
-            ));
-        } else {
-            app.composer.queue.push_back(Command::Prompt(text));
-            let title = app.conn.engine.title();
-            app.notice(format!(
-                "{title} cannot steer a running turn; queued as a follow-up"
-            ));
-        }
-    } else if app.is_idle() {
-        match session.handle.send(Command::Prompt(text.clone())) {
-            Ok(()) => {
-                app.goals.user_prompt_sent();
-                app.conn.start_turn();
-                app.conn.status = "sending".into();
-                app.remember(text);
-            }
-            Err(error) => app.notice(error.to_string()),
-        }
-    } else {
-        app.notice("Wait for the connection, or /reconnect");
     }
 }
 /// Sends the next prompt queued behind the turn that just ended.
-fn send_queued(app: &mut App, session: &Session) {
+fn send_queued(app: &mut App, vendor: &dyn Vendor) {
     if !app.is_idle() {
         return;
     }
-    let Some(command) = app.composer.queue.pop_front() else {
+    let Some(prompt) = app.composer.queue.pop_front() else {
         return;
     };
-    match session.handle.send(command) {
-        Ok(()) => {
-            app.goals.user_prompt_sent();
-            app.conn.start_turn();
-            app.conn.status = "sending".into();
-        }
-        Err(error) => app.notice(format!("A queued prompt could not be sent: {error}")),
+    if let Err(error) = app.begin_turn(vendor, prompt.into_command(), By::User, "sending") {
+        app.notice(format!("A queued prompt could not be sent: {error}"));
     }
 }
 /// Asks a running editor to quit, so it can put the terminal back, and

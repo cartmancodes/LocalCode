@@ -147,7 +147,7 @@ pub(crate) struct Composer {
     /// The workspace file index for `@`.
     pub(crate) files: crate::files::Files,
     /// Prompts sent while a turn ran, sent in order as turns finish.
-    pub(crate) queue: VecDeque<octet_core::Command>,
+    pub(crate) queue: VecDeque<crate::vendor::Prompt>,
 }
 /// Dialogs over the screen: help, the palette and approvals.
 pub(crate) struct Overlays {

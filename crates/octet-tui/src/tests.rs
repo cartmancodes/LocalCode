@@ -1,8 +1,22 @@
 use super::*;
 use crate::app::ConnPhase;
-use crate::{commands::*, input::*};
+use crate::{
+    commands::{self, *},
+    input::*,
+    vendor::{Prompt, RecordingVendor},
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use octet_core::Engine;
+/// Runs a command; what it sent the session.
+async fn sends(app: &mut App, input: &str) -> Vec<Command> {
+    let vendor = RecordingVendor::default();
+    commands::command(app, &vendor, input).await;
+    vendor.sent.take()
+}
+/// Runs a command against a stand-in session that records what it sent.
+async fn command(app: &mut App, input: &str) -> Action {
+    commands::command(app, &RecordingVendor::default(), input).await
+}
 fn app() -> App {
     let config = Config::new(Engine::CODEX, "codex", "/tmp");
     let mut app = App::new(&config, "journal".into());
@@ -133,11 +147,11 @@ async fn at_opens_the_file_popup_and_enter_accepts() {
         "src/main.rs".into(),
     ]));
     for c in "see @mai".chars() {
-        key_action(&mut app, &session, key(KeyCode::Char(c))).await;
+        key_action(&mut app, &session.handle, key(KeyCode::Char(c))).await;
     }
     let completion = app.composer.completion.as_ref().expect("popup open");
     assert_eq!(completion.items, ["src/main.rs"]);
-    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert_eq!(app.composer.editor.text, "see @src/main.rs ");
     assert!(app.composer.completion.is_none());
     assert!(!app.conn.is_running(), "Enter accepted instead of sending");
@@ -151,23 +165,23 @@ async fn the_palette_offers_the_editor_mentions_and_shell() {
         app.overlay.selection = index;
     };
     open_at(&mut app, COMMANDS.len() + 1);
-    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert_eq!(app.composer.editor.text, "@");
     assert!(app.composer.completion.is_some(), "@ opens the file popup");
     app.composer.completion = None;
     app.composer.editor.take();
     open_at(&mut app, COMMANDS.len() + 2);
-    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert_eq!(app.composer.editor.text, "!");
     open_at(&mut app, COMMANDS.len());
     assert!(matches!(
-        key_action(&mut app, &session, key(KeyCode::Enter)).await,
+        key_action(&mut app, &session.handle, key(KeyCode::Enter)).await,
         Action::ExternalEditor
     ));
     app.overlay.palette = true;
     app.overlay.selection = 0;
     for _ in 0..40 {
-        key_action(&mut app, &session, key(KeyCode::Down)).await;
+        key_action(&mut app, &session.handle, key(KeyCode::Down)).await;
     }
     assert_eq!(
         app.overlay.selection,
@@ -182,7 +196,7 @@ async fn a_prompt_too_long_for_its_attachments_says_so() {
     app.composer
         .editor
         .set("x".repeat(octet_core::PROMPT_LIMIT - 6));
-    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert_eq!(
         app.notice,
         "The prompt and its attachments are over 64 KiB. Shorten the prompt, or press Esc on an empty prompt to drop them"
@@ -226,11 +240,11 @@ async fn the_popup_closes_before_the_editor_and_follows_a_paste() {
     app.composer.files =
         crate::files::Files::Ready(crate::files::Index::from_paths(vec!["src/main.rs".into()]));
     for c in "a long draft @ma".chars() {
-        key_action(&mut app, &session, key(KeyCode::Char(c))).await;
+        key_action(&mut app, &session.handle, key(KeyCode::Char(c))).await;
     }
     assert!(app.composer.completion.is_some());
     assert!(matches!(
-        key_action(&mut app, &session, ctrl('g')).await,
+        key_action(&mut app, &session.handle, ctrl('g')).await,
         Action::ExternalEditor
     ));
     assert!(
@@ -249,17 +263,17 @@ async fn the_popup_closes_before_the_editor_and_follows_a_paste() {
         app.composer.completion.is_none(),
         "a paste closes a command popup"
     );
-    key_action(&mut app, &session, key(KeyCode::Char('x'))).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Char('x'))).await;
     assert_eq!(app.composer.editor.text, "/report the bugx");
 }
 #[tokio::test]
 async fn the_first_at_asks_for_the_index_and_esc_closes_the_popup() {
     let mut app = app();
     let (_temp, session) = demo_session("octet-at-index").await;
-    key_action(&mut app, &session, key(KeyCode::Char('@'))).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Char('@'))).await;
     assert!(matches!(app.composer.files, crate::files::Files::Wanted));
     assert!(app.composer.completion.is_some());
-    key_action(&mut app, &session, key(KeyCode::Esc)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Esc)).await;
     assert!(app.composer.completion.is_none());
     assert_eq!(app.composer.editor.text, "@");
 }
@@ -268,7 +282,7 @@ async fn an_at_inside_a_word_opens_nothing() {
     let mut app = app();
     let (_temp, session) = demo_session("octet-at-word").await;
     for c in "me@host".chars() {
-        key_action(&mut app, &session, key(KeyCode::Char(c))).await;
+        key_action(&mut app, &session.handle, key(KeyCode::Char(c))).await;
     }
     assert!(app.composer.completion.is_none());
 }
@@ -278,7 +292,7 @@ async fn bang_lines_run_locally_and_double_bang_does_not_attach() {
     let (_temp, session) = demo_session("octet-bang").await;
     app.composer.editor.set("!echo hi".into());
     assert!(matches!(
-        key_action(&mut app, &session, key(KeyCode::Enter)).await,
+        key_action(&mut app, &session.handle, key(KeyCode::Enter)).await,
         Action::RunShell { ref command, attach: true } if command == "echo hi"
     ));
     assert!(app.composer.editor.text.is_empty());
@@ -288,24 +302,24 @@ async fn bang_lines_run_locally_and_double_bang_does_not_attach() {
     );
     app.composer.editor.set("!!  pwd ".into());
     assert!(matches!(
-        key_action(&mut app, &session, key(KeyCode::Enter)).await,
+        key_action(&mut app, &session.handle, key(KeyCode::Enter)).await,
         Action::RunShell { ref command, attach: false } if command == "pwd"
     ));
     app.composer.editor.set("!".into());
     assert!(matches!(
-        key_action(&mut app, &session, key(KeyCode::Enter)).await,
+        key_action(&mut app, &session.handle, key(KeyCode::Enter)).await,
         Action::Continue
     ));
     assert_eq!(app.notice, "Type a command after !");
     app.composer.shell_running = true;
     app.composer.editor.set("!ls".into());
     assert!(matches!(
-        key_action(&mut app, &session, key(KeyCode::Enter)).await,
+        key_action(&mut app, &session.handle, key(KeyCode::Enter)).await,
         Action::Continue
     ));
     assert_eq!(app.notice, "A command is already running");
     assert!(matches!(
-        key_action(&mut app, &session, key(KeyCode::Esc)).await,
+        key_action(&mut app, &session.handle, key(KeyCode::Esc)).await,
         Action::CancelShell
     ));
 }
@@ -315,7 +329,7 @@ async fn attachments_go_with_the_next_prompt_then_clear() {
     let (_temp, mut session) = demo_session("octet-attach").await;
     app.attach(ran("echo hi", "hi\n"));
     app.composer.editor.set("explain".into());
-    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert!(app.composer.attachments.is_empty());
     assert_eq!(next_user_text(&mut session).await, "explain\n\n[+ echo hi]");
 }
@@ -324,7 +338,7 @@ async fn esc_on_an_empty_idle_draft_removes_attachments() {
     let mut app = app();
     let (_temp, session) = demo_session("octet-detach").await;
     app.attach(ran("ls", ""));
-    key_action(&mut app, &session, key(KeyCode::Esc)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Esc)).await;
     assert!(app.composer.attachments.is_empty());
     assert_eq!(app.notice, "Attachments removed");
 }
@@ -333,7 +347,7 @@ async fn goal_prompts_never_carry_attachments() {
     let mut app = app();
     let (_temp, mut session) = demo_session("octet-goal-attach").await;
     app.attach(ran("ls", "a\n"));
-    send_goal_prompt(&mut app, &session, "continue the goal".into()).await;
+    send_goal_prompt(&mut app, &session.handle, "continue the goal".into()).await;
     assert_eq!(
         app.composer.attachments.len(),
         1,
@@ -394,12 +408,12 @@ async fn ctrl_c_twice_on_an_idle_empty_prompt_quits() {
     let mut app = app();
     let (_temp, mut session) = demo_session("octet-quit-twice").await;
     assert!(matches!(
-        key_action(&mut app, &session, ctrl('c')).await,
+        key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue
     ));
     assert_eq!(app.notice, QUIT_HINT);
     assert!(matches!(
-        key_action(&mut app, &session, ctrl('c')).await,
+        key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Exit(Exit::Quit)
     ));
     session.shutdown().await;
@@ -410,17 +424,17 @@ async fn ctrl_c_clears_a_draft_before_it_can_quit() {
     let (_temp, mut session) = demo_session("octet-quit-draft").await;
     assert!(app.composer.editor.insert("half-written prompt"));
     assert!(matches!(
-        key_action(&mut app, &session, ctrl('c')).await,
+        key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue
     ));
     assert!(app.composer.editor.text.is_empty());
     assert_ne!(app.notice, QUIT_HINT);
     assert!(matches!(
-        key_action(&mut app, &session, ctrl('c')).await,
+        key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue
     ));
     assert!(matches!(
-        key_action(&mut app, &session, ctrl('c')).await,
+        key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Exit(Exit::Quit)
     ));
     session.shutdown().await;
@@ -429,18 +443,18 @@ async fn ctrl_c_clears_a_draft_before_it_can_quit() {
 async fn another_key_or_an_expired_window_disarms_quit() {
     let mut app = app();
     let (_temp, mut session) = demo_session("octet-quit-disarm").await;
-    key_action(&mut app, &session, ctrl('c')).await;
+    key_action(&mut app, &session.handle, ctrl('c')).await;
     let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
-    key_action(&mut app, &session, left).await;
+    key_action(&mut app, &session.handle, left).await;
     assert_ne!(app.notice, QUIT_HINT, "another key clears the hint");
     assert!(matches!(
-        key_action(&mut app, &session, ctrl('c')).await,
+        key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue
     ));
     // The window has passed: the press arms again instead of quitting.
     app.quit_armed = Some(Instant::now() - Duration::from_millis(1));
     assert!(matches!(
-        key_action(&mut app, &session, ctrl('c')).await,
+        key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue
     ));
     assert_eq!(app.notice, QUIT_HINT);
@@ -452,13 +466,13 @@ async fn ctrl_c_closes_help_and_the_palette_without_quitting() {
     let (_temp, mut session) = demo_session("octet-quit-overlay").await;
     app.overlay.help = true;
     assert!(matches!(
-        key_action(&mut app, &session, ctrl('c')).await,
+        key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue
     ));
     assert!(!app.overlay.help);
     app.overlay.palette = true;
     assert!(matches!(
-        key_action(&mut app, &session, ctrl('c')).await,
+        key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue
     ));
     assert!(!app.overlay.palette);
@@ -472,7 +486,7 @@ async fn ctrl_c_interrupts_a_running_turn_instead_of_quitting() {
     app.conn.phase = ConnPhase::Running;
     for _ in 0..2 {
         assert!(matches!(
-            key_action(&mut app, &session, ctrl('c')).await,
+            key_action(&mut app, &session.handle, ctrl('c')).await,
             Action::Continue
         ));
         assert_eq!(app.notice, crate::app::CANCELLING);
@@ -484,7 +498,7 @@ async fn ctrl_q_no_longer_quits() {
     let mut app = app();
     let (_temp, mut session) = demo_session("octet-quit-q").await;
     assert!(matches!(
-        key_action(&mut app, &session, ctrl('q')).await,
+        key_action(&mut app, &session.handle, ctrl('q')).await,
         Action::Continue
     ));
     session.shutdown().await;
@@ -502,7 +516,7 @@ async fn ctrl_c_in_approval_dialog_pauses_the_active_goal() {
     let mut session = Session::open(config, directory.clone()).await.unwrap();
     key_action(
         &mut app,
-        &session,
+        &session.handle,
         KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
     )
     .await;
@@ -516,8 +530,8 @@ async fn ctrl_c_in_approval_dialog_pauses_the_active_goal() {
 async fn goal_commands_start_pause_resume_and_clear_without_a_vendor_turn() {
     let mut app = app();
     assert!(matches!(
-        command(&mut app, "/goal Ship the project").await,
-        Action::GoalPrompt(_)
+        sends(&mut app, "/goal Ship the project").await[..],
+        [Command::PromptWithDisplay { .. }]
     ));
     assert_eq!(
         app.goals.goal.as_ref().unwrap().objective,
@@ -531,9 +545,10 @@ async fn goal_commands_start_pause_resume_and_clear_without_a_vendor_turn() {
         app.goals.goal.as_ref().unwrap().status,
         octet_core::goal::Status::Paused
     );
+    app.conn.phase = ConnPhase::Idle;
     assert!(matches!(
-        command(&mut app, "/goal resume").await,
-        Action::GoalPrompt(_)
+        sends(&mut app, "/goal resume").await[..],
+        [Command::PromptWithDisplay { .. }]
     ));
     let goal = app.goals.goal.as_mut().unwrap();
     goal.status = octet_core::goal::Status::Paused;
@@ -555,15 +570,18 @@ async fn goal_commands_start_pause_resume_and_clear_without_a_vendor_turn() {
 #[tokio::test]
 async fn mode_command_switches_live_modes_and_rejects_unknown() {
     let mut app = app();
-    assert!(matches!(
-        command(&mut app, "/mode auto").await,
-        Action::SetMode(octet_core::Mode::Auto)
-    ));
+    assert_eq!(
+        sends(&mut app, "/mode auto").await,
+        [Command::SetMode(octet_core::Mode::Auto)]
+    );
+    assert_eq!(app.conn.mode_pending, Some(octet_core::Mode::Auto));
+    app.conn.mode_pending = None;
     app.conn.phase = ConnPhase::Running;
-    assert!(matches!(
-        command(&mut app, "/mode accept-edits").await,
-        Action::SetMode(octet_core::Mode::AcceptEdits)
-    ));
+    assert_eq!(
+        sends(&mut app, "/mode accept-edits").await,
+        [Command::SetMode(octet_core::Mode::AcceptEdits)]
+    );
+    app.conn.mode_pending = None;
     assert!(matches!(
         command(&mut app, "/mode yolo").await,
         Action::Continue
@@ -610,24 +628,31 @@ async fn full_access_requires_idle_ready_session() {
 #[test]
 fn cycle_follows_order_and_never_reaches_full_access() {
     let mut app = app();
-    assert!(matches!(
-        cycle_mode(&mut app),
-        Action::SetMode(octet_core::Mode::AcceptEdits)
-    ));
+    let vendor = RecordingVendor::default();
+    cycle_mode(&mut app, &vendor);
+    app.conn.mode_pending = None;
     app.conn.mode = octet_core::Mode::Auto;
-    assert!(matches!(
-        cycle_mode(&mut app),
-        Action::SetMode(octet_core::Mode::Ask)
-    ));
+    cycle_mode(&mut app, &vendor);
+    app.conn.mode_pending = None;
     app.conn.mode = octet_core::Mode::FullAccess;
-    assert!(matches!(cycle_mode(&mut app), Action::Continue));
+    cycle_mode(&mut app, &vendor);
     assert!(app.notice.contains("/mode"));
+    assert_eq!(
+        vendor.sent.take(),
+        [
+            Command::SetMode(octet_core::Mode::AcceptEdits),
+            Command::SetMode(octet_core::Mode::Ask)
+        ]
+    );
 }
 #[tokio::test]
 async fn cycle_is_ignored_while_a_switch_is_pending() {
     let mut app = app();
     app.conn.mode_pending = Some(octet_core::Mode::AcceptEdits);
-    assert!(matches!(cycle_mode(&mut app), Action::Continue));
+    assert!(matches!(
+        cycle_mode(&mut app, &RecordingVendor::default()),
+        Action::Continue
+    ));
     assert!(app.notice.contains("pending"));
     assert!(matches!(
         command(&mut app, "/mode auto").await,
@@ -684,7 +709,7 @@ async fn unknown_command_keeps_the_draft() {
         .editor
         .insert("/nope is not a command, keep my words"));
     assert!(matches!(
-        key_action(&mut app, &session, enter).await,
+        key_action(&mut app, &session.handle, enter).await,
         Action::Continue
     ));
     assert_eq!(
@@ -700,7 +725,7 @@ async fn unknown_command_keeps_the_draft() {
         .editor
         .insert("/usr/lib is where this breaks, please look"));
     assert!(matches!(
-        key_action(&mut app, &session, enter).await,
+        key_action(&mut app, &session.handle, enter).await,
         Action::Continue
     ));
     assert!(
@@ -716,7 +741,7 @@ async fn unknown_command_keeps_the_draft() {
     // A prompt starting with a multi-byte character is an ordinary prompt.
     assert!(app.composer.editor.insert("界 means world"));
     assert!(matches!(
-        key_action(&mut app, &session, enter).await,
+        key_action(&mut app, &session.handle, enter).await,
         Action::Continue
     ));
     assert_eq!(
@@ -726,7 +751,7 @@ async fn unknown_command_keeps_the_draft() {
     app.conn.phase = ConnPhase::Idle;
     assert!(app.composer.editor.insert("/session"));
     assert!(matches!(
-        key_action(&mut app, &session, enter).await,
+        key_action(&mut app, &session.handle, enter).await,
         Action::Continue
     ));
     assert!(app.composer.editor.text.is_empty());
@@ -761,7 +786,7 @@ async fn enter_while_running_queues_the_prompt() {
     let (_temp, session) = demo_session("octet-queue-enter").await;
     app.conn.phase = ConnPhase::Running;
     assert!(app.composer.editor.insert("next please"));
-    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert_eq!(app.composer.queue.len(), 1);
     assert!(app.composer.editor.text.is_empty());
     assert!(crate::view::composer_title(&app).contains("+1 queued"));
@@ -773,10 +798,10 @@ async fn a_finished_turn_sends_the_next_queued_prompt() {
     app.conn.phase = ConnPhase::Running;
     app.composer
         .queue
-        .push_back(Command::Prompt("queued one".into()));
+        .push_back(Prompt::plain("queued one".into()));
     session_event(
         &mut app,
-        &session,
+        &session.handle,
         octet_core::Event::Finished {
             outcome: octet_core::Outcome::Completed,
         },
@@ -791,9 +816,9 @@ async fn cancel_drops_the_queue() {
     let mut app = app();
     let (_temp, session) = demo_session("octet-queue-cancel").await;
     app.conn.phase = ConnPhase::Running;
-    app.composer.queue.push_back(Command::Prompt("a".into()));
-    app.composer.queue.push_back(Command::Prompt("b".into()));
-    key_action(&mut app, &session, key(KeyCode::Esc)).await;
+    app.composer.queue.push_back(Prompt::plain("a".into()));
+    app.composer.queue.push_back(Prompt::plain("b".into()));
+    key_action(&mut app, &session.handle, key(KeyCode::Esc)).await;
     assert!(app.composer.queue.is_empty());
     assert!(app.entries_text().contains("Dropped 2 queued prompts"));
 }
@@ -803,12 +828,10 @@ async fn the_queue_is_bounded() {
     let (_temp, session) = demo_session("octet-queue-bound").await;
     app.conn.phase = ConnPhase::Running;
     for i in 0..8 {
-        app.composer
-            .queue
-            .push_back(Command::Prompt(format!("p{i}")));
+        app.composer.queue.push_back(Prompt::plain(format!("p{i}")));
     }
     assert!(app.composer.editor.insert("one more"));
-    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert_eq!(app.composer.queue.len(), 8);
     assert_eq!(app.composer.editor.text, "one more");
     assert!(app.notice.contains("queue is full"), "{}", app.notice);
@@ -818,7 +841,7 @@ async fn slash_queue_lists_and_clears() {
     let mut app = app();
     app.composer
         .queue
-        .push_back(Command::Prompt("first queued".into()));
+        .push_back(Prompt::plain("first queued".into()));
     command(&mut app, "/queue").await;
     assert!(app.entries_text().contains("first queued"));
     command(&mut app, "/queue clear").await;
@@ -830,7 +853,7 @@ async fn steer_on_claude_queues_a_follow_up() {
     let mut app = App::new(&config, "journal".into());
     let (_temp, session) = demo_session("octet-steer-claude").await;
     app.conn.phase = ConnPhase::Running;
-    steer(&mut app, &session, "also check docs".into());
+    steer(&mut app, &session.handle, "also check docs".into());
     assert_eq!(app.composer.queue.len(), 1);
     assert!(
         app.entries_text().contains("Claude cannot steer"),
@@ -843,7 +866,7 @@ async fn steer_when_idle_sends_a_prompt() {
     let mut app = app();
     let (_temp, mut session) = demo_session("octet-steer-idle").await;
     app.conn.phase = ConnPhase::Idle;
-    steer(&mut app, &session, "plain prompt".into());
+    steer(&mut app, &session.handle, "plain prompt".into());
     assert_eq!(next_user_text(&mut session).await, "plain prompt");
     assert!(app.conn.is_running());
 }
@@ -855,10 +878,11 @@ async fn effort_command_shows_and_sets() {
         .entries_text()
         .contains("Reasoning effort: vendor default"));
     // Codex takes effort per turn: no reconnect.
-    assert!(matches!(
-        command(&mut app, "/effort high").await,
-        Action::Effort(Some(ref level)) if level == "high"
-    ));
+    assert_eq!(
+        sends(&mut app, "/effort high").await,
+        [Command::SetEffort(Some("high".into()))]
+    );
+    assert_eq!(app.conn.effort.as_deref(), Some("high"));
     // Claude takes it at launch: reconnect to the same session.
     let mut claude = App::new(
         &Config::new(Engine::CLAUDE, "claude", "/tmp"),
@@ -906,10 +930,8 @@ async fn fork_needs_an_idle_vendor_session() {
 #[tokio::test]
 async fn compact_needs_an_idle_session() {
     let mut app = app();
-    assert!(matches!(
-        command(&mut app, "/compact").await,
-        Action::Compact
-    ));
+    assert_eq!(sends(&mut app, "/compact").await, [Command::Compact]);
+    assert!(app.conn.is_running());
     app.conn.phase = ConnPhase::Running;
     assert!(matches!(
         command(&mut app, "/compact").await,
@@ -939,20 +961,12 @@ async fn image_attaches_and_shows_in_the_title() {
     let (_temp, session) = demo_session("octet-image-send").await;
     app.conn.phase = ConnPhase::Running;
     assert!(app.composer.editor.insert("look"));
-    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert!(app.composer.images.is_empty());
-    match app.composer.queue.front() {
-        Some(Command::PromptWithDisplay {
-            wire,
-            display,
-            images,
-        }) => {
-            assert_eq!(wire, "look");
-            assert_eq!(display, "look\n[+ image shot.png]");
-            assert_eq!(images.len(), 1);
-        }
-        other => panic!("{other:?}"),
-    }
+    let queued = app.composer.queue.front().unwrap();
+    assert_eq!(queued.wire, "look");
+    assert_eq!(queued.display, "look\n[+ image shot.png]");
+    assert_eq!(queued.images.len(), 1);
 }
 #[tokio::test]
 async fn oversized_or_unknown_images_are_refused() {
@@ -984,7 +998,7 @@ async fn oversized_or_unknown_images_are_refused() {
     assert!(crate::view::composer_title(&app).contains("+4 images"));
     // Esc on an empty prompt drops them.
     let (_temp, session) = demo_session("octet-image-esc").await;
-    key_action(&mut app, &session, key(KeyCode::Esc)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Esc)).await;
     assert!(app.composer.images.is_empty());
 }
 #[test]
@@ -1073,8 +1087,8 @@ async fn resume_picks_the_listed_session() {
 fn a_stopped_session_drops_the_queue() {
     let mut app = app();
     app.conn.phase = ConnPhase::Running;
-    app.composer.queue.push_back(Command::Prompt("a".into()));
-    app.composer.queue.push_back(Command::Prompt("b".into()));
+    app.composer.queue.push_back(Prompt::plain("a".into()));
+    app.composer.queue.push_back(Prompt::plain("b".into()));
     app.event(octet_core::Event::Stopped);
     assert!(app.composer.queue.is_empty());
     assert!(app.entries_text().contains("Dropped 2 queued prompts"));
@@ -1145,13 +1159,13 @@ async fn a_failed_image_keeps_the_draft() {
     app.composer.root = dir.path().to_path_buf();
     let (_temp, session) = demo_session("octet-image-draft-session").await;
     assert!(app.composer.editor.insert("/image notes.txt"));
-    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert_eq!(app.composer.editor.text, "/image notes.txt");
     assert!(app.entries_text().contains("not a PNG"));
     app.composer.editor.take();
     std::fs::write(dir.path().join("ok.png"), b"x").unwrap();
     assert!(app.composer.editor.insert("/image ok.png"));
-    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert!(app.composer.editor.text.is_empty());
 }
 #[tokio::test]
@@ -1159,11 +1173,11 @@ async fn steer_while_cancelling_queues_it() {
     let mut app = app();
     let (_temp, session) = demo_session("octet-steer-cancel").await;
     app.conn.phase = ConnPhase::Running;
-    cancel_turn(&mut app, &session).await;
-    steer(&mut app, &session, "look at the tests".into());
+    cancel_turn(&mut app, &session.handle).await;
+    steer(&mut app, &session.handle, "look at the tests".into());
     assert_eq!(
         app.composer.queue.front(),
-        Some(&Command::Prompt("look at the tests".into()))
+        Some(&Prompt::plain("look at the tests".into()))
     );
     assert!(app.entries_text().contains("The turn is stopping"));
     // The turn's end clears the state; the queued prompt then goes.
@@ -1181,7 +1195,7 @@ async fn up_recalls_a_prompt_with_its_images() {
     command(&mut app, "/image shot.png").await;
     app.conn.phase = ConnPhase::Running;
     assert!(app.composer.editor.insert("look"));
-    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert!(app.composer.images.is_empty());
     app.recall(true);
     assert_eq!(app.composer.editor.text, "look");
@@ -1294,4 +1308,38 @@ fn browsing_history_keeps_the_drafts_own_images() {
     );
     app.recall(false);
     assert_eq!(app.composer.images.len(), 1);
+}
+#[test]
+fn begin_turn_marks_nothing_when_the_send_fails() {
+    let mut app = app();
+    let vendor = RecordingVendor::default();
+    vendor.refuse.set(true);
+    let sent = app.begin_turn(
+        &vendor,
+        Command::Prompt("hello".into()),
+        crate::vendor::By::User,
+        "sending",
+    );
+    assert!(sent.is_err());
+    assert!(app.is_idle(), "a refused send must not start a turn");
+    assert_ne!(app.conn.status, "sending");
+}
+#[tokio::test]
+async fn idle_steer_sends_attachments_like_enter() {
+    let mut app = app();
+    app.attach(crate::shell::Ran {
+        command: "git status".into(),
+        status: crate::shell::Status::Exited(0),
+        output: "clean\n".into(),
+    });
+    let vendor = RecordingVendor::default();
+    steer(&mut app, &vendor, "look".into());
+    match &vendor.sent.borrow()[..] {
+        [Command::PromptWithDisplay { wire, display, .. }] => {
+            assert!(wire.contains("clean"), "{wire}");
+            assert_eq!(display, "look\n\n[+ git status]");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(app.composer.attachments.is_empty());
 }

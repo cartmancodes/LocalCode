@@ -5,8 +5,12 @@ use crate::{
     commands::{command, try_command, COMMANDS},
     composer, files, text, view, write_terminal, Action, Exit, QUIT_HINT, QUIT_WINDOW,
 };
+use crate::{
+    commands::switch_mode,
+    vendor::{By, Prompt, Vendor},
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use octet_core::{Command, Session};
+use octet_core::Command;
 use std::{path::PathBuf, time::Duration};
 use tokio::time::Instant;
 
@@ -148,7 +152,7 @@ pub(crate) fn paste(app: &mut App, value: &str) {
 }
 /// One key. Dialogs take keys first (help, an approval, the palette, a
 /// popup); otherwise the key edits or sends the draft.
-pub(crate) async fn key_action(app: &mut App, session: &Session, key: KeyEvent) -> Action {
+pub(crate) async fn key_action(app: &mut App, vendor: &dyn Vendor, key: KeyEvent) -> Action {
     // Any key ends a pending quit; only a second Ctrl+C in time completes it.
     let quit_armed = app.quit_armed.take();
     if quit_armed.is_some() && app.notice == QUIT_HINT {
@@ -164,16 +168,16 @@ pub(crate) async fn key_action(app: &mut App, session: &Session, key: KeyEvent) 
     // Approval keys never leak into the composer. A queued modal takes priority.
     if let Some((id, _)) = app.overlay.approvals.front() {
         let id = *id;
-        approval_key(app, session, key, id).await;
+        approval_key(app, vendor, key, id).await;
         return Action::Continue;
     }
     if app.overlay.palette {
-        return palette_press(app, key).await;
+        return palette_press(app, vendor, key).await;
     }
     if let Some(action) = completion_key(app, key) {
         return action;
     }
-    composer_key(app, session, key, quit_armed).await
+    composer_key(app, vendor, key, quit_armed).await
 }
 /// Ctrl plus `c`.
 fn ctrl(key: KeyEvent, c: char) -> bool {
@@ -193,7 +197,7 @@ fn help_key(app: &mut App, key: KeyEvent) {
         help.help_scroll = 0;
     }
 }
-async fn approval_key(app: &mut App, session: &Session, key: KeyEvent, id: u64) {
+async fn approval_key(app: &mut App, vendor: &dyn Vendor, key: KeyEvent, id: u64) {
     let ctrl_c = ctrl(key, 'c');
     let answer = match key.code {
         KeyCode::Char('a' | 'A') => Some(true),
@@ -201,7 +205,7 @@ async fn approval_key(app: &mut App, session: &Session, key: KeyEvent, id: u64) 
         _ => None,
     };
     if let Some(allow) = answer {
-        match session.handle.send(Command::Answer { id, allow }) {
+        match vendor.send(Command::Answer { id, allow }) {
             Ok(()) => {
                 app.overlay.approvals.pop_front();
                 app.overlay.approval_scroll = 0;
@@ -213,10 +217,10 @@ async fn approval_key(app: &mut App, session: &Session, key: KeyEvent, id: u64) 
     } else if key.code == KeyCode::PageUp {
         app.overlay.approval_scroll = app.overlay.approval_scroll.saturating_sub(8);
     } else if ctrl_c {
-        cancel_turn(app, session).await;
+        cancel_turn(app, vendor).await;
     }
 }
-async fn palette_press(app: &mut App, key: KeyEvent) -> Action {
+async fn palette_press(app: &mut App, vendor: &dyn Vendor, key: KeyEvent) -> Action {
     let ctrl_c = ctrl(key, 'c');
     match key.code {
         _ if ctrl_c => app.overlay.palette = false,
@@ -229,7 +233,7 @@ async fn palette_press(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Enter => {
             app.overlay.palette = false;
             if let Some(spec) = COMMANDS.get(app.overlay.selection) {
-                return command(app, spec.name).await;
+                return command(app, vendor, spec.name).await;
             }
             return palette_key(
                 app,
@@ -265,7 +269,7 @@ fn completion_key(app: &mut App, key: KeyEvent) -> Option<Action> {
 /// The draft: editing, history, sending, and the keys that act on the session.
 async fn composer_key(
     app: &mut App,
-    session: &Session,
+    vendor: &dyn Vendor,
     key: KeyEvent,
     quit_armed: Option<Instant>,
 ) -> Action {
@@ -277,7 +281,7 @@ async fn composer_key(
         || (ctrl && key.code == KeyCode::Char('j'));
     match key.code {
         KeyCode::F(1) => app.overlay.help = true,
-        KeyCode::BackTab => return cycle_mode(app),
+        KeyCode::BackTab => return cycle_mode(app, vendor),
         KeyCode::Char('p') if ctrl => app.overlay.palette = true,
         KeyCode::Char('x') if ctrl => copy_reply(app),
         KeyCode::Char('g') if ctrl => {
@@ -294,7 +298,7 @@ async fn composer_key(
             if app.composer.shell_running {
                 return Action::CancelShell;
             } else if app.is_busy() {
-                cancel_turn(app, session).await;
+                cancel_turn(app, vendor).await;
                 app.notice = CANCELLING.into();
             } else if !app.composer.editor.text.is_empty() {
                 app.composer.editor.take();
@@ -309,7 +313,7 @@ async fn composer_key(
             if app.composer.shell_running {
                 return Action::CancelShell;
             } else if app.is_busy() {
-                cancel_turn(app, session).await;
+                cancel_turn(app, vendor).await;
                 app.notice = CANCELLING.into();
             } else if app.composer.editor.text.is_empty()
                 && !(app.composer.attachments.is_empty() && app.composer.images.is_empty())
@@ -357,7 +361,7 @@ async fn composer_key(
                 .and_then(|first| first.strip_prefix('/'))
                 .is_some_and(|name| name.contains('/'));
             if draft.starts_with('/') && draft != "/approval-demo" && !path_like {
-                return match try_command(app, &draft).await {
+                return match try_command(app, vendor, &draft).await {
                     Some(action) => {
                         app.composer.editor.take();
                         action
@@ -365,60 +369,8 @@ async fn composer_key(
                     None => Action::Continue,
                 };
             }
-            if !app.is_idle() && !app.conn.is_running() {
-                app.notice = "Wait for the connection, or /reconnect".into();
-                return Action::Continue;
-            }
-            if app.conn.is_running() && app.composer.queue.len() >= QUEUE_LIMIT {
-                app.notice = format!(
-                    "The queue is full ({QUEUE_LIMIT} prompts); wait for the turn or press Esc"
-                );
-                return Action::Continue;
-            }
-            let command = if app.composer.attachments.is_empty() && app.composer.images.is_empty() {
-                Command::Prompt(draft.clone())
-            } else {
-                let (wire, mut display) = composer::with_attachments(
-                    &draft,
-                    &app.composer.attachments,
-                    octet_core::PROMPT_LIMIT,
-                );
-                for image in &app.composer.images {
-                    display.push_str(&format!("\n[+ image {}]", image.name));
-                }
-                if wire.len().max(display.len()) > octet_core::PROMPT_LIMIT {
-                    app.notice = "The prompt and its attachments are over 64 KiB. \
-                                  Shorten the prompt, or press Esc on an empty prompt to drop them"
-                        .into();
-                    return Action::Continue;
-                }
-                Command::PromptWithDisplay {
-                    wire,
-                    display,
-                    images: app.composer.images.clone(),
-                }
-            };
-            if app.conn.is_running() {
-                // The running turn keeps going; this one goes when it ends.
-                app.composer.queue.push_back(command);
-                app.composer.attachments.clear();
-                let images = std::mem::take(&mut app.composer.images);
+            if submit(app, vendor, draft) {
                 app.composer.editor.take();
-                app.remember_with(draft, images);
-                app.notice = format!("Queued ({} waiting)", app.composer.queue.len());
-                return Action::Continue;
-            }
-            match session.handle.send(command) {
-                Ok(()) => {
-                    app.composer.attachments.clear();
-                    let images = std::mem::take(&mut app.composer.images);
-                    app.goals.user_prompt_sent();
-                    app.composer.editor.take();
-                    app.conn.start_turn();
-                    app.conn.status = "sending".into();
-                    app.remember_with(draft, images);
-                }
-                Err(error) => app.notice = error.to_string(),
             }
         }
         KeyCode::Up if app.composer.editor.text.contains('\n') => {
@@ -477,7 +429,7 @@ async fn composer_key(
 }
 /// Interrupts the turn; a goal working on it is paused first, and prompts
 /// queued behind it are dropped: stopping the agent stops what was lined up.
-pub(crate) async fn cancel_turn(app: &mut App, session: &Session) {
+pub(crate) async fn cancel_turn(app: &mut App, vendor: &dyn Vendor) {
     if let Err(error) = app.goals.pause_running_turn().await {
         app.notice(format!("Goal persistence failed: {error}"));
     }
@@ -487,15 +439,69 @@ pub(crate) async fn cancel_turn(app: &mut App, session: &Session) {
         app.notice(format!("Dropped {dropped} queued prompt{plural}"));
     }
     app.conn.cancelling = app.conn.is_running();
-    session.handle.interrupt();
+    vendor.interrupt();
 }
-pub(crate) fn cycle_mode(app: &mut App) -> Action {
+pub(crate) fn cycle_mode(app: &mut App, vendor: &dyn Vendor) -> Action {
     if app.conn.mode == octet_core::Mode::FullAccess {
         app.notice = "Use /mode to leave full access".into();
     } else if app.conn.mode_pending.is_some() {
         app.notice = "Mode change pending; wait for the vendor to confirm".into();
     } else {
-        return Action::SetMode(app.conn.mode.cycle());
+        switch_mode(app, vendor, app.conn.mode.cycle());
     }
     Action::Continue
+}
+/// The prompt for `draft`, with the waiting `!` output and images, or why it
+/// cannot be sent.
+pub(crate) fn compose(app: &App, draft: &str) -> Result<Prompt, &'static str> {
+    if app.composer.attachments.is_empty() && app.composer.images.is_empty() {
+        return Ok(Prompt::plain(draft.to_owned()));
+    }
+    let (wire, mut display) =
+        composer::with_attachments(draft, &app.composer.attachments, octet_core::PROMPT_LIMIT);
+    for image in &app.composer.images {
+        display.push_str(&format!("\n[+ image {}]", image.name));
+    }
+    if wire.len().max(display.len()) > octet_core::PROMPT_LIMIT {
+        return Err("The prompt and its attachments are over 64 KiB. \
+                    Shorten the prompt, or press Esc on an empty prompt to drop them");
+    }
+    Ok(Prompt {
+        wire,
+        display,
+        images: app.composer.images.clone(),
+    })
+}
+/// Sends `draft` as a prompt, or queues it behind the running turn. Its
+/// attachments go with it, and it joins the history. False, with a notice,
+/// when it could not go.
+pub(crate) fn submit(app: &mut App, vendor: &dyn Vendor, draft: String) -> bool {
+    if !app.is_idle() && !app.conn.is_running() {
+        app.notice = "Wait for the connection, or /reconnect".into();
+        return false;
+    }
+    if app.conn.is_running() && app.composer.queue.len() >= QUEUE_LIMIT {
+        app.notice =
+            format!("The queue is full ({QUEUE_LIMIT} prompts); wait for the turn or press Esc");
+        return false;
+    }
+    let prompt = match compose(app, &draft) {
+        Ok(prompt) => prompt,
+        Err(reason) => {
+            app.notice = reason.into();
+            return false;
+        }
+    };
+    if app.conn.is_running() {
+        // The running turn keeps going; this one goes when it ends.
+        app.composer.queue.push_back(prompt);
+        app.notice = format!("Queued ({} waiting)", app.composer.queue.len());
+    } else if let Err(error) = app.begin_turn(vendor, prompt.into_command(), By::User, "sending") {
+        app.notice = error.to_string();
+        return false;
+    }
+    app.composer.attachments.clear();
+    let images = std::mem::take(&mut app.composer.images);
+    app.remember_with(draft, images);
+    true
 }

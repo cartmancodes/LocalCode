@@ -1,7 +1,12 @@
 //! Every slash command, once. The palette, help, Tab, the sidebar and the
 //! CLI help are built from this table; `try_command` dispatches on `Cmd`.
-use crate::{app::App, input::copy_reply, Action, Exit};
-use octet_core::{Command, Session};
+use crate::{
+    app::App,
+    input::{copy_reply, submit},
+    vendor::{By, Vendor},
+    Action, Exit,
+};
+use octet_core::{Command, Mode};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,19 +224,14 @@ impl Cmd {
     }
 }
 
-pub(crate) async fn send_goal_prompt(app: &mut App, session: &Session, prompt: String) {
+pub(crate) async fn send_goal_prompt(app: &mut App, vendor: &dyn Vendor, prompt: String) {
     let command = Command::PromptWithDisplay {
         wire: prompt,
         display: app.goals.prompt_display(),
         images: Vec::new(),
     };
-    match session.handle.send(command) {
-        Ok(()) => {
-            app.goals.goal_prompt_sent();
-            app.conn.start_turn();
-            app.conn.status = "working on goal".into();
-        }
-        Err(error) => goal_send_failed(app, error).await,
+    if let Err(error) = app.begin_turn(vendor, command, By::Goal, "working on goal") {
+        goal_send_failed(app, error).await;
     }
 }
 /// Pauses the goal whose prompt could not be sent and says why.
@@ -244,7 +244,7 @@ pub(crate) async fn goal_send_failed(app: &mut App, error: octet_core::SendError
 /// Runs a slash command. `None` means the caller keeps the draft: the name is
 /// not a command (it may be a prompt that merely starts with a slash), or the
 /// command failed on input worth correcting (a `/image` path).
-pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
+pub(crate) async fn try_command(app: &mut App, vendor: &dyn Vendor, input: &str) -> Option<Action> {
     let (name, argument) = input.split_once(' ').unwrap_or((input, ""));
     let argument = argument.trim();
     let Some(cmd) = Cmd::parse(name) else {
@@ -258,19 +258,19 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
         Cmd::Quit => return Some(Action::Exit(Exit::Quit)),
         Cmd::Help => app.overlay.help = true,
         Cmd::Queue => queue_command(app, argument),
-        Cmd::Effort => return Some(effort_command(app, argument)),
+        Cmd::Effort => return Some(effort_command(app, vendor, argument)),
         Cmd::Fork => return Some(fork_command(app)),
-        Cmd::Compact => return Some(compact_command(app)),
+        Cmd::Compact => compact_command(app, vendor),
         // A failed /image leaves the line in the prompt box to correct.
         Cmd::Image if !image_command(app, argument) => return None,
         Cmd::Image => {}
         Cmd::Sessions => sessions_command(app).await,
         Cmd::Resume => return Some(resume_command(app, argument)),
         Cmd::Steer if argument.is_empty() => app.notice("Use /steer <text>"),
-        Cmd::Steer => return Some(Action::Steer(argument.to_owned())),
+        Cmd::Steer => steer(app, vendor, argument.to_owned()),
         Cmd::Copy => copy_reply(app),
         Cmd::Model => return Some(model_command(app, argument)),
-        Cmd::Mode => return Some(mode_command(app, argument)),
+        Cmd::Mode => return Some(mode_command(app, vendor, argument)),
         Cmd::New | Cmd::Reconnect => {
             if app.conn.is_running() {
                 app.notice = "Cancel the active turn before changing sessions".into();
@@ -293,7 +293,7 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
             app.conn.journal.display(),
             app.conn.workspace
         )),
-        Cmd::Goal => return Some(goal_command(app, argument).await),
+        Cmd::Goal => goal_command(app, vendor, argument).await,
         Cmd::RemoteControl => match argument {
             "" | "status" => return Some(Action::RemoteControl),
             _ => app.notice("Use /remote-control or /remote-control status"),
@@ -304,7 +304,7 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
 }
 /// `/effort`: show the reasoning effort, or change it. Codex takes it per
 /// turn; Claude takes it at launch, so a change reconnects there.
-fn effort_command(app: &mut App, argument: &str) -> Action {
+fn effort_command(app: &mut App, vendor: &dyn Vendor, argument: &str) -> Action {
     if argument.is_empty() {
         let current = app.conn.effort.as_deref().unwrap_or("vendor default");
         app.notice(format!(
@@ -330,7 +330,11 @@ fn effort_command(app: &mut App, argument: &str) -> Action {
         app.notice("The offline demo has no reasoning effort");
         Action::Continue
     } else if provider.effort_live {
-        Action::Effort(level)
+        match vendor.send(Command::SetEffort(level.clone())) {
+            Ok(()) => app.conn.effort = level,
+            Err(error) => app.notice(error.to_string()),
+        }
+        Action::Continue
     } else if app.conn.is_running() || !app.overlay.approvals.is_empty() {
         app.notice("Finish or cancel the turn before changing effort");
         Action::Continue
@@ -357,15 +361,45 @@ fn fork_command(app: &mut App) -> Action {
 }
 
 /// `/compact`: the vendor compacts its context in a turn of its own.
-fn compact_command(app: &mut App) -> Action {
+fn compact_command(app: &mut App, vendor: &dyn Vendor) {
     if app.conn.engine.offline() {
         app.notice("The offline demo has no context to compact");
     } else if !app.is_idle() {
         app.notice("Finish or cancel the turn before compacting");
-    } else {
-        return Action::Compact;
+    } else if let Err(error) = app.begin_turn(vendor, Command::Compact, By::User, "compacting") {
+        app.notice(error.to_string());
     }
-    Action::Continue
+}
+
+/// `/steer`: adds `text` to the running turn where the provider can; queues
+/// it as the next prompt where it cannot, or while the turn is stopping; and
+/// sends it as a prompt when idle.
+pub(crate) fn steer(app: &mut App, vendor: &dyn Vendor, text: String) {
+    let running = app.conn.is_running();
+    if running && app.conn.engine.provider().steer && !app.conn.cancelling {
+        if let Err(error) = vendor.send(Command::Steer(text)) {
+            app.notice(error.to_string());
+        }
+        return;
+    }
+    if submit(app, vendor, text) && running {
+        app.notice(if app.conn.cancelling {
+            "The turn is stopping; queued the steer as the next prompt".to_owned()
+        } else {
+            format!(
+                "{} cannot steer a running turn; queued as a follow-up",
+                app.conn.engine.title()
+            )
+        });
+    }
+}
+
+/// Switches the permission mode live; the vendor confirms it later.
+pub(crate) fn switch_mode(app: &mut App, vendor: &dyn Vendor, target: Mode) {
+    match vendor.send(Command::SetMode(target)) {
+        Ok(()) => app.conn.mode_pending = Some(target),
+        Err(error) => app.notice(error.to_string()),
+    }
 }
 
 /// `/image PATH`: attach an image to the next prompt; whether it did.
@@ -572,18 +606,9 @@ fn queue_command(app: &mut App, argument: &str) {
 }
 
 /// A queued prompt as the transcript shows it, on one line.
-fn queued_text(command: &Command) -> String {
-    let text = match command {
-        Command::Prompt(text) => text.as_str(),
-        Command::PromptWithDisplay { display, .. } => display.as_str(),
-        _ => "",
-    };
-    let line = text.lines().next().unwrap_or("");
-    if line.chars().count() > 60 {
-        format!("{}…", line.chars().take(60).collect::<String>())
-    } else {
-        line.to_owned()
-    }
+/// A queued prompt's first line, as the queue lists it.
+fn queued_text(prompt: &crate::vendor::Prompt) -> String {
+    cut(prompt.display.lines().next().unwrap_or(""), 60)
 }
 
 fn model_command(app: &mut App, argument: &str) -> Action {
@@ -609,8 +634,7 @@ fn model_command(app: &mut App, argument: &str) -> Action {
     }
     Action::Continue
 }
-fn mode_command(app: &mut App, argument: &str) -> Action {
-    use octet_core::Mode;
+fn mode_command(app: &mut App, vendor: &dyn Vendor, argument: &str) -> Action {
     if argument.is_empty() {
         app.notice(app.mode_details());
     } else if app.conn.mode_pending.is_some() {
@@ -637,12 +661,12 @@ fn mode_command(app: &mut App, argument: &str) -> Action {
                     return Action::Exit(Exit::Mode(target));
                 }
             }
-            Some(target) => return Action::SetMode(target),
+            Some(target) => switch_mode(app, vendor, target),
         }
     }
     Action::Continue
 }
-async fn goal_command(app: &mut App, argument: &str) -> Action {
+async fn goal_command(app: &mut App, vendor: &dyn Vendor, argument: &str) {
     use octet_core::goal::{Goal, GoalStep};
     let idle = app.is_idle();
     match argument {
@@ -672,17 +696,16 @@ async fn goal_command(app: &mut App, argument: &str) -> Action {
                 GoalStep::Continue
             };
             match app.goals.resume(step).await {
-                Ok(prompt) => return Action::GoalPrompt(prompt),
+                Ok(prompt) => send_goal_prompt(app, vendor, prompt).await,
                 Err(error) => app.notice(error.to_string()),
             }
         }
         _ if !idle => app.notice("Wait for a ready, idle session before starting a goal"),
         objective => match app.goals.start(objective).await {
-            Ok(prompt) => return Action::GoalPrompt(prompt),
+            Ok(prompt) => send_goal_prompt(app, vendor, prompt).await,
             Err(error) => app.notice(error.to_string()),
         },
     }
-    Action::Continue
 }
 async fn export_command(app: &mut App, argument: &str) -> Action {
     if app.conn.is_running() {
@@ -702,8 +725,10 @@ async fn export_command(app: &mut App, argument: &str) -> Action {
     }
     Action::Continue
 }
-pub(crate) async fn command(app: &mut App, input: &str) -> Action {
-    try_command(app, input).await.unwrap_or(Action::Continue)
+pub(crate) async fn command(app: &mut App, vendor: &dyn Vendor, input: &str) -> Action {
+    try_command(app, vendor, input)
+        .await
+        .unwrap_or(Action::Continue)
 }
 
 #[cfg(test)]
