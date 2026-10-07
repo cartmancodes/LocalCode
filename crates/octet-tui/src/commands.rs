@@ -22,6 +22,8 @@ pub enum Cmd {
     Fork,
     Compact,
     Image,
+    Sessions,
+    Resume,
     Quit,
 }
 
@@ -164,6 +166,18 @@ pub const COMMANDS: &[Spec] = &[
         "Attach an image",
     ),
     spec(
+        Cmd::Sessions,
+        "/sessions",
+        "/sessions: list this workspace's recent vendor sessions",
+        "Recent sessions",
+    ),
+    spec(
+        Cmd::Resume,
+        "/resume",
+        "/resume N: reconnect to session N from /sessions",
+        "Resume a session",
+    ),
+    spec(
         Cmd::Quit,
         "/quit",
         "/quit or Ctrl+C twice: save and exit",
@@ -175,7 +189,7 @@ pub const COMMANDS: &[Spec] = &[
 impl Cmd {
     /// Every command, for the registry coverage test.
     #[cfg(test)]
-    pub(crate) const ALL: [Cmd; 17] = [
+    pub(crate) const ALL: [Cmd; 19] = [
         Cmd::Help,
         Cmd::Model,
         Cmd::Mode,
@@ -192,6 +206,8 @@ impl Cmd {
         Cmd::Fork,
         Cmd::Compact,
         Cmd::Image,
+        Cmd::Sessions,
+        Cmd::Resume,
         Cmd::Quit,
     ];
     /// The command a typed name (or alias) names.
@@ -245,6 +261,8 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
         Cmd::Fork => return Some(fork_command(app)),
         Cmd::Compact => return Some(compact_command(app)),
         Cmd::Image => image_command(app, argument),
+        Cmd::Sessions => sessions_command(app).await,
+        Cmd::Resume => return Some(resume_command(app, argument)),
         Cmd::Steer if argument.is_empty() => app.notice("Use /steer <text>"),
         Cmd::Steer => return Some(Action::Steer(argument.to_owned())),
         Cmd::Copy => copy_reply(app),
@@ -377,6 +395,109 @@ pub(crate) fn image_path(
     match (argument.strip_prefix("~/"), home) {
         (Some(rest), Some(home)) => home.join(rest),
         _ => root.join(argument),
+    }
+}
+
+/// How many sessions `/sessions` lists.
+const SESSIONS_LISTED: usize = 20;
+
+/// `/sessions`: this workspace's recent vendor sessions, from the journals
+/// beside this one.
+async fn sessions_command(app: &mut App) {
+    let directory = app
+        .conn
+        .journal
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    app.conn.listed =
+        octet_core::recent_sessions(&directory, &app.composer.root, SESSIONS_LISTED).await;
+    if app.conn.listed.is_empty() {
+        app.notice("No earlier vendor sessions in this workspace");
+        return;
+    }
+    let now = std::time::SystemTime::now();
+    let lines: Vec<String> = app
+        .conn
+        .listed
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let summary = &entry.summary;
+            let this = if summary.session == app.conn.session {
+                " (this session)"
+            } else {
+                ""
+            };
+            let prompt = summary
+                .first_prompt
+                .as_deref()
+                .map_or_else(|| "(no prompt)".to_owned(), |p| cut(p, 60));
+            format!(
+                "{}. {} · {}{this} · {} · {}\n   {prompt}",
+                index + 1,
+                entry.engine,
+                summary.session,
+                summary.model.as_deref().unwrap_or("default model"),
+                age(now, summary.started),
+            )
+        })
+        .collect();
+    app.notice(format!(
+        "Recent sessions (/resume N reconnects):\n{}",
+        lines.join("\n")
+    ));
+}
+
+/// `/resume N`: reconnect to entry N of the last `/sessions` listing.
+fn resume_command(app: &mut App, argument: &str) -> Action {
+    if app.conn.listed.is_empty() {
+        app.notice("Run /sessions first, then /resume N");
+        return Action::Continue;
+    }
+    let count = app.conn.listed.len();
+    let Some(entry) = argument
+        .parse::<usize>()
+        .ok()
+        .and_then(|n| n.checked_sub(1))
+        .and_then(|i| app.conn.listed.get(i))
+    else {
+        app.notice(format!("No session {argument}; /sessions listed {count}"));
+        return Action::Continue;
+    };
+    if entry.summary.session == app.conn.session {
+        app.notice("That is this session");
+        return Action::Continue;
+    }
+    if app.conn.is_running() || !app.overlay.approvals.is_empty() {
+        app.notice("Cancel the active turn before changing sessions");
+        return Action::Continue;
+    }
+    Action::Exit(Exit::Resume {
+        engine: entry.engine,
+        session: entry.summary.session.clone(),
+        model: entry.summary.model.clone(),
+    })
+}
+
+/// `text` on one line, cut to `limit` characters.
+fn cut(text: &str, limit: usize) -> String {
+    let line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= limit {
+        line
+    } else {
+        format!("{}…", line.chars().take(limit).collect::<String>())
+    }
+}
+
+/// How long ago `then` was, in the largest whole unit.
+fn age(now: std::time::SystemTime, then: std::time::SystemTime) -> String {
+    let seconds = now.duration_since(then).map_or(0, |d| d.as_secs());
+    match seconds {
+        0..60 => "just now".into(),
+        60..3_600 => format!("{} min ago", seconds / 60),
+        3_600..86_400 => format!("{} h ago", seconds / 3_600),
+        _ => format!("{} d ago", seconds / 86_400),
     }
 }
 

@@ -1009,3 +1009,63 @@ fn image_paths_resolve_against_the_workspace_and_home() {
         Path::new("/work/~/a.png")
     );
 }
+#[tokio::test]
+async fn resume_picks_the_listed_session() {
+    let temp = octet_testkit::TempDir::new("octet-tui-sessions");
+    let dir = temp.path();
+    std::fs::create_dir_all(dir).unwrap();
+    for (stamp, engine, session, prompt) in [
+        (1, "codex", "t-1", "first codex prompt"),
+        (2, "claude", "c-1", "first claude prompt"),
+    ] {
+        let data = serde_json::json!({"engine":engine,"cwd":"/work","resume":null,"model":"m1","mode":"ask"});
+        let header =
+            serde_json::json!({"format":"octet-preview-1","seq":0,"type":"session","data":data});
+        let ready =
+            serde_json::json!({"format":"octet-preview-1","seq":1,"type":"ready","data":session});
+        let user =
+            serde_json::json!({"format":"octet-preview-1","seq":2,"type":"user","data":prompt});
+        std::fs::write(
+            dir.join(format!("session-{stamp}-1.jsonl")),
+            format!("{header}\n{ready}\n{user}\n"),
+        )
+        .unwrap();
+    }
+    let mut app = App::new(
+        &Config::new(Engine::CODEX, "codex", "/work"),
+        dir.join("session-3-1.jsonl"),
+    );
+    app.conn.phase = ConnPhase::Idle;
+    app.conn.session = "t-1".into();
+    assert!(matches!(
+        command(&mut app, "/resume 1").await,
+        Action::Continue
+    ));
+    assert!(app.entries_text().contains("Run /sessions first"));
+    command(&mut app, "/sessions").await;
+    let text = app.entries_text();
+    assert!(text.contains("1. claude · c-1"), "{text}");
+    assert!(text.contains("first claude prompt"));
+    assert!(text.contains("2. codex · t-1 (this session)"), "{text}");
+    match command(&mut app, "/resume 1").await {
+        Action::Exit(Exit::Resume {
+            engine,
+            session,
+            model,
+        }) => {
+            assert_eq!(engine, Engine::CLAUDE);
+            assert_eq!(session, "c-1");
+            assert_eq!(model.as_deref(), Some("m1"));
+        }
+        _ => panic!("expected a resume"),
+    }
+    assert!(matches!(
+        command(&mut app, "/resume 2").await,
+        Action::Continue
+    ));
+    assert!(app.entries_text().contains("That is this session"));
+    command(&mut app, "/resume 9").await;
+    assert!(app
+        .entries_text()
+        .contains("No session 9; /sessions listed 2"));
+}

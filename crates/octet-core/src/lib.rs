@@ -195,5 +195,8 @@ mod error;
 pub use error::{ExportError, GoalError, SelectionError, SessionError};
 pub mod goal;
 pub mod model;
+pub mod sessions;
+pub use octet_store::JournalSummary;
+pub use sessions::{recent_sessions, RecentSession};
 
 pub use octet_engine::live::ModelInfo;

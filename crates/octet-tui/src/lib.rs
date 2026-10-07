@@ -159,6 +159,12 @@ pub(crate) enum Exit {
     Effort(Option<String>),
     /// Reconnect as a new vendor session continuing this one (`/fork`).
     Fork,
+    /// Reconnect to a session `/sessions` listed (`/resume N`).
+    Resume {
+        engine: octet_core::Engine,
+        session: String,
+        model: Option<String>,
+    },
 }
 /// Every slash command's name, for the CLI help.
 pub fn command_names() -> impl Iterator<Item = &'static str> {
@@ -180,6 +186,8 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     let guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut retained_app: Option<App> = None;
+    // Shown in a fresh interface, after a switch that drops the transcript.
+    let mut opening_notice: Option<String> = None;
     let mut binaries = std::collections::HashMap::from([(config.engine, config.binary.clone())]);
     let goal_store = octet_core::goal::GoalStore::new(&directory, &config.cwd);
     loop {
@@ -189,6 +197,9 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         let mut app = retained_app
             .take()
             .unwrap_or_else(|| App::new(&config, session.journal.clone()));
+        if let Some(notice) = opening_notice.take() {
+            app.notice(notice);
+        }
         if !app.goals.is_attached() {
             attach_goal_store(&mut app, goal_store.clone()).await;
         }
@@ -251,6 +262,26 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                 config.resume = Some(app.conn.session.clone());
                 config.fork = true;
                 retained_app = Some(app);
+            }
+            Exit::Resume {
+                engine,
+                session,
+                model,
+            } => {
+                pause_active_goal(&mut app, "resume").await;
+                let binary = binaries
+                    .get(&engine)
+                    .cloned()
+                    .unwrap_or_else(|| PathBuf::from(engine.provider().default_binary));
+                binaries.insert(engine, binary.clone());
+                opening_notice = Some(format!(
+                    "Resumed {engine} session {session}. Previous journal: {}",
+                    app.conn.journal.display()
+                ));
+                config.engine = engine;
+                config.binary = binary;
+                config.model = model;
+                config.resume = Some(session);
             }
             Exit::New => config.resume = None,
             Exit::Reconnect => {

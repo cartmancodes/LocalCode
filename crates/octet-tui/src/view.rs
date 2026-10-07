@@ -452,12 +452,12 @@ pub fn help_lines() -> Vec<String> {
         "Ctrl+U clear draft · PgUp/PgDn scroll conversation",
         "Ctrl+End follow · Esc/Ctrl+C cancel turn",
         "Ctrl+C twice quit · Ctrl+Z suspend (return with fg)",
+        "Ctrl+P commands · Ctrl+G write the prompt in $EDITOR",
+        "!cmd run and attach output · !!cmd run only · Esc stops",
+        "@ mention a file · Tab completes paths and /commands",
         "",
     ];
     let rest = [
-        "!cmd run and attach output · !!cmd run only · Esc stops",
-        "@ mention a file · Tab completes paths and /commands",
-        "Ctrl+P commands · Ctrl+G write the prompt in $EDITOR",
         "/approval-demo: offline permission dialog",
         "",
         "Approval: A allow once · D/Esc deny",

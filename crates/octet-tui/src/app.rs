@@ -51,6 +51,8 @@ pub(crate) struct Connection {
     pub(crate) phase: ConnPhase,
     /// The reasoning effort requested; `None` is the vendor default.
     pub(crate) effort: Option<String>,
+    /// What `/sessions` last listed, for `/resume N`.
+    pub(crate) listed: Vec<octet_core::RecentSession>,
     pub(crate) status: String,
     pub(crate) usage: String,
     pub(crate) activity: State,
@@ -169,6 +171,7 @@ impl App {
                 journal,
                 phase: ConnPhase::Connecting,
                 effort: config.effort.clone(),
+                listed: Vec::new(),
                 status: "connecting".into(),
                 usage: String::new(),
                 activity: State::Thinking,
