@@ -385,10 +385,6 @@ pub(super) fn seconds(limit: Duration) -> String {
 }
 #[cfg(test)]
 mod tests {
-    use super::super::{
-        claude::{claude_result_error, claude_stray_reply},
-        codex::{codex_stray_reply, error_text},
-    };
     use super::*;
     #[test]
     fn an_unverified_shutdown_keeps_the_vendor_error() {
@@ -405,7 +401,6 @@ mod tests {
         );
         assert_eq!(finish(Ok(()), true, Engine::CODEX, b""), Ok(()));
     }
-    use serde_json::json;
     #[test]
     fn stderr_is_attached_only_to_vendor_failures_and_starts_on_a_line() {
         let vendor = || DriverError::from("Vendor disconnected.");
@@ -439,47 +434,7 @@ mod tests {
         assert!(text.ends_with("codex stderr: last line é"), "{text}");
     }
     #[test]
-    fn stray_request_replies_use_production_wording() {
-        let request = json!({"subtype": "can_use_tool", "tool_name": "Bash", "input": {}});
-        let permission = json!({"type": "control_request", "request_id": "r1", "request": request});
-        let unknown = json!({"type":"control_request","request_id":"r2","request":{"subtype":"hook_callback"}});
-        let codex = json!({"id":7,"method":"item/tool/requestUserInput","params":{}});
-        for reply in [
-            claude_stray_reply(&permission).unwrap(),
-            claude_stray_reply(&unknown).unwrap(),
-            codex_stray_reply(&codex).unwrap(),
-        ] {
-            assert!(!reply.to_string().contains("fixture"), "{reply}");
-        }
-        assert_eq!(
-            claude_stray_reply(&permission).unwrap()["response"]["response"]["behavior"],
-            "deny"
-        );
-        assert_eq!(
-            claude_stray_reply(&unknown).unwrap()["response"]["subtype"],
-            "error"
-        );
-        assert_eq!(codex_stray_reply(&codex).unwrap()["error"]["code"], -32601);
-        let approval = json!({"id":8,"method":"item/commandExecution/requestApproval","params":{}});
-        assert_eq!(
-            codex_stray_reply(&approval).unwrap()["result"]["decision"],
-            "decline"
-        );
-    }
-    #[test]
-    fn error_text_keeps_structured_kinds_and_names_missing_errors() {
-        assert_eq!(
-            error_text(&json!({"message":"bad","codexErrorInfo":{"httpStatus":429}})),
-            "bad ({\"httpStatus\":429})"
-        );
-        assert_eq!(
-            error_text(&Value::Null),
-            "The vendor reported an error without details"
-        );
-        assert_eq!(
-            claude_result_error(&json!({"is_error":true,"subtype":"error_max_turns"})),
-            "Claude returned an error (error_max_turns)"
-        );
+    fn seconds_read_naturally() {
         assert_eq!(seconds(Duration::from_millis(400)), "400 ms");
         assert_eq!(seconds(Duration::from_secs(600)), "600 seconds");
     }

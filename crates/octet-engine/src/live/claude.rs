@@ -519,4 +519,31 @@ mod tests {
         }
         assert_eq!(claude_reported_mode("plan"), None);
     }
+    #[test]
+    fn stray_request_replies_use_production_wording() {
+        let request = json!({"subtype": "can_use_tool", "tool_name": "Bash", "input": {}});
+        let permission = json!({"type": "control_request", "request_id": "r1", "request": request});
+        let unknown = json!({"type":"control_request","request_id":"r2","request":{"subtype":"hook_callback"}});
+        for reply in [
+            claude_stray_reply(&permission).unwrap(),
+            claude_stray_reply(&unknown).unwrap(),
+        ] {
+            assert!(!reply.to_string().contains("fixture"), "{reply}");
+        }
+        assert_eq!(
+            claude_stray_reply(&permission).unwrap()["response"]["response"]["behavior"],
+            "deny"
+        );
+        assert_eq!(
+            claude_stray_reply(&unknown).unwrap()["response"]["subtype"],
+            "error"
+        );
+    }
+    #[test]
+    fn a_result_error_names_its_subtype_when_it_has_no_text() {
+        assert_eq!(
+            claude_result_error(&json!({"is_error":true,"subtype":"error_max_turns"})),
+            "Claude returned an error (error_max_turns)"
+        );
+    }
 }

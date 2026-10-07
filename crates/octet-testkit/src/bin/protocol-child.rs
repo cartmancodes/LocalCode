@@ -2,6 +2,7 @@
 //! protocol to drive Octet through scripted scenarios.
 // Test fixture: a panic here fails the test that started it.
 #![allow(clippy::unwrap_used)]
+use octet_testkit::scenario;
 use serde_json::{json, Value};
 use std::{
     env,
@@ -16,6 +17,21 @@ fn emit(value: &Value) {
     serde_json::to_writer(&mut stdout, value).unwrap();
     stdout.write_all(b"\n").unwrap();
     stdout.flush().unwrap();
+}
+
+/// Codex's notice that a turn ended with `status`.
+fn codex_turn_completed(active: &str, status: &str) -> Value {
+    json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":status}}})
+}
+
+/// Claude's session announcement at the start of a turn.
+fn claude_init(sid: &str) -> Value {
+    json!({"type":"system","subtype":"init","session_id":sid,"model":"claude-fixture-full-id"})
+}
+
+/// Claude's successful end of a turn with `result` as its text.
+fn claude_result(sid: &str, result: &str) -> Value {
+    json!({"type":"result","is_error":false,"result":result,"session_id":sid,"total_cost_usd":0.0})
 }
 
 fn goal_reply(text: &str) -> Option<&'static str> {
@@ -127,7 +143,7 @@ fn interactive_codex() {
             }
             Some("initialize") => emit(&json!({"id":v["id"],"result":{}})),
             Some("thread/start" | "thread/resume" | "thread/fork")
-                if v["params"]["model"] == "refuse-thread" =>
+                if v["params"]["model"] == scenario::REFUSE_THREAD =>
             {
                 emit(
                     &json!({"id":v["id"],"error":{"code":-32600,"message":"no rollout found for thread id fixture"}}),
@@ -139,7 +155,7 @@ fn interactive_codex() {
                 // Echo the policy like Codex does; "report-stricter" simulates a
                 // managed requirement that overrides what the client asked for.
                 let p = &v["params"];
-                let (sandbox, policy, reviewer) = if p["model"] == "report-stricter" {
+                let (sandbox, policy, reviewer) = if p["model"] == scenario::REPORT_STRICTER {
                     (json!("workspace-write"), json!("untrusted"), json!("user"))
                 } else {
                     (
@@ -176,9 +192,7 @@ fn interactive_codex() {
                 emit(
                     &json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":active,"item":{"id":"compact","type":"contextCompaction"}}}),
                 );
-                emit(
-                    &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"completed"}}}),
-                );
+                emit(&codex_turn_completed(&active, "completed"));
             }
             Some("turn/start") => {
                 turn += 1;
@@ -187,14 +201,14 @@ fn interactive_codex() {
                     .pointer("/params/input/0/text")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                if first == "refuse-start" {
+                if first == scenario::REFUSE_START {
                     // Refuse the turn after a pause, so Octet can hold a steer.
                     thread::sleep(Duration::from_millis(400));
                     emit(&json!({"id":v["id"],"error":{"code":-32600,"message":"turn refused"}}));
                     continue;
                 }
                 emit(&json!({"id":v["id"],"result":{"turn":{"id":active}}}));
-                if first == "late-start" {
+                if first == scenario::LATE_START {
                     // Name the turn late, so Octet holds steers and cancels.
                     thread::sleep(Duration::from_millis(400));
                 }
@@ -205,17 +219,23 @@ fn interactive_codex() {
                     .pointer("/params/input/0/text")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                if text == "hold"
-                    || text == "late-start"
+                if text == scenario::HOLD_MARKED {
+                    emit(
+                        &json!({"method":"item/agentMessage/delta","params":{"threadId":"fixture-thread","turnId":active,"itemId":"marker","delta":"named"}}),
+                    );
+                    continue;
+                }
+                if text == scenario::HOLD
+                    || text == scenario::LATE_START
                     || text.starts_with("Octet active goal: fixture-hold\n")
                 {
                     continue;
                 }
-                if text == "die-on-interrupt" {
+                if text == scenario::DIE_ON_INTERRUPT {
                     dies_on_interrupt = true;
                     continue;
                 }
-                if text == "approvals-9" {
+                if text == scenario::APPROVALS_9 {
                     for n in 1..=9 {
                         emit(
                             &json!({"id":format!("cap-{n}"),"method":"item/commandExecution/requestApproval","params":{"threadId":"fixture-thread","turnId":active,"command":"echo fixture"}}),
@@ -223,24 +243,22 @@ fn interactive_codex() {
                     }
                     continue;
                 }
-                if text == "approval" {
+                if text == scenario::APPROVAL {
                     emit(
                         &json!({"id":"permission","method":"item/commandExecution/requestApproval","params":{"threadId":"fixture-thread","turnId":active,"command":"echo fixture"}}),
                     );
                     continue;
                 }
-                if text == "bigtool" {
+                if text == scenario::BIGTOOL {
                     // One completed command whose output is far larger than the event queue.
                     let output = "x".repeat(6 * 1024 * 1024);
                     emit(
                         &json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":active,"item":{"id":"cmd","type":"commandExecution","command":"cat big","status":"completed","exitCode":0,"aggregatedOutput":output}}}),
                     );
-                    emit(
-                        &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"completed"}}}),
-                    );
+                    emit(&codex_turn_completed(&active, "completed"));
                     continue;
                 }
-                if text == "chatter" {
+                if text == scenario::CHATTER {
                     // The turn goes silent while another thread keeps talking.
                     for _ in 0..8 {
                         thread::sleep(Duration::from_millis(300));
@@ -250,19 +268,19 @@ fn interactive_codex() {
                     }
                     continue;
                 }
-                if text == "fail" || text.starts_with("Octet active goal: fixture-fail\n") {
+                if text == scenario::FAIL || text.starts_with("Octet active goal: fixture-fail\n") {
                     emit(
                         &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"failed","error":{"additionalDetails":null,"codexErrorInfo":"usageLimitExceeded","message":"You've hit your usage limit."}}}}),
                     );
                     continue;
                 }
-                if text == "fail-nested" {
+                if text == scenario::FAIL_NESTED {
                     emit(
                         &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"failed","error":{"codexErrorInfo":"other","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The model is not supported.\"}}"}}}}),
                     );
                     continue;
                 }
-                if text == "slow" {
+                if text == scenario::SLOW {
                     // Stays active longer than a short idle limit, never silent for long.
                     for _ in 0..8 {
                         thread::sleep(Duration::from_millis(300));
@@ -270,19 +288,15 @@ fn interactive_codex() {
                             &json!({"method":"item/agentMessage/delta","params":{"threadId":"fixture-thread","turnId":active,"itemId":"slow","delta":"."}}),
                         );
                     }
-                    emit(
-                        &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"completed"}}}),
-                    );
+                    emit(&codex_turn_completed(&active, "completed"));
                     continue;
                 }
-                if text == "params" {
+                if text == scenario::PARAMS {
                     let echo = json!({"thread":thread_params,"turn":v["params"]}).to_string();
                     emit(
                         &json!({"method":"item/agentMessage/delta","params":{"threadId":"fixture-thread","turnId":active,"itemId":"params","delta":echo}}),
                     );
-                    emit(
-                        &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"completed"}}}),
-                    );
+                    emit(&codex_turn_completed(&active, "completed"));
                     continue;
                 }
                 emit(
@@ -311,9 +325,7 @@ fn interactive_codex() {
                 emit(
                     &json!({"method":"thread/tokenUsage/updated","params":{"threadId":"fixture-thread","tokenUsage":{"total":{"totalTokens":42}}}}),
                 );
-                emit(
-                    &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"completed"}}}),
-                );
+                emit(&codex_turn_completed(&active, "completed"));
             }
             Some("turn/steer") => {
                 // Steering adds to the running turn; a stale turn ID, or the
@@ -338,18 +350,14 @@ fn interactive_codex() {
                 if dies_on_interrupt {
                     std::process::exit(3);
                 }
-                emit(
-                    &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"interrupted"}}}),
-                );
+                emit(&codex_turn_completed(&active, "interrupted"));
                 emit(&json!({"id":v["id"],"result":{}}));
             }
             None if v["id"] == "permission" => {
                 emit(
                     &json!({"method":"item/agentMessage/delta","params":{"threadId":"fixture-thread","turnId":active,"itemId":"answer","delta":v["result"]["decision"].as_str().unwrap_or("bad response")}}),
                 );
-                emit(
-                    &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"completed"}}}),
-                );
+                emit(&codex_turn_completed(&active, "completed"));
             }
             _ => {}
         }
@@ -370,7 +378,7 @@ fn interactive_claude() {
         let v: Value = serde_json::from_str(&line.unwrap()).unwrap();
         if v["type"] == "control_request"
             && v["request"]["subtype"] == "initialize"
-            && argv.iter().any(|a| a == "die-stderr")
+            && argv.iter().any(|a| a == scenario::DIE_STDERR)
         {
             eprintln!("No conversation found with session ID: fixture");
             process::exit(1);
@@ -382,9 +390,9 @@ fn interactive_claude() {
                 .and_then(|i| argv.get(i + 1))
                 .map(String::as_str)
                 .unwrap_or("default");
-            let reported = if argv.iter().any(|a| a == "report-auto") {
+            let reported = if argv.iter().any(|a| a == scenario::REPORT_AUTO) {
                 "auto"
-            } else if argv.iter().any(|a| a == "report-plan") {
+            } else if argv.iter().any(|a| a == scenario::REPORT_PLAN) {
                 "plan"
             } else {
                 requested
@@ -393,9 +401,7 @@ fn interactive_claude() {
                 &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"current_permission_mode":reported,"models":[{"value":"sonnet","resolvedModel":"claude-fixture-full-id","displayName":"Fixture Sonnet","description":"Provider description"}]}}}),
             );
         } else if v["type"] == "control_request" && v["request"]["subtype"] == "interrupt" {
-            emit(
-                &json!({"type":"result","is_error":false,"result":"","session_id":sid,"total_cost_usd":0.0}),
-            );
+            emit(&claude_result(sid, ""));
         } else if v["type"] == "control_request" && v["request"]["subtype"] == "set_permission_mode"
         {
             modes.push(
@@ -404,21 +410,21 @@ fn interactive_claude() {
                     .unwrap_or("<missing>")
                     .to_owned(),
             );
-            if argv.iter().any(|a| a == "hang-mode") {
+            if argv.iter().any(|a| a == scenario::HANG_MODE) {
                 // Answer only when a "flush" prompt arrives.
                 held.push(v["request_id"].clone());
-            } else if argv.iter().any(|a| a == "odd-mode") {
+            } else if argv.iter().any(|a| a == scenario::ODD_MODE) {
                 emit(
                     &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"mode":"plan"}}}),
                 );
-            } else if argv.iter().any(|a| a == "late-mode") {
+            } else if argv.iter().any(|a| a == scenario::LATE_MODE) {
                 // Confirm after the test's shortened mode deadline.
                 let reply = json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"mode":v["request"]["mode"]}}});
                 thread::spawn(move || {
                     thread::sleep(Duration::from_millis(2500));
                     emit(&reply);
                 });
-            } else if argv.iter().any(|a| a == "reject-mode") {
+            } else if argv.iter().any(|a| a == scenario::REJECT_MODE) {
                 emit(
                     &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"error","error":"Cannot set permission mode: fixture refusal"}}),
                 );
@@ -440,48 +446,38 @@ fn interactive_claude() {
             emit(
                 &json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":reply}}}),
             );
-            emit(
-                &json!({"type":"result","is_error":false,"result":reply,"session_id":sid,"total_cost_usd":0.0}),
-            );
+            emit(&claude_result(sid, &reply));
         } else if v["type"] == "user" {
             let text = v
                 .pointer("/message/content/0/text")
                 .and_then(Value::as_str)
                 .unwrap_or("");
             let permission = |id: &str| json!({"type":"control_request","request_id":id,"request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"echo fixture"}}});
-            if text == "approval" {
-                emit(
-                    &json!({"type":"system","subtype":"init","session_id":sid,"model":"claude-fixture-full-id"}),
-                );
+            if text == scenario::APPROVAL {
+                emit(&claude_init(sid));
                 emit(&permission("perm-1"));
                 continue;
             }
-            if text == "approval-cancel" {
-                emit(
-                    &json!({"type":"system","subtype":"init","session_id":sid,"model":"claude-fixture-full-id"}),
-                );
+            if text == scenario::APPROVAL_CANCEL {
+                emit(&claude_init(sid));
                 emit(&permission("perm-2"));
                 emit(&json!({"type":"control_cancel_request","request_id":"perm-2"}));
-                emit(
-                    &json!({"type":"result","is_error":false,"result":"","session_id":sid,"total_cost_usd":0.0}),
-                );
+                emit(&claude_result(sid, ""));
                 continue;
             }
-            if text == "approvals-9" {
-                emit(
-                    &json!({"type":"system","subtype":"init","session_id":sid,"model":"claude-fixture-full-id"}),
-                );
+            if text == scenario::APPROVALS_9 {
+                emit(&claude_init(sid));
                 for n in 1..=9 {
                     emit(&permission(&format!("cap-{n}")));
                 }
                 continue;
             }
-            if text == "no-is-error" {
+            if text == scenario::NO_IS_ERROR {
                 // A result that omits is_error, as an older CLI might send.
                 emit(&json!({"type":"result","result":"odd","session_id":sid}));
                 continue;
             }
-            if text == "flush" {
+            if text == scenario::FLUSH {
                 // First held request succeeds, every later one is refused.
                 for (index, id) in held.drain(..).enumerate() {
                     emit(&if index == 0 {
@@ -491,32 +487,26 @@ fn interactive_claude() {
                     });
                 }
             }
-            if text == "tool" {
-                emit(
-                    &json!({"type":"system","subtype":"init","session_id":sid,"model":"claude-fixture-full-id"}),
-                );
+            if text == scenario::TOOL {
+                emit(&claude_init(sid));
                 emit(
                     &json!({"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"Bash","input":{}}}}),
                 );
                 emit(
                     &json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo fixture"}}]}}),
                 );
-                emit(
-                    &json!({"type":"result","is_error":false,"result":"","session_id":sid,"total_cost_usd":0.0}),
-                );
+                emit(&claude_result(sid, ""));
                 continue;
             }
-            if text == "errors" || text.starts_with("Octet active goal: fixture-fail\n") {
+            if text == scenario::ERRORS || text.starts_with("Octet active goal: fixture-fail\n") {
                 emit(
                     &json!({"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Fixture failure detail"],"session_id":sid,"total_cost_usd":0.0}),
                 );
                 continue;
             }
-            if text == "hold" || text.starts_with("Octet active goal: fixture-hold\n") {
+            if text == scenario::HOLD || text.starts_with("Octet active goal: fixture-hold\n") {
                 // Stay mid-turn until the driver interrupts.
-                emit(
-                    &json!({"type":"system","subtype":"init","session_id":sid,"model":"claude-fixture-full-id"}),
-                );
+                emit(&claude_init(sid));
                 continue;
             }
             // Image blocks are echoed as "image:<media type>:<base64 length>".
@@ -537,27 +527,23 @@ fn interactive_claude() {
                 .collect();
             let reply = if !images.is_empty() {
                 images.join(",")
-            } else if text == "argv" {
+            } else if text == scenario::ARGV {
                 argv.join(" ")
             } else if text == "/compact" {
                 "Compacted".to_owned()
-            } else if text == "modes" {
+            } else if text == scenario::MODES {
                 modes.join(",")
             } else if let Some(reply) = goal_reply(text) {
                 reply.to_owned()
             } else {
                 "Hello Claude".to_owned()
             };
-            emit(
-                &json!({"type":"system","subtype":"init","session_id":sid,"model":"claude-fixture-full-id"}),
-            );
+            emit(&claude_init(sid));
             emit(
                 &json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":reply}}}),
             );
             emit(&json!({"type":"assistant","message":{"content":[{"type":"text","text":reply}]}}));
-            emit(
-                &json!({"type":"result","is_error":false,"result":reply,"session_id":sid,"total_cost_usd":0.0}),
-            );
+            emit(&claude_result(sid, &reply));
         }
     }
 }

@@ -13,8 +13,8 @@ use tokio::{
     time::{timeout, Instant},
 };
 
-/// Where a vendor connection is. Each stage is a state the old flags could
-/// combine; impossible combinations can no longer be written.
+/// Where a vendor connection is. The stages are ordered: a later stage
+/// implies every earlier one, so readiness is a comparison.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Phase {
     /// The process is up; the handshake is unanswered.
@@ -270,7 +270,7 @@ pub(crate) trait Protocol: Default + Send {
 mod tests {
     use super::*;
     #[test]
-    fn phase_answers_the_old_flag_questions() {
+    fn phase_answers_readiness_and_running_questions() {
         use Phase::*;
         for (phase, ready, running, interrupting) in [
             (Starting, false, false, false),

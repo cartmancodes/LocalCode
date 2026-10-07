@@ -6,6 +6,7 @@ use octet_engine::live::{
     spawn, spawn_with_limits, Command, Config, Engine, Event, ImageAttachment, Limits, Mode,
     Outcome,
 };
+use octet_testkit::scenario;
 use std::time::Duration;
 use tokio::{sync::mpsc, time::timeout};
 fn config() -> Config {
@@ -14,6 +15,37 @@ fn config() -> Config {
         octet_testkit::protocol_child(),
         std::env::temp_dir(),
     )
+}
+/// The fake Claude, otherwise as `config()`.
+fn claude() -> Config {
+    let mut c = config();
+    c.engine = Engine::CLAUDE;
+    c
+}
+/// Shuts the session down and waits for it, failing instead of hanging.
+async fn stop(handle: &octet_engine::live::Handle, task: tokio::task::JoinHandle<()>) {
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .expect("the session did not stop")
+        .unwrap();
+}
+/// Waits for a session that is ending by itself, failing instead of hanging.
+async fn ended(task: tokio::task::JoinHandle<()>) {
+    timeout(Duration::from_secs(3), task)
+        .await
+        .expect("the session did not stop")
+        .unwrap();
+}
+/// The first error the session reports; it must report one before stopping.
+async fn expect_error(events: &mut mpsc::Receiver<Event>) -> String {
+    loop {
+        match next(events).await {
+            Event::Error(error) => return error,
+            Event::Stopped => panic!("stopped without an error"),
+            _ => {}
+        }
+    }
 }
 async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
     timeout(Duration::from_secs(5), events.recv())
@@ -86,11 +118,7 @@ async fn a_repeated_claude_handshake_mid_turn_does_not_end_the_turn() {
         ),
         "{finished:?}"
     );
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn cancel_while_handshaken_is_cancelled() {
@@ -169,17 +197,15 @@ async fn live_driver_keeps_turns_separate_and_waits_for_terminal_after_usage() {
         assert_eq!(text, "Hello fixture");
         assert!(usage);
     }
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn approvals_and_cancel_remain_routable_during_turn() {
     let (handle, mut events, task) = spawn(config());
     next(&mut events).await;
-    handle.send(Command::Prompt("approval".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::APPROVAL.into()))
+        .unwrap();
     let id = loop {
         if let Event::Approval { id, .. } = next(&mut events).await {
             break id;
@@ -195,7 +221,7 @@ async fn approvals_and_cancel_remain_routable_during_turn() {
         }
     }
     assert!(denied);
-    handle.send(Command::Prompt("hold".into())).unwrap();
+    handle.send(Command::Prompt(scenario::HOLD.into())).unwrap();
     while !matches!(next(&mut events).await, Event::Started) {}
     handle.interrupt();
     loop {
@@ -210,11 +236,7 @@ async fn approvals_and_cancel_remain_routable_during_turn() {
     }
     handle.send(Command::Answer { id, allow: true }).unwrap();
     assert!(matches!(next(&mut events).await, Event::Notice(_)));
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 
 #[tokio::test]
@@ -239,11 +261,7 @@ async fn claude_stream_does_not_duplicate_final_assistant_message() {
         }
         assert_eq!(text, "Hello Claude");
     }
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 
 #[tokio::test]
@@ -265,11 +283,7 @@ async fn codex_discovers_all_pages_and_uses_model_not_picker_id() {
             _ => {}
         }
     }
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 
 #[tokio::test]
@@ -293,11 +307,7 @@ async fn claude_catalog_alias_is_distinct_from_confirmed_session_model() {
             break;
         }
     }
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 
 #[tokio::test]
@@ -306,7 +316,7 @@ async fn provider_receives_wire_prompt_while_transcript_keeps_user_facing_text()
     while !matches!(next(&mut events).await, Event::Ready { .. }) {}
     handle
         .send(Command::PromptWithDisplay {
-            wire: "hold".into(),
+            wire: scenario::HOLD.into(),
             display: "hello".into(),
             images: Vec::new(),
         })
@@ -330,11 +340,7 @@ async fn provider_receives_wire_prompt_while_transcript_keeps_user_facing_text()
         }
     }
     assert!(seen_user);
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 
 async fn wait_for(events: &mut mpsc::Receiver<Event>, wanted: impl Fn(&Event) -> bool) -> Event {
@@ -365,33 +371,32 @@ async fn codex_launches_and_turns_with_the_configured_mode() {
     c.mode = Mode::Auto;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Auto))).await;
-    handle.send(Command::Prompt("params".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::PARAMS.into()))
+        .unwrap();
     let echo: serde_json::Value = serde_json::from_str(&turn_text(&mut events).await).unwrap();
     assert_eq!(echo["thread"]["sandbox"], "workspace-write");
     assert_eq!(echo["thread"]["approvalPolicy"], "on-request");
     assert_eq!(echo["thread"]["approvalsReviewer"], "auto_review");
     assert_eq!(echo["turn"]["approvalPolicy"], "on-request");
     assert_eq!(echo["turn"]["approvalsReviewer"], "auto_review");
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_launches_with_the_mapped_permission_flag() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let mut c = claude();
     c.mode = Mode::AcceptEdits;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| {
         matches!(e, Event::ModeChanged(Mode::AcceptEdits))
     })
     .await;
-    handle.send(Command::Prompt("argv".into())).unwrap();
+    handle.send(Command::Prompt(scenario::ARGV.into())).unwrap();
     let argv = turn_text(&mut events).await;
     assert!(argv.contains("--permission-mode acceptEdits"), "{argv}");
     assert!(!argv.contains("--permission-mode default"), "{argv}");
     assert!(!argv.contains("dangerously"), "{argv}");
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn codex_live_switch_applies_to_the_next_turn() {
@@ -399,30 +404,28 @@ async fn codex_live_switch_applies_to_the_next_turn() {
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     handle.send(Command::SetMode(Mode::Auto)).unwrap();
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Auto))).await;
-    handle.send(Command::Prompt("params".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::PARAMS.into()))
+        .unwrap();
     let echo: serde_json::Value = serde_json::from_str(&turn_text(&mut events).await).unwrap();
     assert_eq!(echo["thread"]["approvalsReviewer"], "user");
     assert_eq!(echo["turn"]["approvalPolicy"], "on-request");
     assert_eq!(echo["turn"]["approvalsReviewer"], "auto_review");
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_live_switch_uses_set_permission_mode() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let c = claude();
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     handle.send(Command::SetMode(Mode::Auto)).unwrap();
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Auto))).await;
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_refusal_keeps_the_previous_mode() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
-    c.model = Some("reject-mode".into());
+    let mut c = claude();
+    c.model = Some(scenario::REJECT_MODE.into());
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     handle.send(Command::SetMode(Mode::Auto)).unwrap();
@@ -438,8 +441,7 @@ async fn claude_refusal_keeps_the_previous_mode() {
         next(&mut events).await,
         Event::ModeChanged(Mode::Ask)
     ));
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn driver_refuses_live_full_access() {
@@ -458,14 +460,12 @@ async fn driver_refuses_live_full_access() {
         next(&mut events).await,
         Event::ModeChanged(Mode::Ask)
     ));
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_header_follows_the_mode_claude_reports() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
-    c.model = Some("report-auto".into());
+    let mut c = claude();
+    c.model = Some(scenario::REPORT_AUTO.into());
     let (handle, mut events, task) = spawn(c);
     let event = wait_for(&mut events, |e| {
         matches!(e, Event::Notice(_) | Event::ModeChanged(_))
@@ -479,14 +479,12 @@ async fn claude_header_follows_the_mode_claude_reports() {
         next(&mut events).await,
         Event::ModeChanged(Mode::Auto)
     ));
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn unmapped_claude_mode_keeps_the_requested_mode_with_a_notice() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
-    c.model = Some("report-plan".into());
+    let mut c = claude();
+    c.model = Some(scenario::REPORT_PLAN.into());
     let (handle, mut events, task) = spawn(c);
     let event = wait_for(&mut events, |e| {
         matches!(e, Event::Notice(_) | Event::ModeChanged(_))
@@ -500,14 +498,13 @@ async fn unmapped_claude_mode_keeps_the_requested_mode_with_a_notice() {
         next(&mut events).await,
         Event::ModeChanged(Mode::Ask)
     ));
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn codex_header_follows_a_stricter_reported_policy() {
     let mut c = config();
     c.mode = Mode::Auto;
-    c.model = Some("report-stricter".into());
+    c.model = Some(scenario::REPORT_STRICTER.into());
     let (handle, mut events, task) = spawn(c);
     let event = wait_for(&mut events, |e| {
         matches!(e, Event::Notice(text) if text.contains("reports"))
@@ -519,11 +516,12 @@ async fn codex_header_follows_a_stricter_reported_policy() {
         "{event:?}"
     );
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
-    handle.send(Command::Prompt("params".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::PARAMS.into()))
+        .unwrap();
     let echo: serde_json::Value = serde_json::from_str(&turn_text(&mut events).await).unwrap();
     assert_eq!(echo["turn"]["approvalPolicy"], "untrusted");
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 /// Real limits shortened so timeout paths run in seconds.
 fn quick() -> Limits {
@@ -534,7 +532,8 @@ fn quick() -> Limits {
         ..Limits::default()
     }
 }
-async fn wait_long(
+/// Like `wait_for`, allowing `seconds` instead of five.
+async fn wait_for_within(
     events: &mut mpsc::Receiver<Event>,
     seconds: u64,
     wanted: impl Fn(&Event) -> bool,
@@ -555,16 +554,15 @@ async fn wait_long(
 }
 #[tokio::test]
 async fn unconfirmed_claude_switch_times_out_then_applies_a_late_confirmation() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
-    c.model = Some("late-mode".into());
+    let mut c = claude();
+    c.model = Some(scenario::LATE_MODE.into());
     let (handle, mut events, task) = spawn_with_limits(c, quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     // Idle past the connect deadline: the mode timer firing later must not be
     // mistaken for an expired turn.
     tokio::time::sleep(Duration::from_millis(2200)).await;
     handle.send(Command::SetMode(Mode::Auto)).unwrap();
-    let event = wait_long(&mut events, 12, |e| {
+    let event = wait_for_within(&mut events, 12, |e| {
         matches!(e, Event::Notice(_) | Event::ModeChanged(_))
     })
     .await;
@@ -576,7 +574,7 @@ async fn unconfirmed_claude_switch_times_out_then_applies_a_late_confirmation() 
         next(&mut events).await,
         Event::ModeChanged(Mode::Ask)
     ));
-    let event = wait_long(&mut events, 5, |e| {
+    let event = wait_for_within(&mut events, 5, |e| {
         matches!(e, Event::Notice(_) | Event::ModeChanged(_))
     })
     .await;
@@ -588,8 +586,7 @@ async fn unconfirmed_claude_switch_times_out_then_applies_a_late_confirmation() 
         next(&mut events).await,
         Event::ModeChanged(Mode::Auto)
     ));
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn demo_mode_switch_during_approval_keeps_the_dialog_open() {
@@ -609,13 +606,11 @@ async fn demo_mode_switch_during_approval_keeps_the_dialog_open() {
     assert!(matches!(event, Event::ModeChanged(Mode::Auto)), "{event:?}");
     handle.send(Command::Answer { id: 1, allow: true }).unwrap();
     assert!(turn_text(&mut events).await.starts_with("Approved."));
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_switch_sends_the_vendor_mode_name() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let c = claude();
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     for (mode, _) in [(Mode::AcceptEdits, ()), (Mode::Auto, ()), (Mode::Ask, ())] {
@@ -626,18 +621,18 @@ async fn claude_switch_sends_the_vendor_mode_name() {
         )
         .await;
     }
-    handle.send(Command::Prompt("modes".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::MODES.into()))
+        .unwrap();
     assert_eq!(turn_text(&mut events).await, "acceptEdits,auto,default");
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_switch_applies_in_the_middle_of_a_turn() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let c = claude();
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
-    handle.send(Command::Prompt("hold".into())).unwrap();
+    handle.send(Command::Prompt(scenario::HOLD.into())).unwrap();
     wait_for(&mut events, |e| matches!(e, Event::Started)).await;
     handle.send(Command::SetMode(Mode::Auto)).unwrap();
     let event = wait_for(&mut events, |e| {
@@ -651,8 +646,7 @@ async fn claude_switch_applies_in_the_middle_of_a_turn() {
     handle.interrupt();
     let event = wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
     assert!(matches!(event, Event::Finished { outcome } if outcome == Outcome::Interrupted));
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn codex_resume_carries_the_mode() {
@@ -664,44 +658,42 @@ async fn codex_resume_carries_the_mode() {
         matches!(e, Event::ModeChanged(Mode::FullAccess))
     })
     .await;
-    handle.send(Command::Prompt("params".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::PARAMS.into()))
+        .unwrap();
     let echo: serde_json::Value = serde_json::from_str(&turn_text(&mut events).await).unwrap();
     assert_eq!(echo["thread"]["method"], "thread/resume");
     assert_eq!(echo["thread"]["threadId"], "fixture-thread");
     assert_eq!(echo["thread"]["sandbox"], "danger-full-access");
     assert_eq!(echo["thread"]["approvalPolicy"], "never");
     assert_eq!(echo["turn"]["approvalPolicy"], "never");
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn idle_switch_long_after_connect_confirms_promptly() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let c = claude();
     let (handle, mut events, task) = spawn_with_limits(c, quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     // Past the connect deadline, which is stale once idle.
     tokio::time::sleep(Duration::from_millis(2200)).await;
     handle.send(Command::SetMode(Mode::Auto)).unwrap();
-    let event = wait_long(&mut events, 12, |e| {
+    let event = wait_for_within(&mut events, 12, |e| {
         matches!(e, Event::Notice(_) | Event::ModeChanged(_))
     })
     .await;
     // The first event being the confirmation, not a timeout notice, is the proof.
     assert!(matches!(event, Event::ModeChanged(Mode::Auto)), "{event:?}");
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn every_timed_out_switch_can_still_be_confirmed_late() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
-    c.model = Some("hang-mode".into());
+    let mut c = claude();
+    c.model = Some(scenario::HANG_MODE.into());
     let (handle, mut events, task) = spawn_with_limits(c, quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     for target in [Mode::AcceptEdits, Mode::Auto] {
         handle.send(Command::SetMode(target)).unwrap();
-        wait_long(
+        wait_for_within(
             &mut events,
             12,
             |e| matches!(e, Event::Notice(t) if t.contains("has not confirmed")),
@@ -713,19 +705,19 @@ async fn every_timed_out_switch_can_still_be_confirmed_late() {
         ));
     }
     // Claude accepts the first request late and refuses the second.
-    handle.send(Command::Prompt("flush".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::FLUSH.into()))
+        .unwrap();
     wait_for(&mut events, |e| {
         matches!(e, Event::ModeChanged(Mode::AcceptEdits))
     })
     .await;
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn unmapped_switch_reply_keeps_the_target_with_a_notice() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
-    c.model = Some("odd-mode".into());
+    let mut c = claude();
+    c.model = Some(scenario::ODD_MODE.into());
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     handle.send(Command::SetMode(Mode::Auto)).unwrap();
@@ -741,51 +733,39 @@ async fn unmapped_switch_reply_keeps_the_target_with_a_notice() {
         next(&mut events).await,
         Event::ModeChanged(Mode::Auto)
     ));
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn vendor_exit_reports_its_stderr() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
-    c.model = Some("die-stderr".into());
+    let mut c = claude();
+    c.model = Some(scenario::DIE_STDERR.into());
     let (_handle, mut events, task) = spawn(c);
-    let error = loop {
-        match next(&mut events).await {
-            Event::Error(error) => break error,
-            Event::Stopped => panic!("stopped without an error"),
-            _ => {}
-        }
-    };
+    let error = expect_error(&mut events).await;
     assert!(
         error.contains("No conversation found with session ID: fixture"),
         "{error}"
     );
-    task.await.unwrap();
+    ended(task).await;
 }
 #[tokio::test]
 async fn codex_thread_refusal_reports_the_vendor_message() {
     let mut c = config();
-    c.model = Some("refuse-thread".into());
+    c.model = Some(scenario::REFUSE_THREAD.into());
     let (_handle, mut events, task) = spawn(c);
-    let error = loop {
-        match next(&mut events).await {
-            Event::Error(error) => break error,
-            Event::Stopped => panic!("stopped without an error"),
-            _ => {}
-        }
-    };
+    let error = expect_error(&mut events).await;
     assert!(
         error.contains("no rollout found for thread id fixture"),
         "{error}"
     );
-    task.await.unwrap();
+    ended(task).await;
 }
 #[tokio::test]
 async fn large_tool_item_is_bounded_and_the_turn_completes() {
     let (handle, mut events, task) = spawn(config());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
-    handle.send(Command::Prompt("bigtool".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::BIGTOOL.into()))
+        .unwrap();
     let mut tool_bytes = 0;
     let mut tool = String::new();
     loop {
@@ -809,16 +789,18 @@ async fn large_tool_item_is_bounded_and_the_turn_completes() {
         head.contains("cat big") && head.contains("exit 0"),
         "{head}"
     );
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn turn_errors_show_the_vendor_message_not_raw_json() {
     let (handle, mut events, task) = spawn(config());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
     for (prompt, expected) in [
-        ("fail", "You've hit your usage limit. (usageLimitExceeded)"),
-        ("fail-nested", "The model is not supported."),
+        (
+            scenario::FAIL,
+            "You've hit your usage limit. (usageLimitExceeded)",
+        ),
+        (scenario::FAIL_NESTED, "The model is not supported."),
     ] {
         handle.send(Command::Prompt(prompt.into())).unwrap();
         let error = loop {
@@ -833,16 +815,16 @@ async fn turn_errors_show_the_vendor_message_not_raw_json() {
             matches!(next(&mut events).await, Event::Finished { outcome } if outcome == Outcome::Failed)
         );
     }
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_result_errors_are_shown() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let c = claude();
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
-    handle.send(Command::Prompt("errors".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::ERRORS.into()))
+        .unwrap();
     let error = loop {
         match next(&mut events).await {
             Event::Error(error) => break error,
@@ -851,16 +833,14 @@ async fn claude_result_errors_are_shown() {
         }
     };
     assert_eq!(error, "Fixture failure detail");
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_tool_is_announced_once_with_its_input() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let c = claude();
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
-    handle.send(Command::Prompt("tool".into())).unwrap();
+    handle.send(Command::Prompt(scenario::TOOL.into())).unwrap();
     let mut tools = Vec::new();
     loop {
         match next(&mut events).await {
@@ -875,35 +855,27 @@ async fn claude_tool_is_announced_once_with_its_input() {
         tools[0].starts_with("Bash") && tools[0].contains("echo fixture"),
         "{tools:?}"
     );
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn active_turn_outlives_the_idle_limit() {
     let (handle, mut events, task) = spawn_with_limits(config(), quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
     // The fixture streams for about 2.4 seconds; the idle limit is 1 second.
-    handle.send(Command::Prompt("slow".into())).unwrap();
-    let event = wait_long(&mut events, 6, |e| matches!(e, Event::Finished { .. })).await;
+    handle.send(Command::Prompt(scenario::SLOW.into())).unwrap();
+    let event = wait_for_within(&mut events, 6, |e| matches!(e, Event::Finished { .. })).await;
     assert!(matches!(event, Event::Finished { outcome } if outcome == Outcome::Completed));
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn silent_turn_is_stopped_at_the_idle_limit() {
     let (handle, mut events, task) = spawn_with_limits(config(), quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
-    handle.send(Command::Prompt("hold".into())).unwrap();
-    let error = loop {
-        match next(&mut events).await {
-            Event::Error(error) => break error,
-            Event::Stopped => panic!("stopped without an error"),
-            _ => {}
-        }
-    };
+    handle.send(Command::Prompt(scenario::HOLD.into())).unwrap();
+    let error = expect_error(&mut events).await;
     assert!(error.contains("sent nothing for 1 second"), "{error}");
     let _ = handle;
-    task.await.unwrap();
+    ended(task).await;
 }
 #[tokio::test]
 async fn other_thread_chatter_does_not_keep_a_silent_turn_alive() {
@@ -911,14 +883,10 @@ async fn other_thread_chatter_does_not_keep_a_silent_turn_alive() {
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
     let sent = tokio::time::Instant::now();
     // Another thread emits frames for about 2.4 seconds; ours is silent.
-    handle.send(Command::Prompt("chatter".into())).unwrap();
-    let error = loop {
-        match next(&mut events).await {
-            Event::Error(error) => break error,
-            Event::Stopped => panic!("stopped without an error"),
-            _ => {}
-        }
-    };
+    handle
+        .send(Command::Prompt(scenario::CHATTER.into()))
+        .unwrap();
+    let error = expect_error(&mut events).await;
     assert!(error.contains("sent nothing for 1 second"), "{error}");
     // The 1 s idle limit fired, not a longer one.
     assert!(
@@ -927,13 +895,15 @@ async fn other_thread_chatter_does_not_keep_a_silent_turn_alive() {
         sent.elapsed()
     );
     let _ = handle;
-    task.await.unwrap();
+    ended(task).await;
 }
 #[tokio::test]
 async fn waiting_for_the_user_is_not_vendor_silence() {
     let (handle, mut events, task) = spawn_with_limits(config(), quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
-    handle.send(Command::Prompt("approval".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::APPROVAL.into()))
+        .unwrap();
     let id = match wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await {
         Event::Approval { id, .. } => id,
         _ => unreachable!(),
@@ -943,8 +913,7 @@ async fn waiting_for_the_user_is_not_vendor_silence() {
     handle.send(Command::Answer { id, allow: true }).unwrap();
     let event = wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
     assert!(matches!(event, Event::Finished { outcome } if outcome == Outcome::Completed));
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 
 #[tokio::test]
@@ -964,15 +933,14 @@ async fn spawn_uses_the_configured_approval_window() {
             _ => {}
         }
     }
-    handle.shutdown();
-    task.await.unwrap();
+    stop(&handle, task).await;
 }
 
 #[tokio::test]
 async fn codex_steer_adds_to_the_running_turn() {
     let (handle, mut events, task) = spawn(config());
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
-    handle.send(Command::Prompt("hold".into())).unwrap();
+    handle.send(Command::Prompt(scenario::HOLD.into())).unwrap();
     wait_for(&mut events, |e| matches!(e, Event::Started)).await;
     handle
         .send(Command::Steer("look at tests too".into()))
@@ -987,11 +955,7 @@ async fn codex_steer_adds_to_the_running_turn() {
         |e| matches!(e, Event::Text(t) if t == "steered:look at tests too"),
     )
     .await;
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn steer_without_a_turn_is_refused() {
@@ -1003,11 +967,7 @@ async fn steer_without_a_turn_is_refused() {
         |e| matches!(e, Event::Notice(n) if n.contains("No turn is running")),
     )
     .await;
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn codex_sends_effort_on_each_turn_and_takes_changes_live() {
@@ -1015,7 +975,9 @@ async fn codex_sends_effort_on_each_turn_and_takes_changes_live() {
     c.effort = Some("high".into());
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
-    handle.send(Command::Prompt("params".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::PARAMS.into()))
+        .unwrap();
     assert!(turn_text(&mut events).await.contains("\"effort\":\"high\""));
     handle.send(Command::SetEffort(Some("low".into()))).unwrap();
     wait_for(
@@ -1023,28 +985,21 @@ async fn codex_sends_effort_on_each_turn_and_takes_changes_live() {
         |e| matches!(e, Event::Notice(n) if n.contains("low")),
     )
     .await;
-    handle.send(Command::Prompt("params".into())).unwrap();
-    assert!(turn_text(&mut events).await.contains("\"effort\":\"low\""));
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
+    handle
+        .send(Command::Prompt(scenario::PARAMS.into()))
         .unwrap();
+    assert!(turn_text(&mut events).await.contains("\"effort\":\"low\""));
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_launches_with_effort() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let mut c = claude();
     c.effort = Some("max".into());
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
-    handle.send(Command::Prompt("argv".into())).unwrap();
+    handle.send(Command::Prompt(scenario::ARGV.into())).unwrap();
     assert!(turn_text(&mut events).await.contains("--effort max"));
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn codex_fork_opens_a_new_thread() {
@@ -1057,11 +1012,7 @@ async fn codex_fork_opens_a_new_thread() {
         |e| matches!(e, Event::Ready { session } if session == "forked-thread"),
     )
     .await;
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn codex_compact_runs_as_a_turn() {
@@ -1083,36 +1034,26 @@ async fn codex_compact_runs_as_a_turn() {
         )
     })
     .await;
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_fork_passes_fork_session() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let mut c = claude();
     c.resume = Some("claude-fixture".into());
     c.fork = true;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
-    handle.send(Command::Prompt("argv".into())).unwrap();
+    handle.send(Command::Prompt(scenario::ARGV.into())).unwrap();
     let argv = turn_text(&mut events).await;
     assert!(
         argv.contains("--resume claude-fixture --fork-session"),
         "{argv}"
     );
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_compact_sends_the_command() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let c = claude();
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
     handle.send(Command::Compact).unwrap();
@@ -1122,11 +1063,7 @@ async fn claude_compact_sends_the_command() {
     )
     .await;
     assert_eq!(turn_text(&mut events).await, "Compacted");
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 /// A prompt carrying one image file written with `bytes`.
 fn image_prompt(dir: &octet_testkit::TempDir, bytes: &[u8]) -> (Command, ImageAttachment) {
@@ -1157,34 +1094,24 @@ async fn codex_receives_local_image_paths() {
         turn_text(&mut events).await,
         format!("images:{}", image.path.display())
     );
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_receives_base64_image_blocks() {
     let dir = octet_testkit::TempDir::new("octet-image");
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let c = claude();
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
     // "abc" is "YWJj" in base64: four bytes on the wire.
     let (command, _) = image_prompt(&dir, b"abc");
     handle.send(command).unwrap();
     assert_eq!(turn_text(&mut events).await, "image:image/png:4");
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn an_image_gone_at_send_time_fails_the_turn() {
     let dir = octet_testkit::TempDir::new("octet-image");
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let c = claude();
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
     let (command, image) = image_prompt(&dir, b"abc");
@@ -1202,16 +1129,11 @@ async fn an_image_gone_at_send_time_fails_the_turn() {
         }
     }
     assert!(error.unwrap().contains("shot.png"));
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_fork_names_the_new_session_only_after_the_first_prompt() {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let mut c = claude();
     c.resume = Some("claude-fixture".into());
     c.fork = true;
     let (handle, mut events, task) = spawn(c);
@@ -1228,30 +1150,23 @@ async fn claude_fork_names_the_new_session_only_after_the_first_prompt() {
         |e| matches!(e, Event::Ready { session } if session == "claude-forked"),
     )
     .await;
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn codex_rejected_steer_is_reported_with_its_text() {
     let (handle, mut events, task) = spawn(config());
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
-    handle.send(Command::Prompt("hold".into())).unwrap();
-    wait_for(&mut events, |e| matches!(e, Event::Started)).await;
-    // Let Codex name the turn, so the steer goes out at once.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    handle
+        .send(Command::Prompt(scenario::HOLD_MARKED.into()))
+        .unwrap();
+    // The marker comes once Codex has named the turn, so the steer goes out.
+    wait_for(&mut events, |e| matches!(e, Event::Text(t) if t == "named")).await;
     handle.send(Command::Steer("reject".into())).unwrap();
     wait_for(&mut events, |e| {
         matches!(e, Event::Notice(t) if t.contains("Codex did not take the steer") && t.contains("reject"))
     })
     .await;
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn claude_images_too_large_together_fail_the_turn_not_the_session() {
@@ -1266,8 +1181,7 @@ async fn claude_images_too_large_together_fail_the_turn_not_the_session() {
             .unwrap();
         images.push(ImageAttachment::open(&path).unwrap());
     }
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
+    let c = claude();
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
     handle
@@ -1293,17 +1207,13 @@ async fn claude_images_too_large_together_fail_the_turn_not_the_session() {
     // The session is still usable.
     handle.send(Command::Prompt("hello".into())).unwrap();
     assert_eq!(turn_text(&mut events).await, "Hello Claude");
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn steer_while_interrupting_names_the_text_it_did_not_send() {
     let (handle, mut events, task) = spawn(config());
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
-    handle.send(Command::Prompt("hold".into())).unwrap();
+    handle.send(Command::Prompt(scenario::HOLD.into())).unwrap();
     wait_for(&mut events, |e| matches!(e, Event::Started)).await;
     handle.interrupt();
     handle.send(Command::Steer("too late".into())).unwrap();
@@ -1311,11 +1221,7 @@ async fn steer_while_interrupting_names_the_text_it_did_not_send() {
         matches!(e, Event::Notice(t) if t.contains("The turn is stopping") && t.contains("too late"))
     })
     .await;
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn a_prompt_cancelled_before_it_starts_is_not_run() {
@@ -1337,11 +1243,7 @@ async fn a_prompt_cancelled_before_it_starts_is_not_run() {
     // A later prompt is not affected.
     handle.send(Command::Prompt("hello".into())).unwrap();
     assert_eq!(turn_text(&mut events).await, "Hello fixture");
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn the_demo_also_cancels_a_prompt_that_had_not_started() {
@@ -1361,16 +1263,7 @@ async fn the_demo_also_cancels_a_prompt_that_had_not_started() {
         ),
         "{outcome:?}"
     );
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
-}
-fn claude() -> Config {
-    let mut c = config();
-    c.engine = Engine::CLAUDE;
-    c
+    stop(&handle, task).await;
 }
 /// Runs `prompt` until its first approval, answers it, and returns the
 /// turn's text.
@@ -1385,24 +1278,20 @@ async fn answer_first_approval(engine: Config, prompt: &str, allow: bool) -> Str
     };
     handle.send(Command::Answer { id, allow }).unwrap();
     let text = turn_text(&mut events).await;
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
     text
 }
 #[tokio::test]
 async fn claude_approval_allowed_passes_the_input_back() {
     assert_eq!(
-        answer_first_approval(claude(), "approval", true).await,
+        answer_first_approval(claude(), scenario::APPROVAL, true).await,
         "allow:echo fixture"
     );
 }
 #[tokio::test]
 async fn claude_approval_denied() {
     assert_eq!(
-        answer_first_approval(claude(), "approval", false).await,
+        answer_first_approval(claude(), scenario::APPROVAL, false).await,
         "deny:"
     );
 }
@@ -1411,7 +1300,7 @@ async fn claude_cancel_request_closes_the_approval() {
     let (handle, mut events, task) = spawn(claude());
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
     handle
-        .send(Command::Prompt("approval-cancel".into()))
+        .send(Command::Prompt(scenario::APPROVAL_CANCEL.into()))
         .unwrap();
     let Event::Approval { id, .. } =
         wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await
@@ -1432,17 +1321,15 @@ async fn claude_cancel_request_closes_the_approval() {
         )
     })
     .await;
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 /// Sends `approvals-9` and counts the approvals shown before the cap's notice.
 async fn approvals_before_the_cap(engine: Config) -> usize {
     let (handle, mut events, task) = spawn(engine);
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
-    handle.send(Command::Prompt("approvals-9".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::APPROVALS_9.into()))
+        .unwrap();
     let mut shown = 0;
     loop {
         match next(&mut events).await {
@@ -1452,11 +1339,7 @@ async fn approvals_before_the_cap(engine: Config) -> usize {
             _ => {}
         }
     }
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
     shown
 }
 #[tokio::test]
@@ -1470,7 +1353,9 @@ async fn an_unanswered_approval_times_out_and_is_denied() {
         engine.approval_timeout = Duration::from_millis(300);
         let (handle, mut events, task) = spawn_with_limits(engine, quick());
         wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
-        handle.send(Command::Prompt("approval".into())).unwrap();
+        handle
+            .send(Command::Prompt(scenario::APPROVAL.into()))
+            .unwrap();
         let Event::Approval { id, .. } =
             wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await
         else {
@@ -1482,18 +1367,16 @@ async fn an_unanswered_approval_times_out_and_is_denied() {
         )
         .await;
         assert_eq!(turn_text(&mut events).await, denied);
-        handle.shutdown();
-        timeout(Duration::from_secs(3), task)
-            .await
-            .unwrap()
-            .unwrap();
+        stop(&handle, task).await;
     }
 }
 #[tokio::test]
 async fn claude_result_without_is_error_is_failed_once() {
     let (handle, mut events, task) = spawn(claude());
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
-    handle.send(Command::Prompt("no-is-error".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::NO_IS_ERROR.into()))
+        .unwrap();
     let mut errors = 0;
     let outcome = loop {
         match next(&mut events).await {
@@ -1503,17 +1386,15 @@ async fn claude_result_without_is_error_is_failed_once() {
         }
     };
     assert_eq!((errors, outcome), (1, Outcome::Failed));
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn a_steer_held_for_a_cancelled_turn_is_reported() {
     let (handle, mut events, task) = spawn(config());
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
-    handle.send(Command::Prompt("late-start".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::LATE_START.into()))
+        .unwrap();
     wait_for(&mut events, |e| matches!(e, Event::Started)).await;
     // Codex has not named the turn yet, so the steer is held.
     handle.send(Command::Steer("held text".into())).unwrap();
@@ -1528,17 +1409,15 @@ async fn a_steer_held_for_a_cancelled_turn_is_reported() {
         |e| matches!(e, Event::Notice(t) if t == "This steer was not sent: held text"),
     )
     .await;
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn a_steer_held_for_a_refused_turn_is_reported() {
     let (handle, mut events, task) = spawn(config());
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
-    handle.send(Command::Prompt("refuse-start".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::REFUSE_START.into()))
+        .unwrap();
     wait_for(&mut events, |e| matches!(e, Event::Started)).await;
     handle.send(Command::Steer("held text".into())).unwrap();
     let mut reported = false;
@@ -1551,17 +1430,15 @@ async fn a_steer_held_for_a_refused_turn_is_reported() {
     };
     assert_eq!(outcome, Outcome::Failed);
     assert!(reported, "the held steer was dropped silently");
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn held_steers_are_bounded() {
     let (handle, mut events, task) = spawn(config());
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
-    handle.send(Command::Prompt("late-start".into())).unwrap();
+    handle
+        .send(Command::Prompt(scenario::LATE_START.into()))
+        .unwrap();
     wait_for(&mut events, |e| matches!(e, Event::Started)).await;
     for n in 1..=9 {
         handle.send(Command::Steer(format!("steer {n}"))).unwrap();
@@ -1571,11 +1448,7 @@ async fn held_steers_are_bounded() {
         |e| matches!(e, Event::Notice(t) if t == "This steer was not sent: steer 1"),
     )
     .await;
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }
 #[tokio::test]
 async fn a_prompt_sent_during_the_demo_dialog_is_refused_and_counted() {
@@ -1608,9 +1481,5 @@ async fn a_prompt_sent_during_the_demo_dialog_is_refused_and_counted() {
         ),
         "{outcome:?}"
     );
-    handle.shutdown();
-    timeout(Duration::from_secs(3), task)
-        .await
-        .unwrap()
-        .unwrap();
+    stop(&handle, task).await;
 }

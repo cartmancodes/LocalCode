@@ -1,7 +1,7 @@
 //! The JSON-line transport against a scripted child: framing, limits,
 //! back-pressure, stderr capture and process-group shutdown.
 use octet_proc::{Process, ProcessConfig, ProcessError, ShutdownStage};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
 use tokio::time::timeout;
 
@@ -9,6 +9,12 @@ fn child_binary() -> PathBuf {
     octet_testkit::protocol_child()
 }
 
+/// The next frame, failing the test if none comes within two seconds.
+async fn next_within(process: &mut Process) -> Result<Option<Value>, ProcessError> {
+    timeout(Duration::from_secs(2), process.next_frame())
+        .await
+        .expect("no frame within two seconds")
+}
 fn config(mode: &str) -> ProcessConfig {
     ProcessConfig {
         executable: child_binary(),
@@ -35,13 +41,7 @@ async fn echo_round_trip_and_clean_eof() {
         Some(json!({"op":"echo","value":"hello"}))
     );
     sender.send(&json!({"op":"exit"})).await.unwrap();
-    assert_eq!(
-        timeout(Duration::from_secs(2), process.next_frame())
-            .await
-            .unwrap()
-            .unwrap(),
-        None
-    );
+    assert_eq!(next_within(&mut process).await.unwrap(), None);
     let report = process.shutdown().await;
     assert!(report.reaped);
 }
@@ -64,10 +64,7 @@ async fn shutdown_closes_stdin_and_reaps_cooperative_child() {
 async fn split_json_line_reassembles_before_parsing() {
     let mut process = Process::spawn(&config("split")).unwrap();
     assert_eq!(
-        timeout(Duration::from_secs(2), process.next_frame())
-            .await
-            .unwrap()
-            .unwrap(),
+        next_within(&mut process).await.unwrap(),
         Some(json!({"part":"complete"}))
     );
     assert!(process.shutdown().await.reaped);
@@ -78,10 +75,7 @@ async fn oversized_line_fails_with_explicit_limit() {
     let mut cfg = config("oversize");
     cfg.max_frame_bytes = 64;
     let mut process = Process::spawn(&cfg).unwrap();
-    let error = timeout(Duration::from_secs(2), process.next_frame())
-        .await
-        .unwrap()
-        .unwrap_err();
+    let error = next_within(&mut process).await.unwrap_err();
     assert!(matches!(error, ProcessError::FrameTooLarge { limit: 64 }));
     assert!(process.shutdown().await.reaped);
 }
@@ -95,9 +89,8 @@ async fn frame_at_the_limit_passes_and_one_more_byte_fails() {
     at_limit.max_frame_bytes = OVERSIZE_FRAME;
     at_limit.queue_bytes = 2 * OVERSIZE_FRAME;
     let mut process = Process::spawn(&at_limit).unwrap();
-    let frame = timeout(Duration::from_secs(2), process.next_frame())
+    let frame = next_within(&mut process)
         .await
-        .unwrap()
         .unwrap()
         .expect("a frame exactly at the limit arrives");
     assert_eq!(frame["x"].as_str().map(str::len), Some(8192));
@@ -107,10 +100,7 @@ async fn frame_at_the_limit_passes_and_one_more_byte_fails() {
     over.max_frame_bytes = OVERSIZE_FRAME - 1;
     over.queue_bytes = 2 * OVERSIZE_FRAME;
     let mut process = Process::spawn(&over).unwrap();
-    let error = timeout(Duration::from_secs(2), process.next_frame())
-        .await
-        .unwrap()
-        .unwrap_err();
+    let error = next_within(&mut process).await.unwrap_err();
     assert!(matches!(error, ProcessError::FrameTooLarge { limit } if limit == OVERSIZE_FRAME - 1));
     assert!(process.shutdown().await.reaped);
 }
@@ -118,10 +108,7 @@ async fn frame_at_the_limit_passes_and_one_more_byte_fails() {
 #[tokio::test]
 async fn malformed_json_is_reported() {
     let mut process = Process::spawn(&config("malformed")).unwrap();
-    let error = timeout(Duration::from_secs(2), process.next_frame())
-        .await
-        .unwrap()
-        .unwrap_err();
+    let error = next_within(&mut process).await.unwrap_err();
     assert!(matches!(error, ProcessError::InvalidJson(_)));
     assert_eq!(process.next_frame().await.unwrap(), None);
     assert!(process.shutdown().await.reaped);
@@ -130,10 +117,7 @@ async fn malformed_json_is_reported() {
 #[tokio::test]
 async fn partial_frame_at_eof_is_an_error() {
     let mut process = Process::spawn(&config("partial")).unwrap();
-    let error = timeout(Duration::from_secs(2), process.next_frame())
-        .await
-        .unwrap()
-        .unwrap_err();
+    let error = next_within(&mut process).await.unwrap_err();
     assert!(
         matches!(error, ProcessError::Io(ref io_error) if io_error.kind() == std::io::ErrorKind::UnexpectedEof)
     );
@@ -146,10 +130,7 @@ async fn stderr_flood_is_drained_and_tail_is_bounded() {
     cfg.stderr_bytes = 80;
     let mut process = Process::spawn(&cfg).unwrap();
     assert_eq!(
-        timeout(Duration::from_secs(2), process.next_frame())
-            .await
-            .unwrap()
-            .unwrap(),
+        next_within(&mut process).await.unwrap(),
         Some(json!({"ready":true}))
     );
     let report = process.shutdown().await;
@@ -219,16 +200,9 @@ async fn shutdown_reaps_child_while_stdout_queue_is_full() {
 #[tokio::test]
 async fn shutdown_kills_grandchild_after_leader_exits() {
     let mut process = Process::spawn(&config("grandchild")).unwrap();
-    let frame = timeout(Duration::from_secs(2), process.next_frame())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    let frame = next_within(&mut process).await.unwrap().unwrap();
     let pid = i32::try_from(frame["pid"].as_i64().unwrap()).unwrap();
-    let _ = timeout(Duration::from_secs(2), process.next_frame())
-        .await
-        .unwrap()
-        .unwrap();
+    let _ = next_within(&mut process).await.unwrap();
     let report = timeout(Duration::from_secs(2), process.shutdown())
         .await
         .unwrap();
@@ -307,10 +281,7 @@ async fn transport_roundtrip_benchmark() {
         let start = std::time::Instant::now();
         sender.send(&value).await.unwrap();
         assert_eq!(
-            timeout(Duration::from_secs(2), process.next_frame())
-                .await
-                .unwrap()
-                .unwrap(),
+            next_within(&mut process).await.unwrap(),
             Some(value.clone())
         );
         samples.push(start.elapsed().as_micros());
@@ -329,13 +300,7 @@ async fn stderr_of_a_child_that_exits_at_once_is_complete() {
         let mut cfg = config("stderr-exit");
         cfg.stderr_bytes = 64;
         let mut process = Process::spawn(&cfg).unwrap();
-        assert_eq!(
-            timeout(Duration::from_secs(2), process.next_frame())
-                .await
-                .unwrap()
-                .unwrap(),
-            None
-        );
+        assert_eq!(next_within(&mut process).await.unwrap(), None);
         let report = process.shutdown().await;
         assert!(
             report.stderr_tail.ends_with(b"FINAL-REASON\n"),

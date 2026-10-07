@@ -689,4 +689,27 @@ mod tests {
         assert!(raw.contains("readOnly"), "{raw}");
         assert_eq!(codex_reported(&json!({"thread":{}})), None);
     }
+    #[test]
+    fn stray_request_replies_use_production_wording() {
+        let unknown = json!({"id":7,"method":"item/tool/requestUserInput","params":{}});
+        let reply = codex_stray_reply(&unknown).unwrap();
+        assert!(!reply.to_string().contains("fixture"), "{reply}");
+        assert_eq!(reply["error"]["code"], -32601);
+        let approval = json!({"id":8,"method":"item/commandExecution/requestApproval","params":{}});
+        assert_eq!(
+            codex_stray_reply(&approval).unwrap()["result"]["decision"],
+            "decline"
+        );
+    }
+    #[test]
+    fn error_text_keeps_structured_kinds_and_names_missing_errors() {
+        assert_eq!(
+            error_text(&json!({"message":"bad","codexErrorInfo":{"httpStatus":429}})),
+            "bad ({\"httpStatus\":429})"
+        );
+        assert_eq!(
+            error_text(&Value::Null),
+            "The vendor reported an error without details"
+        );
+    }
 }
