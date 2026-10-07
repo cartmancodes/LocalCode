@@ -22,8 +22,13 @@ pub use image::{
 };
 pub use mode::Mode;
 
-/// The longest prompt, in bytes, Octet sends to a vendor.
+/// The longest prompt, in bytes, a user may type (or a command may send as
+/// its displayed text).
 pub const PROMPT_LIMIT: usize = 64 * 1024;
+/// The most a prompt sends the vendor, wire text and all: room for the typed
+/// text, its `!` attachments and a provider handoff's transcript, while still
+/// bounding memory.
+pub const WIRE_LIMIT: usize = 4 * PROMPT_LIMIT;
 const EVENT_CAPACITY: usize = 128;
 const EVENT_BYTES: usize = 32 * 1024;
 
@@ -485,15 +490,24 @@ impl Command {
             _ => None,
         }
     }
-    /// The longest text a prompt command carries; 0 for other commands.
+    /// The typed text a prompt command carries, bounded by
+    /// [`PROMPT_LIMIT`]; 0 for other commands.
     fn prompt_bytes(&self) -> usize {
         match self {
             Command::Prompt(text) | Command::Steer(text) => text.len(),
-            Command::PromptWithDisplay { wire, display, .. } => wire.len().max(display.len()),
+            Command::PromptWithDisplay { display, .. } => display.len(),
             Command::Answer { .. }
             | Command::SetMode(_)
             | Command::SetEffort(_)
             | Command::Compact => 0,
+        }
+    }
+    /// What a prompt command sends the vendor, bounded by [`WIRE_LIMIT`]:
+    /// the wire text when it differs from the display.
+    fn wire_bytes(&self) -> usize {
+        match self {
+            Command::PromptWithDisplay { wire, .. } => wire.len(),
+            other => other.prompt_bytes(),
         }
     }
 }
@@ -550,7 +564,7 @@ impl Handle {
     /// full or the session has stopped.
     pub fn send(&self, command: Command) -> Result<(), SendError> {
         use std::sync::atomic::Ordering;
-        if command.prompt_bytes() > PROMPT_LIMIT {
+        if command.prompt_bytes() > PROMPT_LIMIT || command.wire_bytes() > WIRE_LIMIT {
             return Err(SendError::PromptTooLong);
         }
         // Reserve the slot first: a turn is counted only once nothing can
@@ -750,6 +764,49 @@ mod tests {
         }
         assert!(text.len() < TEXT_LIMIT + 200, "{}", text.len());
         assert!(text.ends_with("[Octet shows at most 2 MiB of one reply; the rest is cut]"));
+    }
+    fn test_handle(capacity: usize) -> (Handle, mpsc::Receiver<Command>) {
+        let (commands, rx) = mpsc::channel(capacity);
+        let (interrupt, _cancel) = watch::channel(0);
+        let (stop, _stopping) = watch::channel(false);
+        let handle = Handle {
+            commands,
+            interrupt,
+            stop,
+            turns: std::sync::Arc::default(),
+        };
+        (handle, rx)
+    }
+    #[test]
+    fn a_long_wire_with_a_short_display_is_accepted() {
+        let (handle, _rx) = test_handle(4);
+        let sent = handle.send(Command::PromptWithDisplay {
+            wire: "x".repeat(100 * 1024),
+            display: "short".into(),
+            images: Vec::new(),
+        });
+        assert_eq!(sent, Ok(()));
+    }
+    #[test]
+    fn a_long_display_or_wire_is_refused() {
+        let (handle, _rx) = test_handle(4);
+        let with = |wire: usize, display: usize| Command::PromptWithDisplay {
+            wire: "x".repeat(wire),
+            display: "y".repeat(display),
+            images: Vec::new(),
+        };
+        assert_eq!(
+            handle.send(with(10, PROMPT_LIMIT + 1)),
+            Err(SendError::PromptTooLong)
+        );
+        assert_eq!(
+            handle.send(with(WIRE_LIMIT + 1, 10)),
+            Err(SendError::PromptTooLong)
+        );
+        assert_eq!(
+            handle.send(Command::Prompt("z".repeat(PROMPT_LIMIT + 1))),
+            Err(SendError::PromptTooLong)
+        );
     }
     #[test]
     fn send_counts_a_turn_only_when_queued() {

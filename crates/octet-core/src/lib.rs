@@ -4,7 +4,7 @@
 pub use octet_engine::live::{
     APPROVAL_DEMO, Command, Config, DEFAULT_APPROVAL_TIMEOUT, Engine, Event, Handle, IMAGE_LIMIT,
     IMAGES_PER_PROMPT, ImageAttachment, ImageError, Mode, Outcome, PROMPT_LIMIT, SendError,
-    check_inline, encoded_len, valid_effort,
+    WIRE_LIMIT, check_inline, encoded_len, valid_effort,
 };
 use octet_store::Journal;
 use serde_json::{Value, json};
