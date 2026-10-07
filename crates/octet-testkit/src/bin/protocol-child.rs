@@ -107,6 +107,9 @@ fn main() {
 fn interactive_codex() {
     let mut turn = 0u64;
     let mut active = String::new();
+    // "die-on-interrupt" holds its turn and exits when asked to stop it, as
+    // a vendor that ignores the interrupt is eventually stopped.
+    let mut dies_on_interrupt = false;
     let mut thread_params = Value::Null;
     for line in io::stdin().lock().lines() {
         let v: Value = serde_json::from_str(&line.unwrap()).unwrap();
@@ -189,6 +192,10 @@ fn interactive_codex() {
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 if text == "hold" || text.starts_with("Octet active goal: fixture-hold\n") {
+                    continue;
+                }
+                if text == "die-on-interrupt" {
+                    dies_on_interrupt = true;
                     continue;
                 }
                 if text == "approval" {
@@ -303,6 +310,9 @@ fn interactive_codex() {
                 }
             }
             Some("turn/interrupt") => {
+                if dies_on_interrupt {
+                    std::process::exit(3);
+                }
                 emit(
                     &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"interrupted"}}}),
                 );

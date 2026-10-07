@@ -13,10 +13,13 @@ use tokio::{
 const LINE_LIMIT: usize = 4 * octet_core::PROMPT_LIMIT;
 /// Exit code after SIGINT, as shells report it.
 const INTERRUPTED: i32 = 130;
+/// Exit code after SIGTERM, as shells report it.
+const TERMINATED: i32 = 143;
 
 /// Runs `prompt` as one turn. Text mode writes the reply to stdout; JSON
 /// mode writes every event as a line. Notices and errors go to stderr.
-/// Exits 0 when the turn completes, 130 when interrupted, 1 otherwise.
+/// Exits 0 when the turn completes, 130 when interrupted (even if the vendor
+/// then stops), 143 on SIGTERM, 1 otherwise.
 pub(crate) async fn print(
     config: Config,
     directory: PathBuf,
@@ -24,6 +27,7 @@ pub(crate) async fn print(
     json: bool,
 ) -> Result<i32, String> {
     let mut interrupts = signal(SignalKind::interrupt()).map_err(|e| e.to_string())?;
+    let mut terminations = signal(SignalKind::terminate()).map_err(|e| e.to_string())?;
     let mut session = Session::open(config, directory)
         .await
         .map_err(|e| e.to_string())?;
@@ -42,8 +46,12 @@ pub(crate) async fn print(
                 }
                 break INTERRUPTED;
             }
+            _ = terminations.recv() => break TERMINATED,
         };
-        let Some(event) = event else { break 1 };
+        // After ^C, a session that ends without finishing the turn (a vendor
+        // that ignored the interrupt) still exits as interrupted.
+        let stopped = if interrupted { INTERRUPTED } else { 1 };
+        let Some(event) = event else { break stopped };
         if json {
             write_line(&event_json(&event)).await?;
         }
@@ -75,7 +83,7 @@ pub(crate) async fn print(
                     Outcome::Failed | Outcome::Other(_) => 1,
                 };
             }
-            Event::Stopped => break 1,
+            Event::Stopped => break stopped,
             _ => {}
         }
     };
@@ -96,6 +104,8 @@ pub(crate) async fn rpc(config: Config, directory: PathBuf) -> Result<i32, Strin
     let mut session = Session::open(config, directory)
         .await
         .map_err(|e| e.to_string())?;
+    let mut interrupts = signal(SignalKind::interrupt()).map_err(|e| e.to_string())?;
+    let mut terminations = signal(SignalKind::terminate()).map_err(|e| e.to_string())?;
     let mut requests = read_lines(BufReader::new(tokio::io::stdin()));
     let mut state = RpcState::default();
     let code = loop {
@@ -103,6 +113,10 @@ pub(crate) async fn rpc(config: Config, directory: PathBuf) -> Result<i32, Strin
             break i32::from(state.failed);
         }
         tokio::select! {
+            // A signal stops the session cleanly: the vendor is stopped and
+            // the journal finished before exit.
+            _ = interrupts.recv() => break INTERRUPTED,
+            _ = terminations.recv() => break TERMINATED,
             line = requests.recv(), if !state.input_closed => {
                 let Some(line) = line else {
                     state.input_closed = true;
@@ -201,14 +215,30 @@ async fn send_or_report(session: &Session, command: Command) -> Result<bool, Str
 
 /// The prompt for `--print -`: all of stdin, less one trailing newline.
 pub(crate) async fn read_prompt() -> Result<String, String> {
-    let mut text = String::new();
+    let mut bytes = Vec::new();
+    // Read past the limit, so a longer prompt is reported as one rather
+    // than cut, possibly inside a character.
     tokio::io::stdin()
-        .take(octet_core::PROMPT_LIMIT as u64 + 2)
-        .read_to_string(&mut text)
+        .take(octet_core::PROMPT_LIMIT as u64 + 3)
+        .read_to_end(&mut bytes)
         .await
         .map_err(|e| format!("Cannot read the prompt from stdin: {e}"))?;
-    let text = text.strip_suffix('\n').unwrap_or(&text);
-    Ok(text.strip_suffix('\r').unwrap_or(text).to_owned())
+    prompt_text(bytes)
+}
+
+/// The prompt in `bytes`, less one line ending, checked against the limit
+/// before UTF-8.
+fn prompt_text(mut bytes: Vec<u8>) -> Result<String, String> {
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    }
+    if bytes.len() > octet_core::PROMPT_LIMIT {
+        return Err("The prompt is over 64 KiB".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "The prompt is not UTF-8 text".into())
 }
 
 /// One RPC command.

@@ -256,3 +256,89 @@ fn rpc_denies_approvals_once_stdin_closes() {
         "{stdout}"
     );
 }
+
+/// Starts `octet args` with its JSON event lines on a channel.
+fn with_lines(args: &[&str]) -> (Child, mpsc::Receiver<String>, octet_testkit::TempDir) {
+    let (mut child, temp) = octet(args);
+    let stdout = child.stdout.take().unwrap();
+    let (tx, lines) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if tx.send(line.unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+    (child, lines, temp)
+}
+
+/// Waits for a line containing `wanted`.
+fn wait_line(lines: &mpsc::Receiver<String>, wanted: &str) {
+    loop {
+        let line = lines.recv_timeout(LIMIT).expect("the line never came");
+        if line.contains(wanted) {
+            return;
+        }
+    }
+}
+
+/// Sends `signal` to `child` and returns its exit code.
+fn signal_and_wait(mut child: Child, signal: libc::c_int) -> Option<i32> {
+    let pid = libc::pid_t::try_from(child.id()).unwrap();
+    // SAFETY: kill only sends a signal to our own child process.
+    assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || tx.send(child.wait().unwrap()));
+    rx.recv_timeout(LIMIT).unwrap().code()
+}
+
+#[test]
+fn print_exits_130_when_the_vendor_stops_after_ctrl_c() {
+    let (mut child, lines, _temp) =
+        with_lines(&["--print", "die-on-interrupt", "--output", "json"]);
+    drop(child.stdin.take());
+    wait_line(&lines, r#""type":"started""#);
+    assert_eq!(signal_and_wait(child, libc::SIGINT), Some(130));
+}
+
+#[test]
+fn print_reports_a_prompt_over_the_limit_from_stdin() {
+    // Two-byte characters, so the cut at the limit falls inside one.
+    let long = "é".repeat(40_000);
+    let (code, _, stderr) = run(&["-p", "-"], &long);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("The prompt is over 64 KiB"), "{stderr}");
+}
+
+#[test]
+fn print_stops_cleanly_on_sigterm() {
+    let (mut child, lines, temp) = with_lines(&["--print", "hold", "--output", "json"]);
+    drop(child.stdin.take());
+    wait_line(&lines, r#""type":"started""#);
+    assert_eq!(signal_and_wait(child, libc::SIGTERM), Some(143));
+    assert!(last_journal_record(temp.path()).contains(r#""type":"stopped""#));
+}
+
+#[test]
+fn rpc_stops_cleanly_on_sigint_and_sigterm() {
+    for (signal, code) in [(libc::SIGINT, 130), (libc::SIGTERM, 143)] {
+        let (mut child, lines, temp) = with_lines(&["--rpc"]);
+        // Held open: `wait` would close stdin, and the end of input also
+        // ends RPC.
+        let _stdin = child.stdin.take();
+        wait_line(&lines, r#""type":"ready""#);
+        assert_eq!(signal_and_wait(child, signal), Some(code), "{signal}");
+        assert!(last_journal_record(temp.path()).contains(r#""type":"stopped""#));
+    }
+}
+
+/// The last line of the only journal in `directory`.
+fn last_journal_record(directory: &std::path::Path) -> String {
+    let journal = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|e| e == "jsonl"))
+        .unwrap();
+    let text = std::fs::read_to_string(journal).unwrap();
+    text.lines().last().unwrap_or_default().to_owned()
+}
