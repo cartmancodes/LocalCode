@@ -376,7 +376,20 @@ fn image_command(app: &mut App, argument: &str) {
     }
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let path = image_path(&app.composer.root, home.as_deref(), argument);
-    match octet_core::ImageAttachment::open(&path) {
+    let provider = app.conn.engine.provider();
+    let opened = octet_core::ImageAttachment::open(&path).and_then(|image| {
+        if provider.inline_images {
+            let sizes = app
+                .composer
+                .images
+                .iter()
+                .chain([&image])
+                .map(|i| (i.name.as_str(), octet_core::encoded_len(i.bytes)));
+            octet_core::check_inline(provider.title, sizes)?;
+        }
+        Ok(image)
+    });
+    match opened {
         Ok(image) => {
             app.notice(format!("Attached {} to the next prompt", image.name));
             app.composer.images.push(image);
@@ -386,12 +399,22 @@ fn image_command(app: &mut App, argument: &str) {
 }
 
 /// Where `/image` looks: `~/` is the home directory, and a relative path is
-/// in the workspace.
+/// in the workspace. A path dragged into the terminal arrives quoted or with
+/// backslash escapes; both are undone.
 pub(crate) fn image_path(
     root: &std::path::Path,
     home: Option<&std::path::Path>,
     argument: &str,
 ) -> std::path::PathBuf {
+    let quoted = ['\'', '"'].into_iter().find_map(|quote| {
+        argument
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+    });
+    let argument = match quoted {
+        Some(inner) => inner.to_owned(),
+        None => unescape(argument),
+    };
     match (argument.strip_prefix("~/"), home) {
         (Some(rest), Some(home)) => home.join(rest),
         _ => root.join(argument),
@@ -499,6 +522,20 @@ fn age(now: std::time::SystemTime, then: std::time::SystemTime) -> String {
         3_600..86_400 => format!("{} h ago", seconds / 3_600),
         _ => format!("{} d ago", seconds / 86_400),
     }
+}
+
+/// `text` with each backslash escape replaced by the character it escapes.
+fn unescape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        out.push(if c == '\\' {
+            chars.next().unwrap_or(c)
+        } else {
+            c
+        });
+    }
+    out
 }
 
 /// `/queue`: list the prompts waiting for the running turn, or clear them.

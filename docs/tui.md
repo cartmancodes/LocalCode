@@ -52,7 +52,8 @@ octet --rpc                                              # JSON-line commands on
   The exit code is 0 when the turn completes, 1 when it fails, and 130 after
   Ctrl+C (SIGINT), which cancels the turn first.
 - **`--output json`** writes every event as one JSON line in the journal's
-  shape, `{"type": …, "data": …}`, ending with `{"type":"finished",…}`.
+  shape, `{"type": …, "data": …}`. A turn that runs ends with
+  `{"type":"finished",…}`; a session that stops ends with `stopped`.
 - **Approvals in print mode are denied**, with a note on stderr. For
   unattended runs choose the policy up front with `--mode auto` (the
   vendor's reviewer decides) or `--mode full-access`.
@@ -63,7 +64,11 @@ octet --rpc                                              # JSON-line commands on
   `null` for the vendor default) and `{"type":"quit"}`. An approval arrives
   as an `approval` event with its `id`; unanswered, it is denied when the
   approval window ends. A command that cannot be read gets an `error` line.
-  RPC exits 0 on `quit` or the end of stdin, and 1 if the vendor stops.
+  Commands sent before the `ready` event, and prompts sent while a turn
+  runs, wait their turn in order (up to 64), so a script can be piped in.
+  At the end of stdin Octet finishes the waiting work, denying any approval
+  it can no longer ask about, then exits 0, or 1 if a turn failed. `quit`
+  exits 0 at once; RPC exits 1 if the vendor stops.
 
 Every headless run is journaled like an interactive one.
 
@@ -180,7 +185,9 @@ level carries across `/model`, `/new` and `/reconnect`.
 leaves the original as it was (Codex `thread/fork`, Claude
 `--resume ID --fork-session`). The transcript stays on screen, a notice names
 the session it came from, and the new session's ID replaces the old one. It
-needs an idle session that the vendor has already named.
+needs an idle session that the vendor has already named. Claude names the
+fork with its first turn; a reconnect before then (for example `/effort`)
+forks again, so the original is never written to.
 
 **Compaction.** `/compact` asks the vendor to compact its context (Codex
 `thread/compact/start`, Claude's own `/compact`). It runs as a turn: its
@@ -189,10 +196,13 @@ output streams as usual and Esc cancels it.
 **Images.** `/image PATH` attaches an image to the next prompt; the prompt
 box title shows `+ image name.png` (or `+N images`). PNG, JPEG, GIF and WebP
 are accepted, by extension, up to 5 MiB each and 4 per prompt. A relative
-path is in the workspace, and `~/` is your home folder. Codex receives the
-file's path and reads it itself. Claude receives the bytes, read when the
-prompt is sent; if the file has gone or grown past 5 MiB by then, the turn
-fails with a message. The transcript and journal show `[+ image name.png]`,
+path is in the workspace, `~/` is your home folder, and a path dragged in
+from Finder (quoted, or with `\ ` escapes) works as typed. Codex receives
+the file's path and reads it itself. Claude receives the bytes inside the
+prompt, which limits each image to 3.75 MiB and a prompt's images to
+5.25 MiB together; `/image` refuses more. The bytes are read when the prompt
+is sent; if a file has gone or grown past the limits by then, the turn fails
+with a message and the session carries on. The transcript and journal show `[+ image name.png]`,
 never the image. Esc on an empty prompt drops attached images and `!` output.
 
 ## Permission modes

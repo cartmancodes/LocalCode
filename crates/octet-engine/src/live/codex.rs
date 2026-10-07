@@ -9,7 +9,10 @@ use super::{
     Mode, ModelInfo, Outcome, Provider, EVENT_BYTES,
 };
 use serde_json::{json, Value};
-use std::{collections::HashSet, ffi::OsString};
+use std::{
+    collections::{HashMap, HashSet},
+    ffi::OsString,
+};
 
 /// Codex's row in the provider table.
 pub(super) const PROVIDER: Provider = Provider {
@@ -24,6 +27,7 @@ pub(super) const PROVIDER: Provider = Provider {
         "No sandbox; never asks (danger-full-access)",
     ],
     steer: true,
+    inline_images: false,
     effort_live: true,
     start,
 };
@@ -49,6 +53,9 @@ pub(super) struct CodexProtocol {
     catalog_cursors: HashSet<String>,
     /// Steering sent before Codex named the turn; sent once it does.
     pending_steer: Vec<String>,
+    /// Steering requests awaiting Codex's reply, by request ID, so a refusal
+    /// is reported with the text that was lost.
+    steer_requests: HashMap<u64, String>,
 }
 
 impl Protocol for CodexProtocol {
@@ -77,6 +84,7 @@ impl Protocol for CodexProtocol {
         self.turn = None;
         self.text_items.clear();
         self.pending_steer.clear();
+        self.steer_requests.clear();
     }
 
     /// Steers the turn, or holds the text until Codex names the turn.
@@ -253,8 +261,9 @@ impl Protocol for CodexProtocol {
 }
 
 impl CodexProtocol {
-    async fn send_steer(&self, core: &mut Core, text: &str) -> Result<(), DriverError> {
+    async fn send_steer(&mut self, core: &mut Core, text: &str) -> Result<(), DriverError> {
         core.request_id += 1;
+        self.steer_requests.insert(core.request_id, text.to_owned());
         let params = json!({
             "threadId": core.session,
             "expectedTurnId": self.turn,
@@ -356,6 +365,17 @@ impl CodexProtocol {
                 })?;
             }
             Ok(())
+        } else if let Some(text) = v["id"]
+            .as_u64()
+            .and_then(|id| self.steer_requests.remove(&id))
+        {
+            match v.get("error") {
+                Some(error) => core.emit(Event::Notice(format!(
+                    "Codex did not take the steer ({}). Not sent: {text}",
+                    error_text(error)
+                ))),
+                None => Ok(()),
+            }
         } else if self.interrupt_request.is_some() && v["id"].as_u64() == self.interrupt_request {
             self.interrupt_request = None;
             if v.get("error").is_some() {

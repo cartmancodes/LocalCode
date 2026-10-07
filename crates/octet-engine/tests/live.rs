@@ -1208,3 +1208,94 @@ async fn an_image_gone_at_send_time_fails_the_turn() {
         .unwrap()
         .unwrap();
 }
+#[tokio::test]
+async fn claude_fork_names_the_new_session_only_after_the_first_prompt() {
+    let mut c = config();
+    c.engine = Engine::CLAUDE;
+    c.resume = Some("claude-fixture".into());
+    c.fork = true;
+    let (handle, mut events, task) = spawn(c);
+    // Until Claude names the fork, there is no session to resume: reporting
+    // the original would send the next reconnect back into it.
+    let ready = wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    assert!(
+        matches!(ready, Event::Ready { ref session } if session.is_empty()),
+        "{ready:?}"
+    );
+    handle.send(Command::Prompt("hello".into())).unwrap();
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::Ready { session } if session == "claude-forked"),
+    )
+    .await;
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn codex_rejected_steer_is_reported_with_its_text() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("hold".into())).unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::Started)).await;
+    // Let Codex name the turn, so the steer goes out at once.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    handle.send(Command::Steer("reject".into())).unwrap();
+    wait_for(&mut events, |e| {
+        matches!(e, Event::Notice(t) if t.contains("Codex did not take the steer") && t.contains("reject"))
+    })
+    .await;
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn claude_images_too_large_together_fail_the_turn_not_the_session() {
+    let dir = octet_testkit::TempDir::new("octet-image-big");
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let mut images = Vec::new();
+    for name in ["a.png", "b.png"] {
+        let path = dir.path().join(name);
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(3 * 1024 * 1024)
+            .unwrap();
+        images.push(ImageAttachment::open(&path).unwrap());
+    }
+    let mut c = config();
+    c.engine = Engine::CLAUDE;
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle
+        .send(Command::PromptWithDisplay {
+            wire: "look".into(),
+            display: "look".into(),
+            images,
+        })
+        .unwrap();
+    let mut error = String::new();
+    loop {
+        match next(&mut events).await {
+            Event::Error(text) => error = text,
+            Event::Finished { outcome } => {
+                assert_eq!(outcome, Outcome::Failed);
+                break;
+            }
+            Event::Stopped => panic!("the session stopped: {error}"),
+            _ => {}
+        }
+    }
+    assert!(error.contains("together"), "{error}");
+    // The session is still usable.
+    handle.send(Command::Prompt("hello".into())).unwrap();
+    assert_eq!(turn_text(&mut events).await, "Hello Claude");
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}

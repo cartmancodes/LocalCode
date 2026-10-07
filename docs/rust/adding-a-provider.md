@@ -31,6 +31,7 @@ pub(super) const PROVIDER: Provider = Provider {
         "…ask…", "…accept-edits…", "…auto…", "…full-access…",
     ],
     steer: false,                   // true if a running turn takes more input
+    inline_images: false,           // true if images go in the prompt as base64
     effort_live: false,             // true if effort is sent per turn, not at launch
     start,
 };

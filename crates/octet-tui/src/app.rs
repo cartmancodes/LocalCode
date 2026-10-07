@@ -528,6 +528,14 @@ impl App {
                 self.conn.mode_pending = None;
                 self.conn.phase = ConnPhase::Stopped;
                 self.overlay.approvals.clear();
+                // Nothing would send them, and after a reconnect they would
+                // follow newer prompts.
+                let dropped = std::mem::take(&mut self.composer.queue).len();
+                if dropped > 0 {
+                    self.notice(format!(
+                        "Dropped {dropped} queued prompts: the session stopped"
+                    ));
+                }
                 self.conn.status = "disconnected".into();
             }
         }

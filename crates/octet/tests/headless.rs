@@ -219,3 +219,40 @@ fn print_sigint_interrupts_the_turn_and_exits_130() {
     std::thread::spawn(move || tx.send(child.wait().unwrap()));
     assert_eq!(rx.recv_timeout(LIMIT).unwrap().code(), Some(130));
 }
+
+#[test]
+fn rpc_runs_a_piped_script_to_the_end() {
+    let input = concat!(
+        r#"{"type":"prompt","text":"hello"}"#,
+        "\n",
+        r#"{"type":"prompt","text":"hello"}"#,
+        "\n"
+    );
+    let (code, stdout, stderr) = run(&["--rpc"], input);
+    assert_eq!(code, 0, "{stderr}");
+    let finished = stdout
+        .lines()
+        .filter(|line| line.contains(r#""type":"finished""#))
+        .count();
+    assert_eq!(finished, 2, "{stdout}");
+}
+
+#[test]
+fn rpc_exits_one_when_a_piped_turn_fails() {
+    let (code, stdout, _) = run(&["--rpc"], "{\"type\":\"prompt\",\"text\":\"fail\"}\n");
+    assert_eq!(code, 1, "{stdout}");
+    assert!(
+        stdout.contains(r#"{"data":"failed","type":"finished"}"#),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn rpc_denies_approvals_once_stdin_closes() {
+    let (code, stdout, _) = run(&["--rpc"], "{\"type\":\"prompt\",\"text\":\"approval\"}\n");
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains(r#"{"data":"decline","type":"text"}"#),
+        "{stdout}"
+    );
+}

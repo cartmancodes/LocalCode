@@ -61,7 +61,9 @@ impl Selection {
             mode: current.mode,
             approval_timeout: current.approval_timeout,
             effort: current.effort.clone(),
-            fork: false,
+            // A fork the vendor has not named yet stays a fork; resuming
+            // the original instead would write into it.
+            fork: same && session.is_empty() && current.fork,
             engine: self.provider,
             model: self.model.clone(),
             cwd: current.cwd.clone(),
@@ -143,6 +145,25 @@ pub fn catalog_hint(vendors: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn configure_keeps_a_fork_the_vendor_has_not_named() {
+        let mut current = Config::new(Engine::CLAUDE, "claude", "/tmp");
+        current.resume = Some("original".into());
+        current.fork = true;
+        let selection = Selection {
+            provider: Engine::CLAUDE,
+            model: Some("opus".into()),
+        };
+        let next = selection.configure(&current, "", None);
+        assert_eq!(next.resume.as_deref(), Some("original"));
+        assert!(
+            next.fork,
+            "the fork must not turn into a resume of the original"
+        );
+        let named = selection.configure(&current, "forked", None);
+        assert_eq!(named.resume.as_deref(), Some("forked"));
+        assert!(!named.fork);
+    }
     #[test]
     fn usage_text_names_every_vendor() {
         let three = ["codex", "claude", "gemini"];

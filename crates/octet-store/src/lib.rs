@@ -103,9 +103,9 @@ pub struct JournalSummary {
 /// it is not a journal: a name other than `session-<nanos>-<pid>.jsonl`, or
 /// a first record that is not a session header.
 ///
-/// Reading stops at the first line that does not parse (a torn tail), at
-/// 64 KiB, or once both the session ID and the first prompt are known.
-/// Claude names its session only after the first prompt, so both are read.
+/// Reading stops at the first line that does not parse (a torn tail), or at
+/// 64 KiB. The session is the last one named in that window: Claude names a
+/// new or forked session only with its first turn.
 pub async fn read_summary(path: &Path) -> Option<JournalSummary> {
     use tokio::io::AsyncReadExt;
     let nanos: u64 = path
@@ -152,9 +152,6 @@ pub async fn read_summary(path: &Path) -> Option<JournalSummary> {
                 summary.first_prompt = Some(text.to_owned());
             }
             _ => {}
-        }
-        if !summary.session.is_empty() && summary.first_prompt.is_some() {
-            break;
         }
     }
     Some(summary)
@@ -238,6 +235,27 @@ mod tests {
             "",
         );
         assert_eq!(read_summary(&path).await.unwrap().session, "");
+    }
+    #[tokio::test]
+    async fn summary_takes_the_last_named_session() {
+        // A Claude fork reports the original, then names the fork with its
+        // first turn.
+        let temp = octet_testkit::TempDir::new("octet-store-fork");
+        let path = journal_file(
+            temp.path(),
+            7,
+            &[
+                header("claude"),
+                ("ready", serde_json::json!("original")),
+                ("user", serde_json::json!("hi")),
+                ("ready", serde_json::json!("forked")),
+                ("text", serde_json::json!("hello")),
+            ],
+            "",
+        );
+        let summary = read_summary(&path).await.unwrap();
+        assert_eq!(summary.session, "forked");
+        assert_eq!(summary.first_prompt.as_deref(), Some("hi"));
     }
     #[tokio::test]
     async fn non_journals_are_ignored() {

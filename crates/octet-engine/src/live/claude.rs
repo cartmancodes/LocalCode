@@ -1,7 +1,7 @@
 //! Claude Code stream-json protocol: launch arguments, control requests and
 //! the frame handler.
 use super::{
-    limited,
+    check_inline, limited,
     mode::{claude_mode, claude_permission_args, claude_reported_mode, confirm_mode},
     model_catalog_with,
     protocol::{Core, Phase, Protocol},
@@ -25,6 +25,7 @@ pub(super) const PROVIDER: Provider = Provider {
         "No permission checks at all (bypassPermissions)",
     ],
     steer: false,
+    inline_images: true,
     effort_live: false,
     start,
 };
@@ -165,20 +166,25 @@ impl Protocol for ClaudeProtocol {
         images: &[ImageAttachment],
     ) -> Result<(), DriverError> {
         let mut content = vec![json!({"type": "text", "text": text})];
+        let mut encoded = Vec::with_capacity(images.len());
         for image in images {
             match image.read_base64().await {
-                Ok(data) => content.push(json!({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": image.media_type, "data": data},
-                })),
-                Err(error) => {
-                    core.phase = Phase::Idle;
-                    core.emit(Event::Error(error.to_string()))?;
-                    return core.emit(Event::Finished {
-                        outcome: Outcome::Failed,
-                    });
-                }
+                Ok(data) => encoded.push((image, data)),
+                Err(error) => return fail_turn(core, error.to_string()),
             }
+        }
+        // Files can change after they were attached; check what is sent.
+        let sizes = encoded
+            .iter()
+            .map(|(image, data)| (image.name.as_str(), data.len() as u64));
+        if let Err(error) = check_inline(PROVIDER.title, sizes) {
+            return fail_turn(core, error.to_string());
+        }
+        for (image, data) in encoded {
+            content.push(json!({
+                "type": "image",
+                "source": {"type": "base64", "media_type": image.media_type, "data": data},
+            }));
         }
         core.send(json!({
             "type": "user",
@@ -343,9 +349,14 @@ impl ClaudeProtocol {
             if !core.phase.is_ready() {
                 core.phase = Phase::Idle;
             }
-            core.emit(Event::Ready {
-                session: core.config.resume.clone().unwrap_or_default(),
-            })?;
+            // A fork is a new session that Claude names with its first turn;
+            // until then there is none to resume.
+            let session = if core.config.fork {
+                String::new()
+            } else {
+                core.config.resume.clone().unwrap_or_default()
+            };
+            core.emit(Event::Ready { session })?;
             let reported = v
                 .pointer("/response/response/current_permission_mode")
                 .and_then(Value::as_str)
@@ -443,6 +454,15 @@ fn stray(value: &Value) -> Option<Value> {
         })
     };
     Some(json!({"type": "control_response", "response": response}))
+}
+
+/// Ends a turn that could not be sent, keeping the session.
+fn fail_turn(core: &mut Core, message: String) -> Result<(), DriverError> {
+    core.phase = Phase::Idle;
+    core.emit(Event::Error(message))?;
+    core.emit(Event::Finished {
+        outcome: Outcome::Failed,
+    })
 }
 
 #[cfg(test)]

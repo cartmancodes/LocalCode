@@ -16,7 +16,9 @@ mod mode;
 mod protocol;
 pub use claude::claude_stray_reply;
 pub use codex::codex_stray_reply;
-pub use image::{ImageAttachment, ImageError, IMAGES_PER_PROMPT, IMAGE_LIMIT};
+pub use image::{
+    check_inline, encoded_len, ImageAttachment, ImageError, IMAGES_PER_PROMPT, IMAGE_LIMIT,
+};
 pub use mode::Mode;
 
 /// The longest prompt, in bytes, Octet sends to a vendor.
@@ -70,6 +72,9 @@ pub struct Provider {
     pub modes: [&'static str; 4],
     /// Text can be added to a running turn (`/steer`).
     pub steer: bool,
+    /// Images go inside the prompt as base64, so [`check_inline`]'s limits
+    /// apply; otherwise the vendor reads the files itself.
+    pub inline_images: bool,
     /// Reasoning effort changes take effect from the next turn; otherwise
     /// they need a reconnect (the CLI takes effort at launch).
     pub effort_live: bool,

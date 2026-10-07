@@ -1069,3 +1069,72 @@ async fn resume_picks_the_listed_session() {
         .entries_text()
         .contains("No session 9; /sessions listed 2"));
 }
+#[test]
+fn a_stopped_session_drops_the_queue() {
+    let mut app = app();
+    app.conn.phase = ConnPhase::Running;
+    app.composer.queue.push_back(Command::Prompt("a".into()));
+    app.composer.queue.push_back(Command::Prompt("b".into()));
+    app.event(octet_core::Event::Stopped);
+    assert!(app.composer.queue.is_empty());
+    assert!(app.entries_text().contains("Dropped 2 queued prompts"));
+}
+#[test]
+fn dragged_image_paths_are_unquoted() {
+    use std::path::Path;
+    let root = Path::new("/work");
+    let home = Some(Path::new("/home/me"));
+    for (typed, wanted) in [
+        ("'/x/Shot 1.png'", "/x/Shot 1.png"),
+        ("\"/x/Shot 1.png\"", "/x/Shot 1.png"),
+        (r"/x/Shot\ 1.png", "/x/Shot 1.png"),
+        (r"~/My\ Shots/a.png", "/home/me/My Shots/a.png"),
+    ] {
+        assert_eq!(
+            commands::image_path(root, home, typed),
+            Path::new(wanted),
+            "{typed}"
+        );
+    }
+}
+#[tokio::test]
+async fn claude_refuses_images_it_cannot_take_inline() {
+    let dir = image_workspace("octet-image-inline", &[]);
+    for name in ["a.png", "b.png", "big.png"] {
+        let size = if name == "big.png" { 4 } else { 3 } * 1024 * 1024;
+        std::fs::File::create(dir.path().join(name))
+            .unwrap()
+            .set_len(size)
+            .unwrap();
+    }
+    let mut app = App::new(
+        &Config::new(Engine::CLAUDE, "claude", "/tmp"),
+        "journal".into(),
+    );
+    app.composer.root = dir.path().to_path_buf();
+    command(&mut app, "/image big.png").await;
+    assert!(app
+        .entries_text()
+        .contains("big.png is over 3.75 MiB, the largest image Claude accepts"));
+    command(&mut app, "/image a.png").await;
+    command(&mut app, "/image b.png").await;
+    assert_eq!(app.composer.images.len(), 1);
+    assert!(app.entries_text().contains("over 5.25 MiB together"));
+    // Codex reads the files itself, so its limit is the file size.
+    let mut codex = self::app();
+    codex.composer.root = dir.path().to_path_buf();
+    command(&mut codex, "/image big.png").await;
+    assert_eq!(codex.composer.images.len(), 1);
+}
+#[test]
+fn a_fork_stays_pending_until_the_vendor_names_it() {
+    let mut config = Config::new(Engine::CLAUDE, "claude", "/tmp");
+    config.resume = Some("original".into());
+    config.fork = true;
+    settle_fork(&mut config, "");
+    assert!(config.fork);
+    settle_fork(&mut config, "original");
+    assert!(config.fork);
+    settle_fork(&mut config, "forked");
+    assert!(!config.fork);
+}

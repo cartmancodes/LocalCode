@@ -1,8 +1,9 @@
 //! Presentation-independent session boundary. Persist events before publishing;
 //! disk and subscriber failures stop execution instead of losing output silently.
 pub use octet_engine::live::{
-    valid_effort, Command, Config, Engine, Event, Handle, ImageAttachment, ImageError, Mode,
-    Outcome, SendError, DEFAULT_APPROVAL_TIMEOUT, IMAGES_PER_PROMPT, IMAGE_LIMIT, PROMPT_LIMIT,
+    check_inline, encoded_len, valid_effort, Command, Config, Engine, Event, Handle,
+    ImageAttachment, ImageError, Mode, Outcome, SendError, DEFAULT_APPROVAL_TIMEOUT,
+    IMAGES_PER_PROMPT, IMAGE_LIMIT, PROMPT_LIMIT,
 };
 use octet_store::Journal;
 use serde_json::{json, Value};

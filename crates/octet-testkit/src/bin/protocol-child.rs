@@ -284,8 +284,10 @@ fn interactive_codex() {
                 );
             }
             Some("turn/steer") => {
-                // Steering adds to the running turn; a stale turn ID is refused.
-                if v["params"]["expectedTurnId"] == active.as_str() {
+                // Steering adds to the running turn; a stale turn ID, or the
+                // text "reject", is refused.
+                let refused = v.pointer("/params/input/0/text") == Some(&json!("reject"));
+                if v["params"]["expectedTurnId"] == active.as_str() && !refused {
                     let text = v
                         .pointer("/params/input/0/text")
                         .and_then(Value::as_str)
@@ -321,6 +323,12 @@ fn interactive_codex() {
 
 fn interactive_claude() {
     let argv: Vec<String> = env::args().skip(1).collect();
+    // A forked session gets a new ID, which Claude reports with the first turn.
+    let sid = if argv.iter().any(|a| a == "--fork-session") {
+        "claude-forked"
+    } else {
+        "claude-fixture"
+    };
     let mut modes: Vec<String> = Vec::new();
     let mut held: Vec<Value> = Vec::new();
     for line in io::stdin().lock().lines() {
@@ -351,7 +359,7 @@ fn interactive_claude() {
             );
         } else if v["type"] == "control_request" && v["request"]["subtype"] == "interrupt" {
             emit(
-                &json!({"type":"result","is_error":false,"result":"","session_id":"claude-fixture","total_cost_usd":0.0}),
+                &json!({"type":"result","is_error":false,"result":"","session_id":sid,"total_cost_usd":0.0}),
             );
         } else if v["type"] == "control_request" && v["request"]["subtype"] == "set_permission_mode"
         {
@@ -401,7 +409,7 @@ fn interactive_claude() {
             }
             if text == "tool" {
                 emit(
-                    &json!({"type":"system","subtype":"init","session_id":"claude-fixture","model":"claude-fixture-full-id"}),
+                    &json!({"type":"system","subtype":"init","session_id":sid,"model":"claude-fixture-full-id"}),
                 );
                 emit(
                     &json!({"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"Bash","input":{}}}}),
@@ -410,20 +418,20 @@ fn interactive_claude() {
                     &json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo fixture"}}]}}),
                 );
                 emit(
-                    &json!({"type":"result","is_error":false,"result":"","session_id":"claude-fixture","total_cost_usd":0.0}),
+                    &json!({"type":"result","is_error":false,"result":"","session_id":sid,"total_cost_usd":0.0}),
                 );
                 continue;
             }
             if text == "errors" || text.starts_with("Octet active goal: fixture-fail\n") {
                 emit(
-                    &json!({"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Fixture failure detail"],"session_id":"claude-fixture","total_cost_usd":0.0}),
+                    &json!({"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Fixture failure detail"],"session_id":sid,"total_cost_usd":0.0}),
                 );
                 continue;
             }
             if text == "hold" || text.starts_with("Octet active goal: fixture-hold\n") {
                 // Stay mid-turn until the driver interrupts.
                 emit(
-                    &json!({"type":"system","subtype":"init","session_id":"claude-fixture","model":"claude-fixture-full-id"}),
+                    &json!({"type":"system","subtype":"init","session_id":sid,"model":"claude-fixture-full-id"}),
                 );
                 continue;
             }
@@ -457,14 +465,14 @@ fn interactive_claude() {
                 "Hello Claude".to_owned()
             };
             emit(
-                &json!({"type":"system","subtype":"init","session_id":"claude-fixture","model":"claude-fixture-full-id"}),
+                &json!({"type":"system","subtype":"init","session_id":sid,"model":"claude-fixture-full-id"}),
             );
             emit(
                 &json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":reply}}}),
             );
             emit(&json!({"type":"assistant","message":{"content":[{"type":"text","text":reply}]}}));
             emit(
-                &json!({"type":"result","is_error":false,"result":reply,"session_id":"claude-fixture","total_cost_usd":0.0}),
+                &json!({"type":"result","is_error":false,"result":reply,"session_id":sid,"total_cost_usd":0.0}),
             );
         }
     }

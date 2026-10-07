@@ -209,8 +209,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         // Carry the last vendor-confirmed mode, never an unconfirmed pending one.
         config.mode = app.conn.mode;
         config.effort = app.conn.effort.clone();
-        // A fork happens once, at connect; later reconnects resume the fork.
-        config.fork = false;
+        settle_fork(&mut config, &app.conn.session);
         match result? {
             Exit::Model(selection) => {
                 pause_active_goal(&mut app, "model switch").await;
@@ -283,7 +282,10 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                 config.model = model;
                 config.resume = Some(session);
             }
-            Exit::New => config.resume = None,
+            Exit::New => {
+                config.resume = None;
+                config.fork = false;
+            }
             Exit::Reconnect => {
                 if let Some(id) = resume_id(&app, &config) {
                     config.resume = Some(id);
@@ -298,6 +300,14 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     drop(terminal);
     drop(guard);
     Ok(())
+}
+/// A fork happens once: when the vendor has named the new session, later
+/// reconnects resume it. Until then (Claude names a fork with its first
+/// turn) the next connection forks again, so the original stays untouched.
+fn settle_fork(config: &mut Config, session: &str) {
+    if !session.is_empty() && config.resume.as_deref() != Some(session) {
+        config.fork = false;
+    }
 }
 /// The vendor session a reconnect resumes, once there is one.
 fn resume_id(app: &App, config: &Config) -> Option<String> {
@@ -634,10 +644,16 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
                     app.conn.start_turn();
                     app.conn.status = "continuing goal".into();
                 }
-                Err(error) => goal_send_failed(app, error).await,
+                Err(error) => {
+                    goal_send_failed(app, error).await;
+                    send_queued(app, session);
+                }
             }
         }
-        Err(error) => app.notice(format!("Goal persistence failed; paused: {error}")),
+        Err(error) => {
+            app.notice(format!("Goal persistence failed; paused: {error}"));
+            send_queued(app, session);
+        }
     }
 }
 /// `/steer`: adds `text` to the running turn where the provider can, queues

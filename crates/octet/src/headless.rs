@@ -87,44 +87,116 @@ pub(crate) async fn print(
 }
 
 /// Reads JSON-line commands from stdin and writes events as JSON lines to
-/// stdout, until `quit` or the end of stdin (exit 0) or the vendor stops
-/// (exit 1).
+/// stdout. Commands sent before `ready`, and prompts sent while a turn runs,
+/// wait their turn in order. At the end of stdin the waiting work finishes,
+/// with approvals nobody can answer any more denied. Exits 0 on `quit`, 0 at
+/// the end of stdin if every turn completed, and 1 otherwise or if the
+/// vendor stops.
 pub(crate) async fn rpc(config: Config, directory: PathBuf) -> Result<i32, String> {
     let mut session = Session::open(config, directory)
         .await
         .map_err(|e| e.to_string())?;
     let mut requests = read_lines(BufReader::new(tokio::io::stdin()));
+    let mut state = RpcState::default();
     let code = loop {
+        if state.input_closed && !state.busy && state.waiting.is_empty() {
+            break i32::from(state.failed);
+        }
         tokio::select! {
-            line = requests.recv() => {
-                let Some(line) = line else { break 0 };
-                let request = line.and_then(|line| parse(&line));
-                let sent = match request {
-                    Ok(Request::Quit) => break 0,
-                    Ok(Request::Interrupt) => {
-                        session.handle.interrupt();
-                        Ok(())
+            line = requests.recv(), if !state.input_closed => {
+                let Some(line) = line else {
+                    state.input_closed = true;
+                    for id in std::mem::take(&mut state.approvals) {
+                        send_or_report(&session, Command::Answer { id, allow: false }).await?;
                     }
-                    Ok(Request::Send(command)) => {
-                        session.handle.send(command).map_err(|e| e.to_string())
-                    }
-                    Err(message) => Err(message),
+                    continue;
                 };
-                if let Err(message) = sent {
-                    write_line(&event_json(&Event::Error(message))).await?;
+                match line.and_then(|line| parse(&line)) {
+                    Ok(Request::Quit) => break 0,
+                    Ok(Request::Interrupt) => session.handle.interrupt(),
+                    Ok(Request::Send(_)) if state.waiting.len() >= RPC_WAITING => {
+                        let message = format!("Too many commands waiting ({RPC_WAITING})");
+                        write_line(&event_json(&Event::Error(message))).await?;
+                    }
+                    Ok(Request::Send(command)) => state.waiting.push_back(command),
+                    Err(message) => write_line(&event_json(&Event::Error(message))).await?,
                 }
             }
             event = session.events.recv() => {
                 let Some(event) = event else { break 1 };
                 write_line(&event_json(&event)).await?;
-                if matches!(event, Event::Stopped) {
-                    break 1;
+                match event {
+                    Event::Ready { .. } => state.ready = true,
+                    Event::Finished { outcome } => {
+                        state.busy = false;
+                        state.failed |= matches!(outcome, Outcome::Failed | Outcome::Other(_));
+                    }
+                    Event::Approval { id, .. } if state.input_closed => {
+                        send_or_report(&session, Command::Answer { id, allow: false }).await?;
+                    }
+                    Event::Approval { id, .. } => state.approvals.push(id),
+                    Event::ApprovalClosed(id) => state.approvals.retain(|open| *open != id),
+                    Event::Stopped => break 1,
+                    _ => {}
                 }
             }
         }
+        state.flush(&session).await?;
     };
     session.shutdown().await;
     Ok(code)
+}
+
+/// The most RPC commands that may wait for `ready` or a running turn.
+const RPC_WAITING: usize = 64;
+
+/// What the RPC loop tracks between commands and events.
+#[derive(Default)]
+struct RpcState {
+    /// The vendor session is ready for commands.
+    ready: bool,
+    /// A prompt is running.
+    busy: bool,
+    /// Commands waiting for `ready`, and prompts waiting for the turn.
+    waiting: std::collections::VecDeque<Command>,
+    /// Approvals the client has not answered.
+    approvals: Vec<u64>,
+    /// Stdin has ended.
+    input_closed: bool,
+    /// A turn failed.
+    failed: bool,
+}
+impl RpcState {
+    /// Sends waiting commands in order, stopping at a prompt while one runs.
+    async fn flush(&mut self, session: &Session) -> Result<(), String> {
+        while self.ready {
+            let prompt = matches!(
+                self.waiting.front(),
+                Some(Command::Prompt(_) | Command::PromptWithDisplay { .. } | Command::Compact)
+            );
+            if prompt && self.busy {
+                break;
+            }
+            let Some(command) = self.waiting.pop_front() else {
+                break;
+            };
+            if send_or_report(session, command).await? && prompt {
+                self.busy = true;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Sends `command`; whether it was accepted (a refusal is an error line).
+async fn send_or_report(session: &Session, command: Command) -> Result<bool, String> {
+    match session.handle.send(command) {
+        Ok(()) => Ok(true),
+        Err(error) => {
+            write_line(&event_json(&Event::Error(error.to_string()))).await?;
+            Ok(false)
+        }
+    }
 }
 
 /// The prompt for `--print -`: all of stdin, less one trailing newline.
