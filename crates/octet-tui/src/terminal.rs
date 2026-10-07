@@ -129,7 +129,19 @@ pub(crate) fn alert() {
 /// Writes control bytes straight to the terminal, outside a frame. Errors are
 /// ignored: these are courtesies, never a reason to stop.
 pub(crate) fn write_terminal(bytes: &[u8]) {
-    use std::io::Write;
-    let mut stdout = io::stdout();
-    let _ = stdout.write_all(bytes).and_then(|()| stdout.flush());
+    // Tests capture these bytes: written for real they would reach the
+    // terminal running the tests (an OSC 52 would replace its clipboard).
+    #[cfg(test)]
+    WRITTEN.with(|written| written.borrow_mut().extend_from_slice(bytes));
+    #[cfg(not(test))]
+    {
+        use std::io::Write;
+        let mut stdout = io::stdout();
+        let _ = stdout.write_all(bytes).and_then(|()| stdout.flush());
+    }
+}
+#[cfg(test)]
+thread_local! {
+    /// What `write_terminal` would have written, in this test's thread.
+    pub(crate) static WRITTEN: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }

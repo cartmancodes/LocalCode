@@ -17,6 +17,8 @@ libc.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# Paused time makes the job and grace tests exact and instant.
+tokio = { workspace = true, features = ["test-util"] }
 octet-testkit = { path = "../octet-testkit" }
 octet-core = { path = "../octet-core", features = ["testing"] }
 

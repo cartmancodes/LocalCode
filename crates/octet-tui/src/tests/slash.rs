@@ -11,7 +11,7 @@ async fn model_command_rejects_busy_switch_and_preserves_current_session() {
     ));
     assert_eq!(app.conn.engine, octet_core::Engine::CODEX);
     assert_eq!(app.conn.session, "thread-1");
-    app.conn.phase = ConnPhase::Idle;
+    crate::test_support::idle(&mut app);
     let Action::Exit(Exit::Model(selection)) = command(&mut app, "/model claude example").await
     else {
         panic!("expected a model switch");
@@ -91,6 +91,14 @@ async fn copy_reports_the_size_of_the_last_reply() {
     assert_eq!(app.last_reply(), Some("hello"));
     assert!(matches!(command(&mut app, "/copy").await, Action::Continue));
     assert_eq!(app.status_line, "Copied 5 B to the clipboard");
+    // The reply went out as OSC 52, base64 of "hello".
+    crate::terminal::WRITTEN.with(|written| {
+        assert!(
+            written.borrow().ends_with(b"\x1b]52;c;aGVsbG8=\x07"),
+            "{:?}",
+            written.borrow()
+        );
+    });
 }
 #[tokio::test]
 async fn remote_control_reports_without_changing_the_session() {
@@ -131,7 +139,7 @@ async fn goal_commands_start_pause_resume_and_clear_without_a_vendor_turn() {
         app.goals.goal().unwrap().status(),
         octet_core::goal::Status::Paused
     );
-    app.conn.phase = ConnPhase::Idle;
+    crate::test_support::idle(&mut app);
     assert!(matches!(
         sends(&mut app, "/goal resume").await[..],
         [Command::PromptWithDisplay { .. }]
@@ -184,19 +192,21 @@ async fn full_access_requires_idle_ready_session() {
         command(&mut app, "/mode full-access").await,
         Action::Continue
     ));
-    app.conn.phase = ConnPhase::Idle;
+    crate::test_support::idle(&mut app);
     app.overlay.approvals.push_back((1, "x".into()));
     assert!(matches!(
         command(&mut app, "/mode full-access").await,
         Action::Continue
     ));
     app.overlay.approvals.clear();
+    // No event returns a live session to connecting without resetting the
+    // state under test, so the phase is set.
     app.conn.phase = ConnPhase::Connecting;
     assert!(matches!(
         command(&mut app, "/mode full-access").await,
         Action::Continue
     ));
-    app.conn.phase = ConnPhase::Idle;
+    crate::test_support::idle(&mut app);
     assert!(matches!(
         command(&mut app, "/mode full-access").await,
         Action::Exit(Exit::Mode(octet_core::Mode::FullAccess))
@@ -230,8 +240,9 @@ async fn cycle_is_ignored_while_a_switch_is_pending() {
 async fn stopped_session_can_always_leave_full_access() {
     let mut app = app();
     app.conn.mode = octet_core::Mode::FullAccess;
-    app.conn.phase = ConnPhase::Connecting;
-    app.conn.phase = ConnPhase::Stopped;
+    // No event returns a live session to connecting without resetting the
+    // state under test, so the phase is set.
+    app.event(octet_core::Event::Stopped);
     assert!(matches!(
         command(&mut app, "/mode ask").await,
         Action::Exit(Exit::Mode(octet_core::Mode::Ask))
@@ -269,7 +280,7 @@ async fn effort_command_shows_and_sets() {
     assert_eq!(app.conn.effort.as_deref(), Some("high"));
     // Claude takes it at launch: reconnect to the same session.
     let mut claude = crate::test_support::app_for(octet_core::Engine::CLAUDE);
-    claude.conn.phase = ConnPhase::Idle;
+    crate::test_support::idle(&mut claude);
     assert!(matches!(
         command(&mut claude, "/effort max").await,
         Action::Exit(Exit::Effort(Some(ref level))) if level == "max"
@@ -301,7 +312,7 @@ async fn fork_needs_an_idle_vendor_session() {
             .contains("No vendor session to fork yet")
     );
     let mut demo = crate::test_support::app_for(octet_core::Engine::DEMO);
-    demo.conn.phase = ConnPhase::Idle;
+    crate::test_support::idle(&mut demo);
     assert!(matches!(
         command(&mut demo, "/fork").await,
         Action::Continue
@@ -331,10 +342,10 @@ async fn image_attaches_and_shows_in_the_title() {
     command(&mut app, "/image shot.png").await;
     assert_eq!(app.composer.images.len(), 1);
     assert!(crate::view::composer_title(&app).contains("+ image shot.png"));
-    let (_temp, session) = demo_session("octet-image-send").await;
+    let vendor = RecordingVendor::default();
     app.conn.start_turn();
     assert!(app.composer.editor.insert("look"));
-    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
+    key_action(&mut app, &vendor, key(KeyCode::Enter)).await;
     assert!(app.composer.images.is_empty());
     let queued = app.composer.queue.front().unwrap();
     assert_eq!(queued.wire, "look");
@@ -371,8 +382,8 @@ async fn oversized_or_unknown_images_are_refused() {
     );
     assert!(crate::view::composer_title(&app).contains("+4 images"));
     // Esc on an empty prompt drops them.
-    let (_temp, session) = demo_session("octet-image-esc").await;
-    key_action(&mut app, &session.handle, key(KeyCode::Esc)).await;
+    let vendor = RecordingVendor::default();
+    key_action(&mut app, &vendor, key(KeyCode::Esc)).await;
     assert!(app.composer.images.is_empty());
 }
 #[tokio::test]
@@ -396,7 +407,7 @@ async fn resume_picks_the_listed_session() {
         &Config::new(Engine::CODEX, "codex", "/work"),
         dir.join("session-3-1.jsonl"),
     );
-    app.conn.phase = ConnPhase::Idle;
+    crate::test_support::idle(&mut app);
     app.conn.session = "t-1".into();
     assert!(matches!(
         command(&mut app, "/resume 1").await,
@@ -464,11 +475,11 @@ async fn up_recalls_a_prompt_with_its_images() {
     let dir = image_workspace("octet-image-recall", &["shot.png"]);
     let mut app = app();
     app.composer.root = dir.path().to_path_buf();
-    let (_temp, session) = demo_session("octet-image-recall-session").await;
+    let vendor = RecordingVendor::default();
     command(&mut app, "/image shot.png").await;
     app.conn.start_turn();
     assert!(app.composer.editor.insert("look"));
-    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
+    key_action(&mut app, &vendor, key(KeyCode::Enter)).await;
     assert!(app.composer.images.is_empty());
     app.recall(true);
     assert_eq!(app.composer.editor.text(), "look");
@@ -482,7 +493,7 @@ async fn up_recalls_a_prompt_with_its_images() {
 #[tokio::test]
 async fn effort_refuses_a_level_claude_does_not_take() {
     let mut claude = crate::test_support::app_for(octet_core::Engine::CLAUDE);
-    claude.conn.phase = ConnPhase::Idle;
+    crate::test_support::idle(&mut claude);
     assert!(matches!(
         command(&mut claude, "/effort bogus").await,
         Action::Continue
@@ -551,14 +562,14 @@ fn exported() -> crate::jobs::Done {
 #[tokio::test]
 async fn a_second_job_keeps_the_draft() {
     let mut app = app();
-    let (_temp, session) = demo_session("octet-second-job").await;
+    let vendor = RecordingVendor::default();
     app.job = Some(crate::jobs::Running::spawn(job_after(None, exported)));
     assert!(app.composer.editor.insert("/sessions"));
-    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
+    key_action(&mut app, &vendor, key(KeyCode::Enter)).await;
     assert_eq!(app.composer.editor.text(), "/sessions");
     assert_eq!(app.status_line, "Wait for: Exporting the journal…");
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_session_ending_waits_for_its_job_and_reports_it() {
     let running = crate::jobs::Running::spawn(job_after(Some(Duration::from_millis(50)), exported));
     let ended = crate::jobs::finish(Some(running), Duration::from_secs(5)).await;
@@ -570,7 +581,7 @@ async fn a_session_ending_waits_for_its_job_and_reports_it() {
             .contains("Exported journal to out.jsonl")
     );
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_job_that_outlives_its_session_is_stopped_with_a_note() {
     let running = crate::jobs::Running::spawn(job_after(None, exported));
     let started = std::time::Instant::now();
@@ -590,7 +601,7 @@ async fn a_job_that_outlives_its_session_is_stopped_with_a_note() {
             .is_none()
     );
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_job_carries_into_the_next_session() {
     // A reconnect opens the next interface while the job still runs; the
     // job moves with it and reports there.
@@ -609,7 +620,7 @@ async fn a_job_carries_into_the_next_session() {
             .contains("Exported journal to out.jsonl")
     );
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn quit_waits_only_for_an_export() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static WRITTEN: AtomicBool = AtomicBool::new(false);
@@ -669,6 +680,8 @@ async fn reconnecting_commands_share_one_guard() {
         assert_eq!(busy.status_line, TURN_OPEN, "{line}");
         let mut connecting = app();
         connecting.conn.engine = Engine::CLAUDE;
+        // No event returns a live session to connecting without resetting the
+        // state under test, so the phase is set.
         connecting.conn.phase = ConnPhase::Connecting;
         command(&mut connecting, line).await;
         assert_eq!(connecting.status_line, NOT_CONNECTED, "{line}");

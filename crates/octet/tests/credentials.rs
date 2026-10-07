@@ -101,8 +101,10 @@ fn workspace_names_no_credential_store() {
             continue; // the rule's own data
         }
         // A file the guard cannot read is a failure, never a skip.
-        let source = std::fs::read_to_string(&file)
+        // Read as bytes: a file that is not UTF-8 is still scanned.
+        let bytes = std::fs::read(&file)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", file.display()));
+        let source = String::from_utf8_lossy(&bytes);
         for (line, rule) in violations(&source) {
             report.push(format!("{}:{line}: {rule}", file.display()));
         }

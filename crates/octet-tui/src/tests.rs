@@ -33,8 +33,10 @@ async fn command(app: &mut App, input: &str) -> Action {
 fn app() -> App {
     let config = Config::new(Engine::CODEX, "codex", "/tmp");
     let mut app = App::new(&config, "journal".into());
-    app.conn.phase = ConnPhase::Idle;
-    app.conn.session = "thread-1".into();
+    // Connected, as the vendor reports it.
+    app.event(octet_core::Event::Ready {
+        session: "thread-1".into(),
+    });
     app
 }
 fn ctrl(c: char) -> KeyEvent {
@@ -56,12 +58,18 @@ fn ran(command: &str, output: &str) -> crate::shell::Ran {
         output: output.into(),
     }
 }
+/// The next prompt the session shows; fails rather than hangs if none comes.
 async fn next_user_text(session: &mut Session) -> String {
-    loop {
-        if let octet_core::Event::User(text) = session.events.recv().await.unwrap() {
-            return text;
+    let wait = async {
+        loop {
+            if let octet_core::Event::User(text) = session.events.recv().await.unwrap() {
+                return text;
+            }
         }
-    }
+    };
+    tokio::time::timeout(Duration::from_secs(5), wait)
+        .await
+        .expect("no prompt reached the session")
 }
 #[tokio::test]
 async fn a_finished_command_replaces_the_running_notice() {
@@ -196,9 +204,9 @@ async fn a_finished_turn_sends_the_next_queued_prompt() {
 async fn steer_on_claude_queues_a_follow_up() {
     let config = Config::new(Engine::CLAUDE, "claude", "/tmp");
     let mut app = App::new(&config, "journal".into());
-    let (_temp, session) = demo_session("octet-steer-claude").await;
+    let vendor = RecordingVendor::default();
     app.conn.start_turn();
-    steer(&mut app, &session.handle, "also check docs".into());
+    steer(&mut app, &vendor, "also check docs".into());
     assert_eq!(app.composer.queue.len(), 1);
     assert!(
         app.entries_text().contains("Claude cannot steer"),
@@ -210,7 +218,7 @@ async fn steer_on_claude_queues_a_follow_up() {
 async fn steer_when_idle_sends_a_prompt() {
     let mut app = app();
     let (_temp, mut session) = demo_session("octet-steer-idle").await;
-    app.conn.phase = ConnPhase::Idle;
+    crate::test_support::idle(&mut app);
     steer(&mut app, &session.handle, "plain prompt".into());
     assert_eq!(next_user_text(&mut session).await, "plain prompt");
     assert!(app.conn.is_running());
@@ -275,18 +283,6 @@ fn dragged_image_paths_are_unquoted() {
     }
 }
 #[test]
-fn a_fork_stays_pending_until_the_vendor_names_it() {
-    let mut config = Config::new(Engine::CLAUDE, "claude", "/tmp");
-    config.resume = Some("original".into());
-    config.fork = true;
-    settle_fork(&mut config, "");
-    assert!(config.fork);
-    settle_fork(&mut config, "original");
-    assert!(config.fork);
-    settle_fork(&mut config, "forked");
-    assert!(!config.fork);
-}
-#[test]
 fn a_fork_is_announced_when_the_vendor_names_it() {
     let mut app = app();
     app.conn.forking_from = Some("original".into());
@@ -311,54 +307,6 @@ fn a_fork_is_announced_when_the_vendor_names_it() {
             .entries_text()
             .contains("The fork from original did not open; /reconnect tries again")
     );
-}
-#[test]
-fn resume_opens_the_session_without_forking_and_with_an_effort_it_takes() {
-    let mut config = Config::new(Engine::CODEX, "codex", "/tmp");
-    // A fork Codex had not named yet must not turn the resume into a fork.
-    config.resume = Some("original".into());
-    config.fork = true;
-    config.effort = Some("minimal".into());
-    let notice = resume_into(
-        &mut config,
-        Engine::CLAUDE,
-        "c-1".into(),
-        Some("m1".into()),
-        "claude".into(),
-    );
-    assert_eq!(config.engine, Engine::CLAUDE);
-    assert_eq!(config.resume.as_deref(), Some("c-1"));
-    assert!(!config.fork);
-    assert_eq!(config.model.as_deref(), Some("m1"));
-    assert_eq!(config.effort, None);
-    assert_eq!(
-        notice.as_deref(),
-        Some("Claude does not take effort minimal; using its default")
-    );
-    config.effort = Some("high".into());
-    assert_eq!(
-        resume_into(
-            &mut config,
-            Engine::CLAUDE,
-            "c-2".into(),
-            None,
-            "claude".into()
-        ),
-        None
-    );
-    assert_eq!(config.effort.as_deref(), Some("high"));
-}
-#[test]
-fn a_dropped_effort_is_named() {
-    assert_eq!(
-        dropped_effort(Some("minimal"), Engine::CLAUDE, None).as_deref(),
-        Some("Claude does not take effort minimal; using its default")
-    );
-    assert_eq!(
-        dropped_effort(Some("high"), Engine::CLAUDE, Some("high")),
-        None
-    );
-    assert_eq!(dropped_effort(None, Engine::CLAUDE, None), None);
 }
 #[test]
 fn browsing_history_keeps_the_drafts_own_images() {

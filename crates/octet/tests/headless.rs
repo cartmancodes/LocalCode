@@ -36,12 +36,8 @@ fn octet(args: &[&str]) -> (Child, octet_testkit::TempDir) {
 /// Runs `octet args` with `input` on stdin; its exit code, stdout and stderr.
 fn run(args: &[&str], input: &str) -> (i32, String, String) {
     let (mut child, _temp) = octet(args);
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    // A child that refuses early (a usage error) may close stdin first.
+    let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
     let output = octet_testkit::wait_child(child, LIMIT);
     (
         output.status.code().unwrap_or(-1),

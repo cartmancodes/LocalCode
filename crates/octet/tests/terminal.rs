@@ -185,7 +185,20 @@ impl Pty {
         let (mut row, mut column) = (1usize, 1usize);
         let mut cells = vec![vec![' '; 120]; 36];
         while let Some(ch) = chars.next() {
-            if ch == '\u{1b}' && chars.next() == Some('[') {
+            if ch == '\u{1b}' && chars.peek() == Some(&']') {
+                // OSC (a title, OSC 52, OSC 9): its payload is never on
+                // screen. It ends at BEL or ESC \.
+                chars.next();
+                while let Some(ch) = chars.next() {
+                    if ch == '\u{7}' {
+                        break;
+                    }
+                    if ch == '\u{1b}' {
+                        chars.next();
+                        break;
+                    }
+                }
+            } else if ch == '\u{1b}' && chars.next() == Some('[') {
                 let mut parameters = String::new();
                 for ch in chars.by_ref() {
                     if ('@'..='~').contains(&ch) {
@@ -215,11 +228,19 @@ impl Pty {
         }
         cells.into_iter().map(String::from_iter).collect()
     }
+    /// The interface's process ID.
+    fn pid(&self) -> libc::pid_t {
+        libc::pid_t::try_from(self.child.id()).expect("pid fits pid_t")
+    }
     fn goal(&self) -> Option<serde_json::Value> {
         fs::read_dir(&self.directory)
             .ok()?
             .filter_map(Result::ok)
-            .find(|entry| entry.file_name().to_string_lossy().starts_with("goal-"))
+            // Only the goal itself: a `.tmp` mid-save would parse to nothing.
+            .find(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.starts_with("goal-") && name.ends_with(".json")
+            })
             .and_then(|entry| fs::read(entry.path()).ok())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
     }
@@ -333,13 +354,13 @@ fn real_terminal_handles_paste_approval_resize_suspend_and_quit() {
     let mut stopped = 0;
     assert_eq!(
         // SAFETY: waitpid writes only into `stopped`, for our own child.
-        unsafe { libc::waitpid(p.child.id() as i32, &mut stopped, libc::WUNTRACED) },
-        p.child.id() as i32
+        unsafe { libc::waitpid(p.pid(), &mut stopped, libc::WUNTRACED) },
+        p.pid()
     );
     assert!(libc::WIFSTOPPED(stopped));
     // SAFETY: kill only signals our own child.
     unsafe {
-        libc::kill(p.child.id() as i32, libc::SIGCONT);
+        libc::kill(p.pid(), libc::SIGCONT);
     }
 
     p.wait(|p| flags(&p.master) & libc::ICANON == 0);
@@ -356,7 +377,7 @@ fn sigterm_restores_terminal_during_a_turn() {
     p.wait(|p| p.count("started") == 1);
     // SAFETY: kill only signals our own child.
     unsafe {
-        libc::kill(p.child.id() as i32, libc::SIGTERM);
+        libc::kill(p.pid(), libc::SIGTERM);
     }
     p.finish();
 }
@@ -836,9 +857,8 @@ fn remote_control_keeps_the_screen_live_while_checks_run() {
         p.screen_shows("Checking phone access")
     });
     p.send(b"typed meanwhile");
-    p.wait_for(Duration::from_secs(2), |p| {
-        p.screen_shows("typed meanwhile")
-    });
+    // Keys echo whether or not the checks are still running.
+    p.wait(|p| p.screen_shows("typed meanwhile"));
     // The status line is painted after the conversation, so once the
     // summary shows, the whole report has.
     p.wait(|p| p.row_shows(35, "Remote control: 3 problems (report above)"));
@@ -997,7 +1017,7 @@ fn a_suspend_while_editing_leaves_the_terminal_usable() {
     p.wait(|p| p.shows("● ready"));
     p.send(b"\x07");
     // Play the shell's part: continue Octet whenever it stops.
-    let pid = p.child.id() as libc::pid_t;
+    let pid = p.pid();
     let deadline = Instant::now() + Duration::from_secs(8);
     while !p.screen_shows("after stop") {
         assert!(Instant::now() < deadline, "the edit never came back");
@@ -1046,7 +1066,7 @@ fn terminating_octet_while_editing_stops_the_editor() {
     let editor_pid = read_pid().unwrap();
     // SAFETY: kill only signals the child this test started.
     unsafe {
-        libc::kill(p.child.id() as libc::pid_t, libc::SIGTERM);
+        libc::kill(p.pid(), libc::SIGTERM);
     }
     p.finish();
     // SAFETY: signal 0 only checks that the process exists.

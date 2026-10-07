@@ -365,4 +365,64 @@ mod tests {
         );
         assert!(opening.ends_with("Claude does not take effort minimal; using its default"));
     }
+    #[test]
+    fn a_fork_stays_pending_until_the_vendor_names_it() {
+        let mut config = Config::new(Engine::CLAUDE, "claude", "/tmp");
+        config.resume = Some("original".into());
+        config.fork = true;
+        settle_fork(&mut config, "");
+        assert!(config.fork);
+        settle_fork(&mut config, "original");
+        assert!(config.fork);
+        settle_fork(&mut config, "forked");
+        assert!(!config.fork);
+    }
+    #[test]
+    fn resume_opens_the_session_without_forking_and_with_an_effort_it_takes() {
+        let mut config = Config::new(Engine::CODEX, "codex", "/tmp");
+        // A fork Codex had not named yet must not turn the resume into a fork.
+        config.resume = Some("original".into());
+        config.fork = true;
+        config.effort = Some("minimal".into());
+        let notice = resume_into(
+            &mut config,
+            Engine::CLAUDE,
+            "c-1".into(),
+            Some("m1".into()),
+            "claude".into(),
+        );
+        assert_eq!(config.engine, Engine::CLAUDE);
+        assert_eq!(config.resume.as_deref(), Some("c-1"));
+        assert!(!config.fork);
+        assert_eq!(config.model.as_deref(), Some("m1"));
+        assert_eq!(config.effort, None);
+        assert_eq!(
+            notice.as_deref(),
+            Some("Claude does not take effort minimal; using its default")
+        );
+        config.effort = Some("high".into());
+        assert_eq!(
+            resume_into(
+                &mut config,
+                Engine::CLAUDE,
+                "c-2".into(),
+                None,
+                "claude".into()
+            ),
+            None
+        );
+        assert_eq!(config.effort.as_deref(), Some("high"));
+    }
+    #[test]
+    fn a_dropped_effort_is_named() {
+        assert_eq!(
+            dropped_effort(Some("minimal"), Engine::CLAUDE, None).as_deref(),
+            Some("Claude does not take effort minimal; using its default")
+        );
+        assert_eq!(
+            dropped_effort(Some("high"), Engine::CLAUDE, Some("high")),
+            None
+        );
+        assert_eq!(dropped_effort(None, Engine::CLAUDE, None), None);
+    }
 }
