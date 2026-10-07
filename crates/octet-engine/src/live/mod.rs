@@ -528,9 +528,13 @@ impl Handle {
 }
 // Output is split before enqueueing. A stalled consumer fails the session rather
 // than blocking the control path or silently dropping semantic output.
-/// The most text one vendor frame adds to the transcript: a quarter of the
-/// event queue, so one huge reply cannot overflow it and stop the session.
+/// The most text one reply adds to the transcript: half the event queue.
 const TEXT_LIMIT: usize = 2 * 1024 * 1024;
+/// Queue slots text leaves free, for the events that end a turn. Text is
+/// also cut to the room left, so a frame of several large blocks sent
+/// before the interface reads any cannot overflow the queue and stop the
+/// session.
+const TEXT_RESERVE: usize = 8;
 
 fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), DriverError> {
     let mut text = match event {
@@ -548,9 +552,20 @@ fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), DriverError> {
                 .map_err(|_| DriverError::ConsumerOverloaded)
         }
     };
-    if text.len() > TEXT_LIMIT {
-        text.truncate(text.floor_char_boundary(TEXT_LIMIT));
-        text.push_str("\n[Octet shows at most 2 MiB of one reply; the rest is cut]");
+    let room = tx.capacity().saturating_sub(TEXT_RESERVE) * EVENT_BYTES;
+    if text.len() > TEXT_LIMIT.min(room) {
+        let marker = if text.len() > TEXT_LIMIT && TEXT_LIMIT <= room {
+            format!(
+                "\n[Octet shows at most {} MiB of one reply; the rest is cut]",
+                TEXT_LIMIT / (1024 * 1024)
+            )
+        } else {
+            "\n[Octet is behind on showing replies; the rest is cut]".to_owned()
+        };
+        // The marker takes room too.
+        let keep = TEXT_LIMIT.min(room).saturating_sub(marker.len());
+        text.truncate(text.floor_char_boundary(keep));
+        text.push_str(&marker);
     }
     let mut remaining = text.as_str();
     while !remaining.is_empty() {
@@ -670,6 +685,31 @@ mod tests {
         }
         assert!(text.len() < TEXT_LIMIT + 200, "{}", text.len());
         assert!(text.ends_with("[Octet shows at most 2 MiB of one reply; the rest is cut]"));
+    }
+    #[test]
+    fn many_large_blocks_in_one_frame_leave_room_to_finish() {
+        // One Claude frame may carry several text blocks, each near the cap,
+        // before the interface reads any of them.
+        let (tx, mut rx) = mpsc::channel(EVENT_CAPACITY);
+        for _ in 0..4 {
+            let block = "x".repeat(TEXT_LIMIT);
+            assert!(
+                emit(&tx, Event::Text(block)).is_ok(),
+                "the queue overflowed"
+            );
+        }
+        assert!(emit(
+            &tx,
+            Event::Finished {
+                outcome: Outcome::Completed
+            }
+        )
+        .is_ok());
+        let mut text = String::new();
+        while let Ok(Event::Text(chunk)) = rx.try_recv() {
+            text.push_str(&chunk);
+        }
+        assert!(text.contains("the rest is cut"), "{}", text.len());
     }
     #[test]
     fn bounded_lists_drop_their_oldest_entry() {
