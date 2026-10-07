@@ -271,7 +271,8 @@ impl Loop<'_> {
 
     /// Hands the terminal to the user's editor for the draft.
     fn start_editor(&mut self, app: &mut App) -> io::Result<()> {
-        let edit = match external::prepare(app.composer.editor.text(), external::editor_command()) {
+        let edit = match external::prepare(app.composer.editor.text(), &external::editor_command())
+        {
             Ok(edit) => edit,
             Err(error) => {
                 app.error(error.to_string());
@@ -281,16 +282,16 @@ impl Loop<'_> {
         // Stop reading keys so the editor gets them all.
         self.input = None;
         TerminalGuard::restore();
-        match tokio::process::Command::new(&edit.program)
-            .args(&edit.args)
-            .arg(&edit.path)
+        let (program, args) = edit.command();
+        match tokio::process::Command::new(program)
+            .args(args)
             .kill_on_drop(true)
             .spawn()
         {
             Ok(child) => self.editing = Some((child, edit)),
             Err(error) => {
                 regain_terminal(self.guard, self.terminal, &mut self.input)?;
-                app.note(format!("Cannot start {}: {error}", edit.program));
+                app.note(format!("Cannot start {}: {error}", edit.editor));
             }
         }
         Ok(())
@@ -305,7 +306,8 @@ impl Loop<'_> {
         // of it; clear the record first.
         let _ = crossterm::terminal::disable_raw_mode();
         regain_terminal(self.guard, self.terminal, &mut self.input)?;
-        match edit.finish(status.as_ref().is_ok_and(ExitStatus::success)) {
+        let code = status.as_ref().ok().and_then(ExitStatus::code);
+        match edit.finish(code) {
             Ok(text) => app.composer.editor.set(text),
             Err(error) => app.error(error.to_string()),
         }

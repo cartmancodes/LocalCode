@@ -266,14 +266,14 @@ fn mark(ok: bool, text: &str) -> String {
     format!("{} {text}", if ok { "[ok]" } else { "[!!]" })
 }
 
-/// The checks as notice text: one line per check, each problem with its fix,
-/// then the exact phone commands once the host is reachable.
 /// The checks' report: its text, and how many checks failed.
 pub struct Report {
     pub text: String,
     pub problems: usize,
 }
 
+/// The checks as notice text: one line per check, each problem with its fix,
+/// then the exact phone commands once the host is reachable.
 pub fn report(checks: &Checks) -> Report {
     let session = match &checks.tmux {
         Tmux::Session(name) => name.as_str(),

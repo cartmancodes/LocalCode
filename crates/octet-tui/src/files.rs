@@ -41,7 +41,7 @@ impl Files {
 impl Index {
     /// Git's view of the workspace when it is a work tree, else a walk.
     pub fn build(root: &Path) -> Index {
-        git(root, LIMIT).unwrap_or_else(|| walk(root, LIMIT))
+        list(root, "git", GIT_DEADLINE)
     }
     fn new(paths: Vec<String>, capped: bool) -> Index {
         let lower = paths.iter().map(|path| path.to_lowercase()).collect();
@@ -156,9 +156,18 @@ impl Scratch {
     }
 }
 
-fn git(root: &Path, limit: usize) -> Option<Index> {
+/// How long `git ls-files` may take before the walk is used instead (a
+/// stuck fsmonitor, a dead mount).
+const GIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `git`'s listing of `root` within `deadline`, else a walk.
+fn list(root: &Path, git: &str, deadline: std::time::Duration) -> Index {
+    git_files(git, root, LIMIT, deadline).unwrap_or_else(|| walk(root, LIMIT))
+}
+
+fn git_files(git: &str, root: &Path, limit: usize, deadline: std::time::Duration) -> Option<Index> {
     use std::io::BufRead;
-    let mut child = std::process::Command::new("git")
+    let mut child = std::process::Command::new(git)
         .args([
             "ls-files",
             "--cached",
@@ -172,6 +181,22 @@ fn git(root: &Path, limit: usize) -> Option<Index> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
+    // A watchdog kills git if it hangs; the reading below then ends. It
+    // fires only before `wait`, while the child is unreaped, so its pid
+    // cannot have been reused.
+    let pid = libc::pid_t::try_from(child.id()).ok()?;
+    let (finished_tx, finished) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if matches!(
+            finished.recv_timeout(deadline),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ) {
+            // SAFETY: signals only the git this function started.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    });
     // Read paths as they come, so a huge tree costs no more than the cap.
     let stdout = std::io::BufReader::new(child.stdout.take()?);
     let mut paths = Vec::new();
@@ -188,6 +213,7 @@ fn git(root: &Path, limit: usize) -> Option<Index> {
         }
         paths.push(String::from_utf8_lossy(&path).into_owned());
     }
+    let _ = finished_tx.send(());
     let finished = child.wait().ok()?;
     if !capped && !finished.success() {
         return None;
@@ -201,7 +227,15 @@ fn walk(root: &Path, limit: usize) -> Index {
     let mut paths = Vec::new();
     let mut capped = false;
     let mut pending = vec![PathBuf::new()];
+    // Directories count against the limit too: a tree of empty folders, or
+    // a slow mount, must not be walked whole.
+    let mut visited = 0;
     'walk: while let Some(dir) = pending.pop() {
+        visited += 1;
+        if visited > limit {
+            capped = true;
+            break;
+        }
         let Ok(entries) = std::fs::read_dir(root.join(&dir)) else {
             continue;
         };
@@ -234,6 +268,33 @@ fn walk(root: &Path, limit: usize) -> Index {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_hung_git_falls_back_to_the_walk() {
+        let temp = octet_testkit::TempDir::new("octet-files-hung-git");
+        let root = temp.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("notes.txt"), "x").unwrap();
+        let git = octet_testkit::write_script(temp.path(), "git", "exec sleep 30\n");
+        let started = std::time::Instant::now();
+        let index = list(
+            &root,
+            git.to_str().unwrap(),
+            std::time::Duration::from_millis(200),
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        assert_eq!(index.paths, ["notes.txt"]);
+    }
+    #[test]
+    fn the_walk_counts_directories() {
+        let temp = octet_testkit::TempDir::new("octet-files-dirs");
+        let mut deep = temp.path().to_path_buf();
+        for n in 0..30 {
+            deep = deep.join(format!("d{n}"));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        // No files at all, but more directories than the limit.
+        assert!(walk(temp.path(), 10).capped);
+    }
     /// Today's ranking, verbatim, as the reference the faster one must match.
     fn reference_rank(paths: &[String], query: &str) -> Vec<String> {
         fn subsequence(text: &str, query: &str) -> Option<usize> {
@@ -432,12 +493,13 @@ mod tests {
             std::fs::write(dir.path().join(name), text).unwrap();
         }
         run_git(&["add", "tracked.rs"]);
-        let index = git(dir.path(), LIMIT).expect("a work tree lists through git");
+        let index = git_files("git", dir.path(), LIMIT, GIT_DEADLINE)
+            .expect("a work tree lists through git");
         assert!(index.paths.contains(&"tracked.rs".to_string()));
         assert!(index.paths.contains(&"untracked.rs".to_string()));
         assert!(!index.paths.iter().any(|p| p == "ignored.log"));
         let plain = octet_testkit::TempDir::new("octet-files-plain");
         std::fs::create_dir_all(plain.path()).unwrap();
-        assert!(git(plain.path(), LIMIT).is_none());
+        assert!(git_files("git", plain.path(), LIMIT, GIT_DEADLINE).is_none());
     }
 }

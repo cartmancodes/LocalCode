@@ -252,13 +252,14 @@ fn overlays(frame: &mut Frame, area: Rect, app: &mut App, cursor: (u16, u16)) {
     } else if app.overlay.palette {
         palette(frame, area, app.overlay.selection);
     } else if let Some((id, detail)) = app.overlay.approvals.front() {
+        let count = app.overlay.approvals.len();
         approval(
             frame,
             area,
             *id,
             detail,
-            app.overlay.approval_scroll,
-            app.overlay.approvals.len(),
+            &mut app.overlay.approval_scroll,
+            count,
         );
     } else {
         frame.set_cursor_position(cursor);
@@ -497,27 +498,23 @@ pub fn help_lines() -> Vec<String> {
 /// terminal is shorter. How to scroll and close is on the border, so it
 /// shows at any size.
 fn help(frame: &mut Frame, area: Rect, scroll: &mut u16) {
-    let lines = help_lines();
     let width = 76.min(area.width.saturating_sub(4));
     let inner = usize::from(width.saturating_sub(2));
-    let rows: usize = lines
-        .iter()
-        .map(|line| transcript::wrap(line, inner).len())
-        .sum();
-    let area = modal(area, 76, cells(rows).saturating_add(2));
+    // Wrapped here, once, so the rows counted are the rows drawn.
+    let rows = wrapped(&help_lines(), inner);
+    let area = modal(area, 76, cells(rows.len()).saturating_add(2));
     let visible = area.height.saturating_sub(2);
-    *scroll = (*scroll).min(cells(rows).saturating_sub(visible));
+    *scroll = (*scroll).min(cells(rows.len()).saturating_sub(visible));
     frame.render_widget(Clear, area);
-    let title = if cells(rows) > visible {
+    let title = if cells(rows.len()) > visible {
         " Help · PgUp/PgDn scroll · Esc closes "
     } else {
         " Help · Esc closes "
     };
     frame.render_widget(
-        Paragraph::new(lines.join("\n"))
+        Paragraph::new(rows.join("\n"))
             .block(card(title))
             .style(Style::default().bg(PANEL).fg(FG))
-            .wrap(Wrap { trim: false })
             .scroll((*scroll, 0)),
         area,
     );
@@ -576,7 +573,14 @@ fn palette(frame: &mut Frame, area: Rect, selected: usize) {
         area,
     );
 }
-fn approval(frame: &mut Frame, area: Rect, id: u64, detail: &str, scroll: u16, count: usize) {
+/// `lines`, each wrapped to `width` as the transcript wraps.
+fn wrapped<S: AsRef<str>>(lines: &[S], width: usize) -> Vec<String> {
+    lines
+        .iter()
+        .flat_map(|line| transcript::wrap(line.as_ref(), width))
+        .collect()
+}
+fn approval(frame: &mut Frame, area: Rect, id: u64, detail: &str, scroll: &mut u16, count: usize) {
     let area = modal(area, 86, 24);
     frame.render_widget(Clear, area);
     let parts = Layout::vertical([
@@ -592,10 +596,14 @@ fn approval(frame: &mut Frame, area: Rect, id: u64, detail: &str, scroll: u16, c
         Paragraph::new(heading).style(Style::default().fg(AMBER).bg(PANEL)),
         parts[0],
     );
+    // Wrapped here so the scroll can stop at the last row.
+    let inner = usize::from(parts[1].width.saturating_sub(2));
+    let rows = wrapped(&detail.lines().collect::<Vec<_>>(), inner);
+    let visible = parts[1].height.saturating_sub(2);
+    *scroll = (*scroll).min(cells(rows.len()).saturating_sub(visible));
     frame.render_widget(
-        Paragraph::new(detail)
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0))
+        Paragraph::new(rows.join("\n"))
+            .scroll((*scroll, 0))
             .block(card(" Request details · PgUp/PgDn "))
             .style(Style::default().bg(PANEL).fg(FG)),
         parts[1],

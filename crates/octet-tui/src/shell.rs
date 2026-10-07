@@ -155,7 +155,7 @@ async fn run_with(
         let tail = tail
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (tail.kept.clone(), tail.cut)
+        (tail.kept.iter().copied().collect::<Vec<u8>>(), tail.cut)
     };
     let text = overstrike(&String::from_utf8_lossy(at_line(&bytes, cut)));
     let output = if cut { format!("{CUT}{text}") } else { text };
@@ -243,7 +243,8 @@ fn kill_group(group: Option<u32>) {
 /// The end of the output read so far.
 #[derive(Default)]
 struct Tail {
-    kept: Vec<u8>,
+    /// A deque, so dropping old output from the front moves nothing.
+    kept: std::collections::VecDeque<u8>,
     cut: bool,
 }
 
@@ -260,7 +261,7 @@ fn read_tail(mut reader: impl Read, limit: usize, tail: &std::sync::Mutex<Tail>)
         let mut tail = tail
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        tail.kept.extend_from_slice(&chunk[..n]);
+        tail.kept.extend(&chunk[..n]);
         if tail.kept.len() > limit {
             let excess = tail.kept.len() - limit;
             tail.kept.drain(..excess);

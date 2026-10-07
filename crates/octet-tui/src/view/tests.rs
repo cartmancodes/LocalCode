@@ -526,3 +526,49 @@ fn no_color_renders_without_colour_and_marks_the_selection() {
     }
     assert!(reversed > 0, "the palette's selected row must still show");
 }
+#[test]
+fn scrolling_up_keeps_the_view_full() {
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
+    // One entry of 13 lines: 15 rows with its blank line and label.
+    let text: Vec<String> = (1..=13).map(|n| format!("line {n}")).collect();
+    app.note(text.join("\n"));
+    let others = app.chat.entries.len() - 1;
+    assert_eq!(others, 0, "only the one entry");
+    app.chat.scroll = 13;
+    let shown = app.visible_lines(80, 10);
+    assert_eq!(shown.len(), 10, "a short page at the top, blank below");
+}
+#[test]
+fn approval_scroll_is_clamped() {
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
+    app.event(Event::Approval {
+        id: 1,
+        detail: "one short line".into(),
+    });
+    app.overlay.approval_scroll = 500;
+    let rows = screen(100, 30, &mut app);
+    assert!(
+        rows.iter().any(|row| row.contains("one short line")),
+        "scrolled past its only line"
+    );
+    assert_eq!(app.overlay.approval_scroll, 0);
+}
+#[test]
+fn help_rows_match_what_is_drawn() {
+    let last = help_lines()
+        .into_iter()
+        .rev()
+        .find(|line| !line.is_empty())
+        .unwrap();
+    let tail: String = last.chars().take(12).collect();
+    for width in 40..100 {
+        let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
+        app.overlay.help = true;
+        app.overlay.help_scroll = u16::MAX;
+        let rows = screen(width, 14, &mut app);
+        assert!(
+            rows.iter().any(|row| row.contains(&tail)),
+            "the help's last line is out of reach at width {width}"
+        );
+    }
+}

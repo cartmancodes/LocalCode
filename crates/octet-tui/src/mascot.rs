@@ -87,19 +87,18 @@ fn color(pixel: char, background: Color) -> Color {
 /// The 9 × 3-cell mini Octet for a pose: one pixel per half cell, each upper
 /// half block showing the top pixel in front and the one below behind it.
 pub fn mini(state: State, background: Color) -> Vec<Line<'static>> {
-    let pixels: Vec<Vec<char>> = art::mini(state)
-        .iter()
-        .map(|row| row.chars().collect())
-        .collect();
-    pixels
+    // The art is ASCII, one byte per pixel: read in place, no grid built
+    // per frame. Each cell is a half block, the top pixel over the bottom.
+    art::mini(state)
         .chunks(2)
         .map(|pair| {
-            Line::from_iter((0..pair[0].len()).map(|x| {
+            let (top, bottom) = (pair[0].as_bytes(), pair[1].as_bytes());
+            Line::from_iter(top.iter().zip(bottom).map(|(&top, &bottom)| {
                 Span::styled(
                     "▀",
                     Style::default()
-                        .fg(color(pair[0][x], background))
-                        .bg(color(pair[1][x], background)),
+                        .fg(color(char::from(top), background))
+                        .bg(color(char::from(bottom), background)),
                 )
             }))
         })
@@ -109,6 +108,12 @@ pub fn mini(state: State, background: Color) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_art_is_ascii() {
+        for state in State::ALL {
+            assert!(art::mini(state).iter().all(|row| row.is_ascii()));
+        }
+    }
     #[test]
     fn poses_all_look_different() {
         let drawn: Vec<Vec<Line>> = State::ALL

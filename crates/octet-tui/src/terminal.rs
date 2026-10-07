@@ -53,6 +53,9 @@ impl InputReader {
     }
 }
 impl Drop for InputReader {
+    /// Joins the reader thread, which sees `stopping` within its poll
+    /// interval: this can block the runtime thread for up to about 100 ms,
+    /// once per editor start or session end, which is acceptable.
     fn drop(&mut self) {
         self.stopping
             .store(true, std::sync::atomic::Ordering::Relaxed);

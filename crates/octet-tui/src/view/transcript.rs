@@ -40,9 +40,10 @@ impl App {
             .flat_map(|entry| entry.cache.iter().rev())
             .take(needed)
             .collect();
-        // Clamp the scroll to the actual cached history rather than showing emptiness.
-        if self.chat.scroll >= lines.len() {
-            self.chat.scroll = lines.len().saturating_sub(height);
+        // History shorter than the view needs: scroll no further than a
+        // full page from its start, rather than showing emptiness below.
+        if lines.len() < needed {
+            self.chat.scroll = self.chat.scroll.min(lines.len().saturating_sub(height));
         }
         lines
             .into_iter()
@@ -98,7 +99,9 @@ pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut rows = vec![String::new()];
     let mut col = 0;
     for word in text.split_word_bounds() {
-        let word_width = word.width();
+        // Measured as ratatui draws it, grapheme by grapheme: the string
+        // width of a word can be less (Arabic lam-alef counts as one).
+        let word_width: usize = word.graphemes(true).map(UnicodeWidthStr::width).sum();
         if word_width <= width {
             if col + word_width > width && col > 0 {
                 rows.push(String::new());
@@ -124,4 +127,35 @@ pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
         }
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// A row's width as ratatui draws it: the sum of its graphemes' widths.
+    fn drawn_width(row: &str) -> usize {
+        row.graphemes(true).map(UnicodeWidthStr::width).sum()
+    }
+    #[test]
+    fn wrap_never_exceeds_the_width() {
+        let samples = [
+            "لا ".repeat(40),
+            "界".repeat(50),
+            "👩‍💻 ".repeat(30),
+            "e\u{301} ".repeat(50),
+            "mixed 界 لا 👩‍💻 words and more words".repeat(4),
+        ];
+        for text in &samples {
+            for width in 2..30 {
+                for row in wrap(text, width) {
+                    let one_wide_grapheme = row.graphemes(true).count() == 1;
+                    assert!(
+                        drawn_width(&row) <= width || one_wide_grapheme,
+                        "{row:?} is {} wide at {width}",
+                        drawn_width(&row)
+                    );
+                }
+            }
+        }
+    }
 }

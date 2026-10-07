@@ -193,6 +193,15 @@ mod tests {
         assert_eq!(e.cursor, 0);
     }
     #[test]
+    fn editor_layout_measures_like_ratatui() {
+        let mut e = Editor::default();
+        assert!(e.insert(&"لا".repeat(20)));
+        for line in e.layout(7).0 {
+            let drawn: usize = line.graphemes(true).map(UnicodeWidthStr::width).sum();
+            assert!(drawn <= 7, "{line:?} is {drawn} wide");
+        }
+    }
+    #[test]
     fn tabs_are_laid_out_to_the_next_stop() {
         let mut e = Editor::default();
         assert!(e.insert("a\tb"));
