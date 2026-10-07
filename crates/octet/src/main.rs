@@ -194,8 +194,11 @@ async fn run() -> Result<i32, String> {
         (None, true) => Run::Rpc,
         (None, false) => Run::Interface,
     };
-    if matches!(run, Run::Print { ref prompt, .. } if prompt.trim().is_empty()) {
-        return Err("The prompt is empty".into());
+    if let Run::Print { prompt, .. } = &run {
+        if prompt.trim().is_empty() {
+            return Err("The prompt is empty".into());
+        }
+        headless::check_prompt_size(prompt.len())?;
     }
     if matches!(run, Run::Interface)
         && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal())

@@ -342,3 +342,30 @@ fn last_journal_record(directory: &std::path::Path) -> String {
     let text = std::fs::read_to_string(journal).unwrap();
     text.lines().last().unwrap_or_default().to_owned()
 }
+
+#[test]
+fn print_shuts_down_when_stdout_closes() {
+    let (mut child, temp) = octet(&["--print", "hello", "--output", "json"]);
+    drop(child.stdin.take());
+    // Nobody reads the replies: the first write fails.
+    drop(child.stdout.take());
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || tx.send(child.wait().unwrap()));
+    assert_eq!(rx.recv_timeout(LIMIT).unwrap().code(), Some(1));
+    assert!(last_journal_record(temp.path()).contains(r#""type":"stopped""#));
+}
+
+#[test]
+fn an_argument_prompt_over_the_limit_is_refused_before_opening() {
+    let long = "x".repeat(70 * 1024);
+    let (mut child, temp) = octet(&["--print", &long]);
+    drop(child.stdin.take());
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || tx.send(child.wait_with_output().unwrap()));
+    let output = rx.recv_timeout(LIMIT).unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("The prompt is over 64 KiB"), "{stderr}");
+    let journals = std::fs::read_dir(temp.path()).unwrap().count();
+    assert_eq!(journals, 0, "no session should have opened");
+}

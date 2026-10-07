@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    signal::unix::{signal, SignalKind},
+    signal::unix::{signal, Signal, SignalKind},
     sync::mpsc,
 };
 
@@ -26,18 +26,46 @@ pub(crate) async fn print(
     prompt: String,
     json: bool,
 ) -> Result<i32, String> {
-    let mut interrupts = signal(SignalKind::interrupt()).map_err(|e| e.to_string())?;
-    let mut terminations = signal(SignalKind::terminate()).map_err(|e| e.to_string())?;
-    let mut session = Session::open(config, directory)
+    let (mut session, mut signals) = open_headless(config, directory).await?;
+    let result = drive_print(&mut session, &mut signals, prompt, json).await;
+    // Always, whatever the loop returned: the vendor stops and the journal
+    // ends with its stop record.
+    session.shutdown().await;
+    result
+}
+
+/// SIGINT and SIGTERM, registered before the session opens so a signal
+/// while it opens is handled too.
+struct Signals {
+    interrupt: Signal,
+    terminate: Signal,
+}
+
+/// Registers the signals, then opens the session.
+async fn open_headless(config: Config, directory: PathBuf) -> Result<(Session, Signals), String> {
+    let signals = Signals {
+        interrupt: signal(SignalKind::interrupt()).map_err(|e| e.to_string())?,
+        terminate: signal(SignalKind::terminate()).map_err(|e| e.to_string())?,
+    };
+    let session = Session::open(config, directory)
         .await
         .map_err(|e| e.to_string())?;
+    Ok((session, signals))
+}
+
+async fn drive_print(
+    session: &mut Session,
+    signals: &mut Signals,
+    prompt: String,
+    json: bool,
+) -> Result<i32, String> {
     let mut out = Reply::default();
     let mut sent = false;
     let mut interrupted = false;
     let code = loop {
         let event = tokio::select! {
             event = session.events.recv() => event,
-            _ = interrupts.recv() => {
+            _ = signals.interrupt.recv() => {
                 // The first ^C cancels a running turn; otherwise stop now.
                 if sent && !interrupted {
                     interrupted = true;
@@ -46,7 +74,7 @@ pub(crate) async fn print(
                 }
                 break INTERRUPTED;
             }
-            _ = terminations.recv() => break TERMINATED,
+            _ = signals.terminate.recv() => break TERMINATED,
         };
         // After ^C, a session that ends without finishing the turn (a vendor
         // that ignored the interrupt) still exits as interrupted.
@@ -90,7 +118,6 @@ pub(crate) async fn print(
     if !json {
         out.end_text().await?;
     }
-    session.shutdown().await;
     Ok(code)
 }
 
@@ -101,12 +128,13 @@ pub(crate) async fn print(
 /// the end of stdin if every turn completed, and 1 otherwise or if the
 /// vendor stops.
 pub(crate) async fn rpc(config: Config, directory: PathBuf) -> Result<i32, String> {
-    // Registered first, so a signal while the session opens is handled too.
-    let mut interrupts = signal(SignalKind::interrupt()).map_err(|e| e.to_string())?;
-    let mut terminations = signal(SignalKind::terminate()).map_err(|e| e.to_string())?;
-    let mut session = Session::open(config, directory)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (mut session, mut signals) = open_headless(config, directory).await?;
+    let result = drive_rpc(&mut session, &mut signals).await;
+    session.shutdown().await;
+    result
+}
+
+async fn drive_rpc(session: &mut Session, signals: &mut Signals) -> Result<i32, String> {
     let mut requests = read_lines(BufReader::new(tokio::io::stdin()));
     let mut state = RpcState::default();
     let code = loop {
@@ -116,13 +144,13 @@ pub(crate) async fn rpc(config: Config, directory: PathBuf) -> Result<i32, Strin
         tokio::select! {
             // A signal stops the session cleanly: the vendor is stopped and
             // the journal finished before exit.
-            _ = interrupts.recv() => break INTERRUPTED,
-            _ = terminations.recv() => break TERMINATED,
+            _ = signals.interrupt.recv() => break INTERRUPTED,
+            _ = signals.terminate.recv() => break TERMINATED,
             line = requests.recv(), if !state.input_closed => {
                 let Some(line) = line else {
                     state.input_closed = true;
                     for id in std::mem::take(&mut state.approvals) {
-                        send_or_report(&session, Command::Answer { id, allow: false }).await?;
+                        send_or_report(session, Command::Answer { id, allow: false }).await?;
                     }
                     continue;
                 };
@@ -147,7 +175,7 @@ pub(crate) async fn rpc(config: Config, directory: PathBuf) -> Result<i32, Strin
                         state.failed |= matches!(outcome, Outcome::Failed | Outcome::Other(_));
                     }
                     Event::Approval { id, .. } if state.input_closed => {
-                        send_or_report(&session, Command::Answer { id, allow: false }).await?;
+                        send_or_report(session, Command::Answer { id, allow: false }).await?;
                     }
                     Event::Approval { id, .. } => state.approvals.push(id),
                     Event::ApprovalClosed(id) => state.approvals.retain(|open| *open != id),
@@ -156,9 +184,8 @@ pub(crate) async fn rpc(config: Config, directory: PathBuf) -> Result<i32, Strin
                 }
             }
         }
-        state.flush(&session).await?;
+        state.flush(session).await?;
     };
-    session.shutdown().await;
     Ok(code)
 }
 
@@ -185,10 +212,7 @@ impl RpcState {
     /// Sends waiting commands in order, stopping at a prompt while one runs.
     async fn flush(&mut self, session: &Session) -> Result<(), String> {
         while self.ready {
-            let prompt = matches!(
-                self.waiting.front(),
-                Some(Command::Prompt(_) | Command::PromptWithDisplay { .. } | Command::Compact)
-            );
+            let prompt = self.waiting.front().is_some_and(Command::starts_turn);
             if prompt && self.busy {
                 break;
             }
@@ -236,10 +260,19 @@ fn prompt_text(mut bytes: Vec<u8>) -> Result<String, String> {
             bytes.pop();
         }
     }
-    if bytes.len() > octet_core::PROMPT_LIMIT {
-        return Err("The prompt is over 64 KiB".into());
-    }
+    check_prompt_size(bytes.len())?;
     String::from_utf8(bytes).map_err(|_| "The prompt is not UTF-8 text".into())
+}
+
+/// Refuses a prompt the session would refuse, before one is opened.
+pub(crate) fn check_prompt_size(bytes: usize) -> Result<(), String> {
+    if bytes > octet_core::PROMPT_LIMIT {
+        return Err(format!(
+            "The prompt is over {} KiB",
+            octet_core::PROMPT_LIMIT / 1024
+        ));
+    }
+    Ok(())
 }
 
 /// One RPC command.

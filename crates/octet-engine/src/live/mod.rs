@@ -419,8 +419,8 @@ pub enum Command {
     Compact,
 }
 impl Command {
-    /// Whether this command starts a turn.
-    fn starts_turn(&self) -> bool {
+    /// Whether this command starts a turn: a prompt or a compaction.
+    pub fn starts_turn(&self) -> bool {
         matches!(
             self,
             Command::Prompt(_) | Command::PromptWithDisplay { .. } | Command::Compact
