@@ -8,6 +8,7 @@ mod editor;
 mod external;
 mod files;
 mod input;
+mod jobs;
 mod mascot;
 mod reconnect;
 mod remote;
@@ -137,8 +138,8 @@ pub(crate) enum Action {
     },
     /// Stop the running `!` command.
     CancelShell,
-    /// Run the `/remote-control` checks off the event loop.
-    RemoteControl,
+    /// Run disk or program work off the event loop.
+    Job(jobs::Job),
     /// Hand the terminal to the user's editor for the draft.
     ExternalEditor,
     Exit(Exit),
@@ -282,16 +283,21 @@ async fn run_session(
     let mut last_paint = Instant::now() - Duration::from_secs(1);
     let frame_time = Duration::from_millis(33);
     let mut events_open = true;
+    // Registered once, so no signal is lost between loop turns.
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
     let mut suspend =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(libc::SIGTSTP))?;
     // The `/remote-control` checks, running while the screen stays live.
-    let mut remote_check: Option<tokio::task::JoinHandle<remote::Checks>> = None;
+    // The one job running off the loop, with its label.
+    let mut job: Option<(&'static str, tokio::task::JoinHandle<jobs::Done>)> = None;
     // The running `!` command, if any.
     let mut shell_task: Option<ShellTask> = None;
     // The workspace file index being built for `@`.
-    let mut index_task: Option<tokio::task::JoinHandle<files::Index>> = None;
+    // The @ index, built on a plain thread: a walk stuck on a dead mount
+    // must not hold up the runtime's shutdown, as spawn_blocking would.
+    let mut index_task: Option<tokio::sync::oneshot::Receiver<files::Index>> = None;
     // The external editor, while it has the terminal.
     let mut editing: Option<(tokio::process::Child, external::Edit)> = None;
     loop {
@@ -327,16 +333,16 @@ async fn run_session(
                 }
                 dirty = true;
             }
-            checks = async {
-                match remote_check.as_mut() {
-                    Some(task) => task.await,
+            done = async {
+                match job.as_mut() {
+                    Some((_, task)) => task.await,
                     None => std::future::pending().await,
                 }
             } => {
-                remote_check = None;
-                match checks {
-                    Ok(checks) => show_remote_report(app, &checks),
-                    Err(error) => app.note(format!("Phone-access check failed: {error}")),
+                job = None;
+                match done {
+                    Ok(done) => jobs::apply(app, done),
+                    Err(error) => app.error(format!("A background task failed: {error}")),
                 }
                 dirty = true;
             }
@@ -407,7 +413,13 @@ async fn run_session(
                 };
                 match action {
                     Action::Continue => {}
-                    Action::RemoteControl => start_remote_check(app, &mut remote_check),
+                    Action::Job(next) => match &job {
+                        Some((running, _)) => app.hint(format!("Wait for: {running}")),
+                        None => {
+                            app.hint(next.label);
+                            job = Some((next.label, tokio::spawn(next.work)));
+                        }
+                    },
                     Action::ExternalEditor => {
                         match external::prepare(&app.composer.editor.text, external::editor_command()) {
                             Err(error) => app.error(error.to_string()),
@@ -461,15 +473,17 @@ async fn run_session(
                 }
                 if matches!(app.composer.files, files::Files::Wanted) {
                     let root = app.composer.root.clone();
-                    index_task = Some(tokio::task::spawn_blocking(move || {
-                        files::Index::build(&root)
-                    }));
+                    let (built, index) = tokio::sync::oneshot::channel();
+                    std::thread::spawn(move || {
+                        let _ = built.send(files::Index::build(&root));
+                    });
+                    index_task = Some(index);
                     app.composer.files = files::Files::Building;
                 }
                 dirty = true;
             }
             // While an editor waits in cooked mode, Ctrl+C is meant for it.
-            _ = quit_signal() => {
+            _ = unix_signal(&mut interrupt) => {
                 if editing.is_none() {
                     return Ok(Exit::Quit);
                 }
@@ -592,21 +606,6 @@ fn shell_finished(app: &mut App, result: Result<shell::Ran, shell::ShellError>, 
 }
 /// Starts the `/remote-control` checks in the background. They take up to
 /// about 2.5 seconds, and the loop must keep draining vendor events meanwhile.
-fn start_remote_check(app: &mut App, check: &mut Option<tokio::task::JoinHandle<remote::Checks>>) {
-    if check.is_some() {
-        app.hint("Phone-access check already running");
-        return;
-    }
-    app.hint("Checking phone access…");
-    *check = Some(tokio::spawn(remote::probe()));
-}
-/// The full report goes in the conversation; the status line, one row high,
-/// gets the count of problems.
-fn show_remote_report(app: &mut App, checks: &remote::Checks) {
-    let report = remote::report(checks);
-    app.note(report.as_str());
-    app.status_line = remote::summary(&report);
-}
 /// Ring once when an approval starts waiting; a burst of requests behind it
 /// rings no more.
 fn should_alert(app: &App, event: &octet_core::Event) -> bool {
@@ -626,9 +625,6 @@ pub(crate) fn write_terminal(bytes: &[u8]) {
     use std::io::Write;
     let mut stdout = io::stdout();
     let _ = stdout.write_all(bytes).and_then(|()| stdout.flush());
-}
-async fn quit_signal() {
-    let _ = tokio::signal::ctrl_c().await;
 }
 async fn unix_signal(signal: &mut tokio::signal::unix::Signal) {
     signal.recv().await;

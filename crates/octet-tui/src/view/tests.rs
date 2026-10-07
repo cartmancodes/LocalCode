@@ -512,3 +512,29 @@ mod model_detail_tests {
         assert!(COMMANDS.iter().any(|spec| spec.name == "/mode"));
     }
 }
+#[test]
+fn no_color_renders_without_colour_and_marks_the_selection() {
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
+    let mut app = App::new(&config, "journal".into());
+    app.monochrome = true;
+    app.note("a note");
+    app.overlay.palette = true;
+    let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let mut reversed = 0;
+    for y in 0..32 {
+        for x in 0..100 {
+            let cell = &buffer[(x, y)];
+            assert_eq!(
+                (cell.fg, cell.bg),
+                (Color::Reset, Color::Reset),
+                "({x}, {y})"
+            );
+            if cell.modifier.contains(Modifier::REVERSED) {
+                reversed += 1;
+            }
+        }
+    }
+    assert!(reversed > 0, "the palette's selected row must still show");
+}

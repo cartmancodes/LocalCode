@@ -8,6 +8,13 @@ use crate::{
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use octet_core::Engine;
+/// Finishes the off-loop job `action` asked for, as the event loop would.
+async fn run_job(app: &mut App, action: Action) {
+    let Action::Job(job) = action else {
+        panic!("no job was started")
+    };
+    crate::jobs::apply(app, job.work.await);
+}
 /// Runs a command; what it sent the session.
 async fn sends(app: &mut App, input: &str) -> Vec<Command> {
     let vendor = RecordingVendor::default();
@@ -380,20 +387,11 @@ fn only_the_first_waiting_approval_rings() {
 #[tokio::test]
 async fn remote_control_reports_without_changing_the_session() {
     let mut app = app();
-    assert!(matches!(
-        command(&mut app, "/remote-control").await,
-        Action::RemoteControl
-    ));
-    let mut check = None;
-    start_remote_check(&mut app, &mut check);
-    assert_eq!(app.status_line, "Checking phone access…");
-    // A second request while one runs starts nothing new.
-    start_remote_check(&mut app, &mut check);
-    assert_eq!(app.status_line, "Phone-access check already running");
+    let action = command(&mut app, "/remote-control").await;
+    assert!(matches!(&action, Action::Job(job) if job.label == "Checking phone access…"));
     // Under test the checks run stand-in program names that never exist,
     // so the result doesn't depend on what this machine has installed.
-    let checks = check.take().unwrap().await.unwrap();
-    show_remote_report(&mut app, &checks);
+    run_job(&mut app, action).await;
     let text = app.entries_text();
     assert!(text.contains("Remote control setup"), "{text}");
     assert!(text.contains("[!!] Tailscale isn't connected"), "{text}");
@@ -1064,7 +1062,8 @@ async fn resume_picks_the_listed_session() {
         Action::Continue
     ));
     assert!(app.entries_text().contains("Run /sessions first"));
-    command(&mut app, "/sessions").await;
+    let action = command(&mut app, "/sessions").await;
+    run_job(&mut app, action).await;
     let text = app.entries_text();
     assert!(text.contains("1. claude · c-1"), "{text}");
     assert!(text.contains("first claude prompt"));
@@ -1373,4 +1372,41 @@ async fn every_command_needing_no_open_turn_refuses_the_same_way() {
             assert!(vendor.sent.borrow().is_empty(), "{} sent", spec.name);
         }
     }
+}
+#[tokio::test]
+async fn one_tab_listing_at_a_time() {
+    let mut app = app();
+    let vendor = RecordingVendor::default();
+    // A listing still stuck on a slow folder from an earlier Tab.
+    app.composer
+        .listing
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(app.composer.editor.insert("/tm"));
+    key_action(&mut app, &vendor, key(KeyCode::Tab)).await;
+    assert!(
+        app.status_line.starts_with("Still reading"),
+        "{}",
+        app.status_line
+    );
+    assert_eq!(app.composer.editor.text, "/tm");
+    // A listing that finishes frees the next Tab.
+    app.composer
+        .listing
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    key_action(&mut app, &vendor, key(KeyCode::Tab)).await;
+    assert!(!app
+        .composer
+        .listing
+        .load(std::sync::atomic::Ordering::SeqCst));
+}
+#[tokio::test]
+async fn sessions_listing_runs_off_the_loop() {
+    let mut app = app();
+    let action = command(&mut app, "/sessions").await;
+    // Nothing is read yet: the journals are read by the job, not the key.
+    assert!(matches!(&action, Action::Job(job) if job.label == "Reading recent sessions…"));
+    assert!(app.conn.listed.is_empty());
+    assert!(!app.entries_text().contains("No earlier vendor sessions"));
+    run_job(&mut app, action).await;
+    assert!(app.entries_text().contains("No earlier vendor sessions"));
 }

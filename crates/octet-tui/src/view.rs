@@ -46,6 +46,23 @@ fn mode_chip(app: &App) -> Span<'static> {
     Span::styled(text, Style::default().fg(color).bold())
 }
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    paint(frame, app);
+    if app.monochrome {
+        without_colour(frame.buffer_mut());
+    }
+}
+/// NO_COLOR: every cell takes the terminal's own colours. A selection, shown
+/// only by its background, becomes reverse video instead.
+fn without_colour(buffer: &mut Buffer) {
+    for cell in &mut buffer.content {
+        if cell.bg == SELECTED {
+            cell.modifier.insert(Modifier::REVERSED);
+        }
+        cell.fg = Color::Reset;
+        cell.bg = Color::Reset;
+    }
+}
+fn paint(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
     if area.width < 38 || area.height < 12 {

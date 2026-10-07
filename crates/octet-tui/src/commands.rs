@@ -3,6 +3,7 @@
 use crate::{
     app::App,
     input::{copy_reply, submit},
+    jobs::Job,
     vendor::{By, Vendor},
     Action, Exit,
 };
@@ -301,7 +302,7 @@ pub(crate) async fn try_command(app: &mut App, vendor: &dyn Vendor, input: &str)
         // A failed /image leaves the line in the prompt box to correct.
         Cmd::Image if !image_command(app, argument) => return None,
         Cmd::Image => {}
-        Cmd::Sessions => sessions_command(app).await,
+        Cmd::Sessions => return Some(sessions_command(app)),
         Cmd::Resume => return Some(resume_command(app, argument)),
         Cmd::Steer if argument.is_empty() => app.note("Use /steer <text>"),
         Cmd::Steer => steer(app, vendor, argument.to_owned()),
@@ -323,10 +324,10 @@ pub(crate) async fn try_command(app: &mut App, vendor: &dyn Vendor, input: &str)
         )),
         Cmd::Goal => goal_command(app, vendor, argument).await,
         Cmd::RemoteControl => match argument {
-            "" | "status" => return Some(Action::RemoteControl),
+            "" | "status" => return Some(Action::Job(Job::remote())),
             _ => app.note("Use /remote-control or /remote-control status"),
         },
-        Cmd::Export => return Some(export_command(app, argument).await),
+        Cmd::Export => return Some(export_command(app, argument)),
     }
     Some(Action::Continue)
 }
@@ -495,15 +496,23 @@ const SESSIONS_LISTED: usize = 20;
 
 /// `/sessions`: this workspace's recent vendor sessions, from the journals
 /// beside this one.
-async fn sessions_command(app: &mut App) {
+fn sessions_command(app: &App) -> Action {
     let directory = app
         .conn
         .journal
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_default();
-    app.conn.listed =
-        octet_core::recent_sessions(&directory, &app.composer.root, SESSIONS_LISTED).await;
+    Action::Job(Job::sessions(
+        directory,
+        app.composer.root.clone(),
+        SESSIONS_LISTED,
+    ))
+}
+
+/// Lists what `/sessions` found, keeping it for `/resume N`.
+pub(crate) fn show_sessions(app: &mut App, listed: Vec<octet_core::RecentSession>) {
+    app.conn.listed = listed;
     if app.conn.listed.is_empty() {
         app.note("No earlier vendor sessions in this workspace");
         return;
@@ -726,7 +735,7 @@ async fn goal_command(app: &mut App, vendor: &dyn Vendor, argument: &str) {
         },
     }
 }
-async fn export_command(app: &mut App, argument: &str) -> Action {
+fn export_command(app: &App, argument: &str) -> Action {
     let path = if argument.trim().is_empty() {
         std::env::current_dir()
             .unwrap_or_default()
@@ -734,11 +743,7 @@ async fn export_command(app: &mut App, argument: &str) -> Action {
     } else {
         PathBuf::from(argument.trim())
     };
-    match octet_core::export_journal(&app.conn.journal, &path).await {
-        Ok(()) => app.note(format!("Exported journal to {}", path.display())),
-        Err(error) => app.note(format!("Export failed: {error}")),
-    }
-    Action::Continue
+    Action::Job(Job::export(app.conn.journal.clone(), path))
 }
 pub(crate) async fn command(app: &mut App, vendor: &dyn Vendor, input: &str) -> Action {
     try_command(app, vendor, input)

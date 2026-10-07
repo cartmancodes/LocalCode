@@ -11,7 +11,14 @@ use crate::{
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use octet_core::Command;
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::time::Instant;
 
 /// How long Tab waits for a folder listing.
@@ -28,6 +35,13 @@ pub(crate) async fn off_loop<T: Send + 'static>(
         let _ = done.send(work());
     });
     tokio::time::timeout(limit, result).await.ok()?.ok()
+}
+/// Marks a Tab listing finished when dropped, however the listing ends.
+struct Listing(Arc<AtomicBool>);
+impl Drop for Listing {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 /// A key chosen from the palette.
 pub(crate) fn palette_key(app: &mut App, key: &str) -> Action {
@@ -387,14 +401,21 @@ async fn composer_key(
         KeyCode::End => app.composer.editor.end(),
         KeyCode::Backspace => app.composer.editor.backspace(),
         KeyCode::Delete => app.composer.editor.delete(),
+        KeyCode::Tab if app.composer.listing.load(Ordering::SeqCst) => {
+            app.hint("Still reading the last folder; try Tab again in a moment");
+        }
         KeyCode::Tab => {
             let home = std::env::var_os("HOME").map(PathBuf::from);
+            app.composer.listing.store(true, Ordering::SeqCst);
+            let listing = Listing(Arc::clone(&app.composer.listing));
             let (text, cursor, root) = (
                 app.composer.editor.text.clone(),
                 app.composer.editor.cursor,
                 app.composer.root.clone(),
             );
             let tab = off_loop(TAB_WAIT, move || {
+                // Released when the listing ends, even one Tab gave up on.
+                let _listing = listing;
                 composer::tab(&text, cursor, &root, home.as_deref())
             })
             .await;

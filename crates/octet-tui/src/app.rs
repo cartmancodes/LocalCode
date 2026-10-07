@@ -177,6 +177,9 @@ pub(crate) struct Composer {
     pub(crate) completion: Option<crate::composer::Completion>,
     /// The workspace file index for `@`.
     pub(crate) files: crate::files::Files,
+    /// A Tab folder listing is still running (perhaps stuck on a slow
+    /// mount); the next Tab waits for it instead of starting another.
+    pub(crate) listing: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Prompts sent while a turn ran, sent in order as turns finish.
     pub(crate) queue: VecDeque<crate::vendor::Prompt>,
 }
@@ -227,6 +230,7 @@ impl App {
                 root: config.cwd.clone(),
                 attachments: Vec::new(),
                 images: Vec::new(),
+                listing: std::sync::Arc::default(),
                 shell_running: false,
                 completion: None,
                 files: crate::files::Files::Unbuilt,
