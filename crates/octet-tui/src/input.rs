@@ -438,7 +438,7 @@ pub(crate) async fn cancel_turn(app: &mut App, vendor: &dyn Vendor) {
         let plural = if dropped == 1 { "" } else { "s" };
         app.note(format!("Dropped {dropped} queued prompt{plural}"));
     }
-    app.conn.cancelling = app.conn.is_running();
+    app.conn.cancel();
     vendor.interrupt();
 }
 pub(crate) fn cycle_mode(app: &mut App, vendor: &dyn Vendor) -> Action {

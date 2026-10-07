@@ -9,6 +9,7 @@ mod external;
 mod files;
 mod input;
 mod mascot;
+mod reconnect;
 mod remote;
 mod shell;
 mod text;
@@ -164,8 +165,10 @@ pub(crate) enum Exit {
 pub fn command_names() -> impl Iterator<Item = &'static str> {
     COMMANDS.iter().map(|spec| spec.name)
 }
-/// Runs the interface until the user quits, reconnecting for `/new`,
-/// `/reconnect`, `/model` and full-access changes. Journals go in `directory`.
+/// Runs the interface until the user quits. When a session ends for a
+/// reconnect (`/new`, `/reconnect`, `/model`, `/mode`, `/effort`, `/fork`,
+/// `/resume`), `reconnect::plan` decides the next one. Journals go in
+/// `directory`.
 ///
 /// # Errors
 ///
@@ -198,158 +201,30 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
             attach_goal_store(&mut app, goal_store.clone()).await;
         }
         app.connection(&config, session.journal.clone());
-        // Announced when the vendor names the fork, which for Claude is
-        // after its first turn, possibly several reconnects later.
-        app.conn.forking_from = config.resume.clone().filter(|_| config.fork);
         let result = run_session(&mut terminal, &guard, &mut app, &mut session).await;
         session.shutdown().await;
-        // Carry the last vendor-confirmed mode, never an unconfirmed pending one.
-        config.mode = app.conn.mode;
-        config.effort = app.conn.effort.clone();
-        settle_fork(&mut config, &app.conn.session);
-        match result? {
-            Exit::Model(selection) => {
-                pause_active_goal(&mut app, "model switch").await;
-                let cross_provider = selection.provider != config.engine;
-                let binary = binaries.get(&selection.provider).cloned();
-                let next = selection.configure(&config, &app.conn.session, binary);
-                binaries.insert(next.engine, next.binary.clone());
-                if let Some(notice) = dropped_effort(
-                    config.effort.as_deref(),
-                    next.engine,
-                    next.effort.as_deref(),
-                ) {
-                    app.note(notice);
-                }
-                app.note(format!(
-                    "Model → {} / {}. {} Previous journal: {}",
-                    next.engine,
-                    next.model.as_deref().unwrap_or("vendor default"),
-                    if cross_provider {
-                        "New provider context; earlier displayed messages are not sent to this provider."
-                    } else {
-                        "Resuming the same vendor context."
-                    },
-                    app.conn.journal.display()
-                ));
-                config = next;
-                retained_app = Some(app);
-            }
-            Exit::Mode(mode) => {
-                pause_active_goal(&mut app, "mode switch").await;
-                app.note(full_access_notice(mode, config.engine, &app.conn.session));
-                config.mode = mode;
-                if let Some(id) = resume_id(&app, &config) {
-                    config.resume = Some(id);
-                }
-                retained_app = Some(app);
-            }
-            Exit::Effort(level) => {
-                pause_active_goal(&mut app, "effort change").await;
-                app.note(format!(
-                    "Reasoning effort → {}. Reconnecting to the same session…",
-                    level.as_deref().unwrap_or("vendor default")
-                ));
-                config.effort = level;
-                if let Some(id) = resume_id(&app, &config) {
-                    config.resume = Some(id);
-                }
-                retained_app = Some(app);
-            }
-            Exit::Fork => {
-                pause_active_goal(&mut app, "fork").await;
-                app.note(format!("Forking from {}…", app.conn.session));
-                config.resume = Some(app.conn.session.clone());
-                config.fork = true;
-                retained_app = Some(app);
-            }
-            Exit::Resume {
-                engine,
-                session,
-                model,
-            } => {
-                pause_active_goal(&mut app, "resume").await;
-                let binary = binaries
-                    .get(&engine)
-                    .cloned()
-                    .unwrap_or_else(|| PathBuf::from(engine.provider().default_binary));
-                binaries.insert(engine, binary.clone());
-                let resumed = format!(
-                    "Resumed {engine} session {session}. Previous journal: {}",
-                    app.conn.journal.display()
-                );
-                let effort = resume_into(&mut config, engine, session, model, binary);
-                opening_notice = Some(match effort {
-                    Some(effort) => format!("{resumed}\n{effort}"),
-                    None => resumed,
-                });
-            }
-            Exit::New => {
-                config.resume = None;
-                config.fork = false;
-            }
-            Exit::Reconnect => {
-                if let Some(id) = resume_id(&app, &config) {
-                    config.resume = Some(id);
-                }
-                pause_active_goal(&mut app, "reconnect").await;
-                app.note(reconnect_notice(config.resume.is_some(), &app.conn.journal));
-                retained_app = Some(app);
-            }
-            Exit::Quit => break,
+        let ended = reconnect::Ended {
+            session: &app.conn.session,
+            journal: &app.conn.journal,
+            mode: app.conn.mode,
+            effort: app.conn.effort.clone(),
+        };
+        let Some(plan) = reconnect::plan(result?, &config, &ended, &mut binaries) else {
+            break;
+        };
+        if let Some(why) = plan.pause {
+            pause_active_goal(&mut app, why).await;
         }
+        for note in plan.notes {
+            app.note(note);
+        }
+        opening_notice = plan.opening;
+        config = plan.config;
+        retained_app = plan.keep_app.then_some(app);
     }
     drop(terminal);
     drop(guard);
     Ok(())
-}
-/// Points `config` at vendor session `session` of `engine` for `/resume`:
-/// a resume, never a fork, with an effort the provider takes. The notice
-/// when the effort was dropped.
-fn resume_into(
-    config: &mut Config,
-    engine: octet_core::Engine,
-    session: String,
-    model: Option<String>,
-    binary: PathBuf,
-) -> Option<String> {
-    let before = config.effort.take();
-    config.effort = before
-        .clone()
-        .filter(|level| engine.check_effort(level).is_ok());
-    let notice = dropped_effort(before.as_deref(), engine, config.effort.as_deref());
-    config.engine = engine;
-    config.binary = binary;
-    config.model = model;
-    config.resume = Some(session);
-    config.fork = false;
-    notice
-}
-/// The notice when a switch to `engine` dropped effort `before`.
-fn dropped_effort(
-    before: Option<&str>,
-    engine: octet_core::Engine,
-    after: Option<&str>,
-) -> Option<String> {
-    match (before, after) {
-        (Some(level), None) => Some(format!(
-            "{} does not take effort {level}; using its default",
-            engine.title()
-        )),
-        _ => None,
-    }
-}
-/// A fork happens once: when the vendor has named the new session, later
-/// reconnects resume it. Until then (Claude names a fork with its first
-/// turn) the next connection forks again, so the original stays untouched.
-fn settle_fork(config: &mut Config, session: &str) {
-    if !session.is_empty() && config.resume.as_deref() != Some(session) {
-        config.fork = false;
-    }
-}
-/// The vendor session a reconnect resumes, once there is one.
-fn resume_id(app: &App, config: &Config) -> Option<String> {
-    (!app.conn.session.is_empty() && config.engine.is_vendor()).then(|| app.conn.session.clone())
 }
 /// Sizes ratatui to the terminal again after something else used it.
 fn fit(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> {
@@ -770,35 +645,5 @@ async fn pause_active_goal(app: &mut App, why: &str) {
         )),
     }
 }
-/// The retained screen spans two journals after a reconnect; say where the
-/// earlier part is, because /export and /session cover only the new one.
-fn reconnect_notice(resumed: bool, previous: &std::path::Path) -> String {
-    format!(
-        "{} Earlier messages stay visible. Previous journal: {}",
-        if resumed {
-            "Reconnecting to the same vendor session."
-        } else {
-            "Reconnecting. No vendor session ID yet, so the vendor starts fresh."
-        },
-        previous.display()
-    )
-}
-/// Says whether a full-access change resumes the vendor session or starts over.
-fn full_access_notice(mode: octet_core::Mode, engine: octet_core::Engine, session: &str) -> String {
-    let change = if mode == octet_core::Mode::FullAccess {
-        "Full access: the agent can run any command and edit any file without asking.".to_owned()
-    } else {
-        format!("Leaving full access for {}.", mode.label())
-    };
-    let next = if engine.offline() {
-        "Restarting the offline demo…"
-    } else if session.is_empty() {
-        "Starting a new session (no session ID yet)…"
-    } else {
-        "Reconnecting to the same session…"
-    };
-    format!("{change} {next}")
-}
-
 #[cfg(test)]
 mod tests;

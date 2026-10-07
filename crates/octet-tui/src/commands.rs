@@ -400,14 +400,14 @@ fn compact_command(app: &mut App, vendor: &dyn Vendor) {
 /// sends it as a prompt when idle.
 pub(crate) fn steer(app: &mut App, vendor: &dyn Vendor, text: String) {
     let running = app.conn.is_running();
-    if running && app.conn.engine.provider().steer && !app.conn.cancelling {
+    if running && app.conn.engine.provider().steer && !app.conn.is_cancelling() {
         if let Err(error) = vendor.send(Command::Steer(text)) {
             app.error(error.to_string());
         }
         return;
     }
     if submit(app, vendor, text) && running {
-        app.note(if app.conn.cancelling {
+        app.note(if app.conn.is_cancelling() {
             "The turn is stopping; queued the steer as the next prompt".to_owned()
         } else {
             format!(

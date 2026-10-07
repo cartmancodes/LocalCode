@@ -3,6 +3,7 @@ use crate::app::ConnPhase;
 use crate::{
     commands::{self, *},
     input::*,
+    reconnect::*,
     vendor::{Prompt, RecordingVendor},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -27,7 +28,7 @@ fn app() -> App {
 #[tokio::test]
 async fn model_command_rejects_busy_switch_and_preserves_current_session() {
     let mut app = app();
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     assert!(matches!(
         command(&mut app, "/model claude example").await,
         Action::Continue
@@ -488,7 +489,7 @@ async fn ctrl_c_closes_help_and_the_palette_without_quitting() {
 async fn ctrl_c_interrupts_a_running_turn_instead_of_quitting() {
     let mut app = app();
     let (_temp, mut session) = demo_session("octet-quit-busy").await;
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     for _ in 0..2 {
         assert!(matches!(
             key_action(&mut app, &session.handle, ctrl('c')).await,
@@ -513,7 +514,7 @@ async fn ctrl_c_in_approval_dialog_pauses_the_active_goal() {
     let mut app = app();
     app.goals.goal = Some(octet_core::goal::Goal::new("Ship the project").unwrap());
     app.goals.goal_prompt_sent();
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     app.overlay.approvals.push_back((1, "command".into()));
     let temp = octet_testkit::TempDir::new("octet-goal-cancel");
     let directory = temp.path().to_path_buf();
@@ -581,7 +582,7 @@ async fn mode_command_switches_live_modes_and_rejects_unknown() {
     );
     assert_eq!(app.conn.mode_pending, Some(octet_core::Mode::Auto));
     app.conn.mode_pending = None;
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     assert_eq!(
         sends(&mut app, "/mode accept-edits").await,
         [Command::SetMode(octet_core::Mode::AcceptEdits)]
@@ -598,7 +599,7 @@ async fn mode_command_switches_live_modes_and_rejects_unknown() {
 #[tokio::test]
 async fn full_access_requires_idle_ready_session() {
     let mut app = app();
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     assert!(matches!(
         command(&mut app, "/mode full-access").await,
         Action::Continue
@@ -789,7 +790,7 @@ async fn reconnect_pauses_an_active_goal_and_names_the_previous_journal() {
 async fn enter_while_running_queues_the_prompt() {
     let mut app = app();
     let (_temp, session) = demo_session("octet-queue-enter").await;
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     assert!(app.composer.editor.insert("next please"));
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert_eq!(app.composer.queue.len(), 1);
@@ -800,7 +801,7 @@ async fn enter_while_running_queues_the_prompt() {
 async fn a_finished_turn_sends_the_next_queued_prompt() {
     let mut app = app();
     let (_temp, mut session) = demo_session("octet-queue-send").await;
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     app.composer
         .queue
         .push_back(Prompt::plain("queued one".into()));
@@ -820,7 +821,7 @@ async fn a_finished_turn_sends_the_next_queued_prompt() {
 async fn cancel_drops_the_queue() {
     let mut app = app();
     let (_temp, session) = demo_session("octet-queue-cancel").await;
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     app.composer.queue.push_back(Prompt::plain("a".into()));
     app.composer.queue.push_back(Prompt::plain("b".into()));
     key_action(&mut app, &session.handle, key(KeyCode::Esc)).await;
@@ -831,7 +832,7 @@ async fn cancel_drops_the_queue() {
 async fn the_queue_is_bounded() {
     let mut app = app();
     let (_temp, session) = demo_session("octet-queue-bound").await;
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     for i in 0..8 {
         app.composer.queue.push_back(Prompt::plain(format!("p{i}")));
     }
@@ -861,7 +862,7 @@ async fn steer_on_claude_queues_a_follow_up() {
     let config = Config::new(Engine::CLAUDE, "claude", "/tmp");
     let mut app = App::new(&config, "journal".into());
     let (_temp, session) = demo_session("octet-steer-claude").await;
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     steer(&mut app, &session.handle, "also check docs".into());
     assert_eq!(app.composer.queue.len(), 1);
     assert!(
@@ -914,7 +915,7 @@ async fn fork_needs_an_idle_vendor_session() {
         command(&mut app, "/fork").await,
         Action::Exit(Exit::Fork)
     ));
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     assert!(matches!(command(&mut app, "/fork").await, Action::Continue));
     assert_eq!(app.status_line, TURN_OPEN);
     let mut fresh = self::app();
@@ -941,7 +942,7 @@ async fn compact_needs_an_idle_session() {
     let mut app = app();
     assert_eq!(sends(&mut app, "/compact").await, [Command::Compact]);
     assert!(app.conn.is_running());
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     assert!(matches!(
         command(&mut app, "/compact").await,
         Action::Continue
@@ -966,7 +967,7 @@ async fn image_attaches_and_shows_in_the_title() {
     assert_eq!(app.composer.images.len(), 1);
     assert!(crate::view::composer_title(&app).contains("+ image shot.png"));
     let (_temp, session) = demo_session("octet-image-send").await;
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     assert!(app.composer.editor.insert("look"));
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert!(app.composer.images.is_empty());
@@ -1093,7 +1094,7 @@ async fn resume_picks_the_listed_session() {
 #[test]
 fn a_stopped_session_drops_the_queue() {
     let mut app = app();
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     app.composer.queue.push_back(Prompt::plain("a".into()));
     app.composer.queue.push_back(Prompt::plain("b".into()));
     app.event(octet_core::Event::Stopped);
@@ -1179,7 +1180,7 @@ async fn a_failed_image_keeps_the_draft() {
 async fn steer_while_cancelling_queues_it() {
     let mut app = app();
     let (_temp, session) = demo_session("octet-steer-cancel").await;
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     cancel_turn(&mut app, &session.handle).await;
     steer(&mut app, &session.handle, "look at the tests".into());
     assert_eq!(
@@ -1191,7 +1192,7 @@ async fn steer_while_cancelling_queues_it() {
     app.event(octet_core::Event::Finished {
         outcome: octet_core::Outcome::Interrupted,
     });
-    assert!(!app.conn.cancelling);
+    assert!(!app.conn.is_cancelling());
 }
 #[tokio::test]
 async fn up_recalls_a_prompt_with_its_images() {
@@ -1200,7 +1201,7 @@ async fn up_recalls_a_prompt_with_its_images() {
     app.composer.root = dir.path().to_path_buf();
     let (_temp, session) = demo_session("octet-image-recall-session").await;
     command(&mut app, "/image shot.png").await;
-    app.conn.phase = ConnPhase::Running;
+    app.conn.phase = ConnPhase::Running { cancelling: false };
     assert!(app.composer.editor.insert("look"));
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert!(app.composer.images.is_empty());
@@ -1361,7 +1362,7 @@ async fn every_command_needing_no_open_turn_refuses_the_same_way() {
         for open in ["running", "approval"] {
             let mut app = app();
             if open == "running" {
-                app.conn.phase = ConnPhase::Running;
+                app.conn.phase = ConnPhase::Running { cancelling: false };
             } else {
                 app.overlay.approvals.push_back((1, "x".into()));
             }

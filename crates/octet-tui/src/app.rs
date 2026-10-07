@@ -51,8 +51,6 @@ pub(crate) struct Connection {
     pub(crate) phase: ConnPhase,
     /// The reasoning effort requested; `None` is the vendor default.
     pub(crate) effort: Option<String>,
-    /// The running turn was cancelled and has not ended yet.
-    pub(crate) cancelling: bool,
     /// The session a `/fork` started from, until the vendor names the fork.
     pub(crate) forking_from: Option<String>,
     /// What `/sessions` last listed, for `/resume N`.
@@ -68,20 +66,55 @@ pub(crate) enum ConnPhase {
     Connecting,
     /// Ready, with no turn running.
     Idle,
-    /// A turn is running.
-    Running,
+    /// A turn is running; `cancelling` once the user cancelled it and it
+    /// has not ended yet.
+    Running { cancelling: bool },
     /// The session ended; only a reconnect leaves this.
     Stopped,
 }
 
 impl Connection {
+    /// A connection being opened for `config`, journaling to `journal`.
+    pub(crate) fn new(config: &octet_core::Config, journal: PathBuf) -> Self {
+        Self {
+            engine: config.engine,
+            mode: config.mode,
+            mode_pending: None,
+            workspace: clean(&config.cwd.display().to_string()),
+            model: "awaiting model metadata".into(),
+            requested_model: config.model.clone(),
+            resolved_model: None,
+            models: Vec::new(),
+            session: String::new(),
+            journal,
+            phase: ConnPhase::Connecting,
+            effort: config.effort.clone(),
+            // Announced when the vendor names the fork, which for Claude is
+            // after its first turn, possibly several reconnects later.
+            forking_from: config.resume.clone().filter(|_| config.fork),
+            listed: Vec::new(),
+            status: "connecting".into(),
+            usage: String::new(),
+            activity: State::Thinking,
+        }
+    }
     /// The session is open (idle or in a turn).
     pub(crate) fn is_ready(&self) -> bool {
-        matches!(self.phase, ConnPhase::Idle | ConnPhase::Running)
+        matches!(self.phase, ConnPhase::Idle | ConnPhase::Running { .. })
     }
     /// A turn is running.
     pub(crate) fn is_running(&self) -> bool {
-        self.phase == ConnPhase::Running
+        matches!(self.phase, ConnPhase::Running { .. })
+    }
+    /// The user cancelled the running turn, which has not ended yet.
+    pub(crate) fn is_cancelling(&self) -> bool {
+        self.phase == ConnPhase::Running { cancelling: true }
+    }
+    /// The user cancelled the running turn.
+    pub(crate) fn cancel(&mut self) {
+        if self.is_running() {
+            self.phase = ConnPhase::Running { cancelling: true };
+        }
     }
     /// The session has ended.
     pub(crate) fn is_stopped(&self) -> bool {
@@ -89,15 +122,13 @@ impl Connection {
     }
     /// A turn started or a prompt was sent; a stopped session stays stopped.
     pub(crate) fn start_turn(&mut self) {
-        self.cancelling = false;
         if self.phase != ConnPhase::Stopped {
-            self.phase = ConnPhase::Running;
+            self.phase = ConnPhase::Running { cancelling: false };
         }
     }
     /// The running turn ended.
     pub(crate) fn end_turn(&mut self) {
-        self.cancelling = false;
-        if self.phase == ConnPhase::Running {
+        if self.is_running() {
             self.phase = ConnPhase::Idle;
         }
     }
@@ -175,26 +206,7 @@ pub struct App {
 impl App {
     pub fn new(config: &octet_core::Config, journal: PathBuf) -> Self {
         Self {
-            conn: Connection {
-                engine: config.engine,
-                mode: config.mode,
-                mode_pending: None,
-                workspace: clean(&config.cwd.display().to_string()),
-                model: "awaiting model metadata".into(),
-                requested_model: config.model.clone(),
-                resolved_model: None,
-                models: Vec::new(),
-                session: String::new(),
-                journal,
-                phase: ConnPhase::Connecting,
-                effort: config.effort.clone(),
-                cancelling: false,
-                forking_from: None,
-                listed: Vec::new(),
-                status: "connecting".into(),
-                usage: String::new(),
-                activity: State::Thinking,
-            },
+            conn: Connection::new(config, journal),
             chat: Transcript {
                 entries: VecDeque::new(),
                 bytes: 0,
@@ -243,22 +255,13 @@ impl App {
         if std::mem::take(&mut self.composer.shell_running) {
             self.note("The running command stopped when the session changed");
         }
-        self.conn.engine = config.engine;
-        self.conn.mode = config.mode;
-        self.conn.mode_pending = None;
-        self.conn.model = "awaiting model metadata".into();
-        self.conn.requested_model = config.model.clone();
-        self.conn.resolved_model = None;
-        self.conn.models.clear();
-        self.conn.session.clear();
+        // Only the last /sessions listing outlives a connection.
+        let listed = std::mem::take(&mut self.conn.listed);
+        self.conn = Connection {
+            listed,
+            ..Connection::new(config, journal)
+        };
         self.chat.catalog_focus = None;
-        self.conn.journal = journal;
-        self.conn.phase = ConnPhase::Connecting;
-        self.conn.cancelling = false;
-        self.conn.effort = config.effort.clone();
-        self.conn.status = "connecting".into();
-        self.conn.activity = State::Thinking;
-        self.conn.usage.clear();
         self.overlay.approvals.clear();
         self.overlay.approval_scroll = 0;
         self.goals.reset_turn();
@@ -568,7 +571,6 @@ impl App {
                 }
                 self.conn.mode_pending = None;
                 self.conn.phase = ConnPhase::Stopped;
-                self.conn.cancelling = false;
                 if let Some(from) = self.conn.forking_from.take() {
                     self.note(format!(
                         "The fork from {from} did not open; /reconnect tries again"
