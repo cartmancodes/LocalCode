@@ -395,3 +395,100 @@ async fn shell_running_follows_the_task() {
     shell_finished(&mut app, Ok(ran("true", "")));
     assert!(!app.shell_running());
 }
+/// A conversation with Claude, then a switch to Codex.
+fn switched_to_codex() -> App {
+    let mut app = crate::test_support::app_for(Engine::CLAUDE);
+    crate::test_support::idle(&mut app);
+    app.event(octet_core::Event::User("Remember OCTET_42".into()));
+    app.event(octet_core::Event::Started);
+    app.event(octet_core::Event::Text("OCTET_42".into()));
+    app.event(octet_core::Event::Finished {
+        outcome: octet_core::Outcome::Completed,
+    });
+    // As the reconnect to another provider leaves the kept interface.
+    app.conn.engine = Engine::CODEX;
+    assert!(app.carry_conversation());
+    app
+}
+fn sent_wire(vendor: &RecordingVendor) -> Vec<(String, String)> {
+    vendor
+        .sent
+        .borrow()
+        .iter()
+        .map(|command| match command {
+            Command::PromptWithDisplay { wire, display, .. } => (wire.clone(), display.clone()),
+            Command::Prompt(text) => (text.clone(), text.clone()),
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+#[tokio::test]
+async fn the_first_prompt_after_a_switch_carries_the_transcript() {
+    let mut app = switched_to_codex();
+    let vendor = RecordingVendor::default();
+    assert!(app.composer.editor.insert("What code?"));
+    key_action(&mut app, &vendor, key(KeyCode::Enter)).await;
+    let sent = sent_wire(&vendor);
+    let (wire, display) = &sent[0];
+    assert!(wire.starts_with("[Octet handoff]"), "{wire}");
+    assert!(wire.contains("User:\nRemember OCTET_42"), "{wire}");
+    assert!(wire.contains("Assistant (claude):\nOCTET_42"), "{wire}");
+    assert!(wire.ends_with("What code?"), "{wire}");
+    assert_eq!(display, "What code?");
+    assert!(app.pending_handoff.is_none());
+    assert!(
+        app.entries_text()
+            .contains("Carried the earlier conversation to codex (1 turn"),
+        "{}",
+        app.entries_text()
+    );
+}
+#[tokio::test]
+async fn only_the_first_prompt_carries_it() {
+    let mut app = switched_to_codex();
+    let vendor = RecordingVendor::default();
+    for prompt in ["first", "second"] {
+        assert!(app.composer.editor.insert(prompt));
+        key_action(&mut app, &vendor, key(KeyCode::Enter)).await;
+        crate::test_support::idle(&mut app);
+    }
+    let sent = sent_wire(&vendor);
+    assert!(sent[0].0.starts_with("[Octet handoff]"));
+    assert_eq!(sent[1].0, "second");
+}
+#[test]
+fn a_refused_send_keeps_the_handoff() {
+    let mut app = switched_to_codex();
+    let vendor = RecordingVendor::default();
+    vendor.refuse.set(true);
+    let refused = app.begin_turn(&vendor, Command::Prompt("hi".into()), By::User, "sending");
+    assert!(refused.is_err());
+    assert!(app.pending_handoff.is_some());
+    vendor.refuse.set(false);
+    app.begin_turn(&vendor, Command::Prompt("hi".into()), By::User, "sending")
+        .unwrap();
+    assert!(sent_wire(&vendor)[0].0.starts_with("[Octet handoff]"));
+}
+#[test]
+fn a_goal_continuation_carries_it() {
+    let mut app = switched_to_codex();
+    let vendor = RecordingVendor::default();
+    let goal = Command::PromptWithDisplay {
+        wire: "Continue the goal".into(),
+        display: "Goal continuation · turn 2".into(),
+        images: Vec::new(),
+    };
+    app.begin_turn(&vendor, goal, By::Goal, "continuing goal")
+        .unwrap();
+    let (wire, display) = &sent_wire(&vendor)[0];
+    assert!(wire.starts_with("[Octet handoff]") && wire.ends_with("Continue the goal"));
+    assert_eq!(display, "Goal continuation · turn 2");
+}
+#[test]
+fn new_drops_the_handoff_and_an_empty_conversation_carries_nothing() {
+    // /new opens a fresh interface: nothing pending.
+    let mut fresh = crate::test_support::app_for(Engine::CODEX);
+    assert!(fresh.pending_handoff.is_none());
+    assert!(!fresh.carry_conversation());
+    assert!(fresh.pending_handoff.is_none());
+}

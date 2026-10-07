@@ -8,6 +8,7 @@ mod editor;
 mod event_loop;
 mod external;
 mod files;
+mod handoff;
 mod input;
 mod jobs;
 mod mascot;
@@ -152,6 +153,9 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         }
         for note in plan.notes {
             app.note(note);
+        }
+        if plan.carry_conversation && app.carry_conversation() {
+            app.note("The earlier conversation goes with your next prompt.");
         }
         opening_notice = plan.opening;
         config = plan.config;

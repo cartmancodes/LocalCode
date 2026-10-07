@@ -30,6 +30,9 @@ pub(crate) struct Plan {
     pub(crate) notes: Vec<String>,
     /// A note to open a fresh interface with.
     pub(crate) opening: Option<String>,
+    /// Another provider takes over: the conversation goes with the next
+    /// prompt, as a rendered transcript.
+    pub(crate) carry_conversation: bool,
 }
 
 /// The plan after `exit`, or `None` to quit. `binaries` remembers each
@@ -55,6 +58,7 @@ pub(crate) fn plan(
         pause,
         notes,
         opening: None,
+        carry_conversation: false,
     };
     let resume = resume_id(ended.session, config.engine);
     Some(match exit {
@@ -76,13 +80,16 @@ pub(crate) fn plan(
                 next.engine,
                 next.model.as_deref().unwrap_or("vendor default"),
                 if cross_provider {
-                    "New provider context; earlier displayed messages are not sent to this provider."
+                    "New provider context."
                 } else {
                     "Resuming the same vendor context."
                 },
                 ended.journal.display()
             ));
-            kept(next, Some("model switch"), notes)
+            Plan {
+                carry_conversation: cross_provider,
+                ..kept(next, Some("model switch"), notes)
+            }
         }
         Exit::Mode(mode) => {
             let note = full_access_notice(mode, config.engine, ended.session);
@@ -133,6 +140,7 @@ pub(crate) fn plan(
                     Some(effort) => format!("{resumed}\n{effort}"),
                     None => resumed,
                 }),
+                carry_conversation: false,
             }
         }
         Exit::New => {
@@ -144,6 +152,7 @@ pub(crate) fn plan(
                 pause: None,
                 notes: Vec::new(),
                 opening: None,
+                carry_conversation: false,
             }
         }
         Exit::Reconnect => {
@@ -261,6 +270,38 @@ mod tests {
         plan(exit, config, &ended(session), &mut HashMap::new()).unwrap()
     }
 
+    #[test]
+    fn a_cross_provider_switch_carries_the_conversation() {
+        let to = |provider| {
+            Exit::Model(Selection {
+                provider,
+                model: None,
+            })
+        };
+        let switched = plan_for(to(Engine::CLAUDE), &codex(), "t-1");
+        assert!(switched.carry_conversation);
+        assert!(
+            !switched.notes.iter().any(|note| note.contains("not sent")),
+            "{:?}",
+            switched.notes
+        );
+        assert!(!plan_for(to(Engine::CODEX), &codex(), "t-1").carry_conversation);
+        let resume = Exit::Resume {
+            engine: Engine::CLAUDE,
+            session: "c-1".into(),
+            model: None,
+        };
+        for exit in [
+            Exit::New,
+            Exit::Reconnect,
+            Exit::Fork,
+            Exit::Mode(Mode::FullAccess),
+            Exit::Effort(Some("high".into())),
+            resume,
+        ] {
+            assert!(!plan_for(exit, &codex(), "t-1").carry_conversation);
+        }
+    }
     #[test]
     fn quit_has_no_plan() {
         assert!(plan(Exit::Quit, &codex(), &ended("t-1"), &mut HashMap::new()).is_none());

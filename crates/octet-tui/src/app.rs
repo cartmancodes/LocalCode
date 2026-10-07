@@ -36,6 +36,9 @@ pub(crate) enum Role {
 }
 pub(crate) struct Entry {
     pub(crate) role: Role,
+    /// The provider connected when it was added, so a handoff can say who
+    /// wrote each reply.
+    pub(crate) engine: octet_core::Engine,
     pub(crate) text: String,
     pub(crate) width: u16,
     pub(crate) cache: Vec<Line<'static>>,
@@ -245,6 +248,9 @@ pub(crate) struct App {
     pub(crate) job: Option<crate::jobs::Running>,
     /// The running `!` command, if any.
     pub(crate) shell: Option<crate::shell::Running>,
+    /// The conversation so far, waiting to go with the next prompt to a
+    /// provider that took over from another.
+    pub(crate) pending_handoff: Option<crate::handoff::Handoff>,
 }
 impl App {
     pub(crate) fn new(config: &octet_core::Config, journal: PathBuf) -> Self {
@@ -291,6 +297,7 @@ impl App {
             goals: octet_core::goal::GoalRunner::default(),
             job: None,
             shell: None,
+            pending_handoff: None,
         }
     }
     pub(crate) fn connection(&mut self, config: &octet_core::Config, journal: PathBuf) {
@@ -309,6 +316,13 @@ impl App {
         self.overlay.approvals.clear();
         self.overlay.approval_scroll = 0;
         self.goals.reset_turn();
+    }
+    /// Another provider takes over: renders the conversation so far to go
+    /// with the next prompt. Whether there was anything to carry.
+    pub(crate) fn carry_conversation(&mut self) -> bool {
+        self.pending_handoff =
+            crate::handoff::render(&self.chat.entries, crate::handoff::HANDOFF_BUDGET);
+        self.pending_handoff.is_some()
     }
     /// A `!` command is running.
     pub(crate) fn shell_running(&self) -> bool {
@@ -470,6 +484,7 @@ impl App {
         self.chat.bytes += text.len();
         self.chat.entries.push_back(Entry {
             role,
+            engine: self.conn.engine,
             text,
             width: 0,
             cache: Vec::new(),

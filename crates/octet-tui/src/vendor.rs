@@ -75,7 +75,44 @@ impl App {
         by: By,
         status: &str,
     ) -> Result<(), SendError> {
+        // The first prompt after another provider took over carries the
+        // conversation so far; it is taken only once the send succeeds.
+        let (command, carried) = match (&self.pending_handoff, command) {
+            (Some(handoff), Command::Prompt(text)) => (
+                Command::PromptWithDisplay {
+                    wire: handoff.wrap(&text),
+                    display: text,
+                    images: Vec::new(),
+                },
+                Some((handoff.turns, handoff.bytes())),
+            ),
+            (
+                Some(handoff),
+                Command::PromptWithDisplay {
+                    wire,
+                    display,
+                    images,
+                },
+            ) => (
+                Command::PromptWithDisplay {
+                    wire: handoff.wrap(&wire),
+                    display,
+                    images,
+                },
+                Some((handoff.turns, handoff.bytes())),
+            ),
+            (_, command) => (command, None),
+        };
         vendor.send(command)?;
+        if let Some((turns, bytes)) = carried {
+            self.pending_handoff = None;
+            self.note(format!(
+                "Carried the earlier conversation to {} ({turns} turn{}, {})",
+                self.conn.engine,
+                if turns == 1 { "" } else { "s" },
+                crate::input::size_label(bytes)
+            ));
+        }
         match by {
             By::User => self.goals.user_prompt_sent(),
             By::Goal => self.goals.goal_prompt_sent(),
