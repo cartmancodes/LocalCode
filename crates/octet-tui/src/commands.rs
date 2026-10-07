@@ -467,7 +467,7 @@ fn mode_command(app: &mut App, vendor: &dyn Vendor, argument: &str) -> Action {
                 "Unknown mode {argument}. Use ask, accept-edits, auto or full-access."
             )),
             Some(target) if target == app.conn.mode && target == Mode::FullAccess => {
-                app.note("Already in full-access mode")
+                app.note("Already in full-access mode");
             }
             Some(target) if target == Mode::FullAccess || app.conn.mode == Mode::FullAccess => {
                 // Tightening out of full access is allowed once the vendor has
@@ -491,12 +491,10 @@ async fn goal_command(app: &mut App, vendor: &dyn Vendor, argument: &str) {
     use octet_core::goal::{Goal, GoalStep};
     let idle = app.is_idle();
     match argument {
-        "" | "status" => app.note(
-            app.goals
-                .goal()
-                .map(Goal::summary)
-                .unwrap_or_else(|| "No goal set. Use /goal <objective>.".into()),
-        ),
+        "" | "status" => app.note(app.goals.goal().map_or_else(
+            || "No goal set. Use /goal <objective>.".into(),
+            Goal::summary,
+        )),
         "pause" => match app.goals.pause().await {
             Ok(notice) => app.note(notice),
             // The goal is paused in memory even though the file is stale.
@@ -507,7 +505,7 @@ async fn goal_command(app: &mut App, vendor: &dyn Vendor, argument: &str) {
             Err(error) => app.goal_save_failed(error, false),
         },
         "resume" | "complete" if !idle => {
-            app.note("Wait for a ready, idle session before resuming or auditing a goal")
+            app.note("Wait for a ready, idle session before resuming or auditing a goal");
         }
         "resume" | "complete" => {
             let step = if argument == "complete" {

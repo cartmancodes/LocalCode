@@ -2,7 +2,7 @@
 //! CLI help are built from this table, and each row says what the session
 //! must be doing for the command to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Cmd {
+pub(crate) enum Cmd {
     Help,
     Model,
     Mode,
@@ -24,7 +24,7 @@ pub enum Cmd {
     Quit,
 }
 
-pub struct Spec {
+pub(crate) struct Spec {
     pub id: Cmd,
     pub name: &'static str,
     pub aliases: &'static [&'static str],
@@ -40,7 +40,7 @@ pub struct Spec {
 
 /// What a command needs of the session, checked once in `try_command`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Requires {
+pub(crate) enum Requires {
     /// Runs at any time.
     Nothing,
     /// No turn running and no approval waiting.
@@ -77,7 +77,7 @@ impl Spec {
         Spec { requires, ..self }
     }
     /// The row a typed name (or alias) names.
-    pub fn find(name: &str) -> Option<&'static Spec> {
+    pub(crate) fn find(name: &str) -> Option<&'static Spec> {
         COMMANDS
             .iter()
             .find(|spec| spec.name == name || spec.aliases.contains(&name))
@@ -87,7 +87,7 @@ impl Spec {
     }
 }
 
-pub const COMMANDS: &[Spec] = &[
+pub(crate) const COMMANDS: &[Spec] = &[
     spec(
         Cmd::Help,
         "/help",

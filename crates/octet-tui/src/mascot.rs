@@ -8,7 +8,7 @@ use ratatui::{
 mod art;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum State {
+pub(crate) enum State {
     Idle,
     Thinking,
     Coding,
@@ -21,7 +21,7 @@ pub enum State {
 }
 impl State {
     #[cfg(test)]
-    pub const ALL: [State; 9] = [
+    pub(crate) const ALL: [State; 9] = [
         State::Idle,
         State::Thinking,
         State::Coding,
@@ -32,7 +32,7 @@ impl State {
         State::Error,
         State::Sleeping,
     ];
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Idle => "IDLE",
             Self::Thinking => "THINKING",
@@ -45,7 +45,7 @@ impl State {
             Self::Sleeping => "SLEEPING",
         }
     }
-    pub fn tool(detail: &str) -> Self {
+    pub(crate) fn tool(detail: &str) -> Self {
         // Inspect the tool name and command line, not arbitrary tool output.
         let name = detail.lines().next().unwrap_or("").to_ascii_lowercase();
         let command = detail.lines().nth(1).unwrap_or("").trim();
@@ -86,7 +86,7 @@ fn color(pixel: char, background: Color) -> Color {
 
 /// The 9 × 3-cell mini Octet for a pose: one pixel per half cell, each upper
 /// half block showing the top pixel in front and the one below behind it.
-pub fn mini(state: State, background: Color) -> Vec<Line<'static>> {
+pub(crate) fn mini(state: State, background: Color) -> Vec<Line<'static>> {
     // The art is ASCII, one byte per pixel: read in place, no grid built
     // per frame. Each cell is a half block, the top pixel over the bottom.
     art::mini(state)

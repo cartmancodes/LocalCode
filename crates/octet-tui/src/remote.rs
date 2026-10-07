@@ -17,7 +17,7 @@ const SSH_TIMEOUT: Duration = Duration::from_millis(500);
 const SESSION: &str = "octet";
 
 /// This host's place on the tailnet.
-pub struct Tailnet {
+pub(crate) struct Tailnet {
     pub name: String,
     pub address: String,
     /// Found through the App Store app, which can't run Tailscale SSH.
@@ -25,7 +25,7 @@ pub struct Tailnet {
 }
 
 /// Where Octet runs relative to tmux.
-pub enum Tmux {
+pub(crate) enum Tmux {
     Outside,
     Session(String),
     /// `$TMUX` is set but tmux didn't answer in time.
@@ -33,7 +33,7 @@ pub enum Tmux {
 }
 
 /// What the phone needs from this host, as found.
-pub struct Checks {
+pub(crate) struct Checks {
     pub user: String,
     pub tmux: Tmux,
     /// Whether tmux is configured for 24-bit colour; None when unknown.
@@ -174,7 +174,7 @@ const PROGRAMS: Programs<'static> = Programs {
 };
 
 /// Runs every check concurrently, each bounded by the check timeout.
-pub async fn probe() -> Checks {
+pub(crate) async fn probe() -> Checks {
     probe_with(&PROGRAMS, std::env::var_os("TMUX").is_some()).await
 }
 
@@ -267,14 +267,14 @@ fn mark(ok: bool, text: &str) -> String {
 }
 
 /// The checks' report: its text, and how many checks failed.
-pub struct Report {
+pub(crate) struct Report {
     pub text: String,
     pub problems: usize,
 }
 
 /// The checks as notice text: one line per check, each problem with its fix,
 /// then the exact phone commands once the host is reachable.
-pub fn report(checks: &Checks) -> Report {
+pub(crate) fn report(checks: &Checks) -> Report {
     let session = match &checks.tmux {
         Tmux::Session(name) => name.as_str(),
         Tmux::Outside | Tmux::NoAnswer => SESSION,
@@ -366,7 +366,7 @@ pub fn report(checks: &Checks) -> Report {
 }
 
 /// The status-line form of a report: how many checks failed.
-pub fn summary(report: &Report) -> String {
+pub(crate) fn summary(report: &Report) -> String {
     match report.problems {
         0 => "Remote control: ready (report above)".into(),
         1 => "Remote control: 1 problem (report above)".into(),

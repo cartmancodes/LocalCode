@@ -145,7 +145,7 @@ impl CodexFixture {
         let done = || emit(&codex_turn_completed(&active, "completed"));
         match text {
             scenario::HOLD_MARKED => {
-                emit(&codex_delta("fixture-thread", &active, "marker", "named"))
+                emit(&codex_delta("fixture-thread", &active, "marker", "named"));
             }
             scenario::HOLD | scenario::LATE_START => {}
             _ if scenario::is_goal_prompt(text, scenario::GOAL_HOLD) => {}

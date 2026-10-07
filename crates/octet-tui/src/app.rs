@@ -7,6 +7,7 @@ use crate::{
 };
 use octet_core::Event;
 use ratatui::prelude::*;
+use std::fmt::Write as _;
 use std::{collections::VecDeque, path::PathBuf};
 
 const MAX_BYTES: usize = 512 * 1024;
@@ -15,7 +16,7 @@ pub(crate) const QUEUE_LIMIT: usize = 8;
 /// Prompts kept for Up/Down.
 const HISTORY_LIMIT: usize = 50;
 /// Shown when an edit would push the draft past the prompt limit.
-pub const PROMPT_FULL: &str = "Prompt limit reached";
+pub(crate) const PROMPT_FULL: &str = "Prompt limit reached";
 const BLOCK_BYTES: usize = 64 * 1024;
 /// Transcript entries kept on screen; older ones are in the journal.
 const MAX_ENTRIES: usize = 160;
@@ -24,7 +25,7 @@ pub(crate) const CATALOG_PAGE: usize = 20;
 /// The farthest the conversation scrolls back, in rows.
 const MAX_SCROLL: usize = 65_536;
 #[derive(Clone, Copy, PartialEq)]
-pub enum Role {
+pub(crate) enum Role {
     User,
     Assistant,
     Tool,
@@ -207,7 +208,7 @@ impl Overlays {
         self.approval_shown = std::time::Instant::now();
     }
 }
-pub struct App {
+pub(crate) struct App {
     pub(crate) conn: Connection,
     pub(crate) chat: Transcript,
     pub(crate) composer: Composer,
@@ -228,7 +229,7 @@ pub struct App {
     pub(crate) shell: Option<crate::shell::Running>,
 }
 impl App {
-    pub fn new(config: &octet_core::Config, journal: PathBuf) -> Self {
+    pub(crate) fn new(config: &octet_core::Config, journal: PathBuf) -> Self {
         Self {
             conn: Connection::new(config, journal),
             chat: Transcript {
@@ -274,7 +275,7 @@ impl App {
             shell: None,
         }
     }
-    pub fn connection(&mut self, config: &octet_core::Config, journal: PathBuf) {
+    pub(crate) fn connection(&mut self, config: &octet_core::Config, journal: PathBuf) {
         self.composer.completion = None;
         // A `!` command belongs to its session: dropping it kills its group.
         if self.shell.take().is_some() {
@@ -296,15 +297,15 @@ impl App {
         self.shell.is_some()
     }
     /// Neither connected nor stopped: the vendor is still starting.
-    pub fn is_connecting(&self) -> bool {
+    pub(crate) fn is_connecting(&self) -> bool {
         self.conn.phase == ConnPhase::Connecting
     }
     /// Ready for a prompt: connected, no turn running.
-    pub fn is_idle(&self) -> bool {
+    pub(crate) fn is_idle(&self) -> bool {
         self.conn.phase == ConnPhase::Idle
     }
     /// A turn is running or the connection is still being made; Esc cancels.
-    pub fn is_busy(&self) -> bool {
+    pub(crate) fn is_busy(&self) -> bool {
         self.conn.is_running() || self.is_connecting()
     }
     fn refresh_model_label(&mut self) {
@@ -314,19 +315,10 @@ impl App {
                 .models
                 .iter()
                 .find(|m| m.id.as_ref() == Some(id))
-                .map(|m| format!("{} · {}", clean(&m.name), id))
-                .unwrap_or_else(|| id.clone()),
+                .map_or_else(|| id.clone(), |m| format!("{} · {}", clean(&m.name), id)),
             None if self.conn.engine.offline() => "offline · no model".into(),
-            None => self
-                .catalog_selection()
-                .map(|m| {
-                    format!(
-                        "{} · {} · unconfirmed",
-                        clean(&m.name),
-                        m.id.as_deref().unwrap_or(&m.selection)
-                    )
-                })
-                .unwrap_or_else(|| {
+            None => self.catalog_selection().map_or_else(
+                || {
                     format!(
                         "{} · unconfirmed",
                         self.conn
@@ -334,7 +326,15 @@ impl App {
                             .as_deref()
                             .unwrap_or("provider default")
                     )
-                }),
+                },
+                |m| {
+                    format!(
+                        "{} · {} · unconfirmed",
+                        clean(&m.name),
+                        m.id.as_deref().unwrap_or(&m.selection)
+                    )
+                },
+            ),
         };
     }
     fn catalog_selection(&self) -> Option<&octet_core::ModelInfo> {
@@ -347,26 +347,27 @@ impl App {
                 .find(|m| m.selection == self.conn.requested_model.as_deref().unwrap_or("default"))
         }
     }
-    pub fn mode_details(&self) -> String {
+    pub(crate) fn mode_details(&self) -> String {
         let mut text = format!("Permission mode: {}", self.conn.mode.label());
         if let Some(pending) = self.conn.mode_pending {
-            text.push_str(&format!(" (switching to {})", pending.label()));
+            let _ = write!(text, " (switching to {})", pending.label());
         }
-        text.push_str(&format!("\n\n{} mapping:\n", self.conn.engine));
+        let _ = write!(text, "\n\n{} mapping:\n", self.conn.engine);
         for mode in octet_core::Mode::ALL {
             let marker = if mode == self.conn.mode { "●" } else { " " };
-            text.push_str(&format!(
-                "{marker} {:<13} {}\n",
+            let _ = writeln!(
+                text,
+                "{marker} {:<13} {}",
                 mode.label(),
                 mode.describe(self.conn.engine)
-            ));
+            );
         }
         text.push_str(
             "\nShift+Tab cycles ask → accept-edits → auto. /mode full-access reconnects with every check off.",
         );
         text
     }
-    pub fn model_details(&self) -> String {
+    pub(crate) fn model_details(&self) -> String {
         let selected = self.catalog_selection();
         format!(
             "Provider: {}\nRequested selection: {}\nConfirmed model ID: {}\nCatalog model ID: {}\nModel name: {}\n{}",
@@ -386,11 +387,11 @@ impl App {
             selected
                 .and_then(|m| m.id.as_deref())
                 .unwrap_or("not reported"),
-            selected.map(|m| m.name.as_str()).unwrap_or("not reported"),
-            selected.map(|m| m.description.as_str()).unwrap_or("")
+            selected.map_or("not reported", |m| m.name.as_str()),
+            selected.map_or("", |m| m.description.as_str())
         )
     }
-    pub fn show_models(&mut self, page: usize) {
+    pub(crate) fn show_models(&mut self, page: usize) {
         let pages = self.conn.models.len().div_ceil(CATALOG_PAGE).max(1);
         if page == 0 || page > pages {
             self.note(format!(
@@ -467,17 +468,17 @@ impl App {
         }
     }
     /// Something that failed, as an `ERROR` entry and on the status line.
-    pub fn error(&mut self, text: impl Into<String>) {
+    pub(crate) fn error(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.status(StatusKind::Plain, &text);
         self.add(Role::Error, &text);
     }
     #[cfg(test)]
-    pub fn last_role(&self) -> Option<Role> {
+    pub(crate) fn last_role(&self) -> Option<Role> {
         self.chat.entries.back().map(|entry| entry.role)
     }
     /// Information, as a transcript note and on the status line.
-    pub fn note(&mut self, text: impl Into<String>) {
+    pub(crate) fn note(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.status(StatusKind::Plain, &text);
         self.add(Role::Notice, &text);
@@ -493,7 +494,7 @@ impl App {
         self.conn.is_running() || !self.overlay.approvals.is_empty()
     }
     /// A refusal or a passing hint, on the status line only.
-    pub fn hint(&mut self, text: impl Into<String>) {
+    pub(crate) fn hint(&mut self, text: impl Into<String>) {
         self.status(StatusKind::Plain, &text.into());
     }
     /// Shows `text` on the status line as a `kind` of message.
@@ -508,7 +509,11 @@ impl App {
             self.status_kind = StatusKind::Plain;
         }
     }
-    pub fn event(&mut self, event: Event) {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one short arm per event; a fuller state machine is out of scope (spec)"
+    )]
+    pub(crate) fn event(&mut self, event: Event) {
         match event {
             Event::Models(models) => {
                 self.conn.models = models;
@@ -655,7 +660,7 @@ impl App {
         }
     }
     /// A finished `!` command in the transcript.
-    pub fn shell_output(&mut self, ran: &crate::shell::Ran) {
+    pub(crate) fn shell_output(&mut self, ran: &crate::shell::Ran) {
         let output = clean(&ran.output);
         let newline = if output.is_empty() || output.ends_with('\n') {
             ""
@@ -674,7 +679,7 @@ impl App {
     }
     /// Keeps `ran` for the next prompt, dropping the oldest attachments
     /// beyond 32 KiB of output.
-    pub fn attach(&mut self, mut ran: crate::shell::Ran) {
+    pub(crate) fn attach(&mut self, mut ran: crate::shell::Ran) {
         ran.output = strip(&ran.output);
         self.composer.attachments.push(ran);
         let total = |all: &[crate::shell::Ran]| all.iter().map(|a| a.output.len()).sum::<usize>();
@@ -694,18 +699,18 @@ impl App {
     }
     /// Back to the newest output, cancelling a catalog scroll that the next
     /// frame would otherwise still apply.
-    pub fn follow_latest(&mut self) {
+    pub(crate) fn follow_latest(&mut self) {
         self.chat.scroll = 0;
         self.chat.catalog_focus = None;
     }
     /// Scrolls the conversation by `rows`, up when positive.
-    pub fn scroll_by(&mut self, rows: isize) {
+    pub(crate) fn scroll_by(&mut self, rows: isize) {
         self.chat.catalog_focus = None;
         self.chat.scroll = self.chat.scroll.saturating_add_signed(rows).min(MAX_SCROLL);
     }
     /// The most recent reply as the vendor sent it, every segment of the
     /// turn, for `/copy`.
-    pub fn last_reply(&self) -> Option<&str> {
+    pub(crate) fn last_reply(&self) -> Option<&str> {
         (!self.chat.reply.is_empty()).then_some(self.chat.reply.as_str())
     }
     /// Adds streamed text to the reply `/copy` takes, up to just over the
@@ -733,7 +738,7 @@ impl App {
         }
     }
     #[cfg(test)]
-    pub fn entries_text(&self) -> String {
+    pub(crate) fn entries_text(&self) -> String {
         self.chat
             .entries
             .iter()
@@ -742,7 +747,7 @@ impl App {
             .join("\n")
     }
     /// A sent draft joins the history unless it repeats the last one.
-    pub fn remember(&mut self, draft: String) {
+    pub(crate) fn remember(&mut self, draft: String) {
         self.remember_with(draft, Vec::new());
     }
     /// A sent draft and the images sent with it, recalled together.
@@ -757,7 +762,7 @@ impl App {
         }
     }
     /// Inserts at the cursor, or says the prompt is full.
-    pub fn insert_or_warn(&mut self, text: &str) -> bool {
+    pub(crate) fn insert_or_warn(&mut self, text: &str) -> bool {
         let fits = self.composer.editor.insert(text);
         if !fits {
             self.hint(PROMPT_FULL);
@@ -765,30 +770,29 @@ impl App {
         fits
     }
     /// Replaces the word before the cursor, or says the prompt is full.
-    pub fn replace_or_warn(&mut self, start: usize, text: &str) -> bool {
+    pub(crate) fn replace_or_warn(&mut self, start: usize, text: &str) -> bool {
         let fits = self.composer.editor.replace(start, text);
         if !fits {
             self.hint(PROMPT_FULL);
         }
         fits
     }
-    pub fn recall(&mut self, older: bool) {
+    pub(crate) fn recall(&mut self, older: bool) {
         if self.composer.history.is_empty() {
             return;
         }
         if older {
-            let index = self
-                .composer
-                .history_index
-                .map(|i| i.saturating_sub(1))
-                .unwrap_or_else(|| {
+            let index = self.composer.history_index.map_or_else(
+                || {
                     self.composer.recall_images = self.composer.images.is_empty();
                     self.composer.saved_draft = Sent {
                         text: self.composer.editor.text().to_owned(),
                         images: Vec::new(),
                     };
                     self.composer.history.len() - 1
-                });
+                },
+                |i| i.saturating_sub(1),
+            );
             self.composer.history_index = Some(index);
             self.show(self.composer.history[index].clone());
         } else if let Some(i) = self.composer.history_index {

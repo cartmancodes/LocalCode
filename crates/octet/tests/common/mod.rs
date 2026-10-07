@@ -2,13 +2,13 @@
 use std::path::{Path, PathBuf};
 
 /// The repository root.
-pub fn root() -> PathBuf {
+pub(crate) fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 /// Every file under `dir` that `keep` accepts, skipping build output and
 /// version control.
-pub fn files_under(dir: &Path, keep: &dyn Fn(&Path) -> bool) -> Vec<PathBuf> {
+pub(crate) fn files_under(dir: &Path, keep: &dyn Fn(&Path) -> bool) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut dirs = vec![dir.to_path_buf()];
     while let Some(dir) = dirs.pop() {
@@ -34,6 +34,6 @@ pub fn files_under(dir: &Path, keep: &dyn Fn(&Path) -> bool) -> Vec<PathBuf> {
 }
 
 /// Rust sources.
-pub fn is_rust(path: &Path) -> bool {
+pub(crate) fn is_rust(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == "rs")
 }

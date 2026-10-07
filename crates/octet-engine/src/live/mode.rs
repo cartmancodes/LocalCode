@@ -41,6 +41,7 @@ impl Mode {
         }
     }
     /// Shift+Tab order. Full access is never reached by cycling.
+    #[must_use]
     pub fn cycle(self) -> Mode {
         match self {
             Mode::Ask => Mode::AcceptEdits,

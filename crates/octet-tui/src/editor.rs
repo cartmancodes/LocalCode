@@ -3,7 +3,7 @@ use unicode_width::UnicodeWidthStr;
 /// The prompt being written: its text and a cursor that is always on a
 /// grapheme boundary, which every edit relies on (so the fields are private).
 #[derive(Default)]
-pub struct Editor {
+pub(crate) struct Editor {
     text: String,
     cursor: usize,
 }
@@ -20,15 +20,15 @@ fn columns(g: &str, col: usize) -> usize {
 }
 impl Editor {
     /// The draft.
-    pub fn text(&self) -> &str {
+    pub(crate) fn text(&self) -> &str {
         &self.text
     }
     /// Where the cursor is, as a byte offset into `text`.
-    pub fn cursor(&self) -> usize {
+    pub(crate) fn cursor(&self) -> usize {
         self.cursor
     }
     #[must_use = "false means the text did not fit the prompt limit"]
-    pub fn insert(&mut self, text: &str) -> bool {
+    pub(crate) fn insert(&mut self, text: &str) -> bool {
         if self.text.len() + text.len() > octet_core::PROMPT_LIMIT {
             return false;
         }
@@ -39,7 +39,7 @@ impl Editor {
     /// Replaces `start..cursor` with `text`; false when it would not fit the
     /// prompt limit, or `start` is not a character boundary before the cursor.
     #[must_use = "false means the text did not fit the prompt limit"]
-    pub fn replace(&mut self, start: usize, text: &str) -> bool {
+    pub(crate) fn replace(&mut self, start: usize, text: &str) -> bool {
         if start > self.cursor || !self.text.is_char_boundary(start) {
             return false;
         }
@@ -50,65 +50,53 @@ impl Editor {
         self.cursor = start + text.len();
         true
     }
-    pub fn left(&mut self) {
+    pub(crate) fn left(&mut self) {
         self.cursor = self.text[..self.cursor]
             .grapheme_indices(true)
             .next_back()
-            .map(|(i, _)| i)
-            .unwrap_or(0);
+            .map_or(0, |(i, _)| i);
     }
-    pub fn right(&mut self) {
+    pub(crate) fn right(&mut self) {
         if let Some(g) = self.text[self.cursor..].graphemes(true).next() {
             self.cursor += g.len();
         }
     }
-    pub fn backspace(&mut self) {
+    pub(crate) fn backspace(&mut self) {
         let end = self.cursor;
         self.left();
         self.text.replace_range(self.cursor..end, "");
     }
-    pub fn delete(&mut self) {
+    pub(crate) fn delete(&mut self) {
         let start = self.cursor;
         self.right();
         self.text.replace_range(start..self.cursor, "");
         self.cursor = start;
     }
-    pub fn home(&mut self) {
-        self.cursor = self.text[..self.cursor]
-            .rfind('\n')
-            .map(|i| i + 1)
-            .unwrap_or(0);
+    pub(crate) fn home(&mut self) {
+        self.cursor = self.text[..self.cursor].rfind('\n').map_or(0, |i| i + 1);
     }
-    pub fn end(&mut self) {
+    pub(crate) fn end(&mut self) {
         self.cursor += self.text[self.cursor..]
             .find('\n')
             .unwrap_or(self.text.len() - self.cursor);
     }
-    pub fn set(&mut self, text: String) {
+    pub(crate) fn set(&mut self, text: String) {
         self.cursor = text.len();
         self.text = text;
     }
-    pub fn take(&mut self) -> String {
+    pub(crate) fn take(&mut self) -> String {
         self.cursor = 0;
         std::mem::take(&mut self.text)
     }
-    pub fn vertical(&mut self, down: bool) {
-        let start = self.text[..self.cursor]
-            .rfind('\n')
-            .map(|i| i + 1)
-            .unwrap_or(0);
+    pub(crate) fn vertical(&mut self, down: bool) {
+        let start = self.text[..self.cursor].rfind('\n').map_or(0, |i| i + 1);
         let column = UnicodeWidthStr::width(&self.text[start..self.cursor]);
         let target = if down {
             self.text[self.cursor..]
                 .find('\n')
                 .map(|i| self.cursor + i + 1)
         } else if start > 0 {
-            Some(
-                self.text[..start - 1]
-                    .rfind('\n')
-                    .map(|i| i + 1)
-                    .unwrap_or(0),
-            )
+            Some(self.text[..start - 1].rfind('\n').map_or(0, |i| i + 1))
         } else {
             None
         };
@@ -126,7 +114,7 @@ impl Editor {
             }
         }
     }
-    pub fn layout(&self, width: usize) -> (Vec<String>, (usize, usize)) {
+    pub(crate) fn layout(&self, width: usize) -> (Vec<String>, (usize, usize)) {
         let width = width.max(1);
         let mut lines = vec![String::new()];
         let mut col = 0;

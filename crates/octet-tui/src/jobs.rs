@@ -97,13 +97,14 @@ pub(crate) enum Ended {
 /// Waits up to `grace` for `running` to end, stopping it after that.
 pub(crate) async fn finish(running: Option<Running>, grace: Duration) -> Option<Ended> {
     let mut running = running?;
-    Some(match tokio::time::timeout(grace, running.wait()).await {
-        Ok(ended) => ended,
-        Err(_) => {
+    Some(
+        if let Ok(ended) = tokio::time::timeout(grace, running.wait()).await {
+            ended
+        } else {
             running.task.abort();
             Ended::Stopped(running.label)
-        }
-    })
+        },
+    )
 }
 
 /// Quitting: waits up to `GRACE` for a job that must finish (an export),

@@ -34,6 +34,10 @@ pub(crate) struct Plan {
 
 /// The plan after `exit`, or `None` to quit. `binaries` remembers each
 /// provider's CLI for this run.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one short arm per kind of exit, read top to bottom"
+)]
 pub(crate) fn plan(
     exit: Exit,
     config: &Config,
@@ -245,7 +249,7 @@ mod tests {
         config.effort = Some("minimal".into());
         config
     }
-    fn ended<'a>(session: &'a str) -> Ended<'a> {
+    fn ended(session: &str) -> Ended<'_> {
         Ended {
             session,
             journal: Path::new("/j/old.jsonl"),

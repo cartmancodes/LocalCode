@@ -1,7 +1,9 @@
 //! Print, JSON and RPC modes, run as processes against the fake vendor. No
 //! terminal is attached: these modes must not need one.
-// Test code: an unwrap that fails is the test failing.
-#![allow(clippy::unwrap_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "test code: an unwrap that fails is the test failing"
+)]
 use serde_json::{Value, json};
 use std::{
     io::Write,

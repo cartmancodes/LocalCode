@@ -195,11 +195,10 @@ impl Loop<'_> {
             }
             Wake::Shell(ran) => shell_finished(app, ran),
             Wake::Editor(status) => self.finish_editor(app, &status)?,
-            Wake::Input(None) => return Ok(Some(Exit::Quit)),
             Wake::Input(Some(input)) => return self.input(app, session, input?).await,
             // While an editor waits in cooked mode, Ctrl+C is meant for it.
             Wake::Interrupt if self.editing.is_some() => {}
-            Wake::Interrupt => return Ok(Some(Exit::Quit)),
+            Wake::Input(None) | Wake::Interrupt => return Ok(Some(Exit::Quit)),
             Wake::Terminate => {
                 self.stop_editor().await;
                 return Ok(Some(Exit::Quit));

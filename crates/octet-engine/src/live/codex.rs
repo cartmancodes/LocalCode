@@ -158,14 +158,14 @@ impl Protocol for CodexProtocol {
             .await
     }
 
-    /// Codex applies a mode with the next turn's overrides, so no request is sent.
-    async fn set_mode(&mut self, core: &mut Core, target: Mode) -> Result<(), DriverError> {
-        core.mode = target;
-        core.emit(Event::ModeChanged(core.mode))?;
-        if core.phase.is_running() {
-            core.emit(Event::Notice("Mode applies from the next turn".into()))?;
-        }
-        Ok(())
+    /// Codex applies a mode with the next turn's overrides, so no request
+    /// is sent: the switch is done at once, as a ready future.
+    fn set_mode(
+        &mut self,
+        core: &mut Core,
+        target: Mode,
+    ) -> impl Future<Output = Result<(), DriverError>> + Send {
+        std::future::ready(adopt_mode_now(core, target))
     }
 
     async fn on_frame(&mut self, core: &mut Core, v: Value) -> Result<(), DriverError> {
@@ -464,6 +464,16 @@ impl CodexProtocol {
         }
         Ok(())
     }
+}
+
+/// Codex takes `target` from the next turn: record it and say so.
+fn adopt_mode_now(core: &mut Core, target: Mode) -> Result<(), DriverError> {
+    core.mode = target;
+    core.emit(Event::ModeChanged(core.mode))?;
+    if core.phase.is_running() {
+        core.emit(Event::Notice("Mode applies from the next turn".into()))?;
+    }
+    Ok(())
 }
 
 /// The Codex catalog: `model` is both the selection and the resolved ID.

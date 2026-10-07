@@ -197,6 +197,10 @@ impl Goal {
     }
 }
 
+/// FNV-1a's 64-bit offset basis and prime.
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
 #[derive(Clone, Debug)]
 /// Where one workspace's goal is saved.
 pub struct GoalStore {
@@ -210,8 +214,8 @@ impl GoalStore {
             .as_os_str()
             .as_encoded_bytes()
             .iter()
-            .fold(0xcbf29ce484222325u64, |hash, byte| {
-                (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            .fold(FNV_OFFSET, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
             });
         Self {
             path: directory.join(format!("goal-{hash:016x}.json")),
@@ -431,10 +435,10 @@ impl GoalRunner {
     }
     /// What the transcript shows for a goal prompt.
     pub fn prompt_display(&self) -> String {
-        self.goal
-            .as_ref()
-            .map(|goal| format!("Goal: {}", goal.objective))
-            .unwrap_or_else(|| "Goal audit".into())
+        self.goal.as_ref().map_or_else(
+            || "Goal audit".into(),
+            |goal| format!("Goal: {}", goal.objective),
+        )
     }
     /// The vendor reported an error. Adapters send it before the failed
     /// terminal event, so the turn is counted here and the later finish ignored.

@@ -1,7 +1,9 @@
 //! Real PTY acceptance tests. No browser or vendor login is needed.
 #![cfg(unix)]
-// Test code: an unwrap that fails is the test failing.
-#![allow(clippy::unwrap_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "test code: an unwrap that fails is the test failing"
+)]
 use std::{
     fs::{self, File},
     io::{Read, Write},
@@ -50,8 +52,8 @@ impl Pty {
             // SAFETY: openpty writes two descriptors into the locals above; a null name and termios are allowed, and `size` lives through the call.
             unsafe {
                 libc::openpty(
-                    &mut master,
-                    &mut slave,
+                    &raw mut master,
+                    &raw mut slave,
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     std::ptr::addr_of_mut!(size),
@@ -85,7 +87,7 @@ impl Pty {
         // SAFETY: the closure runs in the child before exec and calls only async-signal-safe functions (setsid, ioctl).
         unsafe {
             command.pre_exec(|| {
-                if libc::setsid() == -1 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                if libc::setsid() == -1 || libc::ioctl(0, libc::TIOCSCTTY.into(), 0) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
@@ -238,8 +240,9 @@ impl Pty {
             .filter_map(Result::ok)
             // Only the goal itself: a `.tmp` mid-save would parse to nothing.
             .find(|entry| {
+                let path = entry.path();
                 let name = entry.file_name().to_string_lossy().into_owned();
-                name.starts_with("goal-") && name.ends_with(".json")
+                name.starts_with("goal-") && path.extension().is_some_and(|e| e == "json")
             })
             .and_then(|entry| fs::read(entry.path()).ok())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -354,7 +357,7 @@ fn real_terminal_handles_paste_approval_resize_suspend_and_quit() {
     let mut stopped = 0;
     assert_eq!(
         // SAFETY: waitpid writes only into `stopped`, for our own child.
-        unsafe { libc::waitpid(p.pid(), &mut stopped, libc::WUNTRACED) },
+        unsafe { libc::waitpid(p.pid(), &raw mut stopped, libc::WUNTRACED) },
         p.pid()
     );
     assert!(libc::WIFSTOPPED(stopped));
@@ -1046,7 +1049,7 @@ fn terminating_octet_while_editing_stops_the_editor() {
         &format!(
             // Ignoring HUP stands in for a real shell, where the kernel's
             // hangup to the old session does not reach the editor.
-            r#"echo $$ > '{}'; trap '' HUP; trap 'exit 0' TERM; sleep 30 & wait"#,
+            r"echo $$ > '{}'; trap '' HUP; trap 'exit 0' TERM; sleep 30 & wait",
             pid_file.display()
         ),
     );

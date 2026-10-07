@@ -402,9 +402,8 @@ fn read_lines(
     let (tx, rx) = mpsc::channel(16);
     tokio::spawn(async move {
         loop {
-            let line = match read_line(&mut reader).await {
-                Ok(Some(line)) => line,
-                Ok(None) | Err(_) => break,
+            let Ok(Some(line)) = read_line(&mut reader).await else {
+                break;
             };
             if matches!(&line, Ok(text) if text.trim().is_empty()) {
                 continue;

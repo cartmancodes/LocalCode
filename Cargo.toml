@@ -21,9 +21,25 @@ strip = true
 
 [workspace.lints.rust]
 missing_docs = "warn"
+# Every public type can be printed while debugging.
+missing_debug_implementations = "warn"
+# Crate-only items say so (`pub(crate)`), so `pub` means public API.
+unreachable_pub = "warn"
 
 # The rust-engineer skill's rules (.claude/skills/rust-engineer), enforced.
 [workspace.lints.clippy]
+# Pedantic as a whole, less the lints that are noise for this codebase.
+pedantic = { level = "warn", priority = -1 }
+must_use_candidate = "allow"
+module_name_repetitions = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+# An exception names its reason: #[expect(lint, reason = "…")], never a bare
+# #[allow].
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+dbg_macro = "warn"
+todo = "warn"
 cast_possible_truncation = "warn"
 needless_pass_by_ref_mut = "warn"
 unused_async = "warn"

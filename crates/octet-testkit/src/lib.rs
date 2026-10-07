@@ -112,15 +112,14 @@ pub fn wait_child(child: std::process::Child, limit: Duration) -> std::process::
     let pid = libc::pid_t::try_from(child.id()).expect("pid fits pid_t");
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || tx.send(child.wait_with_output()));
-    match rx.recv_timeout(limit) {
-        Ok(output) => output.expect("wait for the process"),
-        Err(_) => {
-            // SAFETY: kill only sends a signal. The child is still unreaped
-            // (the waiting thread has not returned), unless it exited in this
-            // very instant; a test helper accepts that tiny window.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
-            panic!("the process did not exit in time");
-        }
+    if let Ok(output) = rx.recv_timeout(limit) {
+        output.expect("wait for the process")
+    } else {
+        // SAFETY: kill only sends a signal. The child is still unreaped
+        // (the waiting thread has not returned), unless it exited in this
+        // very instant; a test helper accepts that tiny window.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        panic!("the process did not exit in time");
     }
 }
 
@@ -204,7 +203,8 @@ pub fn write_journal(
     for (seq, (kind, data)) in records.iter().enumerate() {
         let record =
             serde_json::json!({"format": JOURNAL_FORMAT, "seq": seq, "type": kind, "data": data});
-        text.push_str(&format!("{record}\n"));
+        text.push_str(&record.to_string());
+        text.push('\n');
     }
     text.push_str(tail);
     std::fs::write(&path, text).expect("journal file");
@@ -213,6 +213,7 @@ pub fn write_journal(
 
 /// A unique path under the system temp dir, removed when dropped, so a
 /// failing test does not leave it behind. The path is not created.
+#[derive(Debug)]
 pub struct TempDir(PathBuf);
 impl TempDir {
     /// A fresh path named after `prefix`, unique within this test run.

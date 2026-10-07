@@ -218,7 +218,7 @@ impl DemoTurn<'_> {
                     interrupted = true;
                     break;
                 }
-                _ = tokio::time::sleep(Duration::from_millis(18)) => {
+                () = tokio::time::sleep(Duration::from_millis(18)) => {
                     emit(self.tx, Event::Text(word.into()))?;
                 }
             }
@@ -249,7 +249,7 @@ impl DemoTurn<'_> {
             tokio::select! {
                 _ = self.stop.changed() => return Ok(DemoApproval::Stopping),
                 _ = self.cancel.changed() => break DemoApproval::Cancelled,
-                _ = &mut expiry => break DemoApproval::Denied,
+                () = &mut expiry => break DemoApproval::Denied,
                 command = self.commands.recv() => match command {
                     Some(Command::SetMode(target)) => demo_set_mode(self.tx, self.mode, target)?,
                     Some(Command::Steer(_)) => emit(

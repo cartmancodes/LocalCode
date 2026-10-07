@@ -84,6 +84,10 @@ impl TerminalGuard {
         );
         let _ = disable_raw_mode();
     }
+    #[expect(
+        clippy::unused_self,
+        reason = "taking the guard proves the terminal was entered first"
+    )]
     pub(crate) fn resume(&self) -> io::Result<()> {
         enable_raw_mode()?;
         execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)

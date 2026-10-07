@@ -1,7 +1,5 @@
 //! The command line as a process: help and usage errors. Each message is
 //! pinned by the parser's unit tests; these check what reaches the shell.
-// Test code: an unwrap that fails is the test failing.
-#![allow(clippy::unwrap_used)]
 use std::process::Command;
 
 /// The invalid-engine error, from the provider table.

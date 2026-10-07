@@ -2,6 +2,7 @@
 //! the contract evidence as JSON. It launches the vendor exactly as Octet
 //! does (`octet_engine::live::launch_args`), adding only what a scenario
 //! needs, so it checks the contract Octet ships.
+#![forbid(unsafe_code)]
 use octet_engine::live::{Config, Engine, claude_stray_reply, codex_stray_reply, launch_args};
 use octet_gate::{
     Evidence, GateError, GateProcess, claude_fixture_allow, claude_fixture_hook_response,

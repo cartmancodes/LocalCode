@@ -1,6 +1,7 @@
 //! The protocol gate: drives a real vendor CLI through fixed scenarios and
 //! records contract evidence. Default replies are Octet's own
 //! (`octet_engine::live::{codex_stray_reply, claude_stray_reply}`).
+#![forbid(unsafe_code)]
 
 use octet_proc::{Process, ProcessError, ProcessSender, ShutdownReport};
 use serde_json::{Value, json};
@@ -317,12 +318,7 @@ pub fn claude_fixture_mcp_response(value: &Value) -> Option<(Value, bool)> {
         ));
     }
     let method = message.get("method").and_then(Value::as_str);
-    let (result, called) = if request.get("server_name")?.as_str()? != "fixture" {
-        (
-            json!({"jsonrpc":"2.0","id":jsonrpc_id,"error":{"code":-32601,"message":"unknown fixture server"}}),
-            false,
-        )
-    } else {
+    let (result, called) = if request.get("server_name")?.as_str()? == "fixture" {
         match method {
             Some("initialize") => (
                 json!({"jsonrpc":"2.0","id":jsonrpc_id,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"0.1.0"}}}),
@@ -347,6 +343,11 @@ pub fn claude_fixture_mcp_response(value: &Value) -> Option<(Value, bool)> {
             ),
             None => (json!({"jsonrpc":"2.0","result":{}}), false),
         }
+    } else {
+        (
+            json!({"jsonrpc":"2.0","id":jsonrpc_id,"error":{"code":-32601,"message":"unknown fixture server"}}),
+            false,
+        )
     };
     Some((
         json!({"type":"control_response","response":{"subtype":"success","request_id":id,"response":{"mcp_response":result}}}),

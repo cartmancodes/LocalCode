@@ -94,7 +94,7 @@ fn deny_wire(wire: &Value, reason: &str) -> Value {
     })
 }
 
-/// A Claude mode switch awaiting its control_response.
+/// A Claude mode switch awaiting its `control_response`.
 struct ModeRequest {
     id: String,
     target: Mode,
@@ -138,23 +138,13 @@ impl Protocol for ClaudeProtocol {
     }
 
     /// A switch Claude has not confirmed in time is reported, and kept in
-    /// case Claude confirms it late.
-    async fn on_deadline(&mut self, core: &mut Core) -> Result<(), DriverError> {
-        if let Some(request) = self
-            .mode_request
-            .take_if(|request| request.deadline <= Instant::now())
-        {
-            let notice = format!(
-                "Claude has not confirmed the switch to {}; the header shows {} until it does",
-                request.target.label(),
-                core.mode.label()
-            );
-            // Kept bounded: a vendor that never answers cannot grow it.
-            push_bounded(&mut self.late_modes, (request.id, request.target), 8);
-            core.emit(Event::Notice(notice))?;
-            core.emit(Event::ModeChanged(core.mode))?;
-        }
-        Ok(())
+    /// case Claude confirms it late. Nothing here waits, so the work is done
+    /// at once and handed back as a ready future.
+    fn on_deadline(
+        &mut self,
+        core: &mut Core,
+    ) -> impl Future<Output = Result<(), DriverError>> + Send {
+        std::future::ready(self.report_late_mode(core))
     }
 
     fn turn_started(&mut self) {
@@ -344,6 +334,24 @@ impl Protocol for ClaudeProtocol {
 }
 
 impl ClaudeProtocol {
+    /// Reports a mode switch Claude did not confirm in time.
+    fn report_late_mode(&mut self, core: &Core) -> Result<(), DriverError> {
+        if let Some(request) = self
+            .mode_request
+            .take_if(|request| request.deadline <= Instant::now())
+        {
+            let notice = format!(
+                "Claude has not confirmed the switch to {}; the header shows {} until it does",
+                request.target.label(),
+                core.mode.label()
+            );
+            // Kept bounded: a vendor that never answers cannot grow it.
+            push_bounded(&mut self.late_modes, (request.id, request.target), 8);
+            core.emit(Event::Notice(notice))?;
+            core.emit(Event::ModeChanged(core.mode))?;
+        }
+        Ok(())
+    }
     /// Handles replies to Octet's own control requests. True when the
     /// frame is fully handled.
     fn control_response(&mut self, core: &mut Core, v: &Value) -> Result<bool, DriverError> {

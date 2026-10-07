@@ -428,7 +428,7 @@ mod model_detail_tests {
         let visible = a
             .visible_lines(72, 12)
             .iter()
-            .map(|line| line.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(visible.contains("claude catalog"));
@@ -487,7 +487,7 @@ mod model_detail_tests {
                 .buffer()
                 .content()
                 .iter()
-                .map(|c| c.symbol())
+                .map(ratatui::buffer::Cell::symbol)
                 .collect::<String>()
         };
         t.draw(|f| draw(f, &mut a)).unwrap();

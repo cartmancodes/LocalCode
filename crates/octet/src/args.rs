@@ -121,6 +121,10 @@ fn text(args: &mut impl Iterator<Item = OsString>, name: &str) -> Result<String,
 ///
 /// A usage error naming the first problem: an unknown option, a missing or
 /// invalid value, or options that cannot be combined.
+#[expect(
+    clippy::too_many_lines,
+    reason = "a flat match over the options, one short arm each"
+)]
 pub(crate) fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, CliError> {
     let mut args = args.into_iter();
     let mut engine = "codex".to_owned();

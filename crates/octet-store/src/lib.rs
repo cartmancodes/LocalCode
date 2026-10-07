@@ -1,4 +1,5 @@
 //! Append-only, owner-only session journals: one JSONL file per connection.
+#![forbid(unsafe_code)]
 use std::{
     io,
     path::{Path, PathBuf},
@@ -189,7 +190,7 @@ pub async fn read_summary(path: &Path) -> Option<JournalSummary> {
     for record in records {
         match (record["type"].as_str(), record["data"].as_str()) {
             (Some("ready"), Some(session)) if !session.is_empty() => {
-                summary.session = session.to_owned();
+                session.clone_into(&mut summary.session);
             }
             (Some("user"), Some(text)) if summary.first_prompt.is_none() => {
                 summary.first_prompt = Some(text.to_owned());

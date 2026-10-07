@@ -1,7 +1,9 @@
 //! Adversarial wire transcripts exercise the actual gate executable offline.
 #![cfg(unix)]
-// Test code: an unwrap that fails is the test failing.
-#![allow(clippy::unwrap_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "test code: an unwrap that fails is the test failing"
+)]
 use serde_json::{Value, json};
 use std::process::Command;
 
@@ -34,7 +36,7 @@ fn probe_engine_within(engine: &str, scenario: &str, frames: &[Value], seconds: 
         .args(["--timeout", &seconds.to_string()])
         .output()
         .unwrap();
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("gate output: {:?}", output))
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("gate output: {output:?}"))
 }
 fn probe(scenario: &str, events: Vec<Value>) -> Value {
     probe_engine("codex", scenario, &codex_frames(events))

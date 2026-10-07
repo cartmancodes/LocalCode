@@ -98,7 +98,7 @@ impl<P: Protocol> Driver<P> {
                     }
                     self.on_cancel().await?;
                 }
-                _ = tokio::time::sleep_until(wake), if self.timers_armed() => self.on_timer().await?,
+                () = tokio::time::sleep_until(wake), if self.timers_armed() => self.on_timer().await?,
                 command = commands.recv() => match command {
                     None => break,
                     Some(command) => {

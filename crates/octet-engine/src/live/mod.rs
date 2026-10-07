@@ -63,9 +63,10 @@ impl Default for Limits {
 /// `d` from now. A duration too large for the clock (a library caller's
 /// `Duration::MAX`) means "about never" instead of a panic.
 pub(crate) fn deadline_after(d: Duration) -> tokio::time::Instant {
+    /// "About never": thirty years.
+    const ABOUT_NEVER: Duration = Duration::from_hours(30 * 365 * 24);
     let now = tokio::time::Instant::now();
-    now.checked_add(d)
-        .unwrap_or_else(|| now + Duration::from_secs(30 * 365 * 86_400))
+    now.checked_add(d).unwrap_or_else(|| now + ABOUT_NEVER)
 }
 
 /// `text` cut to 256 bytes, for vendor strings that should be short (a
@@ -81,6 +82,7 @@ pub(crate) fn short(text: &str) -> String {
 
 /// One backend Octet can drive. A new vendor is one of these plus its
 /// `Protocol` file (see docs/rust/adding-a-provider.md).
+#[derive(Debug)]
 pub struct Provider {
     /// The CLI flag, journal and `/model` spelling.
     pub name: &'static str,
@@ -528,7 +530,7 @@ impl From<&str> for DriverError {
         DriverError::Vendor(message.to_owned())
     }
 }
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /// Sends commands to a running session; cheap to clone.
 pub struct Handle {
     commands: mpsc::Sender<Command>,
@@ -770,7 +772,7 @@ mod tests {
     fn deadlines_never_overflow() {
         let far = deadline_after(Duration::MAX);
         let now = tokio::time::Instant::now();
-        assert!(far > now + Duration::from_secs(86_400 * 365));
+        assert!(far > now + Duration::from_hours(8760));
         let near = deadline_after(Duration::from_secs(1));
         assert!(near <= tokio::time::Instant::now() + Duration::from_secs(1));
     }

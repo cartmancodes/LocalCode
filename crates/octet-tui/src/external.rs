@@ -10,7 +10,7 @@ use std::{
 };
 
 /// The draft on disk, and the editor to open it with.
-pub struct Edit {
+pub(crate) struct Edit {
     /// The draft's file, inside `dir`.
     pub path: PathBuf,
     /// The private (0700) directory holding it.
@@ -27,7 +27,7 @@ impl Drop for Edit {
 
 /// `$VISUAL`, then `$EDITOR`, then `vi`: a shell command, as git takes it,
 /// so `code --wait` and a quoted path with spaces both work.
-pub fn editor_command() -> String {
+pub(crate) fn editor_command() -> String {
     ["VISUAL", "EDITOR"]
         .iter()
         .filter_map(|name| std::env::var(name).ok())
@@ -38,7 +38,7 @@ pub fn editor_command() -> String {
 /// Why the draft could not go to the editor, or come back. Every message
 /// says the draft is safe where that matters.
 #[derive(Debug, thiserror::Error)]
-pub enum EditorError {
+pub(crate) enum EditorError {
     #[error("Cannot create {}: {source}", path.display())]
     Create {
         path: PathBuf,
@@ -71,7 +71,7 @@ pub enum EditorError {
 ///
 /// `Create` if the directory or file cannot be made, `Write` if the draft
 /// cannot be written.
-pub fn prepare(draft: &str, editor: &str) -> Result<Edit, EditorError> {
+pub(crate) fn prepare(draft: &str, editor: &str) -> Result<Edit, EditorError> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     // Unpredictable, and created exclusively: in a shared temp directory
     // nobody else can pre-create it, or read the draft through it.
@@ -115,7 +115,7 @@ pub fn prepare(draft: &str, editor: &str) -> Result<Edit, EditorError> {
 impl Edit {
     /// The program and arguments that open the draft: the shell runs the
     /// editor command with the file as its last argument, as git does.
-    pub fn command(&self) -> (&'static str, Vec<OsString>) {
+    pub(crate) fn command(&self) -> (&'static str, Vec<OsString>) {
         let script = format!("{} \"$@\"", self.editor);
         (
             "sh",
@@ -129,14 +129,14 @@ impl Edit {
     }
     /// The edited draft; the original stays when the editor failed or the
     /// result is over the prompt limit. The file goes when `self` drops.
-    pub fn finish(self, code: Option<i32>) -> Result<String, EditorError> {
+    pub(crate) fn finish(self, code: Option<i32>) -> Result<String, EditorError> {
+        use std::io::Read;
         match code {
             Some(0) => {}
             // The shell's codes for a command it cannot find or run.
             Some(126 | 127) => return Err(EditorError::NoEditor(self.editor.clone())),
             _ => return Err(EditorError::EditorFailed),
         }
-        use std::io::Read;
         // Read no more than the limit plus a trailing newline and one byte,
         // so an enormous result is refused without loading it.
         let mut bytes = Vec::new();
@@ -213,10 +213,10 @@ mod tests {
     }
     #[test]
     fn round_trips_an_edited_draft() {
+        use std::os::unix::fs::PermissionsExt;
         let edit = edit("first");
         assert_eq!(std::fs::read_to_string(&edit.path).unwrap(), "first");
         let mode = std::fs::metadata(&edit.path).unwrap();
-        use std::os::unix::fs::PermissionsExt;
         assert_eq!(mode.permissions().mode() & 0o777, 0o600);
         std::fs::write(&edit.path, "second line\n").unwrap();
         let path = edit.path.clone();

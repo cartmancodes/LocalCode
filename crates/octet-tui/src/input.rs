@@ -14,6 +14,7 @@ use crate::{
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use octet_core::Command;
+use std::fmt::Write as _;
 use std::{
     path::PathBuf,
     sync::{
@@ -27,7 +28,7 @@ use tokio::time::Instant;
 /// How long Tab waits for a folder listing.
 pub(crate) const TAB_WAIT: Duration = Duration::from_millis(500);
 /// Runs blocking `work` on its own thread, waiting at most `limit`. A plain
-/// thread, not spawn_blocking, so work stuck on a dead mount cannot hold up
+/// thread, not `spawn_blocking`, so work stuck on a dead mount cannot hold up
 /// the runtime's shutdown.
 pub(crate) async fn off_loop<T: Send + 'static>(
     limit: Duration,
@@ -142,6 +143,10 @@ pub(crate) fn copy_reply(app: &mut App) {
         format!("Copied {} to the clipboard", size_label(size))
     });
 }
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a label rounded to one decimal; sizes are far below 2^52"
+)]
 pub(crate) fn size_label(bytes: usize) -> String {
     if bytes < 1024 {
         format!("{bytes} B")
@@ -253,7 +258,7 @@ async fn palette_press(app: &mut App, vendor: &dyn Vendor, key: KeyEvent) -> Act
         KeyCode::Up => app.overlay.selection = app.overlay.selection.saturating_sub(1),
         KeyCode::Down => {
             app.overlay.selection =
-                (app.overlay.selection + 1).min(view::palette_entries().count() - 1)
+                (app.overlay.selection + 1).min(view::palette_entries().count() - 1);
         }
         KeyCode::Enter => {
             app.overlay.palette = false;
@@ -445,10 +450,10 @@ async fn composer_key(
         }
         KeyCode::Enter => return submit_draft(app, vendor).await,
         KeyCode::Up if app.composer.editor.text().contains('\n') => {
-            app.composer.editor.vertical(false)
+            app.composer.editor.vertical(false);
         }
         KeyCode::Down if app.composer.editor.text().contains('\n') => {
-            app.composer.editor.vertical(true)
+            app.composer.editor.vertical(true);
         }
         KeyCode::Up => app.recall(true),
         KeyCode::Down => app.recall(false),
@@ -510,7 +515,7 @@ pub(crate) fn compose(app: &App, draft: &str) -> Result<Prompt, String> {
     let (wire, mut display) =
         composer::with_attachments(draft, &app.composer.attachments, octet_core::PROMPT_LIMIT);
     for image in &app.composer.images {
-        display.push_str(&format!("\n[+ image {}]", image.name));
+        let _ = write!(display, "\n[+ image {}]", image.name);
     }
     if wire.len().max(display.len()) > octet_core::PROMPT_LIMIT {
         return Err(format!(

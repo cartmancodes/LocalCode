@@ -177,13 +177,14 @@ pub struct Process {
     term_grace: Duration,
     shutdown_report: Option<ShutdownReport>,
     receive_failed: bool,
-    process_group: libc::pid_t,
+    /// The child's process group, which it leads.
+    group: libc::pid_t,
 }
 
 impl std::fmt::Debug for Process {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Process")
-            .field("process_group", &self.process_group)
+            .field("group", &self.group)
             .field("receive_failed", &self.receive_failed)
             .field("shut_down", &self.shutdown_report.is_some())
             .finish_non_exhaustive()
@@ -270,7 +271,7 @@ impl Process {
             term_grace: config.term_grace,
             shutdown_report: None,
             receive_failed: false,
-            process_group,
+            group: process_group,
         })
     }
 
@@ -399,16 +400,16 @@ impl Process {
     }
 
     fn signal_group(&self, signal: i32) {
-        debug_assert!(self.process_group > 1, "never signal init or every process");
+        debug_assert!(self.group > 1, "never signal init or every process");
         // SAFETY: killpg only sends a signal; the group is our own child's.
         unsafe {
-            libc::killpg(self.process_group, signal);
+            libc::killpg(self.group, signal);
         }
     }
 
     fn group_alive(&self) -> bool {
         // SAFETY: signal 0 performs only the existence and permission check.
-        (unsafe { libc::killpg(self.process_group, 0) == 0 })
+        (unsafe { libc::killpg(self.group, 0) == 0 })
             || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 }
@@ -479,15 +480,14 @@ async fn read_frames<R: AsyncRead + Unpin>(
                         continue;
                     }
                     let size = frame.len();
-                    let permit = match Arc::clone(&permits)
+                    let Ok(permit) = Arc::clone(&permits)
                         .acquire_many_owned(
                             u32::try_from(size.max(1))
                                 .expect("frame size fits u32: queue_bytes is checked at spawn"),
                         )
                         .await
-                    {
-                        Ok(permit) => permit,
-                        Err(_) => return,
+                    else {
+                        return;
                     };
                     // Copy out the exact bytes and keep the buffer for the next frame.
                     let complete: Box<[u8]> = frame.as_slice().into();

@@ -1,9 +1,10 @@
 //! The prompt box's attachment and completion logic, free of terminal I/O.
 use crate::shell::{CUT, Ran};
+use std::fmt::Write as _;
 use std::path::Path;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Kind {
+pub(crate) enum Kind {
     File,
     Path,
     Command,
@@ -11,7 +12,7 @@ pub enum Kind {
 
 /// The suggestion popup above the prompt box.
 #[derive(Debug)]
-pub struct Completion {
+pub(crate) struct Completion {
     pub kind: Kind,
     pub items: Vec<String>,
     pub selected: usize,
@@ -21,7 +22,7 @@ pub struct Completion {
 
 /// What Tab does to the draft.
 #[derive(Debug)]
-pub enum Tab {
+pub(crate) enum Tab {
     /// Replace the word; with several matches, also open the popup.
     Replace {
         start: usize,
@@ -45,7 +46,7 @@ fn word_start(text: &str, cursor: usize) -> usize {
 
 /// The `@` mention ending at the cursor: where it starts and the query after
 /// the `@`.
-pub fn mention_at(text: &str, cursor: usize) -> Option<(usize, &str)> {
+pub(crate) fn mention_at(text: &str, cursor: usize) -> Option<(usize, &str)> {
     let start = word_start(text, cursor);
     let query = text[start..cursor].strip_prefix('@')?;
     // The word must end at the cursor, or the user moved past it.
@@ -60,7 +61,7 @@ pub fn mention_at(text: &str, cursor: usize) -> Option<(usize, &str)> {
 }
 
 /// The text an accepted file suggestion puts in the draft.
-pub fn mention(path: &str) -> String {
+pub(crate) fn mention(path: &str) -> String {
     if path.contains(char::is_whitespace) {
         format!("@\"{path}\" ")
     } else {
@@ -69,7 +70,7 @@ pub fn mention(path: &str) -> String {
 }
 
 /// What Tab does with the word ending at the cursor.
-pub fn tab(text: &str, cursor: usize, root: &Path, home: Option<&Path>) -> Tab {
+pub(crate) fn tab(text: &str, cursor: usize, root: &Path, home: Option<&Path>) -> Tab {
     let start = word_start(text, cursor);
     let word = &text[start..cursor];
     if word.starts_with('@') {
@@ -183,7 +184,7 @@ fn path_candidates(root: &Path, home: Option<&Path>, word: &str) -> Vec<String> 
 }
 
 /// The prompt box title's note of waiting attachments.
-pub fn chip(attachments: &[Ran]) -> Option<String> {
+pub(crate) fn chip(attachments: &[Ran]) -> Option<String> {
     match attachments {
         [] => None,
         [one] => Some(format!("+ {} ({})", one.command, one.summary())),
@@ -193,18 +194,19 @@ pub fn chip(attachments: &[Ran]) -> Option<String> {
 
 /// The text sent to the vendor and the text shown, for a draft with `!`
 /// outputs attached. Outputs lose their beginnings until the wire fits.
-pub fn with_attachments(draft: &str, attachments: &[Ran], limit: usize) -> (String, String) {
+pub(crate) fn with_attachments(draft: &str, attachments: &[Ran], limit: usize) -> (String, String) {
     let mut outputs: Vec<String> = attachments.iter().map(|a| a.output.clone()).collect();
     let build = |outputs: &[String]| {
         let mut wire = draft.to_owned();
         for (attachment, output) in attachments.iter().zip(outputs) {
             let fence = fence_for(output);
             let body = output.strip_suffix('\n').unwrap_or(output);
-            wire.push_str(&format!(
+            let _ = write!(
+                wire,
                 "\n\nOutput of `{}` ({}):\n{fence}\n{body}\n{fence}",
                 attachment.command,
                 attachment.summary()
-            ));
+            );
         }
         wire
     };

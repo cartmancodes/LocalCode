@@ -1,13 +1,15 @@
 //! The live driver against the fake vendor: connection, turns, approvals,
 //! modes, timeouts and shutdown for both protocols.
-// Test code: an unwrap that fails is the test failing.
-#![allow(clippy::unwrap_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "test code: an unwrap that fails is the test failing"
+)]
 use octet_engine::live::{
     Command, Config, Engine, Event, ImageAttachment, Limits, Mode, Outcome, spawn,
     spawn_with_limits,
 };
 use octet_testkit::scenario;
-use std::time::Duration;
+use std::{fmt::Write as _, time::Duration};
 use tokio::{sync::mpsc, time::timeout};
 fn config() -> Config {
     Config::new(
@@ -620,7 +622,7 @@ async fn claude_switch_sends_the_vendor_mode_name() {
     let c = claude();
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
-    for (mode, _) in [(Mode::AcceptEdits, ()), (Mode::Auto, ()), (Mode::Ask, ())] {
+    for (mode, ()) in [(Mode::AcceptEdits, ()), (Mode::Auto, ()), (Mode::Ask, ())] {
         handle.send(Command::SetMode(mode)).unwrap();
         wait_for(
             &mut events,
@@ -912,9 +914,10 @@ async fn waiting_for_the_user_is_not_vendor_silence() {
     handle
         .send(Command::Prompt(scenario::APPROVAL.into()))
         .unwrap();
-    let id = match wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await {
-        Event::Approval { id, .. } => id,
-        _ => unreachable!(),
+    let Event::Approval { id, .. } =
+        wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await
+    else {
+        unreachable!()
     };
     // Longer than the 1-second idle limit: the vendor is waiting on us.
     tokio::time::sleep(Duration::from_millis(1600)).await;
@@ -1819,9 +1822,9 @@ async fn odd_claude_frames_are_ignored() {
     let result = r#"{"type":"result","is_error":false,"result":"done","session_id":"s1"}"#;
     let mut body = format!("read line\necho '{init}'\nread line\n");
     for frame in odd {
-        body.push_str(&format!("echo '{frame}'\n"));
+        let _ = writeln!(body, "echo '{frame}'");
     }
-    body.push_str(&format!("echo '{result}'\nexec sleep 30\n"));
+    let _ = write!(body, "echo '{result}'\nexec sleep 30\n");
     let (_dir, vendor) = script_vendor("octet-live-odd-claude", &body);
     let (handle, mut events, task) =
         spawn(Config::new(Engine::CLAUDE, vendor, std::env::temp_dir()));
@@ -1850,7 +1853,7 @@ async fn odd_codex_frames_are_ignored() {
          echo '{\"id\":2,\"result\":{\"thread\":{\"id\":\"t1\"}}}'\n",
     );
     for frame in odd {
-        body.push_str(&format!("echo '{frame}'\n"));
+        let _ = writeln!(body, "echo '{frame}'");
     }
     body.push_str("exec sleep 30\n");
     let (_dir, vendor) = script_vendor("octet-live-odd-codex", &body);

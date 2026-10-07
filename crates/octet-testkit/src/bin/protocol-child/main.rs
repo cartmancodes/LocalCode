@@ -1,8 +1,10 @@
 //! A fake Codex/Claude vendor for tests: it speaks just enough of each
 //! protocol to drive Octet through scripted scenarios (`scenario`), and has
 //! transport modes for octet-proc's tests.
-// Test fixture: a panic here fails the test that started it.
-#![allow(clippy::unwrap_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "a test fixture: a panic here fails the test that started it"
+)]
 mod claude;
 mod codex;
 mod wire;
@@ -59,7 +61,10 @@ fn main() {
         "grandchild" => {
             // This fixture intentionally exits before reaping its child so the
             // supervisor must clean up a process group whose leader is gone.
-            #[allow(clippy::zombie_processes)]
+            #[expect(
+                clippy::zombie_processes,
+                reason = "the leader must exit unreaped, as the test requires"
+            )]
             let child = Command::new(env::current_exe().unwrap())
                 .arg("sleeper")
                 .stdin(Stdio::null())

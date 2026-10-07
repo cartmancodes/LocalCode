@@ -119,6 +119,10 @@ pub enum ExportError {
 mod tests {
     use super::*;
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a table of every message, pinned in one place"
+    )]
     fn messages_keep_their_wording() {
         let io = || std::io::Error::other("disk full");
         let save = || Box::new(GoalError::Save(io()));

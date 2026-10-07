@@ -5,14 +5,14 @@ use std::{io::Read, path::Path, process::Stdio, time::Duration};
 use tokio::{process::Command, sync::oneshot};
 
 /// Output kept per command, from the end.
-pub const OUTPUT_LIMIT: usize = 32 * 1024;
+pub(crate) const OUTPUT_LIMIT: usize = 32 * 1024;
 /// How long a command may run.
 const TIME_LIMIT: Duration = Duration::from_secs(600);
 /// Starts output that lost its beginning to the limit.
-pub const CUT: &str = "[earlier output cut]\n";
+pub(crate) const CUT: &str = "[earlier output cut]\n";
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Status {
+pub(crate) enum Status {
     Exited(i32),
     Signalled,
     /// Stopped at the time limit it carries.
@@ -21,18 +21,18 @@ pub enum Status {
 }
 
 #[derive(Debug, Clone)]
-pub struct Ran {
+pub(crate) struct Ran {
     pub command: String,
     pub status: Status,
     pub output: String,
 }
 
 impl Ran {
-    pub fn ok(&self) -> bool {
+    pub(crate) fn ok(&self) -> bool {
         self.status == Status::Exited(0)
     }
     /// How it ended, for the transcript and the attachment header.
-    pub fn summary(&self) -> String {
+    pub(crate) fn summary(&self) -> String {
         match self.status {
             Status::Exited(code) => format!("exit {code}"),
             Status::Signalled => "killed by a signal".into(),
@@ -44,7 +44,7 @@ impl Ran {
 
 /// A limit as people say it: whole minutes, else whole seconds, else
 /// milliseconds.
-pub fn duration_text(limit: Duration) -> String {
+pub(crate) fn duration_text(limit: Duration) -> String {
     if limit.subsec_nanos() != 0 {
         return format!("{} ms", limit.as_millis());
     }
@@ -59,7 +59,7 @@ pub fn duration_text(limit: Duration) -> String {
 
 /// Why a `!` command could not run to completion.
 #[derive(Debug, thiserror::Error)]
-pub enum ShellError {
+pub(crate) enum ShellError {
     #[error("Cannot run {shell}: {source}")]
     Run {
         shell: String,
@@ -71,7 +71,7 @@ pub enum ShellError {
 }
 
 /// Runs `command` with the user's shell (`$SHELL`, else `sh`).
-pub async fn run(
+pub(crate) async fn run(
     command: &str,
     cwd: &Path,
     cancel: oneshot::Receiver<()>,
@@ -140,7 +140,7 @@ async fn run_with(
     let exited = tokio::task::spawn_blocking(move || wait_exit(group));
     let mut status = tokio::select! {
         _ = exited => None,
-        _ = tokio::time::sleep(limit) => Some(Status::TimedOut(limit)),
+        () = tokio::time::sleep(limit) => Some(Status::TimedOut(limit)),
         _ = &mut cancel => Some(Status::Cancelled),
     };
     // Children left in the group would hold the pipe open.
@@ -213,8 +213,14 @@ fn wait_exit(pid: Option<u32>) {
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
         // SAFETY: waitid writes only into `info`; WNOWAIT leaves the child
         // for tokio to reap.
-        let result =
-            unsafe { libc::waitid(libc::P_PID, pid, &mut info, libc::WEXITED | libc::WNOWAIT) };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid,
+                &raw mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
         if result == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
         {
             return;

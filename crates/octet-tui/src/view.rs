@@ -13,13 +13,13 @@ use unicode_width::UnicodeWidthStr;
 
 // Warm charcoal and burgundy surfaces with readable, muted crimson accents.
 // Amber remains reserved for warnings and permission decisions.
-pub const BG: Color = Color::Rgb(22, 17, 19);
-pub const PANEL: Color = Color::Rgb(31, 23, 26);
-pub const FG: Color = Color::Rgb(234, 224, 218);
-pub const MUTED: Color = Color::Rgb(174, 151, 154);
-pub const EDGE: Color = Color::Rgb(88, 51, 61);
-pub const ACCENT: Color = Color::Rgb(216, 124, 130);
-pub const AMBER: Color = Color::Rgb(224, 180, 119);
+pub(crate) const BG: Color = Color::Rgb(22, 17, 19);
+pub(crate) const PANEL: Color = Color::Rgb(31, 23, 26);
+pub(crate) const FG: Color = Color::Rgb(234, 224, 218);
+pub(crate) const MUTED: Color = Color::Rgb(174, 151, 154);
+pub(crate) const EDGE: Color = Color::Rgb(88, 51, 61);
+pub(crate) const ACCENT: Color = Color::Rgb(216, 124, 130);
+pub(crate) const AMBER: Color = Color::Rgb(224, 180, 119);
 const SELECTED: Color = Color::Rgb(64, 36, 44);
 /// A count of rows or columns as a terminal coordinate, saturating instead
 /// of wrapping.
@@ -45,13 +45,13 @@ fn mode_chip(app: &App) -> Span<'static> {
     };
     Span::styled(text, Style::default().fg(color).bold())
 }
-pub fn draw(frame: &mut Frame, app: &mut App) {
+pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     paint(frame, app);
     if app.monochrome {
         without_colour(frame.buffer_mut());
     }
 }
-/// NO_COLOR: every cell takes the terminal's own colours. A selection, shown
+/// `NO_COLOR`: every cell takes the terminal's own colours. A selection, shown
 /// only by its background, becomes reverse video instead.
 fn without_colour(buffer: &mut Buffer) {
     for cell in &mut buffer.content {
@@ -462,7 +462,7 @@ fn modal(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 /// The help screen: keys, then every command's usage, then the rest.
-pub fn help_lines() -> Vec<String> {
+pub(crate) fn help_lines() -> Vec<String> {
     let keys = [
         "Octet terminal preview",
         "",
@@ -520,13 +520,13 @@ fn help(frame: &mut Frame, area: Rect, scroll: &mut u16) {
     );
 }
 /// Keys the palette also offers, after the commands.
-pub const PALETTE_KEYS: [(&str, &str); 3] = [
+pub(crate) const PALETTE_KEYS: [(&str, &str); 3] = [
     ("Ctrl+G", "Write the prompt in $EDITOR"),
     ("@", "Mention a file"),
     ("!", "Run a shell command"),
 ];
 /// The palette's rows: every command, then the keys it also offers.
-pub fn palette_entries() -> impl Iterator<Item = (&'static str, &'static str)> {
+pub(crate) fn palette_entries() -> impl Iterator<Item = (&'static str, &'static str)> {
     COMMANDS
         .iter()
         .map(|spec| (spec.name, spec.summary))

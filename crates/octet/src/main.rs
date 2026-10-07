@@ -1,5 +1,6 @@
 //! `octet`: parses the command line and starts the terminal interface, or
 //! runs headless (`--print`, `--rpc`).
+#![forbid(unsafe_code)]
 use args::{CliError, Parsed, Prompt, Run};
 use std::{io::IsTerminal, path::PathBuf};
 mod args;

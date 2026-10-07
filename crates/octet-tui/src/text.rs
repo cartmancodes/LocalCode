@@ -21,20 +21,20 @@ enum State {
 /// a stray ESC must not hide the rest of a reply.
 const STRING_LIMIT: usize = 4096;
 #[derive(Default)]
-pub struct Sanitizer {
+pub(crate) struct Sanitizer {
     state: State,
     /// Keep tabs, for text that leaves Octet (the clipboard, the vendor);
     /// the screen gets four spaces.
     tabs: bool,
 }
 impl Sanitizer {
-    pub fn keeping_tabs() -> Self {
+    pub(crate) fn keeping_tabs() -> Self {
         Self {
             tabs: true,
             ..Self::default()
         }
     }
-    pub fn push(&mut self, text: &str) -> String {
+    pub(crate) fn push(&mut self, text: &str) -> String {
         let mut out = String::with_capacity(text.len());
         for c in text.chars() {
             match self.state {
@@ -51,7 +51,7 @@ impl Sanitizer {
                     c if !c.is_control()
                         && !matches!(c,'\u{202a}'..='\u{202e}'|'\u{2066}'..='\u{2069}') =>
                     {
-                        out.push(c)
+                        out.push(c);
                     }
                     _ => {}
                 },
@@ -68,7 +68,7 @@ impl Sanitizer {
                 }
                 State::Csi => {
                     if ('@'..='~').contains(&c) {
-                        self.state = State::Text
+                        self.state = State::Text;
                     }
                 }
                 State::String { len } => match c {
@@ -92,10 +92,10 @@ impl Sanitizer {
     }
 }
 /// Like `clean`, keeping tabs.
-pub fn strip(text: &str) -> String {
+pub(crate) fn strip(text: &str) -> String {
     Sanitizer::keeping_tabs().push(text)
 }
-pub fn clean(text: &str) -> String {
+pub(crate) fn clean(text: &str) -> String {
     Sanitizer::default().push(text)
 }
 #[cfg(test)]
@@ -132,7 +132,7 @@ mod tests {
     fn c1_strings_are_dropped() {
         for introducer in ['\u{90}', '\u{98}', '\u{9e}', '\u{9f}'] {
             let text = format!("a{introducer}payload\u{9c}b");
-            assert_eq!(clean(&text), "ab", "{:?}", introducer);
+            assert_eq!(clean(&text), "ab", "{introducer:?}");
         }
     }
     #[test]

@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 /// Paths kept per workspace.
 pub(crate) const LIMIT: usize = 50_000;
 /// Suggestions shown at once.
-pub const SHOWN: usize = 8;
+pub(crate) const SHOWN: usize = 8;
 
-pub struct Index {
+pub(crate) struct Index {
     paths: Vec<String>,
     /// `paths` lowercased once, for ranking on every keystroke.
     lower: Vec<String>,
@@ -16,7 +16,7 @@ pub struct Index {
 }
 
 /// Where the session's index is.
-pub enum Files {
+pub(crate) enum Files {
     Unbuilt,
     /// Asked for; the session loop starts the build.
     Wanted,
@@ -29,7 +29,7 @@ pub enum Files {
 
 impl Files {
     /// Starts building the index of `root`.
-    pub fn build(root: std::path::PathBuf) -> Self {
+    pub(crate) fn build(root: std::path::PathBuf) -> Self {
         let (built, index) = tokio::sync::oneshot::channel();
         std::thread::spawn(move || {
             let _ = built.send(Index::build(&root));
@@ -40,7 +40,7 @@ impl Files {
 
 impl Index {
     /// Git's view of the workspace when it is a work tree, else a walk.
-    pub fn build(root: &Path) -> Index {
+    pub(crate) fn build(root: &Path) -> Index {
         list(root, "git", GIT_DEADLINE)
     }
     fn new(paths: Vec<String>, capped: bool) -> Index {
@@ -52,10 +52,10 @@ impl Index {
         }
     }
     #[cfg(test)]
-    pub fn from_paths(paths: Vec<String>) -> Index {
+    pub(crate) fn from_paths(paths: Vec<String>) -> Index {
         Index::new(paths, false)
     }
-    pub fn rank(&self, query: &str) -> Vec<&str> {
+    pub(crate) fn rank(&self, query: &str) -> Vec<&str> {
         let query: Vec<char> = query.to_lowercase().chars().collect();
         let mut scratch = Scratch::default();
         let mut scored: Vec<((bool, usize), &str)> = self
@@ -240,7 +240,7 @@ fn walk(root: &Path, limit: usize) -> Index {
             continue;
         };
         let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
-        entries.sort_by_key(|entry| entry.file_name());
+        entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with('.') || name == "target" || name == "node_modules" {
@@ -413,7 +413,7 @@ mod tests {
         Scratch::default().subsequence(text, &query.chars().collect::<Vec<_>>())
     }
     fn index(paths: &[&str]) -> Index {
-        Index::from_paths(paths.iter().map(|p| p.to_string()).collect())
+        Index::from_paths(paths.iter().map(std::string::ToString::to_string).collect())
     }
     #[test]
     fn file_name_matches_come_first_then_fewer_gaps_then_shorter_paths() {

@@ -2,11 +2,11 @@
 //! (`set -g set-clipboard on`) and mosh 1.4+ pass on, even to a phone.
 
 /// The most text sent in one copy.
-pub const LIMIT: usize = 100 * 1024;
+pub(crate) const LIMIT: usize = 100 * 1024;
 
 /// The escape that sets the clipboard, and whether `text` was cut to fit.
 /// None for empty text.
-pub fn osc52(text: &str) -> Option<(Vec<u8>, bool)> {
+pub(crate) fn osc52(text: &str) -> Option<(Vec<u8>, bool)> {
     if text.is_empty() {
         return None;
     }

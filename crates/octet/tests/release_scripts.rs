@@ -1,7 +1,9 @@
 //! The release workflow's shell steps, run against a fake `gh`.
 #![cfg(unix)]
-// Test code: an unwrap that fails is the test failing.
-#![allow(clippy::unwrap_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "test code: an unwrap that fails is the test failing"
+)]
 use std::{path::Path, process::Command};
 
 fn script(name: &str) -> std::path::PathBuf {
