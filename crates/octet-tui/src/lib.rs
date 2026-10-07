@@ -220,6 +220,12 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                 let binary = binaries.get(&selection.provider).cloned();
                 let next = selection.configure(&config, &app.conn.session, binary);
                 binaries.insert(next.engine, next.binary.clone());
+                if let (Some(level), None) = (&config.effort, &next.effort) {
+                    app.notice(format!(
+                        "{} does not take effort {level}; using its default",
+                        next.engine.title()
+                    ));
+                }
                 app.notice(format!(
                     "Model → {} / {}. {} Previous journal: {}",
                     next.engine,

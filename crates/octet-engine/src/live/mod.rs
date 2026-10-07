@@ -78,6 +78,9 @@ pub struct Provider {
     /// Reasoning effort changes take effect from the next turn; otherwise
     /// they need a reconnect (the CLI takes effort at launch).
     pub effort_live: bool,
+    /// The reasoning effort levels the vendor takes; empty passes any word
+    /// on (Codex's levels depend on the model).
+    pub efforts: &'static [&'static str],
     /// Runs one session until it stops.
     pub start: StartFn,
 }
@@ -139,6 +142,23 @@ impl Engine {
     /// The name in notices.
     pub fn title(self) -> &'static str {
         self.0.title
+    }
+    /// Whether this provider takes `level` as its reasoning effort.
+    ///
+    /// # Errors
+    ///
+    /// Names the levels the provider takes, when it lists them and `level`
+    /// is not one.
+    pub fn check_effort(self, level: &str) -> Result<(), String> {
+        let levels = self.0.efforts;
+        match levels.split_last() {
+            Some((last, rest)) if !levels.contains(&level) => Err(format!(
+                "{} takes effort {} or {last}",
+                self.0.title,
+                rest.join(", ")
+            )),
+            _ => Ok(()),
+        }
     }
     /// No vendor process and no model.
     pub fn offline(self) -> bool {
@@ -606,6 +626,18 @@ mod tests {
         binaries.insert(Engine::CODEX, "a");
         assert_eq!(binaries.get(&copy), Some(&"a"));
         assert_eq!(format!("{:?}", Engine::CLAUDE), "claude");
+    }
+    #[test]
+    fn effort_levels_are_checked_where_the_provider_lists_them() {
+        for level in ["low", "medium", "high", "xhigh", "max"] {
+            assert_eq!(Engine::CLAUDE.check_effort(level), Ok(()), "{level}");
+        }
+        assert_eq!(
+            Engine::CLAUDE.check_effort("bogus"),
+            Err("Claude takes effort low, medium, high, xhigh or max".to_owned())
+        );
+        // Codex's levels depend on the model, so any word is passed on.
+        assert_eq!(Engine::CODEX.check_effort("minimal"), Ok(()));
     }
     #[test]
     fn the_table_is_complete_and_unambiguous() {

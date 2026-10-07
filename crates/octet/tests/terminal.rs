@@ -818,6 +818,19 @@ fn invalid_effort_is_a_startup_error() {
     }
 }
 #[test]
+fn an_effort_claude_does_not_take_is_a_startup_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_octet"))
+        .args(["--engine", "claude", "--effort", "bogus"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Claude takes effort low, medium, high, xhigh or max"),
+        "{stderr}"
+    );
+}
+#[test]
 fn help_and_errors_name_exactly_the_providers() {
     let names: Vec<&str> = octet_core::Engine::ALL.iter().map(|e| e.as_str()).collect();
     let help = Command::new(env!("CARGO_BIN_EXE_octet"))

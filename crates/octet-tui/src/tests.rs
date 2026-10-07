@@ -1215,3 +1215,18 @@ fn a_fork_is_announced_when_the_vendor_names_it() {
         .entries_text()
         .contains("The fork from original did not open; /reconnect tries again"));
 }
+#[tokio::test]
+async fn effort_refuses_a_level_claude_does_not_take() {
+    let mut claude = App::new(
+        &Config::new(Engine::CLAUDE, "claude", "/tmp"),
+        "journal".into(),
+    );
+    claude.conn.phase = ConnPhase::Idle;
+    assert!(matches!(
+        command(&mut claude, "/effort bogus").await,
+        Action::Continue
+    ));
+    assert!(claude
+        .entries_text()
+        .contains("Claude takes effort low, medium, high, xhigh or max"));
+}

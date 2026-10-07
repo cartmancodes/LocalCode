@@ -60,7 +60,11 @@ impl Selection {
         Config {
             mode: current.mode,
             approval_timeout: current.approval_timeout,
-            effort: current.effort.clone(),
+            // A level the new provider does not take falls back to its default.
+            effort: current
+                .effort
+                .clone()
+                .filter(|level| self.provider.check_effort(level).is_ok()),
             // A fork the vendor has not named yet stays a fork; resuming
             // the original instead would write into it.
             fork: same && session.is_empty() && current.fork,
@@ -145,6 +149,21 @@ pub fn catalog_hint(vendors: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn configure_drops_an_effort_the_new_provider_does_not_take() {
+        let mut current = Config::new(Engine::CODEX, "codex", "/tmp");
+        current.effort = Some("minimal".into());
+        let claude = Selection {
+            provider: Engine::CLAUDE,
+            model: None,
+        };
+        assert_eq!(claude.configure(&current, "t-1", None).effort, None);
+        current.effort = Some("high".into());
+        assert_eq!(
+            claude.configure(&current, "t-1", None).effort.as_deref(),
+            Some("high")
+        );
+    }
     #[test]
     fn configure_keeps_a_fork_the_vendor_has_not_named() {
         let mut current = Config::new(Engine::CLAUDE, "claude", "/tmp");

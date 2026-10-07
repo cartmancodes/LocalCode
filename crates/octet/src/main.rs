@@ -177,6 +177,9 @@ async fn run() -> Result<i32, String> {
             .collect();
         format!("Engine must be {}", octet_core::model::or_list(&names))
     })?;
+    if let Some(level) = &effort {
+        engine.check_effort(level)?;
+    }
     let run = match (print, rpc) {
         (Some(_), true) => return Err("--print and --rpc cannot be combined".into()),
         (Some(prompt), false) => Run::Print {

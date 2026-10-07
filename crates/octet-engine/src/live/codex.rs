@@ -29,6 +29,7 @@ pub(super) const PROVIDER: Provider = Provider {
     steer: true,
     inline_images: false,
     effort_live: true,
+    efforts: &[],
     start,
 };
 

@@ -320,6 +320,10 @@ fn effort_command(app: &mut App, argument: &str) -> Action {
         app.notice("Effort must be one word, at most 64 bytes");
         return Action::Continue;
     };
+    if let Some(Err(error)) = level.as_deref().map(|l| app.conn.engine.check_effort(l)) {
+        app.notice(error);
+        return Action::Continue;
+    }
     let provider = app.conn.engine.provider();
     if provider.offline {
         app.notice("The offline demo has no reasoning effort");
