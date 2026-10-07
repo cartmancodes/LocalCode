@@ -256,7 +256,20 @@ fn interactive_codex() {
                 emit(
                     &json!({"method":"item/agentMessage/delta","params":{"threadId":"other-thread","turnId":active,"itemId":"wrong","delta":"MUST NOT DISPLAY"}}),
                 );
-                let reply = goal_reply(text).unwrap_or("Hello fixture");
+                // Image inputs are echoed so tests can check what was sent.
+                let images: Vec<&str> = v
+                    .pointer("/params/input")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|item| item["type"] == "localImage")
+                    .filter_map(|item| item["path"].as_str())
+                    .collect();
+                let reply = if images.is_empty() {
+                    goal_reply(text).unwrap_or("Hello fixture").to_owned()
+                } else {
+                    format!("images:{}", images.join(","))
+                };
                 emit(
                     &json!({"method":"item/agentMessage/delta","params":{"threadId":"fixture-thread","turnId":active,"itemId":"msg","delta":reply}}),
                 );
@@ -414,7 +427,25 @@ fn interactive_claude() {
                 );
                 continue;
             }
-            let reply = if text == "argv" {
+            // Image blocks are echoed as "image:<media type>:<base64 length>".
+            let images: Vec<String> = v
+                .pointer("/message/content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|block| block["type"] == "image")
+                .map(|block| {
+                    let source = &block["source"];
+                    let length = source["data"].as_str().map_or(0, str::len);
+                    format!(
+                        "image:{}:{length}",
+                        source["media_type"].as_str().unwrap_or("")
+                    )
+                })
+                .collect();
+            let reply = if !images.is_empty() {
+                images.join(",")
+            } else if text == "argv" {
                 argv.join(" ")
             } else if text == "/compact" {
                 "Compacted".to_owned()

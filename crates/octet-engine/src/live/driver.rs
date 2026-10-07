@@ -3,7 +3,7 @@
 //! approvals and commands, and calls the protocol for the rest.
 use super::{
     protocol::{Core, Phase, Protocol},
-    Channels, Command, Config, DriverError, Engine, Event, Limits, Mode,
+    Channels, Command, Config, DriverError, Engine, Event, ImageAttachment, Limits, Mode,
 };
 use octet_proc::{Process, ProcessConfig};
 use serde_json::Value;
@@ -178,8 +178,12 @@ impl<P: Protocol> Driver<P> {
 
     async fn on_command(&mut self, command: Command) -> Result<(), DriverError> {
         match command {
-            Command::Prompt(text) => self.start_turn(text.clone(), text).await,
-            Command::PromptWithDisplay { wire, display } => self.start_turn(wire, display).await,
+            Command::Prompt(text) => self.start_turn(text.clone(), text, Vec::new()).await,
+            Command::PromptWithDisplay {
+                wire,
+                display,
+                images,
+            } => self.start_turn(wire, display, images).await,
             Command::Answer { id, allow } => self.answer_approval(id, allow).await,
             Command::SetMode(target) => self.set_mode(target).await,
             Command::Steer(text) => self.steer(text).await,
@@ -188,9 +192,16 @@ impl<P: Protocol> Driver<P> {
         }
     }
 
-    async fn start_turn(&mut self, wire: String, display: String) -> Result<(), DriverError> {
+    async fn start_turn(
+        &mut self,
+        wire: String,
+        display: String,
+        images: Vec<ImageAttachment>,
+    ) -> Result<(), DriverError> {
         if self.begin_turn(display)? {
-            self.protocol.send_prompt(&mut self.core, &wire).await?;
+            self.protocol
+                .send_prompt(&mut self.core, &wire, &images)
+                .await?;
         }
         Ok(())
     }

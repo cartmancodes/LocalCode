@@ -919,3 +919,93 @@ async fn compact_needs_an_idle_session() {
         .entries_text()
         .contains("Finish or cancel the turn before compacting"));
 }
+/// A workspace holding `files`, each one byte long.
+fn image_workspace(prefix: &str, files: &[&str]) -> octet_testkit::TempDir {
+    let dir = octet_testkit::TempDir::new(prefix);
+    std::fs::create_dir_all(dir.path()).unwrap();
+    for file in files {
+        std::fs::write(dir.path().join(file), b"x").unwrap();
+    }
+    dir
+}
+#[tokio::test]
+async fn image_attaches_and_shows_in_the_title() {
+    let dir = image_workspace("octet-image-title", &["shot.png"]);
+    let mut app = app();
+    app.composer.root = dir.path().to_path_buf();
+    command(&mut app, "/image shot.png").await;
+    assert_eq!(app.composer.images.len(), 1);
+    assert!(crate::view::composer_title(&app).contains("+ image shot.png"));
+    let (_temp, session) = demo_session("octet-image-send").await;
+    app.conn.phase = ConnPhase::Running;
+    assert!(app.composer.editor.insert("look"));
+    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    assert!(app.composer.images.is_empty());
+    match app.composer.queue.front() {
+        Some(Command::PromptWithDisplay {
+            wire,
+            display,
+            images,
+        }) => {
+            assert_eq!(wire, "look");
+            assert_eq!(display, "look\n[+ image shot.png]");
+            assert_eq!(images.len(), 1);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+#[tokio::test]
+async fn oversized_or_unknown_images_are_refused() {
+    let dir = image_workspace(
+        "octet-image-refuse",
+        &["notes.txt", "a.png", "b.png", "c.png", "d.png", "e.png"],
+    );
+    std::fs::File::create(dir.path().join("big.png"))
+        .unwrap()
+        .set_len(octet_core::IMAGE_LIMIT + 1)
+        .unwrap();
+    let mut app = app();
+    app.composer.root = dir.path().to_path_buf();
+    command(&mut app, "/image notes.txt").await;
+    command(&mut app, "/image big.png").await;
+    command(&mut app, "/image gone.png").await;
+    assert!(app.composer.images.is_empty());
+    let text = app.entries_text();
+    assert!(text.contains("notes.txt is not a PNG, JPEG, GIF or WebP image"));
+    assert!(text.contains("big.png is over 5 MiB"));
+    assert!(text.contains("Cannot read gone.png"));
+    for file in ["a.png", "b.png", "c.png", "d.png", "e.png"] {
+        command(&mut app, &format!("/image {file}")).await;
+    }
+    assert_eq!(app.composer.images.len(), 4);
+    assert!(app
+        .entries_text()
+        .contains("A prompt takes at most 4 images"));
+    assert!(crate::view::composer_title(&app).contains("+4 images"));
+    // Esc on an empty prompt drops them.
+    let (_temp, session) = demo_session("octet-image-esc").await;
+    key_action(&mut app, &session, key(KeyCode::Esc)).await;
+    assert!(app.composer.images.is_empty());
+}
+#[test]
+fn image_paths_resolve_against_the_workspace_and_home() {
+    use std::path::Path;
+    let root = Path::new("/work");
+    let home = Some(Path::new("/home/me"));
+    assert_eq!(
+        commands::image_path(root, home, "shots/a.png"),
+        Path::new("/work/shots/a.png")
+    );
+    assert_eq!(
+        commands::image_path(root, home, "~/a.png"),
+        Path::new("/home/me/a.png")
+    );
+    assert_eq!(
+        commands::image_path(root, home, "/abs/a.png"),
+        Path::new("/abs/a.png")
+    );
+    assert_eq!(
+        commands::image_path(root, None, "~/a.png"),
+        Path::new("/work/~/a.png")
+    );
+}

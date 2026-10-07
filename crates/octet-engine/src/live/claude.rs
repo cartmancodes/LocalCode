@@ -5,8 +5,8 @@ use super::{
     mode::{claude_mode, claude_permission_args, claude_reported_mode, confirm_mode},
     model_catalog_with,
     protocol::{Core, Phase, Protocol},
-    valid_identifier, BoxFuture, Channels, Config, DriverError, Event, Limits, Mode, ModelInfo,
-    Outcome, Provider,
+    valid_identifier, BoxFuture, Channels, Config, DriverError, Event, ImageAttachment, Limits,
+    Mode, ModelInfo, Outcome, Provider,
 };
 use serde_json::{json, Value};
 use std::ffi::OsString;
@@ -156,8 +156,30 @@ impl Protocol for ClaudeProtocol {
             .await
     }
 
-    async fn send_prompt(&mut self, core: &mut Core, text: &str) -> Result<(), DriverError> {
-        let content = json!([{"type": "text", "text": text}]);
+    /// Images go inline as base64 blocks, read now; an image that cannot
+    /// be read fails the turn.
+    async fn send_prompt(
+        &mut self,
+        core: &mut Core,
+        text: &str,
+        images: &[ImageAttachment],
+    ) -> Result<(), DriverError> {
+        let mut content = vec![json!({"type": "text", "text": text})];
+        for image in images {
+            match image.read_base64().await {
+                Ok(data) => content.push(json!({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": image.media_type, "data": data},
+                })),
+                Err(error) => {
+                    core.phase = Phase::Idle;
+                    core.emit(Event::Error(error.to_string()))?;
+                    return core.emit(Event::Finished {
+                        outcome: Outcome::Failed,
+                    });
+                }
+            }
+        }
         core.send(json!({
             "type": "user",
             "message": {"role": "user", "content": content},
@@ -168,7 +190,7 @@ impl Protocol for ClaudeProtocol {
 
     /// Claude compacts when the user message is `/compact`.
     async fn compact(&mut self, core: &mut Core) -> Result<(), DriverError> {
-        self.send_prompt(core, "/compact").await
+        self.send_prompt(core, "/compact", &[]).await
     }
 
     async fn set_mode(&mut self, core: &mut Core, target: Mode) -> Result<(), DriverError> {

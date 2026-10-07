@@ -1,7 +1,7 @@
 //! What every vendor connection shares (`Core`), and what each vendor
 //! supplies (`Protocol`). The driver loop in `driver.rs` joins the two; a new
 //! vendor implements `Protocol` in its own file and adds a provider row.
-use super::{emit, Config, DriverError, Event, Limits, Mode, EVENT_BYTES};
+use super::{emit, Config, DriverError, Event, ImageAttachment, Limits, Mode, EVENT_BYTES};
 use octet_proc::Process;
 use serde_json::Value;
 use std::{collections::HashMap, ffi::OsString, future::Future, time::Duration};
@@ -163,11 +163,12 @@ pub(crate) trait Protocol: Default + Send {
         &mut self,
         core: &mut Core,
     ) -> impl Future<Output = Result<(), DriverError>> + Send;
-    /// Sends the user's prompt; the turn has already started.
+    /// Sends the user's prompt and its images; the turn has already started.
     fn send_prompt(
         &mut self,
         core: &mut Core,
         text: &str,
+        images: &[ImageAttachment],
     ) -> impl Future<Output = Result<(), DriverError>> + Send;
     /// Asks the vendor to compact its context; the turn has already started.
     fn compact(&mut self, core: &mut Core) -> impl Future<Output = Result<(), DriverError>> + Send;

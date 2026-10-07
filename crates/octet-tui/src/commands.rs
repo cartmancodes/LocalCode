@@ -21,6 +21,7 @@ pub enum Cmd {
     Effort,
     Fork,
     Compact,
+    Image,
     Quit,
 }
 
@@ -157,6 +158,12 @@ pub const COMMANDS: &[Spec] = &[
         "Compact context",
     ),
     spec(
+        Cmd::Image,
+        "/image",
+        "/image PATH: attach a PNG, JPEG, GIF or WebP image (up to 5 MiB) to the next prompt",
+        "Attach an image",
+    ),
+    spec(
         Cmd::Quit,
         "/quit",
         "/quit or Ctrl+C twice: save and exit",
@@ -168,7 +175,7 @@ pub const COMMANDS: &[Spec] = &[
 impl Cmd {
     /// Every command, for the registry coverage test.
     #[cfg(test)]
-    pub(crate) const ALL: [Cmd; 16] = [
+    pub(crate) const ALL: [Cmd; 17] = [
         Cmd::Help,
         Cmd::Model,
         Cmd::Mode,
@@ -184,6 +191,7 @@ impl Cmd {
         Cmd::Effort,
         Cmd::Fork,
         Cmd::Compact,
+        Cmd::Image,
         Cmd::Quit,
     ];
     /// The command a typed name (or alias) names.
@@ -199,6 +207,7 @@ pub(crate) async fn send_goal_prompt(app: &mut App, session: &Session, prompt: S
     let command = Command::PromptWithDisplay {
         wire: prompt,
         display: app.goals.prompt_display(),
+        images: Vec::new(),
     };
     match session.handle.send(command) {
         Ok(()) => {
@@ -235,6 +244,7 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
         Cmd::Effort => return Some(effort_command(app, argument)),
         Cmd::Fork => return Some(fork_command(app)),
         Cmd::Compact => return Some(compact_command(app)),
+        Cmd::Image => image_command(app, argument),
         Cmd::Steer if argument.is_empty() => app.notice("Use /steer <text>"),
         Cmd::Steer => return Some(Action::Steer(argument.to_owned())),
         Cmd::Copy => copy_reply(app),
@@ -331,6 +341,43 @@ fn compact_command(app: &mut App) -> Action {
         return Action::Compact;
     }
     Action::Continue
+}
+
+/// `/image PATH`: attach an image to the next prompt.
+fn image_command(app: &mut App, argument: &str) {
+    if argument.is_empty() {
+        app.notice("Usage: /image PATH (PNG, JPEG, GIF or WebP, up to 5 MiB)");
+        return;
+    }
+    if app.composer.images.len() >= octet_core::IMAGES_PER_PROMPT {
+        app.notice(format!(
+            "A prompt takes at most {} images; press Esc on an empty prompt to drop them",
+            octet_core::IMAGES_PER_PROMPT
+        ));
+        return;
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let path = image_path(&app.composer.root, home.as_deref(), argument);
+    match octet_core::ImageAttachment::open(&path) {
+        Ok(image) => {
+            app.notice(format!("Attached {} to the next prompt", image.name));
+            app.composer.images.push(image);
+        }
+        Err(error) => app.notice(error.to_string()),
+    }
+}
+
+/// Where `/image` looks: `~/` is the home directory, and a relative path is
+/// in the workspace.
+pub(crate) fn image_path(
+    root: &std::path::Path,
+    home: Option<&std::path::Path>,
+    argument: &str,
+) -> std::path::PathBuf {
+    match (argument.strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => root.join(argument),
+    }
 }
 
 /// `/queue`: list the prompts waiting for the running turn, or clear them.

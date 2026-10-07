@@ -320,6 +320,11 @@ pub(crate) fn composer_title(app: &App) -> String {
         "Prompt".to_owned()
     }];
     parts.extend(crate::composer::chip(&app.composer.attachments));
+    match app.composer.images.as_slice() {
+        [] => {}
+        [one] => parts.push(format!("+ image {}", one.name)),
+        many => parts.push(format!("+{} images", many.len())),
+    }
     if !app.composer.queue.is_empty() {
         parts.push(format!("+{} queued", app.composer.queue.len()));
     }

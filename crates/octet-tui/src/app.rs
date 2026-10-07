@@ -120,6 +120,8 @@ pub(crate) struct Composer {
     pub(crate) root: PathBuf,
     /// `!` outputs waiting to go with the next prompt.
     pub(crate) attachments: Vec<crate::shell::Ran>,
+    /// Images waiting to go with the next prompt (`/image`).
+    pub(crate) images: Vec<octet_core::ImageAttachment>,
     /// A `!` command is running.
     pub(crate) shell_running: bool,
     /// The suggestion popup, when open.
@@ -189,6 +191,7 @@ impl App {
                 saved_draft: String::new(),
                 root: config.cwd.clone(),
                 attachments: Vec::new(),
+                images: Vec::new(),
                 shell_running: false,
                 completion: None,
                 files: crate::files::Files::Unbuilt,

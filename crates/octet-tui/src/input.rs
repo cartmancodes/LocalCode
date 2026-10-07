@@ -311,8 +311,11 @@ async fn composer_key(
             } else if app.is_busy() {
                 cancel_turn(app, session).await;
                 app.notice = CANCELLING.into();
-            } else if app.composer.editor.text.is_empty() && !app.composer.attachments.is_empty() {
+            } else if app.composer.editor.text.is_empty()
+                && !(app.composer.attachments.is_empty() && app.composer.images.is_empty())
+            {
                 app.composer.attachments.clear();
+                app.composer.images.clear();
                 app.notice = "Attachments removed".into();
             } else {
                 app.chat.scroll = 0;
@@ -372,26 +375,34 @@ async fn composer_key(
                 );
                 return Action::Continue;
             }
-            let command = if app.composer.attachments.is_empty() {
+            let command = if app.composer.attachments.is_empty() && app.composer.images.is_empty() {
                 Command::Prompt(draft.clone())
             } else {
-                let (wire, display) = composer::with_attachments(
+                let (wire, mut display) = composer::with_attachments(
                     &draft,
                     &app.composer.attachments,
                     octet_core::PROMPT_LIMIT,
                 );
+                for image in &app.composer.images {
+                    display.push_str(&format!("\n[+ image {}]", image.name));
+                }
                 if wire.len().max(display.len()) > octet_core::PROMPT_LIMIT {
                     app.notice = "The prompt and its attachments are over 64 KiB. \
                                   Shorten the prompt, or press Esc on an empty prompt to drop them"
                         .into();
                     return Action::Continue;
                 }
-                Command::PromptWithDisplay { wire, display }
+                Command::PromptWithDisplay {
+                    wire,
+                    display,
+                    images: app.composer.images.clone(),
+                }
             };
             if app.conn.is_running() {
                 // The running turn keeps going; this one goes when it ends.
                 app.composer.queue.push_back(command);
                 app.composer.attachments.clear();
+                app.composer.images.clear();
                 app.composer.editor.take();
                 app.remember(draft);
                 app.notice = format!("Queued ({} waiting)", app.composer.queue.len());
@@ -400,6 +411,7 @@ async fn composer_key(
             match session.handle.send(command) {
                 Ok(()) => {
                     app.composer.attachments.clear();
+                    app.composer.images.clear();
                     app.goals.user_prompt_sent();
                     app.composer.editor.take();
                     app.conn.start_turn();

@@ -11,10 +11,12 @@ mod claude;
 mod codex;
 mod demo;
 mod driver;
+mod image;
 mod mode;
 mod protocol;
 pub use claude::claude_stray_reply;
 pub use codex::codex_stray_reply;
+pub use image::{ImageAttachment, ImageError, IMAGES_PER_PROMPT, IMAGE_LIMIT};
 pub use mode::Mode;
 
 /// The longest prompt, in bytes, Octet sends to a vendor.
@@ -369,12 +371,14 @@ pub enum Command {
     /// Send a prompt, shown as sent.
     Prompt(String),
     /// A prompt whose sent text differs from what the transcript shows
-    /// (attachments, goal prompts).
+    /// (attachments, goal prompts), with any images.
     PromptWithDisplay {
         /// What the vendor receives.
         wire: String,
         /// What the transcript and journal show.
         display: String,
+        /// Images sent after the text; read when the prompt is sent.
+        images: Vec<ImageAttachment>,
     },
     /// The user's answer to an approval.
     Answer {
@@ -397,7 +401,7 @@ impl Command {
     fn prompt_bytes(&self) -> usize {
         match self {
             Command::Prompt(text) => text.len(),
-            Command::PromptWithDisplay { wire, display } => wire.len().max(display.len()),
+            Command::PromptWithDisplay { wire, display, .. } => wire.len().max(display.len()),
             Command::Steer(text) => text.len(),
             Command::Answer { .. }
             | Command::SetMode(_)

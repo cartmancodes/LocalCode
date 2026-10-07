@@ -102,7 +102,7 @@ pub(super) async fn demo(
                         continue;
                     }
                     Some(Command::Prompt(text)) => (text.clone(), text),
-                    Some(Command::PromptWithDisplay { wire, display }) => (wire, display),
+                    Some(Command::PromptWithDisplay { wire, display, .. }) => (wire, display),
                 };
                 let mut turn = DemoTurn {
                     mode: &mut mode,

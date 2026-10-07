@@ -595,6 +595,7 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
             let command = Command::PromptWithDisplay {
                 wire: prompt,
                 display,
+                images: Vec::new(),
             };
             match session.handle.send(command) {
                 Ok(()) => {

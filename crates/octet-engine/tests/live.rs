@@ -3,7 +3,8 @@
 // Test code: an unwrap that fails is the test failing.
 #![allow(clippy::unwrap_used)]
 use octet_engine::live::{
-    spawn, spawn_with_limits, Command, Config, Engine, Event, Limits, Mode, Outcome,
+    spawn, spawn_with_limits, Command, Config, Engine, Event, ImageAttachment, Limits, Mode,
+    Outcome,
 };
 use std::time::Duration;
 use tokio::{sync::mpsc, time::timeout};
@@ -307,6 +308,7 @@ async fn provider_receives_wire_prompt_while_transcript_keeps_user_facing_text()
         .send(Command::PromptWithDisplay {
             wire: "hold".into(),
             display: "hello".into(),
+            images: Vec::new(),
         })
         .unwrap();
     let mut seen_user = false;
@@ -1120,6 +1122,86 @@ async fn claude_compact_sends_the_command() {
     )
     .await;
     assert_eq!(turn_text(&mut events).await, "Compacted");
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+/// A prompt carrying one image file written with `bytes`.
+fn image_prompt(dir: &octet_testkit::TempDir, bytes: &[u8]) -> (Command, ImageAttachment) {
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let path = dir.path().join("shot.png");
+    std::fs::write(&path, bytes).unwrap();
+    let image = ImageAttachment::open(&path).unwrap();
+    let command = Command::PromptWithDisplay {
+        wire: "look".into(),
+        display: "look\n[+ image shot.png]".into(),
+        images: vec![image.clone()],
+    };
+    (command, image)
+}
+#[tokio::test]
+async fn codex_receives_local_image_paths() {
+    let dir = octet_testkit::TempDir::new("octet-image");
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    let (command, image) = image_prompt(&dir, b"fake png");
+    handle.send(command).unwrap();
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::User(t) if t == "look\n[+ image shot.png]"),
+    )
+    .await;
+    assert_eq!(
+        turn_text(&mut events).await,
+        format!("images:{}", image.path.display())
+    );
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn claude_receives_base64_image_blocks() {
+    let dir = octet_testkit::TempDir::new("octet-image");
+    let mut c = config();
+    c.engine = Engine::CLAUDE;
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    // "abc" is "YWJj" in base64: four bytes on the wire.
+    let (command, _) = image_prompt(&dir, b"abc");
+    handle.send(command).unwrap();
+    assert_eq!(turn_text(&mut events).await, "image:image/png:4");
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn an_image_gone_at_send_time_fails_the_turn() {
+    let dir = octet_testkit::TempDir::new("octet-image");
+    let mut c = config();
+    c.engine = Engine::CLAUDE;
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    let (command, image) = image_prompt(&dir, b"abc");
+    std::fs::remove_file(&image.path).unwrap();
+    handle.send(command).unwrap();
+    let mut error = None;
+    loop {
+        match next(&mut events).await {
+            Event::Error(text) => error = Some(text),
+            Event::Finished { outcome } => {
+                assert_eq!(outcome, Outcome::Failed);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(error.unwrap().contains("shot.png"));
     handle.shutdown();
     timeout(Duration::from_secs(3), task)
         .await

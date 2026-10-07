@@ -5,8 +5,8 @@ use super::{
     mode::{codex_reported, codex_thread_params, codex_turn_overrides, confirm_mode},
     model_catalog_with,
     protocol::{Core, Phase, Protocol},
-    valid_identifier, BoxFuture, Channels, Config, DriverError, Event, Limits, Mode, ModelInfo,
-    Outcome, Provider, EVENT_BYTES,
+    valid_identifier, BoxFuture, Channels, Config, DriverError, Event, ImageAttachment, Limits,
+    Mode, ModelInfo, Outcome, Provider, EVENT_BYTES,
 };
 use serde_json::{json, Value};
 use std::{collections::HashSet, ffi::OsString};
@@ -104,10 +104,23 @@ impl Protocol for CodexProtocol {
         Ok(())
     }
 
-    async fn send_prompt(&mut self, core: &mut Core, text: &str) -> Result<(), DriverError> {
+    /// Images go as local paths after the text; Codex reads them itself.
+    async fn send_prompt(
+        &mut self,
+        core: &mut Core,
+        text: &str,
+        images: &[ImageAttachment],
+    ) -> Result<(), DriverError> {
         core.request_id += 1;
         self.start_request = Some(core.request_id);
-        let mut params = json!({"threadId":core.session,"input":[{"type":"text","text":text}]});
+        let input: Vec<Value> = std::iter::once(json!({"type":"text","text":text}))
+            .chain(
+                images
+                    .iter()
+                    .map(|image| json!({"type":"localImage","path":image.path})),
+            )
+            .collect();
+        let mut params = json!({"threadId":core.session,"input":input});
         if let Some(model) = &core.config.model {
             params["model"] = json!(model);
         }
