@@ -353,6 +353,17 @@ fn interactive_codex() {
                 emit(&codex_turn_completed(&active, "interrupted"));
                 emit(&json!({"id":v["id"],"result":{}}));
             }
+            None if v["id"].as_str().is_some_and(|id| id.starts_with("cap-")) => {
+                // Each answer to an "approvals-9" request, as "answered cap-N:decision".
+                let reply = format!(
+                    "answered {}:{}",
+                    v["id"].as_str().unwrap_or(""),
+                    v["result"]["decision"].as_str().unwrap_or("?")
+                );
+                emit(
+                    &json!({"method":"item/agentMessage/delta","params":{"threadId":"fixture-thread","turnId":active,"itemId":"cap","delta":reply}}),
+                );
+            }
             None if v["id"] == "permission" => {
                 emit(
                     &json!({"method":"item/agentMessage/delta","params":{"threadId":"fixture-thread","turnId":active,"itemId":"answer","delta":v["result"]["decision"].as_str().unwrap_or("bad response")}}),
@@ -434,6 +445,29 @@ fn interactive_claude() {
                 );
             }
         } else if v["type"] == "control_response"
+            && v.pointer("/response/request_id") == Some(&json!("perm-2"))
+        {
+            // Octet answered a request Claude had cancelled.
+            emit(
+                &json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"answered a cancelled request"}}}),
+            );
+        } else if v["type"] == "control_response"
+            && v.pointer("/response/request_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("cap-"))
+        {
+            // Each answer to an "approvals-9" request, as "answered cap-N:behavior".
+            let reply = format!(
+                "answered {}:{}",
+                v["response"]["request_id"].as_str().unwrap_or(""),
+                v["response"]["response"]["behavior"]
+                    .as_str()
+                    .unwrap_or("?")
+            );
+            emit(
+                &json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":reply}}}),
+            );
+        } else if v["type"] == "control_response"
             && v.pointer("/response/request_id") == Some(&json!("perm-1"))
         {
             // The answer to the "approval" script: echo what Octet sent.
@@ -462,7 +496,7 @@ fn interactive_claude() {
                 emit(&claude_init(sid));
                 emit(&permission("perm-2"));
                 emit(&json!({"type":"control_cancel_request","request_id":"perm-2"}));
-                emit(&claude_result(sid, ""));
+                // The turn stays open: an answer to perm-2 must never arrive.
                 continue;
             }
             if text == scenario::APPROVALS_9 {

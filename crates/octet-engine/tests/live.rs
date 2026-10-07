@@ -1291,52 +1291,46 @@ async fn claude_approval_denied() {
         "deny:"
     );
 }
-#[tokio::test]
-async fn claude_cancel_request_closes_the_approval() {
-    let (handle, mut events, task) = spawn(claude());
-    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
-    handle
-        .send(Command::Prompt(scenario::APPROVAL_CANCEL.into()))
-        .unwrap();
-    let Event::Approval { id, .. } =
-        wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await
-    else {
-        unreachable!()
-    };
-    wait_for(
-        &mut events,
-        |e| matches!(e, Event::ApprovalClosed(closed) if *closed == id),
-    )
-    .await;
-    wait_for(&mut events, |e| {
-        matches!(
-            e,
-            Event::Finished {
-                outcome: Outcome::Completed
-            }
-        )
-    })
-    .await;
-    stop(&handle, task).await;
-}
-/// Sends `approvals-9` and counts the approvals shown before the cap's notice.
+/// Sends `approvals-9`: the ninth request is denied at the cap, and the
+/// eight shown can still be answered. How many were shown.
 async fn approvals_before_the_cap(engine: Config) -> usize {
+    let claude = engine.engine == Engine::CLAUDE;
+    let (allow, deny) = if claude {
+        ("allow", "deny")
+    } else {
+        ("accept", "decline")
+    };
     let (handle, mut events, task) = spawn(engine);
     wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
     handle
         .send(Command::Prompt(scenario::APPROVALS_9.into()))
         .unwrap();
-    let mut shown = 0;
+    let mut shown = Vec::new();
     loop {
         match next(&mut events).await {
-            Event::Approval { .. } => shown += 1,
+            Event::Approval { id, .. } => shown.push(id),
             Event::Notice(text) if text.contains("Too many approvals are waiting") => break,
             Event::Finished { .. } | Event::Stopped => panic!("no cap notice"),
             _ => {}
         }
     }
+    // Only the ninth request was denied; the eight shown still wait.
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::Text(t) if *t == format!("answered cap-9:{deny}")),
+    )
+    .await;
+    handle
+        .send(Command::Answer {
+            id: shown[0],
+            allow: true,
+        })
+        .unwrap();
+    let echoed = format!("answered cap-1:{allow}");
+    wait_for(&mut events, |e| matches!(e, Event::Text(t) if *t == echoed)).await;
+    handle.interrupt();
     stop(&handle, task).await;
-    shown
+    shown.len()
 }
 #[tokio::test]
 async fn approvals_over_the_cap_are_denied_with_a_notice() {
@@ -1505,5 +1499,36 @@ async fn a_cancel_after_a_demo_turn_does_not_stop_the_next_one() {
             "round {round}: {outcome:?}"
         );
     }
+    stop(&handle, task).await;
+}
+#[tokio::test]
+async fn claude_cancel_request_closes_the_approval() {
+    let (handle, mut events, task) = spawn(claude());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle
+        .send(Command::Prompt(scenario::APPROVAL_CANCEL.into()))
+        .unwrap();
+    let Event::Approval { id, .. } =
+        wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await
+    else {
+        unreachable!()
+    };
+    // Claude cancels the request while its turn is still running.
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::ApprovalClosed(closed) if *closed == id),
+    )
+    .await;
+    // A late answer is refused here and never reaches Claude.
+    handle.send(Command::Answer { id, allow: true }).unwrap();
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::Notice(t) if t == "That approval is no longer active"),
+    )
+    .await;
+    handle.interrupt();
+    assert!(!turn_text(&mut events)
+        .await
+        .contains("answered a cancelled request"));
     stop(&handle, task).await;
 }
