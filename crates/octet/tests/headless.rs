@@ -101,7 +101,7 @@ fn print_failed_turn_exits_one() {
 #[test]
 fn print_and_rpc_cannot_be_combined() {
     let (code, _, stderr) = run(&["--print", "hello", "--rpc"], "");
-    assert_eq!(code, 1);
+    assert_eq!(code, 2, "a usage error");
     assert!(stderr.contains("--print and --rpc"), "{stderr}");
 }
 
@@ -306,7 +306,7 @@ fn print_reports_a_prompt_over_the_limit_from_stdin() {
     // Two-byte characters, so the cut at the limit falls inside one.
     let long = "é".repeat(40_000);
     let (code, _, stderr) = run(&["-p", "-"], &long);
-    assert_eq!(code, 1);
+    assert_eq!(code, 2, "a usage error");
     assert!(stderr.contains("The prompt is over 64 KiB"), "{stderr}");
 }
 
@@ -363,7 +363,7 @@ fn an_argument_prompt_over_the_limit_is_refused_before_opening() {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || tx.send(child.wait_with_output().unwrap()));
     let output = rx.recv_timeout(LIMIT).unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(2), "a usage error");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("The prompt is over 64 KiB"), "{stderr}");
     let journals = std::fs::read_dir(temp.path()).unwrap().count();

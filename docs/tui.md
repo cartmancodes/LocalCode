@@ -51,7 +51,8 @@ octet --rpc                                              # JSON-line commands on
 
 - **`--print PROMPT` (`-p`)** runs one turn and writes the reply text to
   stdout; notices and errors go to stderr. `-` reads the prompt from stdin.
-  The exit code is 0 when the turn completes, 1 when it fails, and 130 after
+  The exit code is 0 when the turn completes, 1 when it fails, 2 for a
+  usage error (a bad option, an empty or over-long prompt), and 130 after
   Ctrl+C (SIGINT), which cancels the turn first (also if the vendor then
   stops). SIGTERM stops the session and exits 143.
 - **`--output json`** writes every event as one JSON line in the journal's

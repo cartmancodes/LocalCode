@@ -1,18 +1,9 @@
 //! `octet`: parses the command line and starts the terminal interface, or
 //! runs headless (`--print`, `--rpc`).
-use octet_core::Config;
+use args::{CliError, Parsed, Prompt, Run};
 use std::{io::IsTerminal, path::PathBuf};
+mod args;
 mod headless;
-
-/// What the process runs once the options are read.
-enum Run {
-    /// The terminal interface.
-    Interface,
-    /// One prompt; the reply (or, with `json`, every event) on stdout.
-    Print { prompt: String, json: bool },
-    /// JSON-line commands in, events out.
-    Rpc,
-}
 
 /// `--help`: fixed usage and keys, then every command from the registry.
 fn help() -> String {
@@ -26,7 +17,7 @@ fn help() -> String {
         "from stdin. --output json writes every event as a JSON line. --rpc reads",
         "JSON-line commands (prompt, answer, interrupt, mode, effort, quit) from",
         "stdin and writes events. Print mode denies approvals; exit codes are 0",
-        "(completed), 1 (failed) and 130 (interrupted).",
+        "(completed), 1 (failed), 2 (usage error) and 130 (interrupted).",
         "",
         "Defaults: Codex, current directory. Vendor CLI installation and login required.",
         "Modes: ask (default) · accept-edits · auto (vendor auto-review) · full-access",
@@ -74,146 +65,49 @@ async fn main() {
         Ok(code) => std::process::exit(code),
         Err(error) => {
             eprintln!("octet: {error}");
-            std::process::exit(1);
+            std::process::exit(error.code());
         }
     }
 }
 /// Reads the options and runs; the process's exit code.
-async fn run() -> Result<i32, String> {
-    let mut args = std::env::args().skip(1);
-    let mut engine = "codex".to_owned();
-    let mut binary = None;
-    let mut model = None;
-    let mut resume = None;
-    let mut cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let mut directory = None;
-    let mut mode = octet_core::Mode::Ask;
-    let mut approval_timeout = octet_core::DEFAULT_APPROVAL_TIMEOUT;
-    let mut effort = None;
-    let mut print = None;
-    let mut output = None;
-    let mut rpc = false;
-    while let Some(arg) = args.next() {
-        if arg == "--help" || arg == "-h" {
+async fn run() -> Result<i32, CliError> {
+    let args = match args::parse_args(std::env::args_os().skip(1))? {
+        Parsed::Help => {
             print!("{}", help());
             return Ok(0);
         }
-        if arg == "--version" {
-            println!("octet {} (Rust preview)", env!("CARGO_PKG_VERSION"));
+        Parsed::Version => {
+            println!("octet {}", env!("CARGO_PKG_VERSION"));
             return Ok(0);
         }
-        if arg == "--rpc" {
-            rpc = true;
-            continue;
-        }
-        let arg = if arg == "-p" {
-            "--print".to_owned()
-        } else {
-            arg
-        };
-        const OPTIONS: [&str; 11] = [
-            "--engine",
-            "--binary",
-            "--cwd",
-            "--model",
-            "--resume",
-            "--journal-dir",
-            "--mode",
-            "--approval-timeout",
-            "--effort",
-            "--print",
-            "--output",
-        ];
-        if !OPTIONS.contains(&arg.as_str()) {
-            return Err(format!("Unknown option {arg}. Use --help."));
-        }
-        // A value never starts with "--", so a forgotten value can't swallow
-        // the next option.
-        let value = args
-            .next()
-            .filter(|value| !value.starts_with("--"))
-            .ok_or_else(|| format!("{arg} requires a value. Use --help."))?;
-        match arg.as_str() {
-            "--engine" => engine = value,
-            "--binary" => binary = Some(PathBuf::from(value)),
-            "--cwd" => cwd = PathBuf::from(value),
-            "--model" => model = Some(value),
-            "--resume" => resume = Some(value),
-            "--journal-dir" => directory = Some(PathBuf::from(value)),
-            "--mode" => {
-                mode = octet_core::Mode::parse(&value).ok_or_else(|| {
-                    format!("Unknown mode {value}. Use ask, accept-edits, auto or full-access.")
-                })?
-            }
-            "--approval-timeout" => {
-                approval_timeout = value
-                    .parse::<u64>()
-                    .ok()
-                    .filter(|seconds| (10..=3600).contains(seconds))
-                    .map(std::time::Duration::from_secs)
-                    .ok_or("Approval timeout must be a whole number of seconds from 10 to 3600")?
-            }
-            "--effort" => {
-                if !octet_core::valid_effort(&value) {
-                    return Err("Effort must be one word, at most 64 bytes".into());
-                }
-                effort = Some(value);
-            }
-            "--print" => print = Some(value),
-            "--output" => {
-                output = Some(match value.as_str() {
-                    "text" => false,
-                    "json" => true,
-                    _ => return Err("Output must be text or json".into()),
-                })
-            }
-            _ => unreachable!("{arg} is checked against OPTIONS"),
-        }
-    }
-    let engine = octet_core::Engine::parse(&engine).ok_or_else(|| {
-        let names: Vec<&str> = octet_core::Engine::ALL
-            .iter()
-            .map(|engine| engine.as_str())
-            .collect();
-        format!("Engine must be {}", octet_core::model::or_list(&names))
-    })?;
-    if let Some(level) = &effort {
-        engine.check_effort(level)?;
-    }
-    let run = match (print, rpc) {
-        (Some(_), true) => return Err("--print and --rpc cannot be combined".into()),
-        (Some(prompt), false) => Run::Print {
-            prompt: if prompt == "-" {
-                headless::read_prompt().await?
-            } else {
-                prompt
-            },
-            json: output.unwrap_or(false),
-        },
-        (None, _) if output.is_some() => return Err("--output applies to --print".into()),
-        (None, true) => Run::Rpc,
-        (None, false) => Run::Interface,
+        Parsed::Run(args) => args,
     };
-    if let Run::Print { prompt, .. } = &run {
-        if prompt.trim().is_empty() {
-            return Err("The prompt is empty".into());
+    let stdin_prompt = match &args.run {
+        Run::Print {
+            prompt: Prompt::Stdin,
+            ..
+        } => {
+            let prompt = headless::read_prompt().await.map_err(CliError::Usage)?;
+            args::check_prompt(&prompt)?;
+            Some(prompt)
         }
-        headless::check_prompt_size(prompt.len())?;
-    }
-    if matches!(run, Run::Interface)
+        _ => None,
+    };
+    if args.run == Run::Interface
         && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal())
     {
-        return Err(
+        return Err(CliError::Usage(
             "The terminal UI requires an interactive terminal. Use --help for options.".into(),
-        );
+        ));
     }
-    cwd = cwd
-        .canonicalize()
-        .map_err(|e| format!("Invalid workspace: {e}"))?;
-    if !cwd.is_dir() {
-        return Err("Workspace must be a directory".into());
-    }
-    let directory = directory
+    let cwd = match &args.cwd {
+        Some(cwd) => cwd.clone(),
+        None => std::env::current_dir().map_err(|e| CliError::Run(e.to_string()))?,
+    };
+    let config = args.config(args::workspace(&cwd)?);
+    let directory = args
+        .journal_dir
+        .clone()
         .or_else(|| {
             std::env::var_os("XDG_DATA_HOME")
                 .map(PathBuf::from)
@@ -224,24 +118,22 @@ async fn run() -> Result<i32, String> {
             std::env::var_os("HOME")
                 .map(|p| PathBuf::from(p).join(".local/share/octet/rust-preview"))
         })
-        .ok_or("Set --journal-dir or HOME to choose transcript storage")?;
-    let config = Config {
-        binary: binary.unwrap_or_else(|| PathBuf::from(engine.as_str())),
-        engine,
-        cwd,
-        model,
-        resume,
-        mode,
-        approval_timeout,
-        effort,
-        fork: false,
-    };
-    match run {
+        .ok_or_else(|| {
+            CliError::Usage("Set --journal-dir or HOME to choose transcript storage".into())
+        })?;
+    let result = match args.run {
         Run::Interface => octet_tui::run(config, directory)
             .await
             .map(|()| 0)
             .map_err(|e| e.to_string()),
-        Run::Print { prompt, json } => headless::print(config, directory, prompt, json).await,
+        Run::Print { prompt, json } => {
+            let prompt = match prompt {
+                Prompt::Text(text) => text,
+                Prompt::Stdin => stdin_prompt.unwrap_or_default(),
+            };
+            headless::print(config, directory, prompt, json).await
+        }
         Run::Rpc => headless::rpc(config, directory).await,
-    }
+    };
+    result.map_err(CliError::Run)
 }

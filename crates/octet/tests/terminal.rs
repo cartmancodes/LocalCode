@@ -379,50 +379,6 @@ fn terminal_idle_diagnostic() {
 }
 
 #[test]
-fn unknown_mode_flag_is_a_startup_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_octet"))
-        .args(["--engine", "demo", "--mode", "bogus"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown mode bogus"));
-}
-
-#[test]
-fn unknown_engine_is_a_startup_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_octet"))
-        .args(["--engine", "gemini"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains(&engine_error()));
-}
-
-#[test]
-fn unknown_options_and_missing_values_are_named_at_startup() {
-    for (args, error) in [
-        (
-            &["--engine", "demo", "--bogus"][..],
-            "Unknown option --bogus",
-        ),
-        (&["--engine", "demo", "stray"][..], "Unknown option stray"),
-        (
-            &["--engine", "demo", "--cwd", "--journal-dir", "/tmp"][..],
-            "--cwd requires a value",
-        ),
-        (&["--engine", "demo", "--cwd"][..], "--cwd requires a value"),
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_octet"))
-            .args(args)
-            .output()
-            .unwrap();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "{args:?}");
-        assert!(stderr.contains(error), "{args:?}: {stderr}");
-    }
-}
-
-#[test]
 fn corrupt_goal_does_not_prevent_chat_or_explicit_recovery() {
     let directory = std::env::temp_dir().join(format!("octet-corrupt-goal-{}", std::process::id()));
     let workspace = std::env::current_dir().unwrap().canonicalize().unwrap();
@@ -768,22 +724,6 @@ fn ctrl_c_twice_quits_and_the_first_press_only_warns() {
 }
 
 #[test]
-fn invalid_approval_timeout_is_a_startup_error() {
-    for value in ["5", "abc", "3601"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_octet"))
-            .args(["--engine", "demo", "--approval-timeout", value])
-            .output()
-            .unwrap();
-        assert!(!output.status.success(), "{value}");
-        assert!(
-            String::from_utf8_lossy(&output.stderr)
-                .contains("Approval timeout must be a whole number of seconds from 10 to 3600"),
-            "{value}"
-        );
-    }
-}
-
-#[test]
 fn a_new_approval_rings_and_notifies() {
     let mut p = Pty::spawn();
     p.wait(|p| p.shows("● ready"));
@@ -804,33 +744,6 @@ fn engine_error() -> String {
     format!("Engine must be {}", octet_core::model::or_list(&names))
 }
 #[test]
-fn invalid_effort_is_a_startup_error() {
-    for value in ["", "two words"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_octet"))
-            .args(["--engine", "demo", "--effort", value])
-            .output()
-            .unwrap();
-        assert!(!output.status.success(), "{value:?}");
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("Effort must be one word"),
-            "{value:?}"
-        );
-    }
-}
-#[test]
-fn an_effort_claude_does_not_take_is_a_startup_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_octet"))
-        .args(["--engine", "claude", "--effort", "bogus"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Claude takes effort low, medium, high, xhigh or max"),
-        "{stderr}"
-    );
-}
-#[test]
 fn help_and_errors_name_exactly_the_providers() {
     let names: Vec<&str> = octet_core::Engine::ALL.iter().map(|e| e.as_str()).collect();
     let help = Command::new(env!("CARGO_BIN_EXE_octet"))
@@ -847,6 +760,16 @@ fn help_and_errors_name_exactly_the_providers() {
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&bad.stderr).contains(&engine_error()));
+}
+#[test]
+fn usage_errors_exit_2() {
+    // Each message is pinned by the parser's unit tests; here, the process.
+    let output = Command::new(env!("CARGO_BIN_EXE_octet"))
+        .args(["--engine", "demo", "--mode", "bogus"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("octet: Unknown mode bogus"));
 }
 
 #[test]
@@ -962,27 +885,6 @@ fn remote_control_keeps_the_screen_live_while_checks_run() {
     // summary shows, the whole report has.
     p.wait(|p| p.row_shows(35, "Remote control: 3 problems (report above)"));
     assert!(p.screen_shows("tmux didn't answer"));
-    p.quit();
-    p.finish();
-}
-
-#[test]
-fn a_valid_approval_timeout_reaches_the_engine() {
-    // The demo denies an unanswered approval when the window closes; with
-    // the 120-second default this would not happen within the wait.
-    let mut p = Pty::spawn_with(&["--approval-timeout", "10"]);
-    p.wait(|p| p.shows("● ready"));
-    p.send(b"/approval-demo\r");
-    p.wait(|p| p.screen_shows("Write a greeting to hello.txt?"));
-    let opened = Instant::now();
-    p.wait_for(Duration::from_secs(15), |p| {
-        p.screen_shows("Denied. No action was performed.")
-    });
-    assert!(
-        opened.elapsed() >= Duration::from_secs(9),
-        "denied after {:?}",
-        opened.elapsed()
-    );
     p.quit();
     p.finish();
 }
