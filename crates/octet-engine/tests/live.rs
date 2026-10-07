@@ -1343,3 +1343,27 @@ async fn a_prompt_cancelled_before_it_starts_is_not_run() {
         .unwrap()
         .unwrap();
 }
+#[tokio::test]
+async fn the_demo_also_cancels_a_prompt_that_had_not_started() {
+    let mut c = config();
+    c.engine = Engine::DEMO;
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("hello".into())).unwrap();
+    handle.interrupt();
+    let outcome = wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
+    assert!(
+        matches!(
+            outcome,
+            Event::Finished {
+                outcome: Outcome::Interrupted
+            }
+        ),
+        "{outcome:?}"
+    );
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}

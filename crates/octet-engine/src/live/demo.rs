@@ -79,11 +79,25 @@ pub(super) async fn demo(
         },
     )?;
     emit(tx, Event::ModeChanged(mode))?;
+    // Turn commands received, matched against the count the interface had
+    // sent when it last cancelled, as the live driver does.
+    let mut turns_taken = 0u64;
     loop {
         tokio::select! {
             _ = stop.changed() => break,
             _ = cancel.changed() => {}
             command = commands.recv() => {
+                if let Some(turn) = command.as_ref().filter(|c| c.starts_turn()) {
+                    turns_taken += 1;
+                    // Marked seen, so the cancel cannot also stop a later turn.
+                    if *cancel.borrow_and_update() >= turns_taken {
+                        let display = turn.turn_display().unwrap_or_default().to_owned();
+                        emit(tx, Event::User(display))?;
+                        emit(tx, Event::Started)?;
+                        emit(tx, Event::Finished { outcome: Outcome::Interrupted })?;
+                        continue;
+                    }
+                }
                 let (text, display) = match command {
                     None => break,
                     Some(Command::SetMode(target)) => {

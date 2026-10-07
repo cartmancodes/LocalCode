@@ -1230,3 +1230,68 @@ async fn effort_refuses_a_level_claude_does_not_take() {
         .entries_text()
         .contains("Claude takes effort low, medium, high, xhigh or max"));
 }
+#[test]
+fn resume_opens_the_session_without_forking_and_with_an_effort_it_takes() {
+    let mut config = Config::new(Engine::CODEX, "codex", "/tmp");
+    // A fork Codex had not named yet must not turn the resume into a fork.
+    config.resume = Some("original".into());
+    config.fork = true;
+    config.effort = Some("minimal".into());
+    let notice = resume_into(
+        &mut config,
+        Engine::CLAUDE,
+        "c-1".into(),
+        Some("m1".into()),
+        "claude".into(),
+    );
+    assert_eq!(config.engine, Engine::CLAUDE);
+    assert_eq!(config.resume.as_deref(), Some("c-1"));
+    assert!(!config.fork);
+    assert_eq!(config.model.as_deref(), Some("m1"));
+    assert_eq!(config.effort, None);
+    assert_eq!(
+        notice.as_deref(),
+        Some("Claude does not take effort minimal; using its default")
+    );
+    config.effort = Some("high".into());
+    assert_eq!(
+        resume_into(
+            &mut config,
+            Engine::CLAUDE,
+            "c-2".into(),
+            None,
+            "claude".into()
+        ),
+        None
+    );
+    assert_eq!(config.effort.as_deref(), Some("high"));
+}
+#[test]
+fn a_dropped_effort_is_named() {
+    assert_eq!(
+        dropped_effort(Some("minimal"), Engine::CLAUDE, None).as_deref(),
+        Some("Claude does not take effort minimal; using its default")
+    );
+    assert_eq!(
+        dropped_effort(Some("high"), Engine::CLAUDE, Some("high")),
+        None
+    );
+    assert_eq!(dropped_effort(None, Engine::CLAUDE, None), None);
+}
+#[test]
+fn browsing_history_keeps_the_drafts_own_images() {
+    let dir = image_workspace("octet-image-browse", &["draft.png"]);
+    let mut app = app();
+    app.remember("earlier".into());
+    let image = octet_core::ImageAttachment::open(&dir.path().join("draft.png")).unwrap();
+    app.composer.images.push(image);
+    app.recall(true);
+    assert_eq!(app.composer.editor.text, "earlier");
+    assert_eq!(
+        app.composer.images.len(),
+        1,
+        "the draft's image stays attached"
+    );
+    app.recall(false);
+    assert_eq!(app.composer.images.len(), 1);
+}

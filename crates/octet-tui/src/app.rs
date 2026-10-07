@@ -131,6 +131,9 @@ pub(crate) struct Composer {
     pub(crate) history_index: Option<usize>,
     /// The draft being written when history browsing began.
     pub(crate) saved_draft: Sent,
+    /// Browsing brings back each prompt's images: the draft had none of its
+    /// own when browsing began, so none can be lost.
+    pub(crate) recall_images: bool,
     /// The workspace, where `!` commands run and `@` looks for files.
     pub(crate) root: PathBuf,
     /// `!` outputs waiting to go with the next prompt.
@@ -207,6 +210,7 @@ impl App {
                 history: VecDeque::new(),
                 history_index: None,
                 saved_draft: Sent::default(),
+                recall_images: true,
                 root: config.cwd.clone(),
                 attachments: Vec::new(),
                 images: Vec::new(),
@@ -705,9 +709,10 @@ impl App {
                 .history_index
                 .map(|i| i.saturating_sub(1))
                 .unwrap_or_else(|| {
+                    self.composer.recall_images = self.composer.images.is_empty();
                     self.composer.saved_draft = Sent {
                         text: self.composer.editor.text.clone(),
-                        images: std::mem::take(&mut self.composer.images),
+                        images: Vec::new(),
                     };
                     self.composer.history.len() - 1
                 });
@@ -724,10 +729,13 @@ impl App {
             }
         }
     }
-    /// Puts a sent (or saved) draft back in the prompt box with its images.
+    /// Puts a sent (or saved) draft back in the prompt box, with its images
+    /// unless the draft being written has images of its own.
     fn show(&mut self, sent: Sent) {
         self.composer.editor.set(sent.text);
-        self.composer.images = sent.images;
+        if self.composer.recall_images {
+            self.composer.images = sent.images;
+        }
     }
     pub(crate) fn visible_lines(&mut self, width: u16, height: usize) -> Vec<Line<'static>> {
         if let Some(entries) = self.chat.catalog_focus.take() {

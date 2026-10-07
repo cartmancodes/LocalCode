@@ -212,7 +212,8 @@ prompt, which limits each image to 3.75 MiB and a prompt's images to
 5.25 MiB together; `/image` refuses more. The bytes are read when the prompt
 is sent; if a file has gone or grown past the limits by then, the turn fails
 with a message and the session carries on. Up recalls a prompt together with
-the images it was sent with; a failed `/image` leaves the line in the prompt
+the images it was sent with (unless the prompt you are writing has images of
+its own, which stay attached); a failed `/image` leaves the line in the prompt
 box to correct. The transcript and journal show `[+ image name.png]`,
 never the image. Esc on an empty prompt drops attached images and `!` output.
 

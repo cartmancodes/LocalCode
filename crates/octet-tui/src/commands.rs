@@ -241,8 +241,9 @@ pub(crate) async fn goal_send_failed(app: &mut App, error: octet_core::SendError
         app.notice(format!("Goal persistence failed: {error}"));
     }
 }
-/// Runs a slash command. `None` means the name is not a command, so the caller
-/// keeps the draft: it may be a prompt that merely starts with a slash.
+/// Runs a slash command. `None` means the caller keeps the draft: the name is
+/// not a command (it may be a prompt that merely starts with a slash), or the
+/// command failed on input worth correcting (a `/image` path).
 pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
     let (name, argument) = input.split_once(' ').unwrap_or((input, ""));
     let argument = argument.trim();

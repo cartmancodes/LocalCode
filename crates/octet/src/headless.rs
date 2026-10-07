@@ -101,11 +101,12 @@ pub(crate) async fn print(
 /// the end of stdin if every turn completed, and 1 otherwise or if the
 /// vendor stops.
 pub(crate) async fn rpc(config: Config, directory: PathBuf) -> Result<i32, String> {
+    // Registered first, so a signal while the session opens is handled too.
+    let mut interrupts = signal(SignalKind::interrupt()).map_err(|e| e.to_string())?;
+    let mut terminations = signal(SignalKind::terminate()).map_err(|e| e.to_string())?;
     let mut session = Session::open(config, directory)
         .await
         .map_err(|e| e.to_string())?;
-    let mut interrupts = signal(SignalKind::interrupt()).map_err(|e| e.to_string())?;
-    let mut terminations = signal(SignalKind::terminate()).map_err(|e| e.to_string())?;
     let mut requests = read_lines(BufReader::new(tokio::io::stdin()));
     let mut state = RpcState::default();
     let code = loop {

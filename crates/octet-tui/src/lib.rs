@@ -220,11 +220,12 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                 let binary = binaries.get(&selection.provider).cloned();
                 let next = selection.configure(&config, &app.conn.session, binary);
                 binaries.insert(next.engine, next.binary.clone());
-                if let (Some(level), None) = (&config.effort, &next.effort) {
-                    app.notice(format!(
-                        "{} does not take effort {level}; using its default",
-                        next.engine.title()
-                    ));
+                if let Some(notice) = dropped_effort(
+                    config.effort.as_deref(),
+                    next.engine,
+                    next.effort.as_deref(),
+                ) {
+                    app.notice(notice);
                 }
                 app.notice(format!(
                     "Model → {} / {}. {} Previous journal: {}",
@@ -279,14 +280,15 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                     .cloned()
                     .unwrap_or_else(|| PathBuf::from(engine.provider().default_binary));
                 binaries.insert(engine, binary.clone());
-                opening_notice = Some(format!(
+                let resumed = format!(
                     "Resumed {engine} session {session}. Previous journal: {}",
                     app.conn.journal.display()
-                ));
-                config.engine = engine;
-                config.binary = binary;
-                config.model = model;
-                config.resume = Some(session);
+                );
+                let effort = resume_into(&mut config, engine, session, model, binary);
+                opening_notice = Some(match effort {
+                    Some(effort) => format!("{resumed}\n{effort}"),
+                    None => resumed,
+                });
             }
             Exit::New => {
                 config.resume = None;
@@ -306,6 +308,42 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     drop(terminal);
     drop(guard);
     Ok(())
+}
+/// Points `config` at vendor session `session` of `engine` for `/resume`:
+/// a resume, never a fork, with an effort the provider takes. The notice
+/// when the effort was dropped.
+fn resume_into(
+    config: &mut Config,
+    engine: octet_core::Engine,
+    session: String,
+    model: Option<String>,
+    binary: PathBuf,
+) -> Option<String> {
+    let before = config.effort.take();
+    config.effort = before
+        .clone()
+        .filter(|level| engine.check_effort(level).is_ok());
+    let notice = dropped_effort(before.as_deref(), engine, config.effort.as_deref());
+    config.engine = engine;
+    config.binary = binary;
+    config.model = model;
+    config.resume = Some(session);
+    config.fork = false;
+    notice
+}
+/// The notice when a switch to `engine` dropped effort `before`.
+fn dropped_effort(
+    before: Option<&str>,
+    engine: octet_core::Engine,
+    after: Option<&str>,
+) -> Option<String> {
+    match (before, after) {
+        (Some(level), None) => Some(format!(
+            "{} does not take effort {level}; using its default",
+            engine.title()
+        )),
+        _ => None,
+    }
 }
 /// A fork happens once: when the vendor has named the new session, later
 /// reconnects resume it. Until then (Claude names a fork with its first
