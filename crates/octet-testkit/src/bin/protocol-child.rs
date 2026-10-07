@@ -198,6 +198,14 @@ fn interactive_codex() {
                     dies_on_interrupt = true;
                     continue;
                 }
+                if text == "approvals-9" {
+                    for n in 1..=9 {
+                        emit(
+                            &json!({"id":format!("cap-{n}"),"method":"item/commandExecution/requestApproval","params":{"threadId":"fixture-thread","turnId":active,"command":"echo fixture"}}),
+                        );
+                    }
+                    continue;
+                }
                 if text == "approval" {
                     emit(
                         &json!({"id":"permission","method":"item/commandExecution/requestApproval","params":{"threadId":"fixture-thread","turnId":active,"command":"echo fixture"}}),
@@ -402,11 +410,60 @@ fn interactive_claude() {
                     &json!({"type":"control_response","response":{"request_id":v["request_id"],"subtype":"success","response":{"mode":v["request"]["mode"]}}}),
                 );
             }
+        } else if v["type"] == "control_response"
+            && v.pointer("/response/request_id") == Some(&json!("perm-1"))
+        {
+            // The answer to the "approval" script: echo what Octet sent.
+            let answer = &v["response"]["response"];
+            let reply = format!(
+                "{}:{}",
+                answer["behavior"].as_str().unwrap_or("?"),
+                answer["updatedInput"]["command"].as_str().unwrap_or("")
+            );
+            emit(
+                &json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":reply}}}),
+            );
+            emit(
+                &json!({"type":"result","is_error":false,"result":reply,"session_id":sid,"total_cost_usd":0.0}),
+            );
         } else if v["type"] == "user" {
             let text = v
                 .pointer("/message/content/0/text")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            let permission = |id: &str| json!({"type":"control_request","request_id":id,"request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"echo fixture"}}});
+            if text == "approval" {
+                emit(
+                    &json!({"type":"system","subtype":"init","session_id":sid,"model":"claude-fixture-full-id"}),
+                );
+                emit(&permission("perm-1"));
+                continue;
+            }
+            if text == "approval-cancel" {
+                emit(
+                    &json!({"type":"system","subtype":"init","session_id":sid,"model":"claude-fixture-full-id"}),
+                );
+                emit(&permission("perm-2"));
+                emit(&json!({"type":"control_cancel_request","request_id":"perm-2"}));
+                emit(
+                    &json!({"type":"result","is_error":false,"result":"","session_id":sid,"total_cost_usd":0.0}),
+                );
+                continue;
+            }
+            if text == "approvals-9" {
+                emit(
+                    &json!({"type":"system","subtype":"init","session_id":sid,"model":"claude-fixture-full-id"}),
+                );
+                for n in 1..=9 {
+                    emit(&permission(&format!("cap-{n}")));
+                }
+                continue;
+            }
+            if text == "no-is-error" {
+                // A result that omits is_error, as an older CLI might send.
+                emit(&json!({"type":"result","result":"odd","session_id":sid}));
+                continue;
+            }
             if text == "flush" {
                 // First held request succeeds, every later one is refused.
                 for (index, id) in held.drain(..).enumerate() {

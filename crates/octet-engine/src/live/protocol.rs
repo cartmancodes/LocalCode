@@ -1,7 +1,10 @@
 //! What every vendor connection shares (`Core`), and what each vendor
 //! supplies (`Protocol`). The driver loop in `driver.rs` joins the two; a new
 //! vendor implements `Protocol` in its own file and adds a provider row.
-use super::{emit, Config, DriverError, Event, ImageAttachment, Limits, Mode, EVENT_BYTES};
+use super::{
+    emit, mode::confirm_mode, Config, DriverError, Event, ImageAttachment, Limits, Mode, Outcome,
+    EVENT_BYTES,
+};
 use octet_proc::Process;
 use serde_json::Value;
 use std::{collections::HashMap, ffi::OsString, future::Future, time::Duration};
@@ -41,6 +44,9 @@ impl Phase {
     }
 }
 
+/// The most approvals waiting on the user at once; more are denied.
+pub(super) const MAX_PENDING_APPROVALS: usize = 8;
+
 /// A vendor approval shown to the user, denied when its deadline passes.
 pub(super) struct Pending {
     pub(super) wire: Value,
@@ -60,7 +66,7 @@ pub(crate) struct Core {
     /// Connect deadline, then the turn's silence watchdog.
     pub(super) deadline: Instant,
     /// Octet's next approval ID and, for Codex, its next request ID. It
-    /// starts at 10 because Codex reserves the fixed IDs 1–4.
+    /// starts at 10 because Codex uses the fixed IDs 1–3.
     pub(super) request_id: u64,
     pub(super) pending: HashMap<u64, Pending>,
     /// The protocol's approval reply, for approvals denied here.
@@ -113,17 +119,24 @@ impl Core {
     }
 
     /// Shows a vendor approval to the user, or denies it when it is too large
-    /// to show completely.
+    /// to show completely or too many are already waiting.
     pub(super) async fn queue_approval(
         &mut self,
         wire: Value,
         detail: String,
     ) -> Result<(), DriverError> {
-        if detail.len() > EVENT_BYTES {
+        let refusal = if detail.len() > EVENT_BYTES {
+            Some("Oversized approval denied: cannot show the complete request".to_owned())
+        } else if self.pending.len() >= MAX_PENDING_APPROVALS {
+            Some(format!(
+                "Too many approvals are waiting ({MAX_PENDING_APPROVALS}); denied another"
+            ))
+        } else {
+            None
+        };
+        if let Some(notice) = refusal {
             self.send(self.answer(&wire, false)).await?;
-            return self.emit(Event::Notice(
-                "Oversized approval denied: cannot show the complete request".into(),
-            ));
+            return self.emit(Event::Notice(notice));
         }
         self.request_id += 1;
         self.emit(Event::Approval {
@@ -150,6 +163,32 @@ impl Core {
             self.emit(Event::ApprovalClosed(id))?;
         }
         Ok(())
+    }
+
+    /// Ends the running turn: the session is idle again, its approvals are
+    /// closed, and `error` (if any) is reported before the outcome.
+    pub(super) fn finish_turn(
+        &mut self,
+        outcome: Outcome,
+        error: Option<String>,
+    ) -> Result<(), DriverError> {
+        self.phase = Phase::Idle;
+        self.close_all_pending()?;
+        if let Some(error) = error {
+            self.emit(Event::Error(error))?;
+        }
+        self.emit(Event::Finished { outcome })
+    }
+
+    /// Takes the mode the vendor reports at connect (noting a mismatch) and
+    /// tells the interface.
+    pub(super) fn adopt_mode(
+        &mut self,
+        reported: Option<(Option<Mode>, String)>,
+    ) -> Result<(), DriverError> {
+        let title = self.config.engine.title();
+        self.mode = confirm_mode(&self.tx, title, self.mode, reported)?;
+        self.emit(Event::ModeChanged(self.mode))
     }
 }
 

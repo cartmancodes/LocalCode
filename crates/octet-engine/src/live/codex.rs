@@ -1,9 +1,7 @@
 //! Codex app-server JSON-RPC protocol: session setup, the model catalog,
 //! server requests and turn notifications.
 use super::{
-    limited,
-    mode::{codex_reported, codex_thread_params, codex_turn_overrides, confirm_mode},
-    model_catalog_with,
+    limited, model_catalog_with,
     protocol::{Core, Phase, Protocol},
     valid_identifier, BoxFuture, Channels, Config, DriverError, Event, ImageAttachment, Limits,
     Mode, ModelInfo, Outcome, Provider, EVENT_BYTES,
@@ -242,18 +240,12 @@ impl Protocol for CodexProtocol {
                 if self.turn.is_none() || completed != self.turn.as_deref() {
                     return Ok(());
                 }
-                core.phase = Phase::Idle;
-                core.close_all_pending()?;
                 let status = v
                     .pointer("/params/turn/status")
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
-                if status == "failed" {
-                    core.emit(Event::Error(error_text(&v["params"]["turn"]["error"])))?;
-                }
-                core.emit(Event::Finished {
-                    outcome: Outcome::from_vendor(status),
-                })?;
+                let error = (status == "failed").then(|| error_text(&v["params"]["turn"]["error"]));
+                core.finish_turn(Outcome::from_vendor(status), error)?;
             }
             _ => {}
         }
@@ -337,13 +329,7 @@ impl CodexProtocol {
             core.emit(Event::Ready {
                 session: core.session.clone(),
             })?;
-            core.mode = confirm_mode(
-                &core.tx,
-                PROVIDER.title,
-                core.mode,
-                codex_reported(&v["result"]),
-            )?;
-            core.emit(Event::ModeChanged(core.mode))?;
+            core.adopt_mode(codex_reported(&v["result"]))?;
             if let Some(model) = v["result"]["model"]
                 .as_str()
                 .filter(|m| valid_identifier(m))
@@ -359,11 +345,7 @@ impl CodexProtocol {
         } else if self.start_request.is_some() && v["id"].as_u64() == self.start_request {
             self.start_request = None;
             if v.get("error").is_some() {
-                core.phase = Phase::Idle;
-                core.emit(Event::Error(error_text(&v["error"])))?;
-                core.emit(Event::Finished {
-                    outcome: Outcome::Failed,
-                })?;
+                core.finish_turn(Outcome::Failed, Some(error_text(&v["error"])))?;
             }
             Ok(())
         } else if let Some(text) = v["id"]
@@ -435,7 +417,7 @@ impl CodexProtocol {
             == Some(core.session.as_str())
             && self.turn.is_some()
             && v.pointer("/params/turnId").and_then(Value::as_str) == self.turn.as_deref();
-        if approval && core.phase == Phase::InTurn && core.pending.len() < 8 && this_turn {
+        if approval && core.phase == Phase::InTurn && this_turn {
             let detail = serde_json::to_string_pretty(&v["params"]).unwrap_or_default();
             return core.queue_approval(v, detail).await;
         }
@@ -532,6 +514,49 @@ pub(super) fn error_text(error: &Value) -> String {
     }
 }
 
+pub(crate) fn codex_thread_params(mode: Mode) -> Value {
+    let (sandbox, policy, reviewer) = match mode {
+        Mode::Ask => ("workspace-write", "untrusted", "user"),
+        Mode::AcceptEdits => ("workspace-write", "on-request", "user"),
+        Mode::Auto => ("workspace-write", "on-request", "auto_review"),
+        Mode::FullAccess => ("danger-full-access", "never", "user"),
+    };
+    json!({"sandbox":sandbox,"approvalPolicy":policy,"approvalsReviewer":reviewer})
+}
+/// The mode a Codex thread reply echoes. Outer None: the reply carries no
+/// policy (older CLI). Inner None: a policy Octet does not map, with the
+/// raw description for the user.
+pub(crate) fn codex_reported(result: &Value) -> Option<(Option<Mode>, String)> {
+    let policy = result.get("approvalPolicy")?;
+    let sandbox = match result["sandbox"]["type"]
+        .as_str()
+        .or(result["sandbox"].as_str())
+    {
+        Some("workspaceWrite" | "workspace-write") => json!("workspace-write"),
+        Some("dangerFullAccess" | "danger-full-access") => json!("danger-full-access"),
+        _ => result["sandbox"].clone(),
+    };
+    let reviewer = match result["approvalsReviewer"].as_str() {
+        Some("guardian_subagent") => json!("auto_review"),
+        Some(reviewer) => json!(reviewer),
+        None => json!("user"),
+    };
+    let echo = json!({"sandbox":sandbox,"approvalPolicy":policy,"approvalsReviewer":reviewer});
+    let mode = Mode::ALL
+        .into_iter()
+        .find(|mode| codex_thread_params(*mode) == echo);
+    let raw = format!(
+        "sandbox {}, approval {}, reviewer {}",
+        result["sandbox"], policy, result["approvalsReviewer"]
+    );
+    Some((mode, limited(&raw)))
+}
+/// Codex applies these on the turn and every later turn. Live modes all share
+/// the workspace-write sandbox, so no sandboxPolicy override is sent.
+pub(crate) fn codex_turn_overrides(mode: Mode) -> Value {
+    let params = codex_thread_params(mode);
+    json!({"approvalPolicy":params["approvalPolicy"],"approvalsReviewer":params["approvalsReviewer"]})
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +608,50 @@ mod tests {
             "{}",
             detail.len()
         );
+    }
+    #[test]
+    fn codex_mapping_matches_spec_table() {
+        let expected = [
+            (Mode::Ask, "workspace-write", "untrusted", "user"),
+            (Mode::AcceptEdits, "workspace-write", "on-request", "user"),
+            (Mode::Auto, "workspace-write", "on-request", "auto_review"),
+            (Mode::FullAccess, "danger-full-access", "never", "user"),
+        ];
+        for (mode, sandbox, policy, reviewer) in expected {
+            assert_eq!(
+                codex_thread_params(mode),
+                json!({"sandbox":sandbox,"approvalPolicy":policy,"approvalsReviewer":reviewer})
+            );
+            assert_eq!(
+                codex_turn_overrides(mode),
+                json!({"approvalPolicy":policy,"approvalsReviewer":reviewer})
+            );
+        }
+    }
+    #[test]
+    fn reported_modes_map_back_or_stay_unmapped() {
+        for mode in Mode::ALL {
+            let mut echo = codex_thread_params(mode);
+            echo["sandbox"] = match mode {
+                Mode::FullAccess => json!({"type":"dangerFullAccess"}),
+                _ => json!({"type":"workspaceWrite"}),
+            };
+            assert_eq!(codex_reported(&echo).map(|r| r.0), Some(Some(mode)));
+        }
+        let legacy = json!({
+            "sandbox": {"type": "workspaceWrite"},
+            "approvalPolicy": "on-request",
+            "approvalsReviewer": "guardian_subagent",
+        });
+        assert_eq!(codex_reported(&legacy).map(|r| r.0), Some(Some(Mode::Auto)));
+        let read_only = json!({
+            "sandbox": {"type": "readOnly"},
+            "approvalPolicy": "on-request",
+            "approvalsReviewer": "user",
+        });
+        let (mode, raw) = codex_reported(&read_only).unwrap();
+        assert_eq!(mode, None);
+        assert!(raw.contains("readOnly"), "{raw}");
+        assert_eq!(codex_reported(&json!({"thread":{}})), None);
     }
 }

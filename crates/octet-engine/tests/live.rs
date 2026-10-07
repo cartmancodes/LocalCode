@@ -1367,3 +1367,148 @@ async fn the_demo_also_cancels_a_prompt_that_had_not_started() {
         .unwrap()
         .unwrap();
 }
+fn claude() -> Config {
+    let mut c = config();
+    c.engine = Engine::CLAUDE;
+    c
+}
+/// Runs `prompt` until its first approval, answers it, and returns the
+/// turn's text.
+async fn answer_first_approval(engine: Config, prompt: &str, allow: bool) -> String {
+    let (handle, mut events, task) = spawn(engine);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt(prompt.into())).unwrap();
+    let Event::Approval { id, .. } =
+        wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await
+    else {
+        unreachable!()
+    };
+    handle.send(Command::Answer { id, allow }).unwrap();
+    let text = turn_text(&mut events).await;
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+    text
+}
+#[tokio::test]
+async fn claude_approval_allowed_passes_the_input_back() {
+    assert_eq!(
+        answer_first_approval(claude(), "approval", true).await,
+        "allow:echo fixture"
+    );
+}
+#[tokio::test]
+async fn claude_approval_denied() {
+    assert_eq!(
+        answer_first_approval(claude(), "approval", false).await,
+        "deny:"
+    );
+}
+#[tokio::test]
+async fn claude_cancel_request_closes_the_approval() {
+    let (handle, mut events, task) = spawn(claude());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle
+        .send(Command::Prompt("approval-cancel".into()))
+        .unwrap();
+    let Event::Approval { id, .. } =
+        wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await
+    else {
+        unreachable!()
+    };
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::ApprovalClosed(closed) if *closed == id),
+    )
+    .await;
+    wait_for(&mut events, |e| {
+        matches!(
+            e,
+            Event::Finished {
+                outcome: Outcome::Completed
+            }
+        )
+    })
+    .await;
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+/// Sends `approvals-9` and counts the approvals shown before the cap's notice.
+async fn approvals_before_the_cap(engine: Config) -> usize {
+    let (handle, mut events, task) = spawn(engine);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("approvals-9".into())).unwrap();
+    let mut shown = 0;
+    loop {
+        match next(&mut events).await {
+            Event::Approval { .. } => shown += 1,
+            Event::Notice(text) if text.contains("Too many approvals are waiting") => break,
+            Event::Finished { .. } | Event::Stopped => panic!("no cap notice"),
+            _ => {}
+        }
+    }
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+    shown
+}
+#[tokio::test]
+async fn approvals_over_the_cap_are_denied_with_a_notice() {
+    assert_eq!(approvals_before_the_cap(config()).await, 8);
+    assert_eq!(approvals_before_the_cap(claude()).await, 8);
+}
+#[tokio::test]
+async fn an_unanswered_approval_times_out_and_is_denied() {
+    let limits = Limits {
+        approval: Duration::from_millis(300),
+        ..quick()
+    };
+    for (engine, denied) in [(config(), "decline"), (claude(), "deny:")] {
+        let (handle, mut events, task) = spawn_with_limits(engine, limits);
+        wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+        handle.send(Command::Prompt("approval".into())).unwrap();
+        let Event::Approval { id, .. } =
+            wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await
+        else {
+            unreachable!()
+        };
+        wait_for(
+            &mut events,
+            |e| matches!(e, Event::ApprovalClosed(closed) if *closed == id),
+        )
+        .await;
+        assert_eq!(turn_text(&mut events).await, denied);
+        handle.shutdown();
+        timeout(Duration::from_secs(3), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+#[tokio::test]
+async fn claude_result_without_is_error_is_failed_once() {
+    let (handle, mut events, task) = spawn(claude());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("no-is-error".into())).unwrap();
+    let mut errors = 0;
+    let outcome = loop {
+        match next(&mut events).await {
+            Event::Error(_) => errors += 1,
+            Event::Finished { outcome } => break outcome,
+            _ => {}
+        }
+    };
+    assert_eq!((errors, outcome), (1, Outcome::Failed));
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}

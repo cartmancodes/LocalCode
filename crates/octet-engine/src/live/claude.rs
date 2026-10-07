@@ -2,7 +2,7 @@
 //! the frame handler.
 use super::{
     check_inline, limited,
-    mode::{claude_mode, claude_permission_args, claude_reported_mode, confirm_mode},
+    mode::confirm_mode,
     model_catalog_with,
     protocol::{Core, Phase, Protocol},
     valid_identifier, BoxFuture, Channels, Config, DriverError, Event, ImageAttachment, Limits,
@@ -76,7 +76,7 @@ fn answer_wire(wire: &Value, allow: bool) -> Value {
     let response = if allow {
         json!({"behavior":"allow","updatedInput":wire["request"]["input"]})
     } else {
-        json!({"behavior":"deny","message":"Denied by Octet user or timeout"})
+        json!({"behavior":"deny","message":"Denied by Octet"})
     };
     json!({
         "type": "control_response",
@@ -243,9 +243,6 @@ impl Protocol for ClaudeProtocol {
             let permission =
                 v.pointer("/request/subtype").and_then(Value::as_str) == Some("can_use_tool");
             if permission && core.phase == Phase::InTurn {
-                if core.pending.len() >= 8 {
-                    return core.send(Self::answer(&v, false)).await;
-                }
                 let detail = serde_json::to_string_pretty(&v["request"]).unwrap_or_default();
                 return core.queue_approval(v, detail).await;
             }
@@ -296,7 +293,7 @@ impl Protocol for ClaudeProtocol {
                 }
                 self.streamed = false;
             }
-            "result" => self.result(core, &v)?,
+            "result" => Self::result(core, &v)?,
             _ => {}
         }
         Ok(())
@@ -362,31 +359,25 @@ impl ClaudeProtocol {
                 .pointer("/response/response/current_permission_mode")
                 .and_then(Value::as_str)
                 .map(|raw| (claude_reported_mode(raw), limited(raw)));
-            core.mode = confirm_mode(&core.tx, PROVIDER.title, core.mode, reported)?;
-            core.emit(Event::ModeChanged(core.mode))?;
+            core.adopt_mode(reported)?;
             core.emit(Event::Models(catalog(&v["response"]["response"]["models"])))?;
         }
         Ok(false)
     }
 
-    fn result(&self, core: &mut Core, v: &Value) -> Result<(), DriverError> {
-        let interrupted = core.phase == Phase::Interrupting;
-        if v["is_error"].as_bool() != Some(false) && !interrupted {
-            core.emit(Event::Error(claude_result_error(v)))?;
-        }
+    /// The turn's end. A result that does not say `is_error: false` failed.
+    fn result(core: &mut Core, v: &Value) -> Result<(), DriverError> {
         if let Some(cost) = v["total_cost_usd"].as_f64() {
             core.emit(Event::Usage(format!("${cost:.4} session cost")))?;
         }
-        core.phase = Phase::Idle;
-        core.close_all_pending()?;
-        let outcome = if interrupted {
-            Outcome::Interrupted
-        } else if v["is_error"] == true {
-            Outcome::Failed
+        let failed = v["is_error"].as_bool() != Some(false);
+        if core.phase == Phase::Interrupting {
+            core.finish_turn(Outcome::Interrupted, None)
+        } else if failed {
+            core.finish_turn(Outcome::Failed, Some(claude_result_error(v)))
         } else {
-            Outcome::Completed
-        };
-        core.emit(Event::Finished { outcome })
+            core.finish_turn(Outcome::Completed, None)
+        }
     }
 }
 
@@ -459,13 +450,31 @@ fn stray(value: &Value) -> Option<Value> {
 
 /// Ends a turn that could not be sent, keeping the session.
 fn fail_turn(core: &mut Core, message: String) -> Result<(), DriverError> {
-    core.phase = Phase::Idle;
-    core.emit(Event::Error(message))?;
-    core.emit(Event::Finished {
-        outcome: Outcome::Failed,
-    })
+    core.finish_turn(Outcome::Failed, Some(message))
 }
 
+pub(super) fn claude_mode(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Ask => "default",
+        Mode::AcceptEdits => "acceptEdits",
+        Mode::Auto => "auto",
+        Mode::FullAccess => "bypassPermissions",
+    }
+}
+/// Claude refuses a live switch to bypassPermissions unless launched with this
+/// allowance, so full access is only ever applied at launch.
+pub(crate) fn claude_permission_args(mode: Mode) -> Vec<&'static str> {
+    let mut args = vec!["--permission-mode", claude_mode(mode)];
+    if mode == Mode::FullAccess {
+        args.push("--allow-dangerously-skip-permissions");
+    }
+    args
+}
+/// The mode Claude reports (`current_permission_mode`, or a switch's reply).
+/// None means the value is not one of Octet's modes.
+pub(crate) fn claude_reported_mode(raw: &str) -> Option<Mode> {
+    Mode::ALL.into_iter().find(|mode| claude_mode(*mode) == raw)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,5 +487,35 @@ mod tests {
             .unwrap()
             .to_owned();
         assert!(message.contains("no turn is waiting"), "{message}");
+    }
+    #[test]
+    fn claude_mapping_matches_spec_table() {
+        assert_eq!(
+            claude_permission_args(Mode::Ask),
+            ["--permission-mode", "default"]
+        );
+        assert_eq!(
+            claude_permission_args(Mode::AcceptEdits),
+            ["--permission-mode", "acceptEdits"]
+        );
+        assert_eq!(
+            claude_permission_args(Mode::Auto),
+            ["--permission-mode", "auto"]
+        );
+        assert_eq!(
+            claude_permission_args(Mode::FullAccess),
+            [
+                "--permission-mode",
+                "bypassPermissions",
+                "--allow-dangerously-skip-permissions"
+            ]
+        );
+    }
+    #[test]
+    fn reported_modes_map_back_or_stay_unmapped() {
+        for mode in Mode::ALL {
+            assert_eq!(claude_reported_mode(claude_mode(mode)), Some(mode));
+        }
+        assert_eq!(claude_reported_mode("plan"), None);
     }
 }
