@@ -143,7 +143,7 @@ impl Core {
             id: self.approval_id,
             detail,
         })?;
-        let deadline = Instant::now() + self.limits.approval;
+        let deadline = Instant::now() + self.config.approval_timeout;
         self.pending
             .insert(self.approval_id, Pending { wire, deadline });
         Ok(())

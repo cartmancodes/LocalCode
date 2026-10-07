@@ -1466,12 +1466,9 @@ async fn approvals_over_the_cap_are_denied_with_a_notice() {
 }
 #[tokio::test]
 async fn an_unanswered_approval_times_out_and_is_denied() {
-    let limits = Limits {
-        approval: Duration::from_millis(300),
-        ..quick()
-    };
-    for (engine, denied) in [(config(), "decline"), (claude(), "deny:")] {
-        let (handle, mut events, task) = spawn_with_limits(engine, limits);
+    for (mut engine, denied) in [(config(), "decline"), (claude(), "deny:")] {
+        engine.approval_timeout = Duration::from_millis(300);
+        let (handle, mut events, task) = spawn_with_limits(engine, quick());
         wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
         handle.send(Command::Prompt("approval".into())).unwrap();
         let Event::Approval { id, .. } =
@@ -1554,6 +1551,26 @@ async fn a_steer_held_for_a_refused_turn_is_reported() {
     };
     assert_eq!(outcome, Outcome::Failed);
     assert!(reported, "the held steer was dropped silently");
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn held_steers_are_bounded() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("late-start".into())).unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::Started)).await;
+    for n in 1..=9 {
+        handle.send(Command::Steer(format!("steer {n}"))).unwrap();
+    }
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::Notice(t) if t == "This steer was not sent: steer 1"),
+    )
+    .await;
     handle.shutdown();
     timeout(Duration::from_secs(3), task)
         .await

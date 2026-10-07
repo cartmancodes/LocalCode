@@ -39,8 +39,6 @@ pub struct Limits {
     pub turn_idle: Duration,
     /// Interrupt request to the turn's terminal event.
     pub interrupt: Duration,
-    /// Unanswered approval before it is denied.
-    pub approval: Duration,
     /// Unanswered mode switch before it is reported as unconfirmed, for a
     /// protocol whose switches are confirmed by the vendor (Claude's are).
     pub mode_confirm: Duration,
@@ -51,7 +49,6 @@ impl Default for Limits {
             connect: Duration::from_secs(30),
             turn_idle: Duration::from_secs(600),
             interrupt: Duration::from_secs(10),
-            approval: DEFAULT_APPROVAL_TIMEOUT,
             mode_confirm: Duration::from_secs(10),
         }
     }
@@ -531,8 +528,12 @@ impl Handle {
 }
 // Output is split before enqueueing. A stalled consumer fails the session rather
 // than blocking the control path or silently dropping semantic output.
+/// The most text one vendor frame adds to the transcript: a quarter of the
+/// event queue, so one huge reply cannot overflow it and stop the session.
+const TEXT_LIMIT: usize = 2 * 1024 * 1024;
+
 fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), DriverError> {
-    let text = match event {
+    let mut text = match event {
         Event::Text(text) => text,
         // Tool detail is a preview: megabytes of command output must not flood
         // the queue, so it is cut to one event.
@@ -547,6 +548,10 @@ fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), DriverError> {
                 .map_err(|_| DriverError::ConsumerOverloaded)
         }
     };
+    if text.len() > TEXT_LIMIT {
+        text.truncate(text.floor_char_boundary(TEXT_LIMIT));
+        text.push_str("\n[Octet shows at most 2 MiB of one reply; the rest is cut]");
+    }
     let mut remaining = text.as_str();
     while !remaining.is_empty() {
         let end = remaining.floor_char_boundary(EVENT_BYTES);
@@ -556,6 +561,14 @@ fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), DriverError> {
         remaining = &remaining[end..];
     }
     Ok(())
+}
+
+/// Appends `item`, dropping and returning the oldest entry once `list` holds
+/// `max`, so per-connection lists stay bounded.
+fn push_bounded<T>(list: &mut Vec<T>, item: T, max: usize) -> Option<T> {
+    let dropped = (list.len() >= max).then(|| list.remove(0));
+    list.push(item);
+    dropped
 }
 
 fn limited(text: &str) -> String {
@@ -569,14 +582,10 @@ fn limited(text: &str) -> String {
 /// Starts a session for `config` with the default time limits. Returns
 /// the command handle, the event stream and the driver task.
 pub fn spawn(config: Config) -> (Handle, mpsc::Receiver<Event>, tokio::task::JoinHandle<()>) {
-    let limits = Limits {
-        approval: config.approval_timeout,
-        ..Limits::default()
-    };
-    spawn_with_limits(config, limits)
+    spawn_with_limits(config, Limits::default())
 }
-/// Like `spawn`, with explicit time limits. `limits.approval` is the
-/// approval window here; `config.approval_timeout` is not read.
+/// Like `spawn`, with explicit time limits. The approval window is
+/// `config.approval_timeout` in both.
 pub fn spawn_with_limits(
     config: Config,
     limits: Limits,
@@ -611,6 +620,26 @@ pub fn spawn_with_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn one_huge_reply_is_cut_instead_of_stopping_the_session() {
+        let (tx, mut rx) = mpsc::channel(EVENT_CAPACITY);
+        let huge = "x".repeat(5 * 1024 * 1024);
+        assert!(emit(&tx, Event::Text(huge)).is_ok(), "the queue overflowed");
+        let mut text = String::new();
+        while let Ok(Event::Text(chunk)) = rx.try_recv() {
+            text.push_str(&chunk);
+        }
+        assert!(text.len() < TEXT_LIMIT + 200, "{}", text.len());
+        assert!(text.ends_with("[Octet shows at most 2 MiB of one reply; the rest is cut]"));
+    }
+    #[test]
+    fn bounded_lists_drop_their_oldest_entry() {
+        let mut list = vec![1, 2, 3];
+        assert_eq!(push_bounded(&mut list, 4, 3), Some(1));
+        assert_eq!(list, [2, 3, 4]);
+        assert_eq!(push_bounded(&mut list, 5, 8), None);
+        assert_eq!(list, [2, 3, 4, 5]);
+    }
     use serde_json::json;
     #[test]
     fn identifiers_are_bounded_single_line_and_non_empty() {

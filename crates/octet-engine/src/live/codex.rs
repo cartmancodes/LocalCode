@@ -3,8 +3,8 @@
 use super::{
     limited, model_catalog_with,
     protocol::{Core, Phase, Protocol},
-    valid_identifier, BoxFuture, Channels, Config, DriverError, Event, ImageAttachment, Limits,
-    Mode, ModelInfo, Outcome, Provider, EVENT_BYTES,
+    push_bounded, valid_identifier, BoxFuture, Channels, Config, DriverError, Event,
+    ImageAttachment, Limits, Mode, ModelInfo, Outcome, Provider, EVENT_BYTES,
 };
 use serde_json::{json, Value};
 use std::{
@@ -98,7 +98,9 @@ impl Protocol for CodexProtocol {
     /// Steers the turn, or holds the text until Codex names the turn.
     async fn steer(&mut self, core: &mut Core, text: &str) -> Result<bool, DriverError> {
         if self.turn.is_none() {
-            self.pending_steer.push(text.to_owned());
+            if let Some(dropped) = push_bounded(&mut self.pending_steer, text.to_owned(), 8) {
+                core.emit(Event::Notice(format!("This steer was not sent: {dropped}")))?;
+            }
             return Ok(true);
         }
         self.send_steer(core, text).await?;

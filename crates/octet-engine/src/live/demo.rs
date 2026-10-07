@@ -28,7 +28,7 @@ pub(super) const PROVIDER: Provider = Provider {
     clippy::needless_pass_by_value,
     reason = "StartFn's shape: the vendor providers take ownership of their Config"
 )]
-fn start(config: Config, limits: Limits, channels: Channels) -> BoxFuture<Result<(), String>> {
+fn start(config: Config, _limits: Limits, channels: Channels) -> BoxFuture<Result<(), String>> {
     Box::pin(async move {
         let Channels {
             commands,
@@ -38,7 +38,7 @@ fn start(config: Config, limits: Limits, channels: Channels) -> BoxFuture<Result
         } = channels;
         demo(
             config.mode,
-            limits.approval,
+            config.approval_timeout,
             commands,
             cancel,
             stopping,

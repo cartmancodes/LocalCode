@@ -5,8 +5,8 @@ use super::{
     mode::confirm_mode,
     model_catalog_with,
     protocol::{Core, Phase, Protocol},
-    valid_identifier, BoxFuture, Channels, Config, DriverError, Event, ImageAttachment, Limits,
-    Mode, ModelInfo, Outcome, Provider,
+    push_bounded, valid_identifier, BoxFuture, Channels, Config, DriverError, Event,
+    ImageAttachment, Limits, Mode, ModelInfo, Outcome, Provider,
 };
 use serde_json::{json, Value};
 use std::ffi::OsString;
@@ -137,7 +137,8 @@ impl Protocol for ClaudeProtocol {
                 request.target.label(),
                 core.mode.label()
             );
-            self.late_modes.push((request.id, request.target));
+            // Kept bounded: a vendor that never answers cannot grow it.
+            push_bounded(&mut self.late_modes, (request.id, request.target), 8);
             core.emit(Event::Notice(notice))?;
             core.emit(Event::ModeChanged(core.mode))?;
         }

@@ -1,6 +1,7 @@
 //! Images attached to a prompt: checked when attached, read when sent.
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use tokio::io::AsyncReadExt;
 
 /// The largest image a prompt may carry, in bytes (5 MiB).
 pub const IMAGE_LIMIT: u64 = 5 * 1024 * 1024;
@@ -137,11 +138,19 @@ impl ImageAttachment {
             name: self.name.clone(),
             source,
         };
-        let metadata = tokio::fs::metadata(&self.path).await.map_err(read)?;
-        if metadata.len() > IMAGE_LIMIT {
+        // Read at most one byte past the limit: the file may have grown since
+        // it was attached, and the read itself must stay bounded.
+        let mut bytes = Vec::new();
+        tokio::fs::File::open(&self.path)
+            .await
+            .map_err(read)?
+            .take(IMAGE_LIMIT + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(read)?;
+        if bytes.len() as u64 > IMAGE_LIMIT {
             return Err(ImageError::TooLarge(self.name.clone()));
         }
-        let bytes = tokio::fs::read(&self.path).await.map_err(read)?;
         Ok(base64(&bytes))
     }
 }
@@ -226,6 +235,23 @@ mod tests {
             check_inline("Claude", two).unwrap_err().to_string(),
             "These images are over 5.25 MiB together, the most Claude accepts in one prompt"
         );
+    }
+
+    #[tokio::test]
+    async fn an_image_over_the_limit_is_refused_when_read() {
+        let dir = folder();
+        let path = dir.path().join("grown.png");
+        std::fs::write(&path, b"x").unwrap();
+        let image = ImageAttachment::open(&path).unwrap();
+        // The file grows after it was attached.
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(IMAGE_LIMIT + 1)
+            .unwrap();
+        assert!(matches!(
+            image.read_base64().await,
+            Err(ImageError::TooLarge(_))
+        ));
     }
 
     #[test]
