@@ -1,5 +1,6 @@
 //! Print, JSON and RPC modes: one session without the terminal interface.
 //! Approvals fail closed: print mode denies them, RPC clients answer them.
+use crate::args::{check_prompt_size, CliError};
 use octet_core::{event_json, Command, Config, Event, Mode, Outcome, Session};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -15,6 +16,13 @@ const LINE_LIMIT: usize = 4 * octet_core::PROMPT_LIMIT;
 const INTERRUPTED: i32 = 130;
 /// Exit code after SIGTERM, as shells report it.
 const TERMINATED: i32 = 143;
+
+/// Writes `octet: text` to stderr. A closed stderr is not worth a panic:
+/// the session must still shut down.
+pub(crate) fn warn(text: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "octet: {text}");
+}
 
 /// Runs `prompt` as one turn. Text mode writes the reply to stdout; JSON
 /// mode writes every event as a line. Notices and errors go to stderr.
@@ -94,16 +102,16 @@ async fn drive_print(
             Event::Text(text) if !json => out.text(&text).await?,
             Event::Approval { id, detail } => {
                 let what = detail.lines().next().unwrap_or_default();
-                eprintln!(
-                    "octet: denied an approval ({what}); print mode cannot ask. \
+                warn(&format!(
+                    "denied an approval ({what}); print mode cannot ask. \
                      Use --mode auto or --mode full-access for unattended runs."
-                );
+                ));
                 session
                     .handle
                     .send(Command::Answer { id, allow: false })
                     .map_err(|e| e.to_string())?;
             }
-            Event::Notice(text) | Event::Error(text) if !json => eprintln!("octet: {text}"),
+            Event::Notice(text) | Event::Error(text) if !json => warn(&text),
             Event::Finished { outcome } => {
                 break match outcome {
                     Outcome::Completed => 0,
@@ -239,7 +247,12 @@ async fn send_or_report(session: &Session, command: Command) -> Result<bool, Str
 }
 
 /// The prompt for `--print -`: all of stdin, less one trailing newline.
-pub(crate) async fn read_prompt() -> Result<String, String> {
+///
+/// # Errors
+///
+/// A run failure if stdin cannot be read; a usage error for a prompt over
+/// the limit or not UTF-8.
+pub(crate) async fn read_prompt() -> Result<String, CliError> {
     let mut bytes = Vec::new();
     // Read past the limit, so a longer prompt is reported as one rather
     // than cut, possibly inside a character.
@@ -247,13 +260,13 @@ pub(crate) async fn read_prompt() -> Result<String, String> {
         .take(octet_core::PROMPT_LIMIT as u64 + 3)
         .read_to_end(&mut bytes)
         .await
-        .map_err(|e| format!("Cannot read the prompt from stdin: {e}"))?;
+        .map_err(|e| CliError::Run(format!("Cannot read the prompt from stdin: {e}")))?;
     prompt_text(bytes)
 }
 
 /// The prompt in `bytes`, less one line ending, checked against the limit
 /// before UTF-8.
-fn prompt_text(mut bytes: Vec<u8>) -> Result<String, String> {
+fn prompt_text(mut bytes: Vec<u8>) -> Result<String, CliError> {
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
         if bytes.last() == Some(&b'\r') {
@@ -261,18 +274,7 @@ fn prompt_text(mut bytes: Vec<u8>) -> Result<String, String> {
         }
     }
     check_prompt_size(bytes.len())?;
-    String::from_utf8(bytes).map_err(|_| "The prompt is not UTF-8 text".into())
-}
-
-/// Refuses a prompt the session would refuse, before one is opened.
-pub(crate) fn check_prompt_size(bytes: usize) -> Result<(), String> {
-    if bytes > octet_core::PROMPT_LIMIT {
-        return Err(format!(
-            "The prompt is over {} KiB",
-            octet_core::PROMPT_LIMIT / 1024
-        ));
-    }
-    Ok(())
+    String::from_utf8(bytes).map_err(|_| CliError::Usage("The prompt is not UTF-8 text".into()))
 }
 
 /// One RPC command.

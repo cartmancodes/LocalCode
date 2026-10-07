@@ -68,7 +68,7 @@ async fn main() {
         Ok(0) => {}
         Ok(code) => std::process::exit(code),
         Err(error) => {
-            eprintln!("octet: {error}");
+            headless::warn(&error.to_string());
             std::process::exit(error.code());
         }
     }
@@ -91,7 +91,7 @@ async fn run() -> Result<i32, CliError> {
             prompt: Prompt::Stdin,
             ..
         } => {
-            let prompt = headless::read_prompt().await.map_err(CliError::Usage)?;
+            let prompt = headless::read_prompt().await?;
             args::check_prompt(&prompt)?;
             Some(prompt)
         }

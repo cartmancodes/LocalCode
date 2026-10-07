@@ -342,3 +342,37 @@ fn an_argument_prompt_over_the_limit_is_refused_before_opening() {
     let journals = std::fs::read_dir(temp.path()).unwrap().count();
     assert_eq!(journals, 0, "no session should have opened");
 }
+
+#[test]
+fn print_survives_a_closed_stderr() {
+    let (mut child, temp) = octet(&["--print", "approval"]);
+    drop(child.stdin.take());
+    // Nobody reads the notices: writing the denial to stderr fails.
+    drop(child.stderr.take());
+    let output = octet_testkit::wait_child(child, LIMIT);
+    assert_eq!(output.status.code(), Some(0), "not a panic");
+    assert!(last_journal_record(temp.path()).contains(r#""type":"stopped""#));
+}
+
+#[test]
+fn a_prompt_that_cannot_be_read_is_a_run_failure() {
+    let temp = octet_testkit::TempDir::new("octet-headless");
+    std::fs::create_dir_all(temp.path()).unwrap();
+    // A directory opens, but reading it fails.
+    let directory = std::fs::File::open(temp.path()).unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_octet"))
+        .args(["--binary"])
+        .arg(octet_testkit::protocol_child())
+        .arg("--journal-dir")
+        .arg(temp.path())
+        .args(["-p", "-"])
+        .stdin(directory)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let output = octet_testkit::wait_child(child, LIMIT);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Cannot read the prompt"), "{stderr}");
+    assert_eq!(output.status.code(), Some(1), "not a usage error");
+}

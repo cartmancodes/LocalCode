@@ -228,7 +228,16 @@ pub(crate) fn check_prompt(prompt: &str) -> Result<(), CliError> {
     if prompt.trim().is_empty() {
         return Err(usage("The prompt is empty"));
     }
-    if prompt.len() > octet_core::PROMPT_LIMIT {
+    check_prompt_size(prompt.len())
+}
+
+/// Refuses a prompt of `bytes` over the prompt limit.
+///
+/// # Errors
+///
+/// A usage error naming the limit.
+pub(crate) fn check_prompt_size(bytes: usize) -> Result<(), CliError> {
+    if bytes > octet_core::PROMPT_LIMIT {
         return Err(usage(format!(
             "The prompt is over {} KiB",
             octet_core::PROMPT_LIMIT / 1024
