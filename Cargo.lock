@@ -407,6 +407,7 @@ dependencies = [
  "octet-testkit",
  "octet-tui",
  "serde_json",
+ "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -439,6 +440,7 @@ version = "0.1.0"
 dependencies = [
  "octet-engine",
  "octet-proc",
+ "octet-testkit",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
