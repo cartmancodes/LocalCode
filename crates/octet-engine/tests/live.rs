@@ -1299,3 +1299,21 @@ async fn claude_images_too_large_together_fail_the_turn_not_the_session() {
         .unwrap()
         .unwrap();
 }
+#[tokio::test]
+async fn steer_while_interrupting_names_the_text_it_did_not_send() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("hold".into())).unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::Started)).await;
+    handle.interrupt();
+    handle.send(Command::Steer("too late".into())).unwrap();
+    wait_for(&mut events, |e| {
+        matches!(e, Event::Notice(t) if t.contains("The turn is stopping") && t.contains("too late"))
+    })
+    .await;
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}

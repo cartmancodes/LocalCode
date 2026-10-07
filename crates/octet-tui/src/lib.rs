@@ -660,7 +660,10 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
 /// it as a follow-up where it cannot, and sends it as a prompt when idle.
 fn steer(app: &mut App, session: &Session, text: String) {
     if app.conn.is_running() {
-        if app.conn.engine.provider().steer {
+        if app.conn.cancelling && app.composer.queue.len() < app::QUEUE_LIMIT {
+            app.composer.queue.push_back(Command::Prompt(text));
+            app.notice("The turn is stopping; queued the steer as the next prompt");
+        } else if app.conn.engine.provider().steer && !app.conn.cancelling {
             if let Err(error) = session.handle.send(Command::Steer(text)) {
                 app.notice(error.to_string());
             }

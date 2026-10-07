@@ -260,7 +260,9 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
         Cmd::Effort => return Some(effort_command(app, argument)),
         Cmd::Fork => return Some(fork_command(app)),
         Cmd::Compact => return Some(compact_command(app)),
-        Cmd::Image => image_command(app, argument),
+        // A failed /image leaves the line in the prompt box to correct.
+        Cmd::Image if !image_command(app, argument) => return None,
+        Cmd::Image => {}
         Cmd::Sessions => sessions_command(app).await,
         Cmd::Resume => return Some(resume_command(app, argument)),
         Cmd::Steer if argument.is_empty() => app.notice("Use /steer <text>"),
@@ -361,18 +363,18 @@ fn compact_command(app: &mut App) -> Action {
     Action::Continue
 }
 
-/// `/image PATH`: attach an image to the next prompt.
-fn image_command(app: &mut App, argument: &str) {
+/// `/image PATH`: attach an image to the next prompt; whether it did.
+fn image_command(app: &mut App, argument: &str) -> bool {
     if argument.is_empty() {
         app.notice("Usage: /image PATH (PNG, JPEG, GIF or WebP, up to 5 MiB)");
-        return;
+        return false;
     }
     if app.composer.images.len() >= octet_core::IMAGES_PER_PROMPT {
         app.notice(format!(
             "A prompt takes at most {} images; press Esc on an empty prompt to drop them",
             octet_core::IMAGES_PER_PROMPT
         ));
-        return;
+        return false;
     }
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let path = image_path(&app.composer.root, home.as_deref(), argument);
@@ -393,8 +395,12 @@ fn image_command(app: &mut App, argument: &str) {
         Ok(image) => {
             app.notice(format!("Attached {} to the next prompt", image.name));
             app.composer.images.push(image);
+            true
         }
-        Err(error) => app.notice(error.to_string()),
+        Err(error) => {
+            app.notice(error.to_string());
+            false
+        }
     }
 }
 

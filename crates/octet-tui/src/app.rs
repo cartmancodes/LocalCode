@@ -51,6 +51,8 @@ pub(crate) struct Connection {
     pub(crate) phase: ConnPhase,
     /// The reasoning effort requested; `None` is the vendor default.
     pub(crate) effort: Option<String>,
+    /// The running turn was cancelled and has not ended yet.
+    pub(crate) cancelling: bool,
     /// What `/sessions` last listed, for `/resume N`.
     pub(crate) listed: Vec<octet_core::RecentSession>,
     pub(crate) status: String,
@@ -85,12 +87,14 @@ impl Connection {
     }
     /// A turn started or a prompt was sent; a stopped session stays stopped.
     pub(crate) fn start_turn(&mut self) {
+        self.cancelling = false;
         if self.phase != ConnPhase::Stopped {
             self.phase = ConnPhase::Running;
         }
     }
     /// The running turn ended.
     pub(crate) fn end_turn(&mut self) {
+        self.cancelling = false;
         if self.phase == ConnPhase::Running {
             self.phase = ConnPhase::Idle;
         }
@@ -171,6 +175,7 @@ impl App {
                 journal,
                 phase: ConnPhase::Connecting,
                 effort: config.effort.clone(),
+                cancelling: false,
                 listed: Vec::new(),
                 status: "connecting".into(),
                 usage: String::new(),
@@ -234,6 +239,7 @@ impl App {
         self.chat.catalog_focus = None;
         self.conn.journal = journal;
         self.conn.phase = ConnPhase::Connecting;
+        self.conn.cancelling = false;
         self.conn.effort = config.effort.clone();
         self.conn.status = "connecting".into();
         self.conn.activity = State::Thinking;
@@ -527,6 +533,7 @@ impl App {
                 }
                 self.conn.mode_pending = None;
                 self.conn.phase = ConnPhase::Stopped;
+                self.conn.cancelling = false;
                 self.overlay.approvals.clear();
                 // Nothing would send them, and after a reconnect they would
                 // follow newer prompts.

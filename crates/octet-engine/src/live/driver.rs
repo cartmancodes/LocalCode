@@ -253,10 +253,18 @@ impl<P: Protocol> Driver<P> {
     }
 
     async fn steer(&mut self, text: String) -> Result<(), DriverError> {
-        if self.core.phase != Phase::InTurn {
-            return self.core.emit(Event::Notice(
-                "No turn is running; send it as a prompt".into(),
-            ));
+        match self.core.phase {
+            Phase::InTurn => {}
+            Phase::Interrupting => {
+                return self.core.emit(Event::Notice(format!(
+                    "The turn is stopping; this steer was not sent: {text}"
+                )));
+            }
+            _ => {
+                return self.core.emit(Event::Notice(
+                    "No turn is running; send it as a prompt".into(),
+                ));
+            }
         }
         if self.protocol.steer(&mut self.core, &text).await? {
             self.core.emit(Event::User(format!("[steer] {text}")))

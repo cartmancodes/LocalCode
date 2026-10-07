@@ -486,6 +486,7 @@ pub(crate) async fn cancel_turn(app: &mut App, session: &Session) {
         let plural = if dropped == 1 { "" } else { "s" };
         app.notice(format!("Dropped {dropped} queued prompt{plural}"));
     }
+    app.conn.cancelling = app.conn.is_running();
     session.handle.interrupt();
 }
 pub(crate) fn cycle_mode(app: &mut App) -> Action {

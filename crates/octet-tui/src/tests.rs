@@ -1138,3 +1138,37 @@ fn a_fork_stays_pending_until_the_vendor_names_it() {
     settle_fork(&mut config, "forked");
     assert!(!config.fork);
 }
+#[tokio::test]
+async fn a_failed_image_keeps_the_draft() {
+    let dir = image_workspace("octet-image-draft", &["notes.txt"]);
+    let mut app = app();
+    app.composer.root = dir.path().to_path_buf();
+    let (_temp, session) = demo_session("octet-image-draft-session").await;
+    assert!(app.composer.editor.insert("/image notes.txt"));
+    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    assert_eq!(app.composer.editor.text, "/image notes.txt");
+    assert!(app.entries_text().contains("not a PNG"));
+    app.composer.editor.take();
+    std::fs::write(dir.path().join("ok.png"), b"x").unwrap();
+    assert!(app.composer.editor.insert("/image ok.png"));
+    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    assert!(app.composer.editor.text.is_empty());
+}
+#[tokio::test]
+async fn steer_while_cancelling_queues_it() {
+    let mut app = app();
+    let (_temp, session) = demo_session("octet-steer-cancel").await;
+    app.conn.phase = ConnPhase::Running;
+    cancel_turn(&mut app, &session).await;
+    steer(&mut app, &session, "look at the tests".into());
+    assert_eq!(
+        app.composer.queue.front(),
+        Some(&Command::Prompt("look at the tests".into()))
+    );
+    assert!(app.entries_text().contains("The turn is stopping"));
+    // The turn's end clears the state; the queued prompt then goes.
+    app.event(octet_core::Event::Finished {
+        outcome: octet_core::Outcome::Interrupted,
+    });
+    assert!(!app.conn.cancelling);
+}
