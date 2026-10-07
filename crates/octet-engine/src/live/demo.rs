@@ -84,10 +84,14 @@ pub(super) async fn demo(
             _ = stop.changed() => break,
             _ = cancel.changed() => {}
             command = commands.recv() => {
-                if let Some(turn) = command.as_ref().filter(|c| gate.cancelled(c, &cancel)) {
-                    // Seen here: the demo has no other cancel step, and a stale
-                    // cancel would stop the next turn.
+                let cancelled = command.as_ref().is_some_and(|c| gate.cancelled(c, &cancel));
+                if command.as_ref().is_some_and(Command::starts_turn) {
+                    // Seen for every turn, cancelled or not: the demo has no
+                    // other cancel step, and an unseen cancel from before this
+                    // turn would stop it at its first word.
                     cancel.borrow_and_update();
+                }
+                if let Some(turn) = command.as_ref().filter(|_| cancelled) {
                     let display = turn.turn_display().unwrap_or_default().to_owned();
                     emit(tx, Event::User(display))?;
                     emit(tx, Event::Started)?;

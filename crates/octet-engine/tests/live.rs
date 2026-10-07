@@ -1479,3 +1479,31 @@ async fn a_prompt_sent_during_the_demo_dialog_is_refused_and_counted() {
     );
     stop(&handle, task).await;
 }
+#[tokio::test]
+async fn a_cancel_after_a_demo_turn_does_not_stop_the_next_one() {
+    let mut c = config();
+    c.engine = Engine::DEMO;
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    // The race needs the cancel and the next prompt in the same poll, so
+    // repeat it: before the fix about two rounds in five failed, so six
+    // rounds catch it about 95% of the time (each demo turn takes ~1 s).
+    for round in 0..6 {
+        handle.send(Command::Prompt("hello".into())).unwrap();
+        wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
+        // Esc on an idle session, then a new prompt: the cancel is old news.
+        handle.interrupt();
+        handle.send(Command::Prompt("hello".into())).unwrap();
+        let outcome = wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
+        assert!(
+            matches!(
+                outcome,
+                Event::Finished {
+                    outcome: Outcome::Completed
+                }
+            ),
+            "round {round}: {outcome:?}"
+        );
+    }
+    stop(&handle, task).await;
+}
