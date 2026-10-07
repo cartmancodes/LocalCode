@@ -39,22 +39,32 @@ fn answer_wire(wire: &Value, allow: bool) -> Value {
     json!({"id":wire["id"],"result":{"decision":if allow {"accept"} else {"decline"}}})
 }
 
-/// Codex's per-connection state: the turn in flight, Octet's own pending
-/// requests and the model catalog being paged in.
+/// What a reply from Codex answers: one of Octet's own requests.
+enum Outstanding {
+    Initialize,
+    OpenThread,
+    ModelList,
+    /// `turn/start` or `thread/compact/start`: an error fails the turn.
+    Start,
+    Interrupt,
+    /// A steer, kept so a refusal can say which text was lost.
+    Steer(String),
+}
+
+/// Codex's per-connection state: the turn in flight, Octet's own requests
+/// awaiting replies and the model catalog being paged in.
 #[derive(Default)]
 pub(super) struct CodexProtocol {
     turn: Option<String>,
-    start_request: Option<u64>,
-    interrupt_request: Option<u64>,
+    /// Octet's last wire request ID.
+    next_id: u64,
+    requests: HashMap<u64, Outstanding>,
     text_items: HashSet<String>,
     catalog: Vec<ModelInfo>,
     catalog_pages: usize,
     catalog_cursors: HashSet<String>,
     /// Steering sent before Codex named the turn; sent once it does.
     pending_steer: Vec<String>,
-    /// Steering requests awaiting Codex's reply, by request ID, so a refusal
-    /// is reported with the text that was lost.
-    steer_requests: HashMap<u64, String>,
 }
 
 impl Protocol for CodexProtocol {
@@ -83,7 +93,6 @@ impl Protocol for CodexProtocol {
         self.turn = None;
         self.text_items.clear();
         self.pending_steer.clear();
-        self.steer_requests.clear();
     }
 
     /// Steers the turn, or holds the text until Codex names the turn.
@@ -97,9 +106,9 @@ impl Protocol for CodexProtocol {
     }
 
     async fn initialize(&mut self, core: &mut Core) -> Result<(), DriverError> {
-        let client = json!({"name":"octet","version":"0.1.0"});
+        let client = json!({"name":"octet","version":env!("CARGO_PKG_VERSION")});
         let params = json!({"clientInfo": client, "capabilities": {"experimentalApi": true}});
-        core.send(json!({"id": 1, "method": "initialize", "params": params}))
+        self.request(core, Outstanding::Initialize, "initialize", params)
             .await
     }
 
@@ -118,8 +127,6 @@ impl Protocol for CodexProtocol {
         text: &str,
         images: &[ImageAttachment],
     ) -> Result<(), DriverError> {
-        core.request_id += 1;
-        self.start_request = Some(core.request_id);
         let input: Vec<Value> = std::iter::once(json!({"type":"text","text":text}))
             .chain(
                 images
@@ -139,17 +146,15 @@ impl Protocol for CodexProtocol {
         {
             target.extend(extra);
         }
-        core.send(json!({"id":core.request_id,"method":"turn/start","params":params}))
+        self.request(core, Outstanding::Start, "turn/start", params)
             .await
     }
 
     /// Compaction is a turn on the thread; an error reply fails it as a
     /// rejected `turn/start` does.
     async fn compact(&mut self, core: &mut Core) -> Result<(), DriverError> {
-        core.request_id += 1;
-        self.start_request = Some(core.request_id);
         let params = json!({"threadId": core.session});
-        core.send(json!({"id":core.request_id,"method":"thread/compact/start","params":params}))
+        self.request(core, Outstanding::Start, "thread/compact/start", params)
             .await
     }
 
@@ -180,6 +185,7 @@ impl Protocol for CodexProtocol {
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             if core.phase == Phase::Interrupting {
+                self.drop_held_steers(core)?;
                 self.request_interrupt(core).await?;
             } else {
                 for text in std::mem::take(&mut self.pending_steer) {
@@ -254,122 +260,151 @@ impl Protocol for CodexProtocol {
 }
 
 impl CodexProtocol {
-    async fn send_steer(&mut self, core: &mut Core, text: &str) -> Result<(), DriverError> {
-        core.request_id += 1;
-        self.steer_requests.insert(core.request_id, text.to_owned());
+    /// Sends one of Octet's requests and records what its reply answers.
+    async fn request(
+        &mut self,
+        core: &Core,
+        kind: Outstanding,
+        method: &str,
+        params: Value,
+    ) -> Result<(), DriverError> {
+        self.next_id += 1;
+        self.requests.insert(self.next_id, kind);
+        core.send(json!({"id": self.next_id, "method": method, "params": params}))
+            .await
+    }
+
+    async fn send_steer(&mut self, core: &Core, text: &str) -> Result<(), DriverError> {
         let params = json!({
             "threadId": core.session,
             "expectedTurnId": self.turn,
             "input": [{"type": "text", "text": text}],
         });
-        core.send(json!({"id": core.request_id, "method": "turn/steer", "params": params}))
-            .await
+        self.request(
+            core,
+            Outstanding::Steer(text.to_owned()),
+            "turn/steer",
+            params,
+        )
+        .await
     }
 
-    async fn request_interrupt(&mut self, core: &mut Core) -> Result<(), DriverError> {
-        core.request_id += 1;
-        self.interrupt_request = Some(core.request_id);
+    async fn request_interrupt(&mut self, core: &Core) -> Result<(), DriverError> {
         let params = json!({"threadId":core.session,"turnId":self.turn});
-        core.send(json!({"id":core.request_id,"method":"turn/interrupt","params":params}))
+        self.request(core, Outstanding::Interrupt, "turn/interrupt", params)
             .await
     }
 
-    /// Replies to Octet's own requests, matched by their fixed or
-    /// recorded ids.
+    /// Steers held for a turn Codex never named are reported, not dropped.
+    fn drop_held_steers(&mut self, core: &Core) -> Result<(), DriverError> {
+        for text in std::mem::take(&mut self.pending_steer) {
+            core.emit(Event::Notice(format!("This steer was not sent: {text}")))?;
+        }
+        Ok(())
+    }
+
+    /// Replies to Octet's own requests, matched by the request they answer.
     async fn response(&mut self, core: &mut Core, v: &Value) -> Result<(), DriverError> {
-        if v["id"] == 1 {
-            if v.get("error").is_some() {
-                return Err("Codex initialization failed".into());
-            }
-            // The phase only moves forward: a repeated reply is ignored.
-            if core.phase != Phase::Starting {
-                return Ok(());
-            }
-            core.phase = Phase::Handshaken;
-            core.send(json!({"method":"initialized","params":{}}))
-                .await?;
-            let mut params = codex_thread_params(core.mode);
-            params["cwd"] = json!(core.config.cwd);
-            let method = match &core.config.resume {
-                Some(id) => {
-                    params["threadId"] = json!(id);
-                    if core.config.fork {
-                        "thread/fork"
-                    } else {
-                        "thread/resume"
-                    }
-                }
-                None => "thread/start",
-            };
-            if let Some(model) = &core.config.model {
-                params["model"] = json!(model);
-            }
-            core.send(json!({"id":2,"method":method,"params":params}))
-                .await
-        } else if v["id"] == 2 {
-            if let Some(error) = v.get("error") {
-                return Err(
-                    format!("Codex could not open the session: {}", error_text(error)).into(),
-                );
-            }
-            // A session opened before the handshake is a protocol fault; one
-            // already open ignores a repeated reply.
-            if core.phase == Phase::Starting {
+        let id = v["id"].as_u64();
+        let Some(kind) = id.and_then(|id| self.requests.remove(&id)) else {
+            // A reply to a request not yet sent, while connecting, means the
+            // handshake is out of order; a repeated reply is ignored.
+            if !core.phase.is_ready() && id.is_some_and(|id| id > self.next_id) {
                 return Err("Unexpected protocol initialization order".into());
             }
-            if core.phase.is_ready() {
-                return Ok(());
+            return Ok(());
+        };
+        match kind {
+            Outstanding::Initialize => self.handshaken(core, v).await,
+            Outstanding::OpenThread => self.opened(core, v).await,
+            Outstanding::ModelList => self.catalog_page(core, v).await,
+            Outstanding::Start => {
+                if v.get("error").is_some() {
+                    self.drop_held_steers(core)?;
+                    core.finish_turn(Outcome::Failed, Some(error_text(&v["error"])))?;
+                }
+                Ok(())
             }
-            core.session = v
-                .pointer("/result/thread/id")
-                .and_then(Value::as_str)
-                .ok_or("Codex could not open the session")?
-                .into();
-            core.phase = Phase::Idle;
-            core.emit(Event::Ready {
-                session: core.session.clone(),
-            })?;
-            core.adopt_mode(codex_reported(&v["result"]))?;
-            if let Some(model) = v["result"]["model"]
-                .as_str()
-                .filter(|m| valid_identifier(m))
-            {
-                core.emit(Event::ModelSelected(model.into()))?;
-            }
-            core.send(
-                json!({"id":3,"method":"model/list","params":{"limit":100,"includeHidden":false}}),
-            )
-            .await
-        } else if v["id"] == 3 {
-            self.catalog_page(core, v).await
-        } else if self.start_request.is_some() && v["id"].as_u64() == self.start_request {
-            self.start_request = None;
-            if v.get("error").is_some() {
-                core.finish_turn(Outcome::Failed, Some(error_text(&v["error"])))?;
-            }
-            Ok(())
-        } else if let Some(text) = v["id"]
-            .as_u64()
-            .and_then(|id| self.steer_requests.remove(&id))
-        {
-            match v.get("error") {
+            Outstanding::Interrupt => match v.get("error") {
+                Some(_) => core.emit(Event::Notice(
+                    "Interrupt was rejected; waiting for terminal outcome".into(),
+                )),
+                None => Ok(()),
+            },
+            Outstanding::Steer(text) => match v.get("error") {
                 Some(error) => core.emit(Event::Notice(format!(
                     "Codex did not take the steer ({}). Not sent: {text}",
                     error_text(error)
                 ))),
                 None => Ok(()),
-            }
-        } else if self.interrupt_request.is_some() && v["id"].as_u64() == self.interrupt_request {
-            self.interrupt_request = None;
-            if v.get("error").is_some() {
-                core.emit(Event::Notice(
-                    "Interrupt was rejected; waiting for terminal outcome".into(),
-                ))?;
-            }
-            Ok(())
-        } else {
-            Ok(())
+            },
         }
+    }
+
+    /// The handshake's reply: open the session.
+    async fn handshaken(&mut self, core: &mut Core, v: &Value) -> Result<(), DriverError> {
+        if v.get("error").is_some() {
+            return Err("Codex initialization failed".into());
+        }
+        core.phase = Phase::Handshaken;
+        core.send(json!({"method":"initialized","params":{}}))
+            .await?;
+        let mut params = codex_thread_params(core.mode);
+        params["cwd"] = json!(core.config.cwd);
+        let method = match &core.config.resume {
+            Some(id) => {
+                params["threadId"] = json!(id);
+                if core.config.fork {
+                    "thread/fork"
+                } else {
+                    "thread/resume"
+                }
+            }
+            None => "thread/start",
+        };
+        if let Some(model) = &core.config.model {
+            params["model"] = json!(model);
+        }
+        self.request(core, Outstanding::OpenThread, method, params)
+            .await
+    }
+
+    /// The session is open: ready, its mode confirmed, its catalog asked for.
+    async fn opened(&mut self, core: &mut Core, v: &Value) -> Result<(), DriverError> {
+        if let Some(error) = v.get("error") {
+            return Err(format!("Codex could not open the session: {}", error_text(error)).into());
+        }
+        core.session = v
+            .pointer("/result/thread/id")
+            .and_then(Value::as_str)
+            .ok_or("Codex could not open the session")?
+            .into();
+        core.phase = Phase::Idle;
+        core.emit(Event::Ready {
+            session: core.session.clone(),
+        })?;
+        core.adopt_mode(codex_reported(&v["result"]))?;
+        if let Some(model) = v["result"]["model"]
+            .as_str()
+            .filter(|m| valid_identifier(m))
+        {
+            core.emit(Event::ModelSelected(model.into()))?;
+        }
+        self.request_models(core, None).await
+    }
+
+    /// Asks for a page of the model catalog.
+    async fn request_models(
+        &mut self,
+        core: &Core,
+        cursor: Option<&str>,
+    ) -> Result<(), DriverError> {
+        let mut params = json!({"limit":100,"includeHidden":false});
+        if let Some(cursor) = cursor {
+            params["cursor"] = json!(cursor);
+        }
+        self.request(core, Outstanding::ModelList, "model/list", params)
+            .await
     }
 
     async fn catalog_page(&mut self, core: &Core, v: &Value) -> Result<(), DriverError> {
@@ -393,9 +428,7 @@ impl CodexProtocol {
                 && cursor.len() <= 4096
                 && self.catalog_cursors.insert(cursor.to_owned())
             {
-                let params = json!({"limit":100,"includeHidden":false,"cursor":cursor});
-                core.send(json!({"id":3,"method":"model/list","params":params}))
-                    .await?;
+                self.request_models(core, Some(cursor)).await?;
             } else {
                 core.emit(Event::Notice(
                     "Model catalog exceeds discovery limits; showing partial results".into(),

@@ -65,9 +65,9 @@ pub(crate) struct Core {
     pub(super) mode: Mode,
     /// Connect deadline, then the turn's silence watchdog.
     pub(super) deadline: Instant,
-    /// Octet's next approval ID and, for Codex, its next request ID. It
-    /// starts at 10 because Codex uses the fixed IDs 1–3.
-    pub(super) request_id: u64,
+    /// The last approval ID shown to the user. Vendors number their own
+    /// wire requests.
+    pub(super) approval_id: u64,
     pub(super) pending: HashMap<u64, Pending>,
     /// The protocol's approval reply, for approvals denied here.
     answer: fn(&Value, bool) -> Value,
@@ -89,7 +89,7 @@ impl Core {
             phase: Phase::Starting,
             session: String::new(),
             deadline: Instant::now() + limits.connect,
-            request_id: 10,
+            approval_id: 0,
             pending: HashMap::new(),
             answer: P::answer,
         }
@@ -138,14 +138,14 @@ impl Core {
             self.send(self.answer(&wire, false)).await?;
             return self.emit(Event::Notice(notice));
         }
-        self.request_id += 1;
+        self.approval_id += 1;
         self.emit(Event::Approval {
-            id: self.request_id,
+            id: self.approval_id,
             detail,
         })?;
         let deadline = Instant::now() + self.limits.approval;
         self.pending
-            .insert(self.request_id, Pending { wire, deadline });
+            .insert(self.approval_id, Pending { wire, deadline });
         Ok(())
     }
 

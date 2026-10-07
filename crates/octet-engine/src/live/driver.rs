@@ -53,10 +53,28 @@ pub(super) async fn run<P: Protocol>(
     };
     let result = driver.run(&mut commands, &mut cancel, &mut stopping).await;
     let report = driver.core.process.shutdown().await;
-    if !report.reaped || !report.descendants_stopped {
-        return Err("Could not verify all vendor children stopped".into());
+    let verified = report.reaped && report.descendants_stopped;
+    finish(result, verified, engine, &report.stderr_tail)
+}
+
+/// The session's result: the vendor's error with its stderr, and a note when
+/// its processes could not be confirmed stopped. Neither hides the other.
+fn finish(
+    result: Result<(), DriverError>,
+    verified: bool,
+    engine: Engine,
+    stderr: &[u8],
+) -> Result<(), String> {
+    const UNVERIFIED: &str = "Could not verify all vendor children stopped";
+    match (result, verified) {
+        (Ok(()), true) => Ok(()),
+        (Ok(()), false) => Err(UNVERIFIED.into()),
+        (Err(error), true) => Err(with_stderr(error, engine, stderr)),
+        (Err(error), false) => Err(format!(
+            "{}\n{UNVERIFIED}",
+            with_stderr(error, engine, stderr)
+        )),
     }
-    result.map_err(|error| with_stderr(error, engine, &report.stderr_tail))
 }
 
 impl<P: Protocol> Driver<P> {
@@ -382,6 +400,21 @@ mod tests {
         codex::{codex_stray_reply, error_text},
     };
     use super::*;
+    #[test]
+    fn an_unverified_shutdown_keeps_the_vendor_error() {
+        let vendor: Result<(), DriverError> = Err("Vendor disconnected".into());
+        let error = finish(vendor, false, Engine::CODEX, b"login expired\n").unwrap_err();
+        assert_eq!(
+            error,
+            "Vendor disconnected\ncodex stderr: login expired\n\
+             Could not verify all vendor children stopped"
+        );
+        assert_eq!(
+            finish(Ok(()), false, Engine::CODEX, b"").unwrap_err(),
+            "Could not verify all vendor children stopped"
+        );
+        assert_eq!(finish(Ok(()), true, Engine::CODEX, b""), Ok(()));
+    }
     use serde_json::json;
     #[test]
     fn stderr_is_attached_only_to_vendor_failures_and_starts_on_a_line() {

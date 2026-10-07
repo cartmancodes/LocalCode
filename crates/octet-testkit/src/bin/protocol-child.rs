@@ -183,7 +183,21 @@ fn interactive_codex() {
             Some("turn/start") => {
                 turn += 1;
                 active = format!("turn-{turn}");
+                let first = v
+                    .pointer("/params/input/0/text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if first == "refuse-start" {
+                    // Refuse the turn after a pause, so Octet can hold a steer.
+                    thread::sleep(Duration::from_millis(400));
+                    emit(&json!({"id":v["id"],"error":{"code":-32600,"message":"turn refused"}}));
+                    continue;
+                }
                 emit(&json!({"id":v["id"],"result":{"turn":{"id":active}}}));
+                if first == "late-start" {
+                    // Name the turn late, so Octet holds steers and cancels.
+                    thread::sleep(Duration::from_millis(400));
+                }
                 emit(
                     &json!({"method":"turn/started","params":{"threadId":"fixture-thread","turn":{"id":active}}}),
                 );
@@ -191,7 +205,10 @@ fn interactive_codex() {
                     .pointer("/params/input/0/text")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                if text == "hold" || text.starts_with("Octet active goal: fixture-hold\n") {
+                if text == "hold"
+                    || text == "late-start"
+                    || text.starts_with("Octet active goal: fixture-hold\n")
+                {
                     continue;
                 }
                 if text == "die-on-interrupt" {

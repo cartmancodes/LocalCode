@@ -1512,3 +1512,51 @@ async fn claude_result_without_is_error_is_failed_once() {
         .unwrap()
         .unwrap();
 }
+#[tokio::test]
+async fn a_steer_held_for_a_cancelled_turn_is_reported() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("late-start".into())).unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::Started)).await;
+    // Codex has not named the turn yet, so the steer is held.
+    handle.send(Command::Steer("held text".into())).unwrap();
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::User(t) if t == "[steer] held text"),
+    )
+    .await;
+    handle.interrupt();
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::Notice(t) if t == "This steer was not sent: held text"),
+    )
+    .await;
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn a_steer_held_for_a_refused_turn_is_reported() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("refuse-start".into())).unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::Started)).await;
+    handle.send(Command::Steer("held text".into())).unwrap();
+    let mut reported = false;
+    let outcome = loop {
+        match next(&mut events).await {
+            Event::Notice(t) if t == "This steer was not sent: held text" => reported = true,
+            Event::Finished { outcome } => break outcome,
+            _ => {}
+        }
+    };
+    assert_eq!(outcome, Outcome::Failed);
+    assert!(reported, "the held steer was dropped silently");
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
