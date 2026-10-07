@@ -108,7 +108,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
             .map_err(io::Error::other)?;
         let mut app = retained_app
             .take()
-            .unwrap_or_else(|| App::new(&config, session.journal.clone()));
+            .unwrap_or_else(|| App::new(&config, session.journal().to_path_buf()));
         if let Some(notice) = opening_notice.take() {
             app.note(notice);
         }
@@ -118,7 +118,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         if !app.goals.is_attached() {
             attach_goal_store(&mut app, goal_store.clone()).await;
         }
-        app.connection(&config, session.journal.clone());
+        app.connection(&config, session.journal().to_path_buf());
         let result = run_session(&mut terminal, &guard, &mut app, &mut session).await;
         // Every exit path: an export is finished, not cut short or orphaned.
         ended_job = jobs::finish(app.job.take(), jobs::GRACE).await;
@@ -156,7 +156,7 @@ async fn attach_goal_store(app: &mut App, store: octet_core::goal::GoalStore) {
         Ok(())
             if app
                 .goals.goal()
-                .is_some_and(|goal| goal.status == octet_core::goal::Status::Paused) =>
+                .is_some_and(|goal| goal.status() == octet_core::goal::Status::Paused) =>
         {
             // Rewrites a stored "active" as "paused".
             if let Err(error) = app.goals.save().await {

@@ -54,16 +54,22 @@ pub enum GoalStep {
 }
 
 #[derive(Clone, Debug)]
-/// A multi-turn objective and its progress.
+/// A multi-turn objective and its progress. Its fields stay within what a
+/// goal file can hold, so every goal saved can be loaded again.
 pub struct Goal {
-    /// What to achieve, on one line.
-    pub objective: String,
-    /// Where it stands.
-    pub status: Status,
-    /// Vendor turns spent on it.
-    pub turns: u32,
-    /// The vendor's evidence when it claimed completion.
-    pub evidence: String,
+    objective: String,
+    status: Status,
+    turns: u32,
+    evidence: String,
+}
+
+/// The most evidence a goal keeps, in characters.
+const EVIDENCE_CHARS: usize = 4096;
+
+/// The last `EVIDENCE_CHARS` characters of `text`.
+fn evidence_tail(text: &str) -> String {
+    let skip = text.chars().count().saturating_sub(EVIDENCE_CHARS);
+    text.chars().skip(skip).collect()
 }
 
 impl Goal {
@@ -73,8 +79,8 @@ impl Goal {
     /// use octet_core::goal::{Goal, Status};
     ///
     /// let goal = Goal::new("  Ship the release  ").unwrap();
-    /// assert_eq!(goal.objective, "Ship the release");
-    /// assert_eq!(goal.status, Status::Active);
+    /// assert_eq!(goal.objective(), "Ship the release");
+    /// assert_eq!(goal.status(), Status::Active);
     /// assert!(Goal::new("two\nlines").is_err());
     /// ```
     /// # Errors
@@ -93,6 +99,32 @@ impl Goal {
             turns: 0,
             evidence: String::new(),
         })
+    }
+    /// What to achieve, on one line.
+    pub fn objective(&self) -> &str {
+        &self.objective
+    }
+    /// Where it stands.
+    pub fn status(&self) -> Status {
+        self.status
+    }
+    /// Vendor turns spent on it.
+    pub fn turns(&self) -> u32 {
+        self.turns
+    }
+    /// The vendor's evidence when it claimed completion.
+    pub fn evidence(&self) -> &str {
+        &self.evidence
+    }
+    /// Sets the status, to set up a test's state.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_status(&mut self, status: Status) {
+        self.status = status;
+    }
+    /// Sets the turn count, to set up a test's state.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_turns(&mut self, turns: u32) {
+        self.turns = turns;
     }
     /// The prompt for one goal turn, asking for the completion marker only
     /// with evidence.
@@ -135,7 +167,9 @@ impl Goal {
         {
             let evidence = evidence.trim();
             if !evidence.is_empty() {
-                self.evidence = evidence.chars().take(4096).collect();
+                // The text just before the marker is the evidence; a long
+                // turn's opening is not.
+                self.evidence = evidence_tail(evidence);
                 self.status = Status::Complete;
                 return false;
             }
@@ -163,7 +197,7 @@ impl Goal {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /// Where one workspace's goal is saved.
 pub struct GoalStore {
     path: PathBuf,
@@ -189,14 +223,23 @@ impl GoalStore {
     /// Fails if the file cannot be read, is over 48 KiB, or is not a valid
     /// goal.
     pub async fn load(&self) -> Result<Option<Goal>, GoalError> {
-        let bytes = match tokio::fs::read(&self.path).await {
-            Ok(bytes) => bytes,
+        use tokio::io::AsyncReadExt;
+        // An 8 KiB objective plus 4096 evidence characters can exceed 16 KiB;
+        // JSON escaping can expand the evidence to six bytes per character.
+        const LIMIT: u64 = 48 * 1024;
+        let file = match tokio::fs::File::open(&self.path).await {
+            Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(GoalError::Read(e)),
         };
-        // An 8 KiB objective plus 4096 evidence characters can exceed 16 KiB;
-        // JSON escaping can expand the evidence to six bytes per character.
-        if bytes.len() > 48 * 1024 {
+        // Read one byte past the limit at most: a huge file is refused, not
+        // read whole.
+        let mut bytes = Vec::new();
+        file.take(LIMIT + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(GoalError::Read)?;
+        if bytes.len() as u64 > LIMIT {
             return Err(GoalError::TooLarge);
         }
         let v: Value = serde_json::from_slice(&bytes).map_err(GoalError::Parse)?;
@@ -211,15 +254,11 @@ impl GoalStore {
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
             .ok_or(GoalError::InvalidTurns)?;
-        goal.evidence = v["evidence"]
-            .as_str()
-            .unwrap_or("")
-            .chars()
-            .take(4096)
-            .collect();
+        goal.evidence = evidence_tail(v["evidence"].as_str().unwrap_or(""));
         Ok(Some(goal))
     }
-    /// Saves `goal` atomically (write, sync, rename).
+    /// Saves `goal` atomically and durably (write, sync, rename, sync the
+    /// directory): a failure leaves the previous file as it was.
     /// # Errors
     ///
     /// `InvalidPath` or `Save` if the file cannot be written.
@@ -245,10 +284,16 @@ impl GoalStore {
         let written = async {
             use tokio::io::AsyncWriteExt;
             let mut file = octet_store::create_private(&temp).await?;
+            // `flush` reports a failed write; `sync_data` alone would not.
             file.write_all(&bytes).await?;
+            file.flush().await?;
             file.sync_data().await?;
             drop(file);
-            tokio::fs::rename(&temp, &self.path).await
+            tokio::fs::rename(&temp, &self.path).await?;
+            match self.path.parent() {
+                Some(directory) => octet_store::sync_directory(directory).await,
+                None => Ok(()),
+            }
         }
         .await;
         if written.is_err() {
@@ -291,7 +336,7 @@ const OUTPUT_LIMIT: usize = 64 * 1024;
 
 /// A goal, where it is stored, and the vendor turn working on it. Every
 /// persistence failure is returned so the UI can say so; none is dropped.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct GoalRunner {
     goal: Option<Goal>,
     store: Option<GoalStore>,
@@ -359,13 +404,15 @@ impl GoalRunner {
         saved
     }
     /// Streamed assistant text of a goal turn; the completion marker is read
-    /// from the end, so only the last 64 KiB is kept.
+    /// from the end, so only the last 64 KiB is needed. It is trimmed back to
+    /// that once it reaches twice as much, so streaming small deltas does not
+    /// move 64 KiB each time.
     pub fn observe_text(&mut self, text: &str) {
         let Some(output) = &mut self.turn else {
             return;
         };
         output.push_str(text);
-        if output.len() > OUTPUT_LIMIT {
+        if output.len() > 2 * OUTPUT_LIMIT {
             let start = output.ceil_char_boundary(output.len() - OUTPUT_LIMIT);
             output.drain(..start);
         }
@@ -478,9 +525,10 @@ impl GoalRunner {
         }
         let goal = Goal::new(objective)?;
         let prompt = goal.prompt(GoalStep::Begin);
-        self.goal = Some(goal);
+        // On a failed save the previous goal, still in the file, stays.
+        let previous = self.goal.replace(goal);
         if let Err(error) = self.save().await {
-            self.goal = None;
+            self.goal = previous;
             return Err(GoalError::Persist(Box::new(error)));
         }
         Ok(prompt)
@@ -576,7 +624,8 @@ mod tests {
     fn goal_output_keeps_the_last_64_kib_on_a_char_boundary() {
         let mut runner = runner_with_goal();
         runner.goal_prompt_sent();
-        runner.observe_text(&"界".repeat(30_000));
+        // 150 KB: past the 128 KiB that triggers a trim back to 64 KiB.
+        runner.observe_text(&"界".repeat(50_000));
         let output = runner.turn.as_deref().unwrap();
         assert!(output.len() <= 64 * 1024);
         assert!(output.starts_with('界'));
@@ -734,5 +783,110 @@ mod tests {
             .filter(|name| name.to_string_lossy().ends_with(".tmp"))
             .collect();
         assert!(left.is_empty(), "{left:?}");
+    }
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+    #[test]
+    fn a_failed_goal_save_keeps_the_old_file() {
+        let temp = octet_testkit::TempDir::new("octet-goal-full");
+        let dir = temp.path().to_path_buf();
+        let store = GoalStore::new(&dir, Path::new("/work"));
+        // The first goal fits; a later one with long evidence does not.
+        runtime()
+            .block_on(store.save(&Goal::new("Ship").unwrap()))
+            .unwrap();
+        octet_testkit::with_file_limit(
+            "goal::tests::a_failed_goal_save_keeps_the_old_file",
+            1024,
+            || {
+                let mut long = Goal::new("Ship more").unwrap();
+                long.evidence = "e".repeat(4000);
+                let saved = runtime().block_on(store.save(&long));
+                assert!(saved.is_err(), "a truncated goal was installed");
+                let kept = runtime().block_on(store.load()).unwrap().unwrap();
+                assert_eq!(kept.objective, "Ship");
+            },
+        );
+    }
+    #[test]
+    fn evidence_is_the_text_before_the_marker() {
+        let mut goal = Goal::new("Ship").unwrap();
+        let reply = format!(
+            "{}\nTests pass and the release is tagged.\n{COMPLETION_MARKER}",
+            "Working on it. ".repeat(1000)
+        );
+        goal.finish_turn(&Outcome::Completed, &reply);
+        assert_eq!(goal.status, Status::Complete);
+        assert!(
+            goal.evidence
+                .ends_with("Tests pass and the release is tagged."),
+            "{}",
+            &goal.evidence[..80]
+        );
+        assert!(goal.evidence.chars().count() <= 4096);
+    }
+    #[tokio::test]
+    async fn a_failed_start_keeps_the_previous_goal() {
+        let temp = octet_testkit::TempDir::new("octet-goal-start");
+        std::fs::create_dir_all(temp.path()).unwrap();
+        // The goal's directory is a file, so saving fails.
+        let blocked = temp.path().join("blocked");
+        std::fs::write(&blocked, b"").unwrap();
+        let mut runner = GoalRunner {
+            goal: Some(Goal::new("First").unwrap()),
+            store: Some(GoalStore::new(&blocked, Path::new("/work"))),
+            ..GoalRunner::default()
+        };
+        runner.goal.as_mut().unwrap().status = Status::Paused;
+        assert!(runner.start("Second").await.is_err());
+        assert_eq!(runner.goal().unwrap().objective, "First");
+    }
+    #[tokio::test]
+    async fn an_oversized_goal_file_is_not_read_whole() {
+        let temp = octet_testkit::TempDir::new("octet-goal-huge");
+        std::fs::create_dir_all(temp.path()).unwrap();
+        let store = GoalStore::new(temp.path(), Path::new("/work"));
+        // A FIFO that never ends: reading it whole would wait forever.
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&store.path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let fifo = store.path.clone();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let mut writer = std::fs::OpenOptions::new().write(true).open(fifo).unwrap();
+            let _ = writer.write_all(&vec![b' '; 64 * 1024]);
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        });
+        let loaded = tokio::time::timeout(std::time::Duration::from_secs(5), store.load())
+            .await
+            .expect("the load read the whole file");
+        assert!(matches!(loaded, Err(GoalError::TooLarge)), "{loaded:?}");
+    }
+    #[test]
+    fn observe_text_trims_amortized() {
+        let mut runner = runner_with_goal();
+        runner.goal_prompt_sent();
+        let chunk = "x".repeat(1024);
+        for _ in 0..65 {
+            runner.observe_text(&chunk);
+        }
+        // Past the limit, but not yet twice it: nothing is moved yet.
+        assert_eq!(runner.turn.as_ref().unwrap().len(), 65 * 1024);
+        for _ in 0..64 {
+            runner.observe_text(&chunk);
+        }
+        runner.observe_text("\nThe end");
+        let kept = runner.turn.as_ref().unwrap();
+        assert!(kept.len() <= 2 * OUTPUT_LIMIT, "{}", kept.len());
+        assert!(kept.len() >= OUTPUT_LIMIT);
+        assert!(kept.ends_with("\nThe end"));
     }
 }

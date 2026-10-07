@@ -17,6 +17,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+libc.workspace = true
 octet-testkit = { path = "../octet-testkit" }
 
 [lints]

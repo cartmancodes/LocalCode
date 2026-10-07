@@ -6,8 +6,7 @@ use std::process::Command;
 
 /// The invalid-engine error, from the provider table.
 fn engine_error() -> String {
-    let names: Vec<&str> = octet_core::Engine::ALL.iter().map(|e| e.as_str()).collect();
-    format!("Engine must be {}", octet_core::model::or_list(&names))
+    format!("Engine must be {}", octet_core::model::engine_choices())
 }
 
 #[test]

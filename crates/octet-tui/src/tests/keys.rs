@@ -179,7 +179,7 @@ async fn esc_on_an_empty_idle_draft_removes_attachments() {
 #[tokio::test]
 async fn ctrl_c_twice_on_an_idle_empty_prompt_quits() {
     let mut app = app();
-    let (_temp, mut session) = demo_session("octet-quit-twice").await;
+    let (_temp, session) = demo_session("octet-quit-twice").await;
     assert!(matches!(
         key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue
@@ -194,7 +194,7 @@ async fn ctrl_c_twice_on_an_idle_empty_prompt_quits() {
 #[tokio::test]
 async fn ctrl_c_clears_a_draft_before_it_can_quit() {
     let mut app = app();
-    let (_temp, mut session) = demo_session("octet-quit-draft").await;
+    let (_temp, session) = demo_session("octet-quit-draft").await;
     assert!(app.composer.editor.insert("half-written prompt"));
     assert!(matches!(
         key_action(&mut app, &session.handle, ctrl('c')).await,
@@ -215,7 +215,7 @@ async fn ctrl_c_clears_a_draft_before_it_can_quit() {
 #[tokio::test]
 async fn another_key_or_an_expired_window_disarms_quit() {
     let mut app = app();
-    let (_temp, mut session) = demo_session("octet-quit-disarm").await;
+    let (_temp, session) = demo_session("octet-quit-disarm").await;
     key_action(&mut app, &session.handle, ctrl('c')).await;
     let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
     key_action(&mut app, &session.handle, left).await;
@@ -236,7 +236,7 @@ async fn another_key_or_an_expired_window_disarms_quit() {
 #[tokio::test]
 async fn ctrl_c_closes_help_and_the_palette_without_quitting() {
     let mut app = app();
-    let (_temp, mut session) = demo_session("octet-quit-overlay").await;
+    let (_temp, session) = demo_session("octet-quit-overlay").await;
     app.overlay.help = true;
     assert!(matches!(
         key_action(&mut app, &session.handle, ctrl('c')).await,
@@ -255,7 +255,7 @@ async fn ctrl_c_closes_help_and_the_palette_without_quitting() {
 #[tokio::test]
 async fn ctrl_c_interrupts_a_running_turn_instead_of_quitting() {
     let mut app = app();
-    let (_temp, mut session) = demo_session("octet-quit-busy").await;
+    let (_temp, session) = demo_session("octet-quit-busy").await;
     app.conn.start_turn();
     for _ in 0..2 {
         assert!(matches!(
@@ -269,7 +269,7 @@ async fn ctrl_c_interrupts_a_running_turn_instead_of_quitting() {
 #[tokio::test]
 async fn ctrl_q_no_longer_quits() {
     let mut app = app();
-    let (_temp, mut session) = demo_session("octet-quit-q").await;
+    let (_temp, session) = demo_session("octet-quit-q").await;
     assert!(matches!(
         key_action(&mut app, &session.handle, ctrl('q')).await,
         Action::Continue
@@ -288,7 +288,7 @@ async fn ctrl_c_in_approval_dialog_pauses_the_active_goal() {
     let temp = octet_testkit::TempDir::new("octet-goal-cancel");
     let directory = temp.path().to_path_buf();
     let config = Config::new(Engine::DEMO, "demo", directory.clone());
-    let mut session = Session::open(config, directory.clone()).await.unwrap();
+    let session = Session::open(config, directory.clone()).await.unwrap();
     key_action(
         &mut app,
         &session.handle,
@@ -297,7 +297,7 @@ async fn ctrl_c_in_approval_dialog_pauses_the_active_goal() {
     .await;
     session.shutdown().await;
     assert_eq!(
-        app.goals.goal().unwrap().status,
+        app.goals.goal().unwrap().status(),
         octet_core::goal::Status::Paused
     );
 }
@@ -326,10 +326,10 @@ async fn unknown_command_keeps_the_draft() {
     let temp = octet_testkit::TempDir::new("octet-tui-draft");
     let directory = temp.path().to_path_buf();
     let config = Config::new(Engine::DEMO, "demo", directory.clone());
-    let mut session = Session::open(config.clone(), directory.clone())
+    let session = Session::open(config.clone(), directory.clone())
         .await
         .unwrap();
-    let mut app = App::new(&config, session.journal.clone());
+    let mut app = App::new(&config, session.journal().to_path_buf());
     let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     assert!(
         app.composer

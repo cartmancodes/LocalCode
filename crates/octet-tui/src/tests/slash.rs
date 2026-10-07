@@ -70,7 +70,7 @@ async fn pausing_a_completed_goal_preserves_completion() {
     app.goals.set_goal(Some(goal));
     command(&mut app, "/goal pause").await;
     assert_eq!(
-        app.goals.goal().unwrap().status,
+        app.goals.goal().unwrap().status(),
         octet_core::goal::Status::Complete
     );
     assert!(matches!(
@@ -122,13 +122,13 @@ async fn goal_commands_start_pause_resume_and_clear_without_a_vendor_turn() {
         sends(&mut app, "/goal Ship the project").await[..],
         [Command::PromptWithDisplay { .. }]
     ));
-    assert_eq!(app.goals.goal().unwrap().objective, "Ship the project");
+    assert_eq!(app.goals.goal().unwrap().objective(), "Ship the project");
     assert!(matches!(
         command(&mut app, "/goal pause").await,
         Action::Continue
     ));
     assert_eq!(
-        app.goals.goal().unwrap().status,
+        app.goals.goal().unwrap().status(),
         octet_core::goal::Status::Paused
     );
     app.conn.phase = ConnPhase::Idle;
@@ -137,14 +137,14 @@ async fn goal_commands_start_pause_resume_and_clear_without_a_vendor_turn() {
         [Command::PromptWithDisplay { .. }]
     ));
     let goal = app.goals.goal_mut().unwrap();
-    goal.status = octet_core::goal::Status::Paused;
-    goal.turns = octet_core::goal::MAX_GOAL_TURNS;
+    goal.set_status(octet_core::goal::Status::Paused);
+    goal.set_turns(octet_core::goal::MAX_GOAL_TURNS);
     assert!(matches!(
         command(&mut app, "/goal resume").await,
         Action::Continue
     ));
     assert_eq!(
-        app.goals.goal().unwrap().status,
+        app.goals.goal().unwrap().status(),
         octet_core::goal::Status::Paused
     );
     assert!(matches!(

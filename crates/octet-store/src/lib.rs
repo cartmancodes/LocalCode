@@ -37,29 +37,44 @@ pub async fn create_private(path: &Path) -> io::Result<File> {
         .open(path)
         .await
 }
+/// Makes `directory`'s entries durable: a file created or renamed in it
+/// survives a power loss only once its directory is synced too.
+///
+/// # Errors
+///
+/// Fails if the directory cannot be opened or synced.
+pub async fn sync_directory(directory: &Path) -> io::Result<()> {
+    File::open(directory).await?.sync_all().await
+}
 /// One session's append-only JSONL record, owner-only and capped at 64 MiB.
+#[derive(Debug)]
 pub struct Journal {
     file: File,
-    /// Where the journal is on disk.
-    pub path: PathBuf,
+    path: PathBuf,
     bytes: u64,
     sequence: u64,
 }
 impl Journal {
-    /// Creates a new journal in `directory`, named by time and process ID so
-    /// two sessions never share one.
+    /// Creates a new journal in `directory`, named by time, process ID and a
+    /// per-process count, so two sessions never share one.
     ///
     /// # Errors
     ///
     /// Fails if `directory` cannot be created or the file cannot be opened.
     pub async fn create(directory: &Path) -> io::Result<Self> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         create_private_dir(directory).await?;
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
             .as_nanos();
-        let path = directory.join(format!("session-{nonce}-{}.jsonl", std::process::id()));
+        let count = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = directory.join(format!(
+            "session-{nonce}-{}-{count}.jsonl",
+            std::process::id()
+        ));
         let file = create_private(&path).await?;
+        sync_directory(directory).await?;
         Ok(Self {
             file,
             path,
@@ -88,7 +103,10 @@ impl Journal {
                 "64 MiB session journal limit reached; session stopped",
             ));
         }
+        // tokio's `write_all` only queues the bytes; `flush` waits for the
+        // write and reports its error, which `sync_data` alone would not.
         self.file.write_all(&bytes).await?;
+        self.file.flush().await?;
         self.bytes += bytes.len() as u64;
         self.sequence += 1;
         if durable {
@@ -96,12 +114,16 @@ impl Journal {
         }
         Ok(())
     }
+    /// Where the journal is on disk.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 /// How much of a journal [`read_summary`] reads.
 const SUMMARY_BYTES: u64 = 64 * 1024;
 /// When the journal at `path` was created, in nanoseconds since the Unix
-/// epoch, from its name (`session-<nanos>-<pid>.jsonl`); `None` for any
-/// other name.
+/// epoch, from its name (`session-<nanos>-<pid>[-<count>].jsonl`); `None`
+/// for any other name.
 pub fn journal_stamp(path: &Path) -> Option<u64> {
     path.file_name()?
         .to_str()?
@@ -314,19 +336,19 @@ mod tests {
         let dir = temp.path();
         let mut first = Journal::create(dir).await.unwrap();
         let second = Journal::create(dir).await.unwrap();
-        assert_ne!(first.path, second.path);
+        assert_ne!(first.path(), second.path());
         first
             .append("text", serde_json::json!("hello 世界\n"), true)
             .await
             .unwrap();
         let record: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&first.path).await.unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(first.path()).await.unwrap()).unwrap();
         assert_eq!(record["data"], "hello 世界\n");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(
-                fs::metadata(&first.path)
+                fs::metadata(first.path())
                     .await
                     .unwrap()
                     .permissions()
@@ -337,6 +359,51 @@ mod tests {
         }
         drop(first);
         drop(second);
+    }
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+    #[test]
+    fn a_failed_append_is_reported() {
+        let temp = octet_testkit::TempDir::new("octet-store-full");
+        let dir = temp.path().to_path_buf();
+        octet_testkit::with_file_limit("tests::a_failed_append_is_reported", 200, || {
+            runtime().block_on(async {
+                let mut journal = Journal::create(&dir).await.unwrap();
+                journal
+                    .append("text", serde_json::json!("fits"), true)
+                    .await
+                    .unwrap();
+                // Past the disk's limit: the record cannot be durable.
+                let failed = journal
+                    .append("text", serde_json::json!("x".repeat(300)), true)
+                    .await;
+                assert!(failed.is_err(), "a torn record was reported durable");
+            });
+        });
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn journal_names_are_unique_within_a_process() {
+        let temp = octet_testkit::TempDir::new("octet-store-unique");
+        let dir = temp.path().to_path_buf();
+        let creates: Vec<_> = (0..64)
+            .map(|_| {
+                let dir = dir.clone();
+                tokio::spawn(
+                    async move { Journal::create(&dir).await.map(|j| j.path().to_path_buf()) },
+                )
+            })
+            .collect();
+        let mut paths = Vec::new();
+        for create in creates {
+            paths.push(create.await.unwrap().unwrap());
+        }
+        paths.sort();
+        paths.dedup();
+        assert_eq!(paths.len(), 64);
     }
     #[tokio::test]
     async fn journal_directories_are_private() {

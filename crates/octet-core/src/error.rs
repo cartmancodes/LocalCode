@@ -1,5 +1,7 @@
 //! The errors `octet-core` returns. Their text is what the interface shows, so
-//! each message is fixed here and pinned by a test.
+//! each message is fixed here and pinned by a test. A message that includes
+//! its cause does not also return it as `source()`, so a chain reporter
+//! does not print the cause twice.
 use std::{io, path::PathBuf};
 use thiserror::Error;
 
@@ -11,13 +13,13 @@ pub enum GoalError {
     InvalidObjective,
     /// The goal file could not be read.
     #[error("Cannot read goal: {0}")]
-    Read(#[source] io::Error),
+    Read(io::Error),
     /// The goal file is larger than a goal can be.
     #[error("Goal file exceeds 48 KiB")]
     TooLarge,
     /// The goal file is not valid JSON.
     #[error("Invalid goal file: {0}")]
-    Parse(#[source] serde_json::Error),
+    Parse(serde_json::Error),
     /// The goal file has no objective.
     #[error("Goal objective missing")]
     MissingObjective,
@@ -32,10 +34,10 @@ pub enum GoalError {
     InvalidPath,
     /// The goal could not be written.
     #[error("Cannot save goal: {0}")]
-    Save(#[source] io::Error),
+    Save(io::Error),
     /// The goal file could not be removed.
     #[error("Cannot clear goal: {0}")]
-    Clear(#[source] io::Error),
+    Clear(io::Error),
     /// A goal is already active.
     #[error("Pause or clear the active goal before replacing it")]
     AlreadyActive,
@@ -50,10 +52,10 @@ pub enum GoalError {
     TurnGuard,
     /// A new goal was not kept because saving it failed.
     #[error("Goal persistence failed: {0}")]
-    Persist(#[source] Box<GoalError>),
+    Persist(Box<GoalError>),
     /// Resuming failed to save, so the goal stays paused.
     #[error("Goal persistence failed; paused: {0}")]
-    PersistPaused(#[source] Box<GoalError>),
+    PersistPaused(Box<GoalError>),
 }
 
 /// A `/model` argument that names no usable model.
@@ -78,38 +80,38 @@ pub enum SelectionError {
 pub enum SessionError {
     /// The journal file could not be created.
     #[error("Cannot create transcript journal: {0}")]
-    Create(#[source] io::Error),
+    Create(io::Error),
     /// The journal's first record could not be written.
     #[error("Cannot write transcript journal: {0}")]
-    Write(#[source] io::Error),
+    Write(io::Error),
 }
 
 /// `/export` could not copy the journal.
 #[derive(Debug, Error)]
 pub enum ExportError {
     /// The journal could not be read.
-    #[error("Cannot read journal {}: {source}", path.display())]
+    #[error("Cannot read journal {}: {error}", path.display())]
     Read {
         /// The file involved.
         path: PathBuf,
         /// What the OS said.
-        source: io::Error,
+        error: io::Error,
     },
     /// The export file could not be created (it may already exist).
-    #[error("Cannot create {}: {source}", path.display())]
+    #[error("Cannot create {}: {error}", path.display())]
     Create {
         /// The file involved.
         path: PathBuf,
         /// What the OS said.
-        source: io::Error,
+        error: io::Error,
     },
     /// The export file could not be written.
-    #[error("Cannot write {}: {source}", path.display())]
+    #[error("Cannot write {}: {error}", path.display())]
     Write {
         /// The file involved.
         path: PathBuf,
         /// What the OS said.
-        source: io::Error,
+        error: io::Error,
     },
 }
 
@@ -196,7 +198,7 @@ mod tests {
             (
                 ExportError::Read {
                     path: "/a".into(),
-                    source: io(),
+                    error: io(),
                 }
                 .to_string(),
                 "Cannot read journal /a: disk full",
@@ -204,7 +206,7 @@ mod tests {
             (
                 ExportError::Create {
                     path: "/b".into(),
-                    source: io(),
+                    error: io(),
                 }
                 .to_string(),
                 "Cannot create /b: disk full",
@@ -212,7 +214,7 @@ mod tests {
             (
                 ExportError::Write {
                     path: "/b".into(),
-                    source: io(),
+                    error: io(),
                 }
                 .to_string(),
                 "Cannot write /b: disk full",

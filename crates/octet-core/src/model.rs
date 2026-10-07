@@ -100,8 +100,14 @@ pub fn vendor_names() -> Vec<&'static str> {
         .collect()
 }
 
+/// Every engine's name, as "a, b or c", for the CLI's usage error.
+pub fn engine_choices() -> String {
+    let names: Vec<&str> = Engine::ALL.iter().map(|engine| engine.as_str()).collect();
+    or_list(&names)
+}
+
 /// "a, b or c".
-pub fn or_list<S: AsRef<str>>(items: &[S]) -> String {
+fn or_list<S: AsRef<str>>(items: &[S]) -> String {
     match items {
         [] => String::new(),
         [only] => only.as_ref().to_owned(),

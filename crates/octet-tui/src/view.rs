@@ -427,8 +427,8 @@ fn sidebar(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(match app.goals.goal() {
             Some(goal) => format!(
                 " {} · {}/{} turns",
-                goal.status,
-                goal.turns,
+                goal.status(),
+                goal.turns(),
                 octet_core::goal::MAX_GOAL_TURNS
             ),
             None => " No active goal".into(),

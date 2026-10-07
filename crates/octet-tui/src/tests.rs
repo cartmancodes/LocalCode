@@ -150,7 +150,7 @@ async fn reconnect_pauses_an_active_goal_and_names_the_previous_journal() {
         .set_goal(Some(octet_core::goal::Goal::new("Ship it").unwrap()));
     pause_active_goal(&mut app, "reconnect").await;
     assert_eq!(
-        app.goals.goal().unwrap().status,
+        app.goals.goal().unwrap().status(),
         octet_core::goal::Status::Paused
     );
     assert!(app.status_line.contains("Goal paused for reconnect"));

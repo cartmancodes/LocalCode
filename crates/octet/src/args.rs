@@ -181,10 +181,9 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Par
         }
     }
     let engine = Engine::parse(&engine).ok_or_else(|| {
-        let names: Vec<&str> = Engine::ALL.iter().map(|engine| engine.as_str()).collect();
         usage(format!(
             "Engine must be {}",
-            octet_core::model::or_list(&names)
+            octet_core::model::engine_choices()
         ))
     })?;
     if let Some(level) = &effort {
@@ -364,8 +363,7 @@ mod tests {
 
     #[test]
     fn every_usage_error_names_the_problem() {
-        let names: Vec<&str> = Engine::ALL.iter().map(|e| e.as_str()).collect();
-        let engine_error = format!("Engine must be {}", octet_core::model::or_list(&names));
+        let engine_error = format!("Engine must be {}", octet_core::model::engine_choices());
         let long = "x".repeat(octet_core::PROMPT_LIMIT + 1);
         for (list, message) in [
             (&["--bogus"][..], "Unknown option --bogus. Use --help."),

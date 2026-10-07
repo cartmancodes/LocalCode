@@ -7,7 +7,10 @@ pub use octet_engine::live::{
 };
 use octet_store::Journal;
 use serde_json::{Value, json};
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tokio::{sync::mpsc, time::timeout};
 /// A running session: commands go in through `handle`, journaled events
 /// come out of `events`.
@@ -16,9 +19,15 @@ pub struct Session {
     pub handle: Handle,
     /// Events, each already in the journal.
     pub events: mpsc::Receiver<Event>,
-    /// This session's journal file.
-    pub journal: PathBuf,
+    journal: PathBuf,
     task: tokio::task::JoinHandle<()>,
+}
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("journal", &self.journal)
+            .finish_non_exhaustive()
+    }
 }
 impl Session {
     /// Starts a session for `config`, journaling to a new file in `directory`.
@@ -40,7 +49,7 @@ impl Session {
             .append("session", header, true)
             .await
             .map_err(SessionError::Write)?;
-        let path = journal.path.clone();
+        let path = journal.path().to_path_buf();
         let (handle, engine_events, driver) = octet_engine::live::spawn(config);
         let (tx, events) = mpsc::channel(128);
         let task = tokio::spawn(pump(engine_events, journal, tx, handle.clone(), driver));
@@ -51,8 +60,13 @@ impl Session {
             task,
         })
     }
-    /// Stops the vendor and waits for the last events to be journaled.
-    pub async fn shutdown(&mut self) {
+    /// This session's journal file.
+    pub fn journal(&self) -> &Path {
+        &self.journal
+    }
+    /// Stops the vendor and waits for the last events to be journaled. It
+    /// takes the session: there is nothing to do with one after it.
+    pub async fn shutdown(mut self) {
         self.handle.shutdown();
         // Keep draining so shutdown and durable terminal events cannot wait on UI.
         loop {
@@ -130,10 +144,17 @@ async fn pump(
             break;
         }
         if !deliver(&tx, event).await {
+            // Stopping on a stalled interface is by design; doing it silently
+            // is not. The journal says why the session ended.
+            let reason = "The interface did not keep up with the vendor; session stopped.";
+            let _ = timeout(JOURNAL_WRITE, journal.append("error", json!(reason), true)).await;
             break;
         }
     }
     control.shutdown();
+    // The driver's last events have nowhere to go: dropping the receiver lets
+    // its final sends fail at once instead of waiting out their timeouts.
+    drop(engine_events);
     if timeout(DRIVER_STOP, &mut driver).await.is_err() {
         driver.abort();
         let _ = driver.await;
@@ -184,27 +205,36 @@ pub async fn export_journal(
     target: &std::path::Path,
 ) -> Result<(), ExportError> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let read = |source_error| ExportError::Read {
+    let read = |error| ExportError::Read {
         path: source.to_owned(),
-        source: source_error,
+        error,
     };
     let input = tokio::fs::File::open(source).await.map_err(read)?;
     let size = input.metadata().await.map_err(read)?.len();
-    let mut output = octet_store::create_private(target)
-        .await
-        .map_err(|source| ExportError::Create {
+    let mut output =
+        octet_store::create_private(target)
+            .await
+            .map_err(|error| ExportError::Create {
+                path: target.to_owned(),
+                error,
+            })?;
+    let copied = async {
+        tokio::io::copy(&mut input.take(size), &mut output).await?;
+        output.flush().await?;
+        output.sync_data().await
+    }
+    .await;
+    if let Err(error) = copied {
+        // A partial copy would look like a real export, and a retry to the
+        // same path would then fail.
+        drop(output);
+        let _ = tokio::fs::remove_file(target).await;
+        return Err(ExportError::Write {
             path: target.to_owned(),
-            source,
-        })?;
-    let write = |source| ExportError::Write {
-        path: target.to_owned(),
-        source,
-    };
-    tokio::io::copy(&mut input.take(size), &mut output)
-        .await
-        .map_err(write)?;
-    output.flush().await.map_err(write)?;
-    output.sync_data().await.map_err(write)
+            error,
+        });
+    }
+    Ok(())
 }
 
 mod error;
@@ -221,6 +251,43 @@ pub use octet_engine::live::ModelInfo;
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn a_failed_export_leaves_no_file() {
+        let temp = octet_testkit::TempDir::new("octet-core-export");
+        std::fs::create_dir_all(temp.path()).unwrap();
+        // A directory opens, but reading it fails mid-copy.
+        let source = temp.path().join("not-a-journal");
+        std::fs::create_dir_all(&source).unwrap();
+        let target = temp.path().join("export.jsonl");
+        assert!(export_journal(&source, &target).await.is_err());
+        assert!(!target.exists(), "a partial export was left behind");
+    }
+    #[tokio::test]
+    async fn a_consumer_stall_is_journaled() {
+        let temp = octet_testkit::TempDir::new("octet-core-stall");
+        let journal = Journal::create(temp.path()).await.unwrap();
+        let path = journal.path().to_path_buf();
+        let config = Config::new(Engine::DEMO, "demo", temp.path());
+        let (handle, _driver_events, driver) = octet_engine::live::spawn(config);
+        let (engine_tx, engine_rx) = mpsc::channel(8);
+        // The interface takes one event and then never reads again.
+        let (tx, _never_read) = mpsc::channel(1);
+        let pump = tokio::spawn(pump(engine_rx, journal, tx, handle, driver));
+        for text in ["a", "b", "c"] {
+            let _ = engine_tx.send(Event::Text(text.into())).await;
+        }
+        tokio::time::timeout(Duration::from_secs(10), pump)
+            .await
+            .expect("the pump stopped")
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let last: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        assert_eq!(last["type"], "error", "{text}");
+        assert!(
+            last["data"].as_str().unwrap().contains("did not keep up"),
+            "{last}"
+        );
+    }
     #[tokio::test]
     async fn a_closed_receiver_is_not_a_delivery() {
         let (tx, rx) = mpsc::channel(1);

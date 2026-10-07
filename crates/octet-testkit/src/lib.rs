@@ -124,6 +124,44 @@ pub fn wait_child(child: std::process::Child, limit: Duration) -> std::process::
     }
 }
 
+/// Runs `body` as if on a full disk: in a child process (this test binary,
+/// running only the test named `test`, its full path) whose files cannot
+/// grow past `bytes`. A write past the limit fails (EFBIG) instead of
+/// killing the process.
+///
+/// # Panics
+///
+/// In the parent, if `body` failed in the child or the child cannot run;
+/// in the child, if the limit cannot be set.
+pub fn with_file_limit(test: &str, bytes: u64, body: impl FnOnce()) {
+    const CHILD: &str = "OCTET_TESTKIT_FILE_LIMIT";
+    if std::env::var_os(CHILD).is_some_and(|name| name == test) {
+        let limit = libc::rlimit {
+            rlim_cur: bytes,
+            rlim_max: bytes,
+        };
+        // SAFETY: ignoring SIGXFSZ and lowering this process's own limit
+        // touch no memory; the child runs nothing else.
+        unsafe {
+            libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+            assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &raw const limit), 0);
+        }
+        body();
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args([test, "--exact", "--nocapture"])
+        .env(CHILD, test)
+        .output()
+        .expect("run the test in a child");
+    assert!(
+        output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Each line `output` prints, read on a thread of its own.
 pub fn line_reader(
     output: impl std::io::Read + Send + 'static,

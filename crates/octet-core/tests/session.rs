@@ -26,11 +26,11 @@ async fn demo_turn_is_journaled_and_export_never_overwrites() {
     .await
     .unwrap();
     let exported = directory.join("export.jsonl");
-    octet_core::export_journal(&session.journal, &exported)
+    octet_core::export_journal(session.journal(), &exported)
         .await
         .unwrap();
     assert!(
-        octet_core::export_journal(&session.journal, &exported)
+        octet_core::export_journal(session.journal(), &exported)
             .await
             .is_err()
     );
@@ -68,7 +68,7 @@ async fn repeated_mode_events_are_journaled_once_but_all_delivered() {
     .await
     .unwrap();
     assert_eq!(delivered, ["ask", "ask", "ask", "auto"]);
-    let text = tokio::fs::read_to_string(&session.journal).await.unwrap();
+    let text = tokio::fs::read_to_string(session.journal()).await.unwrap();
     let journaled: Vec<String> = text
         .lines()
         .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
@@ -95,8 +95,9 @@ async fn journal_keeps_engine_and_outcome_spelling() {
     })
     .await
     .unwrap();
+    let path = session.journal().to_path_buf();
     session.shutdown().await;
-    let journal = std::fs::read_to_string(&session.journal).unwrap();
+    let journal = std::fs::read_to_string(path).unwrap();
     let records: Vec<serde_json::Value> = journal
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())

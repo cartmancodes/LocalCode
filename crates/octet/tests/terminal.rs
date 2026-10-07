@@ -510,7 +510,7 @@ fn goals_pause_cancel_resume_audit_and_stop_on_failure_for_both_providers() {
         let workspace = std::env::current_dir().unwrap().canonicalize().unwrap();
         let store = octet_core::goal::GoalStore::new(&p.directory, &workspace);
         let mut goal = octet_core::goal::Goal::new("fixture-goal").unwrap();
-        goal.status = octet_core::goal::Status::Paused;
+        goal.set_status(octet_core::goal::Status::Paused);
         tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(store.save(&goal))
