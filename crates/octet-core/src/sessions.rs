@@ -1,6 +1,6 @@
 //! Recent vendor sessions in a workspace, read from Octet's own journals.
 use crate::Engine;
-use octet_store::{read_summary, JournalSummary};
+use octet_store::{journal_stamp, read_summary, JournalSummary};
 use std::path::{Path, PathBuf};
 
 /// The most journals [`recent_sessions`] reads, newest first, so a long
@@ -33,7 +33,7 @@ pub async fn recent_sessions(
     let mut journals = Vec::new();
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
-        if let Some(stamp) = stamp(&path) {
+        if let Some(stamp) = journal_stamp(&path) {
             journals.push((stamp, path));
         }
     }
@@ -70,18 +70,6 @@ pub async fn recent_sessions(
         });
     }
     found
-}
-
-/// The creation stamp in a journal's name (`session-<nanos>-<pid>.jsonl`).
-fn stamp(path: &Path) -> Option<u128> {
-    path.file_name()?
-        .to_str()?
-        .strip_prefix("session-")?
-        .strip_suffix(".jsonl")?
-        .split('-')
-        .next()?
-        .parse()
-        .ok()
 }
 
 #[cfg(test)]

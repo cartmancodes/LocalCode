@@ -83,6 +83,19 @@ impl Journal {
 }
 /// How much of a journal [`read_summary`] reads.
 const SUMMARY_BYTES: u64 = 64 * 1024;
+/// When the journal at `path` was created, in nanoseconds since the Unix
+/// epoch, from its name (`session-<nanos>-<pid>.jsonl`); `None` for any
+/// other name.
+pub fn journal_stamp(path: &Path) -> Option<u64> {
+    path.file_name()?
+        .to_str()?
+        .strip_prefix("session-")?
+        .strip_suffix(".jsonl")?
+        .split('-')
+        .next()?
+        .parse()
+        .ok()
+}
 /// What a session browser shows for one journal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalSummary {
@@ -108,15 +121,7 @@ pub struct JournalSummary {
 /// new or forked session only with its first turn.
 pub async fn read_summary(path: &Path) -> Option<JournalSummary> {
     use tokio::io::AsyncReadExt;
-    let nanos: u64 = path
-        .file_name()?
-        .to_str()?
-        .strip_prefix("session-")?
-        .strip_suffix(".jsonl")?
-        .split('-')
-        .next()?
-        .parse()
-        .ok()?;
+    let nanos = journal_stamp(path)?;
     let mut bytes = Vec::new();
     File::open(path)
         .await
@@ -184,6 +189,21 @@ mod tests {
             "session",
             serde_json::json!({"engine":engine,"cwd":"/work","resume":null,"model":"m1","mode":"ask"}),
         )
+    }
+    #[test]
+    fn journal_stamp_reads_the_creation_time_from_the_name() {
+        assert_eq!(
+            journal_stamp(Path::new("/j/session-1791362141855619000-37796.jsonl")),
+            Some(1_791_362_141_855_619_000)
+        );
+        for other in [
+            "/j/notes.txt",
+            "/j/session-x-1.jsonl",
+            "/j/session-1-1.json",
+            "/",
+        ] {
+            assert_eq!(journal_stamp(Path::new(other)), None, "{other}");
+        }
     }
     #[tokio::test]
     async fn summary_survives_a_torn_tail() {
