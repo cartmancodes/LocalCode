@@ -248,8 +248,12 @@ fn status_line(frame: &mut Frame, area: Rect, app: &App) {
 /// Help, the palette or an approval over everything; else the cursor.
 fn overlays(frame: &mut Frame, area: Rect, app: &mut App, cursor: (u16, u16)) {
     if app.overlay.help {
+        // Drawn over any approval, which must be seen again before a key
+        // answers it.
+        app.overlay.approval_hidden();
         help(frame, area, &mut app.overlay.help_scroll);
     } else if app.overlay.palette {
+        app.overlay.approval_hidden();
         palette(frame, area, app.overlay.selection);
     } else if let Some((id, detail)) = app.overlay.approvals.front() {
         let count = app.overlay.approvals.len();
@@ -261,6 +265,7 @@ fn overlays(frame: &mut Frame, area: Rect, app: &mut App, cursor: (u16, u16)) {
             &mut app.overlay.approval_scroll,
             count,
         );
+        app.overlay.approval_drawn();
     } else {
         frame.set_cursor_position(cursor);
     }

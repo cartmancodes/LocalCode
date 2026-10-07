@@ -189,9 +189,11 @@ pub(crate) struct Composer {
 pub(crate) struct Overlays {
     pub(crate) approvals: VecDeque<(u64, String)>,
     pub(crate) approval_scroll: u16,
-    /// When the front approval was first shown: answer keys wait
-    /// `APPROVAL_ARM` after that, so a key typed as it opens cannot answer it.
-    pub(crate) approval_shown: std::time::Instant,
+    /// When the front approval was last drawn after being hidden (it
+    /// arrived, or help, the palette or the editor covered it); `None` while
+    /// unseen. Answer keys wait `APPROVAL_ARM` after that, so a key typed as
+    /// the dialog appears cannot answer it.
+    pub(crate) approval_shown: Option<std::time::Instant>,
     pub(crate) help: bool,
     /// Lines scrolled past at the top of the help screen.
     pub(crate) help_scroll: u16,
@@ -201,11 +203,27 @@ pub(crate) struct Overlays {
 /// How long answer keys wait after an approval is shown.
 pub(crate) const APPROVAL_ARM: std::time::Duration = std::time::Duration::from_millis(400);
 impl Overlays {
-    /// A different approval is now in front: it starts unscrolled, and its
-    /// answer keys wait `APPROVAL_ARM`.
+    /// A different approval is now in front: it starts unscrolled and
+    /// unseen.
     pub(crate) fn front_changed(&mut self) {
         self.approval_scroll = 0;
-        self.approval_shown = std::time::Instant::now();
+        self.approval_shown = None;
+    }
+    /// Something covers the dialog (help, the palette, the editor): it must
+    /// be seen again before a key answers it.
+    pub(crate) fn approval_hidden(&mut self) {
+        self.approval_shown = None;
+    }
+    /// The dialog was drawn: its answer keys wait from now, unless it was
+    /// already on screen.
+    pub(crate) fn approval_drawn(&mut self) {
+        self.approval_shown
+            .get_or_insert_with(std::time::Instant::now);
+    }
+    /// The front approval has been on screen for `APPROVAL_ARM`.
+    pub(crate) fn approval_armed(&self) -> bool {
+        self.approval_shown
+            .is_some_and(|shown| shown.elapsed() >= APPROVAL_ARM)
     }
 }
 pub(crate) struct App {
@@ -260,7 +278,7 @@ impl App {
             overlay: Overlays {
                 approvals: VecDeque::new(),
                 approval_scroll: 0,
-                approval_shown: std::time::Instant::now(),
+                approval_shown: None,
                 help: false,
                 help_scroll: 0,
                 palette: false,

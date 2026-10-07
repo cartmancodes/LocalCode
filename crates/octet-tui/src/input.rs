@@ -1,7 +1,7 @@
 //! Keys, paste and the prompt box's popups: what each key does in each state.
 use crate::{
     Action, Exit, QUIT_HINT, QUIT_WINDOW,
-    app::{APPROVAL_ARM, App, CANCELLING, QUEUE_LIMIT, StatusKind},
+    app::{App, CANCELLING, QUEUE_LIMIT, StatusKind},
     clipboard,
     commands::{command, try_command},
     composer, files,
@@ -231,7 +231,7 @@ async fn approval_key(app: &mut App, vendor: &dyn Vendor, key: KeyEvent, id: u64
         KeyCode::Char('d' | 'D') | KeyCode::Esc => Some(false),
         _ => None,
     };
-    if answer.is_some() && app.overlay.approval_shown.elapsed() < APPROVAL_ARM {
+    if answer.is_some() && !app.overlay.approval_armed() {
         // Typed as the dialog opened: never an answer.
         app.hint("The approval just opened; press A or D again to answer");
     } else if let Some(allow) = answer {

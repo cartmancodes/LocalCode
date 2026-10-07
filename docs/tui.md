@@ -112,14 +112,15 @@ is respected. The minimum usable size is 38 columns by 12 rows.
 | F1 | Help |
 | Ctrl+C twice | Quit, as in Claude Code: on an idle, empty prompt the first press shows "Press Ctrl+C again to quit", and a second within 1.5 seconds stops vendor children, finishes journal writes and exits |
 | Ctrl+Z | Restore terminal and suspend; use the shell's `fg` to return |
-| A / D / Esc in an approval | Allow once / deny / deny, from 0.4 s after the dialog opens |
+| A / D / Esc in an approval | Allow once / deny / deny, from 0.4 s after the dialog appears |
 
 Bracketed paste preserves newlines and tabs without submitting them (a tab
 shows as spaces to the next stop of four, and is sent as a tab). A rejected
 oversized paste leaves the draft intact; a paste while a dialog is open is
 dropped, with a hint. Approval requests are never answered by pasted text, and
-answer keys wait 0.4 seconds after a dialog opens, so a letter typed as it
-appears cannot answer it. Approval expiration (120 seconds by default; `--approval-timeout SECONDS`
+answer keys wait 0.4 seconds after the dialog appears on screen (again, after
+help, the palette or Ctrl+G's editor covered it), so a letter typed as it appears
+cannot answer it. Approval expiration (120 seconds by default; `--approval-timeout SECONDS`
 sets 10–3600), cancellation and unknown request types fail closed; requests too large to display completely are denied explicitly.
 At most eight approvals wait at once; a ninth is denied with a notice. Claude
 receives the reason with each denial (your refusal, the timeout, the cap), so it
@@ -389,9 +390,10 @@ Prompts are limited to 64 KiB, stdout frames to 8 MiB, queued raw frames to 16 M
 and each session journal to 64 MiB. Tool activity is a preview: each tool entry is
 cut at 32 KiB, in the journal as well, and the vendor keeps the full output. A Codex
 command shows what ran, its status and exit code, then the end of its output. Bounded
-event queues never silently discard output. While the interface is behind, Octet
+event queues never silently discard output. While the interface is briefly behind, Octet
 stops reading the vendor (whose output waits in the pipe) rather than stopping the
-session. A reply shows at most 2 MiB, and ends with a note where it is cut; the
+session; an interface or output reader stalled for more than 2 seconds still stops
+it, and the journal says why. A reply shows at most 2 MiB, and ends with a note where it is cut; the
 journal holds the same cut text. A Claude subagent's messages (the Task tool) show
 as tool activity, not as the reply. Escape sequences in vendor and command output
 are removed, including unterminated ones, which end at the line.

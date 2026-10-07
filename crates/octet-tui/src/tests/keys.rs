@@ -498,7 +498,8 @@ async fn an_answer_key_right_after_an_approval_is_ignored() {
     );
     assert_eq!(app.overlay.approvals.len(), 1);
     // Once the dialog has been up a moment, the same key answers.
-    app.overlay.approval_shown -= Duration::from_secs(1);
+    // Shown on screen a moment ago.
+    app.overlay.approval_shown = std::time::Instant::now().checked_sub(Duration::from_secs(1));
     key_action(&mut app, &vendor, key(KeyCode::Char('a'))).await;
     assert!(matches!(
         vendor.sent.borrow().as_slice(),

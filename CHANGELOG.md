@@ -77,8 +77,9 @@ Claude Code and Codex CLIs.
 
 - An approval takes answer keys 0.4 seconds after it opens, so a letter
   typed as it appears cannot allow it.
-- While the interface is behind, Octet stops reading the vendor instead of
-  stopping the session; a burst of output no longer ends it.
+- While the interface is briefly behind, Octet stops reading the vendor
+  instead of stopping the session; a burst of output no longer ends it (a
+  reader stalled past 2 seconds still does, with a journaled reason).
 - A background job carries on across a reconnect; quitting waits only for
   an export. `/export PATH` is relative to the workspace.
 - Paste keeps tabs. The external editor runs as the shell runs `$EDITOR`

@@ -572,3 +572,30 @@ fn help_rows_match_what_is_drawn() {
         );
     }
 }
+#[test]
+fn an_approval_hidden_behind_help_is_armed_only_once_seen() {
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
+    app.event(Event::Approval {
+        id: 1,
+        detail: "rm -rf build".into(),
+    });
+    // Help covers the dialog while the approval arrives and waits.
+    app.overlay.help = true;
+    screen(100, 30, &mut app);
+    std::thread::sleep(crate::app::APPROVAL_ARM);
+    app.overlay.help = false;
+    // Help just closed: the dialog is first seen now, so it is not armed.
+    screen(100, 30, &mut app);
+    assert!(!app.overlay.approval_armed(), "armed before it was seen");
+    // Seen long enough, it arms; covered again and shown again, it waits anew.
+    std::thread::sleep(crate::app::APPROVAL_ARM);
+    assert!(app.overlay.approval_armed());
+    app.overlay.palette = true;
+    screen(100, 30, &mut app);
+    app.overlay.palette = false;
+    screen(100, 30, &mut app);
+    assert!(
+        !app.overlay.approval_armed(),
+        "re-shown dialog was armed at once"
+    );
+}

@@ -1,7 +1,6 @@
 //! Images attached to a prompt: checked when attached, read when sent.
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
 
 /// The largest image a prompt may carry, in bytes (5 MiB).
 pub const IMAGE_LIMIT: u64 = 5 * 1024 * 1024;
@@ -139,14 +138,22 @@ impl ImageAttachment {
             source,
         };
         // Read at most one byte past the limit: the file may have grown since
-        // it was attached, and the read itself must stay bounded.
-        let mut bytes = Vec::new();
-        tokio::fs::File::open(&self.path)
+        // it was attached, and the read itself must stay bounded. A plain
+        // thread, not tokio's blocking pool: a read stuck on a FIFO or a dead
+        // mount must not hold the runtime open when Octet exits.
+        let path = self.path.clone();
+        let (done, result) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            let read = std::fs::File::open(&path)
+                .and_then(|file| file.take(IMAGE_LIMIT + 1).read_to_end(&mut bytes))
+                .map(|_| bytes);
+            let _ = done.send(read);
+        });
+        let bytes = result
             .await
-            .map_err(read)?
-            .take(IMAGE_LIMIT + 1)
-            .read_to_end(&mut bytes)
-            .await
+            .unwrap_or_else(|_| Err(std::io::Error::other("the image reader stopped")))
             .map_err(read)?;
         if bytes.len() as u64 > IMAGE_LIMIT {
             return Err(ImageError::TooLarge(self.name.clone()));
@@ -191,6 +198,45 @@ fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_stuck_read_does_not_hold_the_runtime_at_exit() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let dir = octet_testkit::TempDir::new("octet-image-stuck");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let path = dir.path().join("shot.png");
+        std::fs::write(&path, b"png").unwrap();
+        let image = ImageAttachment::open(&path).unwrap();
+        // Swapped for a FIFO: opening it waits for a writer that never comes.
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let read = runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_millis(100), image.read_base64()).await
+        });
+        assert!(read.is_err(), "the read gave up");
+        // Quitting drops the runtime: it must not wait for the stuck read.
+        let (dropped, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(runtime);
+            let _ = dropped.send(());
+        });
+        let exited = done.recv_timeout(std::time::Duration::from_secs(3)).is_ok();
+        // Release the stuck open, whatever happened, so nothing outlives us.
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path);
+        assert!(exited, "the runtime waited for a stuck image read");
+    }
     use octet_testkit::TempDir;
 
     /// A fresh directory; `TempDir` names it, the test creates it.

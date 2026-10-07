@@ -574,8 +574,10 @@ impl Handle {
         let _ = self.stop.send(true);
     }
 }
-// Output is split before enqueueing. A stalled consumer fails the session rather
-// than blocking the control path or silently dropping semantic output.
+// Output is split before enqueueing. While the consumer is behind, the driver
+// stops reading the vendor (backpressure) rather than block the control path or
+// drop output; a consumer stalled past octet-core's 2 s delivery limit still
+// ends the session there, with a journaled reason.
 /// Free event-queue slots below which the driver stops reading the vendor's
 /// output until the interface catches up. One frame expands to at most a
 /// few events, so this leaves room for it and for the turn's end.

@@ -278,8 +278,10 @@ impl Loop<'_> {
                 return Ok(());
             }
         };
-        // Stop reading keys so the editor gets them all.
+        // Stop reading keys so the editor gets them all. A waiting approval
+        // is hidden behind it, and must be seen again before a key answers.
         self.input = None;
+        app.overlay.approval_hidden();
         TerminalGuard::restore();
         let (program, args) = edit.command();
         match tokio::process::Command::new(program)
