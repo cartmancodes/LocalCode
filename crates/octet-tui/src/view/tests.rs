@@ -127,7 +127,8 @@ fn help_names_the_command_palette_key() {
         "{}",
         rows.join("\n")
     );
-    assert!(rows.iter().any(|row| row.contains("Esc or F1 closes help")));
+    // The help scrolls as commands are added; its border always says how to close it.
+    assert!(rows.iter().any(|row| row.contains("Esc closes")));
 }
 #[test]
 fn the_draft_shows_at_the_minimum_size() {

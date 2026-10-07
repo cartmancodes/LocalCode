@@ -804,6 +804,20 @@ fn engine_error() -> String {
     format!("Engine must be {}", octet_core::model::or_list(&names))
 }
 #[test]
+fn invalid_effort_is_a_startup_error() {
+    for value in ["", "two words"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_octet"))
+            .args(["--engine", "demo", "--effort", value])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{value:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("Effort must be one word"),
+            "{value:?}"
+        );
+    }
+}
+#[test]
 fn help_and_errors_name_exactly_the_providers() {
     let names: Vec<&str> = octet_core::Engine::ALL.iter().map(|e| e.as_str()).collect();
     let help = Command::new(env!("CARGO_BIN_EXE_octet"))

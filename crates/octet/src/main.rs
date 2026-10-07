@@ -7,7 +7,7 @@ fn help() -> String {
     const HEAD: &[&str] = &[
         "                 [--model MODEL] [--mode MODE] [--resume VENDOR_SESSION_ID]",
         "                 [--binary PATH] [--journal-dir PATH]",
-        "                 [--approval-timeout SECONDS]",
+        "                 [--approval-timeout SECONDS] [--effort LEVEL]",
         "",
         "Defaults: Codex, current directory. Vendor CLI installation and login required.",
         "Modes: ask (default) · accept-edits · auto (vendor auto-review) · full-access",
@@ -65,6 +65,7 @@ async fn run() -> Result<(), String> {
     let mut directory = None;
     let mut mode = octet_core::Mode::Ask;
     let mut approval_timeout = octet_core::DEFAULT_APPROVAL_TIMEOUT;
+    let mut effort = None;
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
             print!("{}", help());
@@ -74,7 +75,7 @@ async fn run() -> Result<(), String> {
             println!("octet {} (Rust preview)", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
-        const OPTIONS: [&str; 8] = [
+        const OPTIONS: [&str; 9] = [
             "--engine",
             "--binary",
             "--cwd",
@@ -83,6 +84,7 @@ async fn run() -> Result<(), String> {
             "--journal-dir",
             "--mode",
             "--approval-timeout",
+            "--effort",
         ];
         if !OPTIONS.contains(&arg.as_str()) {
             return Err(format!("Unknown option {arg}. Use --help."));
@@ -112,6 +114,12 @@ async fn run() -> Result<(), String> {
                     .filter(|seconds| (10..=3600).contains(seconds))
                     .map(std::time::Duration::from_secs)
                     .ok_or("Approval timeout must be a whole number of seconds from 10 to 3600")?
+            }
+            "--effort" => {
+                if !octet_core::valid_effort(&value) {
+                    return Err("Effort must be one word, at most 64 bytes".into());
+                }
+                effort = Some(value);
             }
             _ => unreachable!("{arg} is checked against OPTIONS"),
         }
@@ -154,6 +162,7 @@ async fn run() -> Result<(), String> {
         resume,
         mode,
         approval_timeout,
+        effort,
     };
     octet_tui::run(config, directory)
         .await

@@ -1007,3 +1007,40 @@ async fn steer_without_a_turn_is_refused() {
         .unwrap()
         .unwrap();
 }
+#[tokio::test]
+async fn codex_sends_effort_on_each_turn_and_takes_changes_live() {
+    let mut c = config();
+    c.effort = Some("high".into());
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("params".into())).unwrap();
+    assert!(turn_text(&mut events).await.contains("\"effort\":\"high\""));
+    handle.send(Command::SetEffort(Some("low".into()))).unwrap();
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::Notice(n) if n.contains("low")),
+    )
+    .await;
+    handle.send(Command::Prompt("params".into())).unwrap();
+    assert!(turn_text(&mut events).await.contains("\"effort\":\"low\""));
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn claude_launches_with_effort() {
+    let mut c = config();
+    c.engine = Engine::CLAUDE;
+    c.effort = Some("max".into());
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("argv".into())).unwrap();
+    assert!(turn_text(&mut events).await.contains("--effort max"));
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}

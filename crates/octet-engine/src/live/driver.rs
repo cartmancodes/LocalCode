@@ -183,6 +183,7 @@ impl<P: Protocol> Driver<P> {
             Command::Answer { id, allow } => self.answer_approval(id, allow).await,
             Command::SetMode(target) => self.set_mode(target).await,
             Command::Steer(text) => self.steer(text).await,
+            Command::SetEffort(effort) => self.set_effort(effort),
         }
     }
 
@@ -198,6 +199,27 @@ impl<P: Protocol> Driver<P> {
         self.core.emit(Event::User(display))?;
         self.core.emit(Event::Started)?;
         self.protocol.send_prompt(&mut self.core, &wire).await
+    }
+
+    /// Live where the provider takes effort per turn; otherwise the
+    /// interface reconnects instead of sending this.
+    fn set_effort(&mut self, effort: Option<String>) -> Result<(), DriverError> {
+        let provider = self.core.config.engine.provider();
+        if !provider.effort_live {
+            return self.core.emit(Event::Notice(format!(
+                "{} takes reasoning effort at launch; it changes on reconnect",
+                provider.title
+            )));
+        }
+        let shown = effort.as_deref().unwrap_or("vendor default").to_owned();
+        self.core.config.effort = effort;
+        let when = if self.core.phase.is_running() {
+            "from the next turn"
+        } else {
+            "from now on"
+        };
+        self.core
+            .emit(Event::Notice(format!("Reasoning effort: {shown} ({when})")))
     }
 
     async fn steer(&mut self, text: String) -> Result<(), DriverError> {

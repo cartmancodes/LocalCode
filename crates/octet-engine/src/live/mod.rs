@@ -68,6 +68,9 @@ pub struct Provider {
     pub modes: [&'static str; 4],
     /// Text can be added to a running turn (`/steer`).
     pub steer: bool,
+    /// Reasoning effort changes take effect from the next turn; otherwise
+    /// they need a reconnect (the CLI takes effort at launch).
+    pub effort_live: bool,
     /// Runs one session until it stops.
     pub start: StartFn,
 }
@@ -178,6 +181,8 @@ pub struct Config {
     pub mode: Mode,
     /// How long an approval waits for an answer before it is denied.
     pub approval_timeout: Duration,
+    /// Reasoning effort to request; `None` takes the vendor's default.
+    pub effort: Option<String>,
 }
 impl Config {
     /// Ask mode, the vendor's default model, a new vendor session.
@@ -190,6 +195,7 @@ impl Config {
             resume: None,
             mode: Mode::Ask,
             approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
+            effort: None,
         }
     }
 }
@@ -204,6 +210,21 @@ pub struct ModelInfo {
     pub name: String,
     /// The vendor's description.
     pub description: String,
+}
+
+/// A reasoning effort level: one word, at most 64 bytes, no control
+/// characters. Vendors decide which levels they accept.
+///
+/// ```
+/// use octet_engine::live::valid_effort;
+///
+/// assert!(valid_effort("high"));
+/// assert!(!valid_effort("two words"));
+/// ```
+pub fn valid_effort(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && !value.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
 /// A vendor model identifier Octet will pass on or display: non-empty,
@@ -362,6 +383,8 @@ pub enum Command {
     SetMode(Mode),
     /// Add to the running turn, where the provider supports it.
     Steer(String),
+    /// Set the reasoning effort for later turns (`None`: vendor default).
+    SetEffort(Option<String>),
 }
 impl Command {
     /// The longest text a prompt command carries; 0 for other commands.
@@ -370,7 +393,7 @@ impl Command {
             Command::Prompt(text) => text.len(),
             Command::PromptWithDisplay { wire, display } => wire.len().max(display.len()),
             Command::Steer(text) => text.len(),
-            Command::Answer { .. } | Command::SetMode(_) => 0,
+            Command::Answer { .. } | Command::SetMode(_) | Command::SetEffort(_) => 0,
         }
     }
 }

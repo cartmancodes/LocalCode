@@ -25,6 +25,7 @@ pub(super) const PROVIDER: Provider = Provider {
         "No permission checks at all (bypassPermissions)",
     ],
     steer: false,
+    effort_live: false,
     start,
 };
 
@@ -59,6 +60,9 @@ fn launch_args(config: &Config) -> Vec<OsString> {
     }
     if let Some(session) = &config.resume {
         args.extend(["--resume".into(), session.into()]);
+    }
+    if let Some(effort) = &config.effort {
+        args.extend(["--effort".into(), effort.into()]);
     }
     args
 }

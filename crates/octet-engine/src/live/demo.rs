@@ -18,6 +18,7 @@ pub(super) const PROVIDER: Provider = Provider {
         "Offline demo: /approval-demo is allowed without a dialog",
     ],
     steer: false,
+    effort_live: false,
     start,
 };
 
@@ -90,6 +91,10 @@ pub(super) async fn demo(
                     Some(Command::Answer { .. }) => continue,
                     Some(Command::Steer(_)) => {
                         emit(tx, Event::Notice("No turn is running; send it as a prompt".into()))?;
+                        continue;
+                    }
+                    Some(Command::SetEffort(_)) => {
+                        emit(tx, Event::Notice("The offline demo has no reasoning effort".into()))?;
                         continue;
                     }
                     Some(Command::Prompt(text)) => (text.clone(), text),
@@ -207,6 +212,10 @@ impl DemoTurn<'_> {
                     Some(Command::Steer(_)) => emit(
                         self.tx,
                         Event::Notice("The offline demo cannot steer the running turn".into()),
+                    )?,
+                    Some(Command::SetEffort(_)) => emit(
+                        self.tx,
+                        Event::Notice("The offline demo has no reasoning effort".into()),
                     )?,
                     command => break matches!(command, Some(Command::Answer { id: 1, allow: true })),
                 },

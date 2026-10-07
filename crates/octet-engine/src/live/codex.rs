@@ -24,6 +24,7 @@ pub(super) const PROVIDER: Provider = Provider {
         "No sandbox; never asks (danger-full-access)",
     ],
     steer: true,
+    effort_live: true,
     start,
 };
 
@@ -109,6 +110,9 @@ impl Protocol for CodexProtocol {
         let mut params = json!({"threadId":core.session,"input":[{"type":"text","text":text}]});
         if let Some(model) = &core.config.model {
             params["model"] = json!(model);
+        }
+        if let Some(effort) = &core.config.effort {
+            params["effort"] = json!(effort);
         }
         if let (Some(target), Value::Object(extra)) =
             (params.as_object_mut(), codex_turn_overrides(core.mode))

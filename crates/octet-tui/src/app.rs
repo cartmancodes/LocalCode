@@ -49,6 +49,8 @@ pub(crate) struct Connection {
     pub(crate) session: String,
     pub(crate) journal: PathBuf,
     pub(crate) phase: ConnPhase,
+    /// The reasoning effort requested; `None` is the vendor default.
+    pub(crate) effort: Option<String>,
     pub(crate) status: String,
     pub(crate) usage: String,
     pub(crate) activity: State,
@@ -164,6 +166,7 @@ impl App {
                 session: String::new(),
                 journal,
                 phase: ConnPhase::Connecting,
+                effort: config.effort.clone(),
                 status: "connecting".into(),
                 usage: String::new(),
                 activity: State::Thinking,
@@ -225,6 +228,7 @@ impl App {
         self.chat.catalog_focus = None;
         self.conn.journal = journal;
         self.conn.phase = ConnPhase::Connecting;
+        self.conn.effort = config.effort.clone();
         self.conn.status = "connecting".into();
         self.conn.activity = State::Thinking;
         self.conn.usage.clear();

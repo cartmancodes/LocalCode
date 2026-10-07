@@ -60,6 +60,7 @@ impl Selection {
         Config {
             mode: current.mode,
             approval_timeout: current.approval_timeout,
+            effort: current.effort.clone(),
             engine: self.provider,
             model: self.model.clone(),
             cwd: current.cwd.clone(),

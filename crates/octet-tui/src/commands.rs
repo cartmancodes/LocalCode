@@ -18,6 +18,7 @@ pub enum Cmd {
     RemoteControl,
     Queue,
     Steer,
+    Effort,
     Quit,
 }
 
@@ -136,6 +137,12 @@ pub const COMMANDS: &[Spec] = &[
         "Add to the running turn",
     ),
     spec(
+        Cmd::Effort,
+        "/effort",
+        "/effort [level|default]: reasoning effort (low, medium, high, xhigh, max)",
+        "Reasoning effort",
+    ),
+    spec(
         Cmd::Quit,
         "/quit",
         "/quit or Ctrl+C twice: save and exit",
@@ -147,7 +154,7 @@ pub const COMMANDS: &[Spec] = &[
 impl Cmd {
     /// Every command, for the registry coverage test.
     #[cfg(test)]
-    pub(crate) const ALL: [Cmd; 13] = [
+    pub(crate) const ALL: [Cmd; 14] = [
         Cmd::Help,
         Cmd::Model,
         Cmd::Mode,
@@ -160,6 +167,7 @@ impl Cmd {
         Cmd::RemoteControl,
         Cmd::Queue,
         Cmd::Steer,
+        Cmd::Effort,
         Cmd::Quit,
     ];
     /// The command a typed name (or alias) names.
@@ -208,6 +216,7 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
         Cmd::Quit => return Some(Action::Exit(Exit::Quit)),
         Cmd::Help => app.overlay.help = true,
         Cmd::Queue => queue_command(app, argument),
+        Cmd::Effort => return Some(effort_command(app, argument)),
         Cmd::Steer if argument.is_empty() => app.notice("Use /steer <text>"),
         Cmd::Steer => return Some(Action::Steer(argument.to_owned())),
         Cmd::Copy => copy_reply(app),
@@ -244,6 +253,42 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
     }
     Some(Action::Continue)
 }
+/// `/effort`: show the reasoning effort, or change it. Codex takes it per
+/// turn; Claude takes it at launch, so a change reconnects there.
+fn effort_command(app: &mut App, argument: &str) -> Action {
+    if argument.is_empty() {
+        let current = app.conn.effort.as_deref().unwrap_or("vendor default");
+        app.notice(format!(
+            "Reasoning effort: {current}. Use /effort <level> (low, medium, high, xhigh, max) \
+             or /effort default."
+        ));
+        return Action::Continue;
+    }
+    let level = if argument == "default" {
+        None
+    } else if octet_core::valid_effort(argument) {
+        Some(argument.to_owned())
+    } else {
+        app.notice("Effort must be one word, at most 64 bytes");
+        return Action::Continue;
+    };
+    let provider = app.conn.engine.provider();
+    if provider.offline {
+        app.notice("The offline demo has no reasoning effort");
+        Action::Continue
+    } else if provider.effort_live {
+        Action::Effort(level)
+    } else if app.conn.is_running() || !app.overlay.approvals.is_empty() {
+        app.notice("Finish or cancel the turn before changing effort");
+        Action::Continue
+    } else if app.is_connecting() {
+        app.notice("Wait for the connection before changing effort");
+        Action::Continue
+    } else {
+        Action::Exit(Exit::Effort(level))
+    }
+}
+
 /// `/queue`: list the prompts waiting for the running turn, or clear them.
 fn queue_command(app: &mut App, argument: &str) {
     match argument {

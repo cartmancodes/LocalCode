@@ -847,3 +847,30 @@ async fn steer_when_idle_sends_a_prompt() {
     assert_eq!(next_user_text(&mut session).await, "plain prompt");
     assert!(app.conn.is_running());
 }
+#[tokio::test]
+async fn effort_command_shows_and_sets() {
+    let mut app = app();
+    command(&mut app, "/effort").await;
+    assert!(app
+        .entries_text()
+        .contains("Reasoning effort: vendor default"));
+    // Codex takes effort per turn: no reconnect.
+    assert!(matches!(
+        command(&mut app, "/effort high").await,
+        Action::Effort(Some(ref level)) if level == "high"
+    ));
+    // Claude takes it at launch: reconnect to the same session.
+    let mut claude = App::new(
+        &Config::new(Engine::CLAUDE, "claude", "/tmp"),
+        "journal".into(),
+    );
+    claude.conn.phase = ConnPhase::Idle;
+    assert!(matches!(
+        command(&mut claude, "/effort max").await,
+        Action::Exit(Exit::Effort(Some(ref level))) if level == "max"
+    ));
+    assert!(matches!(
+        command(&mut app, "/effort two words").await,
+        Action::Continue
+    ));
+}

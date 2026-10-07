@@ -140,6 +140,8 @@ pub(crate) enum Action {
     RemoteControl,
     /// Add text to the running turn, queue it, or send it (`/steer`).
     Steer(String),
+    /// Change the reasoning effort live (`/effort`, Codex).
+    Effort(Option<String>),
     /// Hand the terminal to the user's editor for the draft.
     ExternalEditor,
     Exit(Exit),
@@ -151,6 +153,8 @@ pub(crate) enum Exit {
     Reconnect,
     Model(octet_core::model::Selection),
     Mode(octet_core::Mode),
+    /// Reconnect with a new reasoning effort (providers that take it at launch).
+    Effort(Option<String>),
 }
 /// Every slash command's name, for the CLI help.
 pub fn command_names() -> impl Iterator<Item = &'static str> {
@@ -189,6 +193,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         session.shutdown().await;
         // Carry the last vendor-confirmed mode, never an unconfirmed pending one.
         config.mode = app.conn.mode;
+        config.effort = app.conn.effort.clone();
         match result? {
             Exit::Model(selection) => {
                 pause_active_goal(&mut app, "model switch").await;
@@ -214,6 +219,18 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                 pause_active_goal(&mut app, "mode switch").await;
                 app.notice(full_access_notice(mode, config.engine, &app.conn.session));
                 config.mode = mode;
+                if let Some(id) = resume_id(&app, &config) {
+                    config.resume = Some(id);
+                }
+                retained_app = Some(app);
+            }
+            Exit::Effort(level) => {
+                pause_active_goal(&mut app, "effort change").await;
+                app.notice(format!(
+                    "Reasoning effort → {}. Reconnecting to the same session…",
+                    level.as_deref().unwrap_or("vendor default")
+                ));
+                config.effort = level;
                 if let Some(id) = resume_id(&app, &config) {
                     config.resume = Some(id);
                 }
@@ -423,6 +440,10 @@ async fn run_session(
                     Action::GoalPrompt(prompt) => send_goal_prompt(app, session, prompt).await,
                     Action::RemoteControl => start_remote_check(app, &mut remote_check),
                     Action::Steer(text) => steer(app, session, text),
+                    Action::Effort(level) => match session.handle.send(Command::SetEffort(level.clone())) {
+                        Ok(()) => app.conn.effort = level,
+                        Err(error) => app.notice(error.to_string()),
+                    },
                     Action::ExternalEditor => {
                         match external::prepare(&app.composer.editor.text, external::editor_command()) {
                             Err(error) => app.notice(error.to_string()),
