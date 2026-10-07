@@ -13,6 +13,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+octet-core = { path = "../octet-core", features = ["testing"] }
 octet-testkit = { path = "../octet-testkit" }
 libc.workspace = true
 

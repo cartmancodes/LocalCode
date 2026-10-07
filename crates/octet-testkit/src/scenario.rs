@@ -44,6 +44,9 @@ pub const FLUSH: &str = "flush";
 pub const NO_IS_ERROR: &str = "no-is-error";
 /// Claude: 200 one-character deltas, then the result.
 pub const DELTA_BURST: &str = "delta-burst";
+/// Claude: 3000 deltas of 100 characters, far more than a stalled reader
+/// can take.
+pub const DELTA_FLOOD: &str = "delta-flood";
 /// Claude: a main reply, then a subagent's (Task tool) messages.
 pub const SUBAGENT: &str = "subagent";
 /// Claude: a result whose session ID holds an escape sequence.

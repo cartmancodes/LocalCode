@@ -379,3 +379,76 @@ fn a_prompt_that_cannot_be_read_is_a_run_failure() {
     assert!(stderr.contains("Cannot read the prompt"), "{stderr}");
     assert_eq!(output.status.code(), Some(1), "not a usage error");
 }
+
+#[test]
+fn rpc_answers_go_ahead_of_queued_prompts() {
+    let mut rpc = Rpc::start();
+    rpc.until(|e| e["type"] == "ready");
+    rpc.send(&json!({"type":"prompt","text":"approval"}));
+    let approval = rpc.until(|e| e["type"] == "approval");
+    let id = approval["data"]["id"].as_u64().unwrap();
+    // A pipelining client queues its next prompt before answering.
+    rpc.send(&json!({"type":"prompt","text":"hello"}));
+    let asked = std::time::Instant::now();
+    rpc.send(&json!({"type":"answer","id":id,"allow":true}));
+    rpc.until(|e| e == &json!({"type":"text","data":"accept"}));
+    assert!(
+        asked.elapsed() < Duration::from_secs(5),
+        "the answer waited"
+    );
+    rpc.until(|e| e == &json!({"type":"text","data":octet_testkit::scenario::CODEX_REPLY}));
+    rpc.send(&json!({"type":"quit"}));
+    assert_eq!(rpc.exit_code(), 0);
+}
+
+#[test]
+fn rpc_quits_while_stdin_stays_open() {
+    let mut rpc = Rpc::start();
+    rpc.until(|e| e["type"] == "ready");
+    rpc.send(&json!({"type":"quit"}));
+    // The client keeps its end of stdin open.
+    let Rpc { child, stdin, .. } = rpc;
+    let output = octet_testkit::wait_child(child, Duration::from_secs(5));
+    drop(stdin);
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn print_says_when_the_session_ends_unfinished() {
+    let (mut child, _temp) = octet(&[
+        "--engine",
+        "claude",
+        "--print",
+        octet_testkit::scenario::DELTA_FLOOD,
+        "--output",
+        "json",
+    ]);
+    drop(child.stdin.take());
+    // Nobody reads the replies for a while: the session gives up on us.
+    let stdout = child.stdout.take().unwrap();
+    std::thread::sleep(Duration::from_secs(4));
+    let drain = std::thread::spawn(move || std::io::read_to_string(stdout).unwrap_or_default());
+    let output = octet_testkit::wait_child(child, LIMIT);
+    let _ = drain.join();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("ended without finishing"), "{stderr}");
+}
+
+#[test]
+fn a_relative_home_is_ignored() {
+    let temp = octet_testkit::TempDir::new("octet-relative-home");
+    std::fs::create_dir_all(temp.path()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_octet"))
+        .arg("--binary")
+        .arg(octet_testkit::protocol_child())
+        .args(["--print", "hello"])
+        .current_dir(temp.path())
+        .env("HOME", "relative-home")
+        .env_remove("XDG_DATA_HOME")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "a usage error");
+    assert!(!temp.path().join("relative-home").exists());
+}

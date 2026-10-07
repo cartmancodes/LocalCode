@@ -16,6 +16,7 @@ fn help() -> String {
         "                 [--binary PATH] [--journal-dir PATH]",
         "                 [--approval-timeout SECONDS] [--effort LEVEL]",
         "                 [--print PROMPT|- [--output text|json] | --rpc]",
+        "       octet --version | --help",
         "",
         "Headless: --print (-p) runs one prompt and writes the reply; - reads it",
         "from stdin. --output json writes every event as a JSON line. --rpc reads",
@@ -120,7 +121,9 @@ async fn run() -> Result<i32, CliError> {
         })
         .or_else(|| {
             std::env::var_os("HOME")
-                .map(|p| PathBuf::from(p).join(".local/share").join(JOURNAL_DIR))
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .map(|p| p.join(".local/share").join(JOURNAL_DIR))
         })
         .ok_or_else(|| {
             CliError::Usage("Set --journal-dir or HOME to choose transcript storage".into())

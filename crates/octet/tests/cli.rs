@@ -50,3 +50,13 @@ fn usage_errors_exit_2() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("octet: Unknown mode bogus"));
 }
+
+#[test]
+fn help_lists_version() {
+    let help = Command::new(env!("CARGO_BIN_EXE_octet"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(help.contains("--version"), "{help}");
+}

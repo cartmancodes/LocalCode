@@ -87,7 +87,12 @@ async fn drive_print(
         // After ^C, a session that ends without finishing the turn (a vendor
         // that ignored the interrupt) still exits as interrupted.
         let stopped = if interrupted { INTERRUPTED } else { 1 };
-        let Some(event) = event else { break stopped };
+        let Some(event) = event else {
+            // The stream ended without `Stopped`: the session gave up (an
+            // output reader that stalled), so say so rather than end quietly.
+            warn(UNFINISHED);
+            break stopped;
+        };
         if json {
             write_line(&event_json(&event)).await?;
         }
@@ -143,7 +148,7 @@ pub(crate) async fn rpc(config: Config, directory: PathBuf) -> Result<i32, Strin
 }
 
 async fn drive_rpc(session: &mut Session, signals: &mut Signals) -> Result<i32, String> {
-    let mut requests = read_lines(BufReader::new(tokio::io::stdin()));
+    let mut requests = read_lines(BufReader::new(stdin_on_a_thread()));
     let mut state = RpcState::default();
     let code = loop {
         if state.input_closed && !state.busy && state.waiting.is_empty() {
@@ -165,6 +170,11 @@ async fn drive_rpc(session: &mut Session, signals: &mut Signals) -> Result<i32, 
                 match line.and_then(|line| parse(&line)) {
                     Ok(Request::Quit) => break 0,
                     Ok(Request::Interrupt) => session.handle.interrupt(),
+                    // An answer is for the approval waiting now: it must not
+                    // queue behind a prompt for the next turn.
+                    Ok(Request::Send(answer @ Command::Answer { .. })) if state.ready => {
+                        send_or_report(session, answer).await?;
+                    }
                     Ok(Request::Send(_)) if state.waiting.len() >= RPC_WAITING => {
                         let message = format!("Too many commands waiting ({RPC_WAITING})");
                         write_line(&event_json(&Event::Error(message))).await?;
@@ -174,7 +184,10 @@ async fn drive_rpc(session: &mut Session, signals: &mut Signals) -> Result<i32, 
                 }
             }
             event = session.events.recv() => {
-                let Some(event) = event else { break 1 };
+                let Some(event) = event else {
+                    write_line(&event_json(&Event::Error(UNFINISHED.into()))).await?;
+                    break 1;
+                };
                 write_line(&event_json(&event)).await?;
                 match event {
                     Event::Ready { .. } => state.ready = true,
@@ -195,6 +208,69 @@ async fn drive_rpc(session: &mut Session, signals: &mut Signals) -> Result<i32, 
         state.flush(session).await?;
     };
     Ok(code)
+}
+
+/// Why a headless run ends when its session stops without saying so.
+const UNFINISHED: &str = "The session ended without finishing the turn; see its journal";
+
+/// Stdin, read on a plain thread and handed over in chunks. A read blocked
+/// on the runtime's blocking pool would hold the process open after `quit`
+/// for as long as the client keeps stdin open; a plain thread does not.
+fn stdin_on_a_thread() -> ChannelReader {
+    use std::io::Read;
+    let (tx, rx) = mpsc::channel(4);
+    std::thread::spawn(move || {
+        let mut stdin = std::io::stdin();
+        let mut buffer = vec![0; 8192];
+        loop {
+            let chunk = match stdin.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => Ok(buffer[..n].to_vec()),
+                Err(error) => Err(error),
+            };
+            let failed = chunk.is_err();
+            if tx.blocking_send(chunk).is_err() || failed {
+                break;
+            }
+        }
+    });
+    ChannelReader {
+        chunks: rx,
+        chunk: Vec::new(),
+        read: 0,
+    }
+}
+
+/// An `AsyncRead` over chunks from a channel; its end is end of input.
+struct ChannelReader {
+    chunks: mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    chunk: Vec<u8>,
+    read: usize,
+}
+impl tokio::io::AsyncRead for ChannelReader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use std::task::Poll;
+        if self.read == self.chunk.len() {
+            match self.chunks.poll_recv(cx) {
+                Poll::Ready(Some(Ok(chunk))) => {
+                    self.chunk = chunk;
+                    self.read = 0;
+                }
+                Poll::Ready(Some(Err(error))) => return Poll::Ready(Err(error)),
+                Poll::Ready(None) => return Poll::Ready(Ok(())),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        let start = self.read;
+        let n = buf.remaining().min(self.chunk.len() - start);
+        buf.put_slice(&self.chunk[start..start + n]);
+        self.read += n;
+        Poll::Ready(Ok(()))
+    }
 }
 
 /// The most RPC commands that may wait for `ready` or a running turn.

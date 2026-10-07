@@ -183,6 +183,14 @@ impl ClaudeFixture {
                 }
                 emit(&claude_result(sid, ""));
             }
+            scenario::DELTA_FLOOD => {
+                emit(&claude_init(sid));
+                let delta = "x".repeat(100);
+                for _ in 0..3000 {
+                    emit(&claude_delta(&delta));
+                }
+                emit(&claude_result(sid, ""));
+            }
             scenario::SUBAGENT => {
                 emit(&claude_init(sid));
                 emit(

@@ -99,6 +99,15 @@ fn value(args: &mut impl Iterator<Item = OsString>, name: &str) -> Result<OsStri
         .ok_or_else(|| usage(format!("{name} requires a value. Use --help.")))
 }
 
+/// The next argument as `name`'s value, whatever it starts with: a prompt
+/// is free text, and may begin with dashes.
+fn verbatim(args: &mut impl Iterator<Item = OsString>, name: &str) -> Result<String, CliError> {
+    args.next()
+        .ok_or_else(|| usage(format!("{name} requires a value. Use --help.")))?
+        .into_string()
+        .map_err(|_| usage(format!("{name} must be UTF-8 text")))
+}
+
 /// `name`'s value as text.
 fn text(args: &mut impl Iterator<Item = OsString>, name: &str) -> Result<String, CliError> {
     value(args, name)?
@@ -133,6 +142,10 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Par
                 arg.to_string_lossy()
             ))
         })?;
+        if let Some(prompt) = arg.strip_prefix("--print=") {
+            print = Some(prompt.to_owned());
+            continue;
+        }
         let name = if arg == "-p" { "--print" } else { arg.as_str() };
         match name {
             "--help" | "-h" => return Ok(Parsed::Help),
@@ -169,7 +182,7 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Par
                 }
                 effort = Some(value);
             }
-            "--print" => print = Some(text(&mut args, name)?),
+            "--print" => print = Some(verbatim(&mut args, name)?),
             "--output" => {
                 output = Some(match text(&mut args, name)?.as_str() {
                     "text" => false,
@@ -340,6 +353,20 @@ mod tests {
     fn the_binary_defaults_to_the_providers() {
         let config = args(&["--engine", "claude"]).config(PathBuf::from("/w"));
         assert_eq!(config.binary, PathBuf::from("claude"));
+    }
+
+    #[test]
+    fn a_print_prompt_may_start_with_dashes() {
+        for list in [&["-p", "--fix the bug"][..], &["--print=--fix the bug"][..]] {
+            assert_eq!(
+                args(list).run,
+                Run::Print {
+                    prompt: Prompt::Text("--fix the bug".into()),
+                    json: false
+                },
+                "{list:?}"
+            );
+        }
     }
 
     #[test]
