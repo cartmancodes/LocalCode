@@ -3,6 +3,8 @@ on:
   push:
     branches: [master]
   pull_request:
+  # The release workflow runs these checks before it builds.
+  workflow_call:
 jobs:
   check:
     strategy:

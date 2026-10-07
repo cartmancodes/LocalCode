@@ -32,7 +32,9 @@ binary before replacing it. The optimized executable can also be run directly.
 A pushed `v*` tag builds archives for `aarch64-apple-darwin`,
 `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, each with a
 SHA-256 file, and attaches them to a GitHub release
-(`.github/workflows/release.yml`).
+(`.github/workflows/release.yml`). The tag must name `crates/octet`'s
+version, the full checks run first, a tag with a `-` (`v0.2.0-rc1`) is
+published as a pre-release, and re-running replaces the archives.
 
 `--effort LEVEL` sets the reasoning effort (see below).
 
@@ -50,7 +52,8 @@ octet --rpc                                              # JSON-line commands on
 - **`--print PROMPT` (`-p`)** runs one turn and writes the reply text to
   stdout; notices and errors go to stderr. `-` reads the prompt from stdin.
   The exit code is 0 when the turn completes, 1 when it fails, and 130 after
-  Ctrl+C (SIGINT), which cancels the turn first.
+  Ctrl+C (SIGINT), which cancels the turn first (also if the vendor then
+  stops). SIGTERM stops the session and exits 143.
 - **`--output json`** writes every event as one JSON line in the journal's
   shape, `{"type": …, "data": …}`. A turn that runs ends with
   `{"type":"finished",…}`; a session that stops ends with `stopped`.
@@ -68,7 +71,8 @@ octet --rpc                                              # JSON-line commands on
   runs, wait their turn in order (up to 64), so a script can be piped in.
   At the end of stdin Octet finishes the waiting work, denying any approval
   it can no longer ask about, then exits 0, or 1 if a turn failed. `quit`
-  exits 0 at once; RPC exits 1 if the vendor stops.
+  exits 0 at once; RPC exits 1 if the vendor stops. SIGINT and SIGTERM stop
+  the session cleanly, finishing its journal, and exit 130 and 143.
 
 Every headless run is journaled like an interactive one.
 
@@ -165,26 +169,31 @@ prompt may start with a path such as `/usr/lib`; it is sent, not treated as a co
 sending it; the prompt box title shows `+N queued`. When the turn finishes,
 the next queued prompt goes, with the `!` output and images attached when it
 was queued. The queue holds 8 prompts. Esc or Ctrl+C cancels the turn and
-drops the queue ("Dropped N queued prompts"). `/queue` lists it and
+drops the queue ("Dropped N queued prompts"), even a prompt sent the moment
+before Esc that the vendor had not started. `/queue` lists it and
 `/queue clear` empties it. An active goal's continuation goes first.
 
 **Steering.** `/steer TEXT` adds TEXT to the running turn. Codex takes it
 into the same turn (`turn/steer`). Claude has no steering request, so the
-text is queued as the next prompt, and Octet says so. With no turn running,
-`/steer` sends the text as a prompt.
+text is queued as the next prompt, and Octet says so. While a cancelled turn
+is still stopping, `/steer` text is queued as the next prompt too. With no
+turn running, `/steer` sends the text as a prompt.
 
 **Reasoning effort.** `--effort LEVEL` at launch, or `/effort LEVEL` later;
 `/effort` alone shows it and `/effort default` returns to the vendor's
-default. The level is passed as given, so the vendor decides which it
-accepts; `low`, `medium`, `high`, `xhigh` and `max` are the usual ones.
+default. Claude takes `low`, `medium`, `high`, `xhigh` and `max`, and Octet
+refuses other levels for it. Codex's levels depend on the model, so any
+word is passed on and Codex decides. A `/model` switch to a provider that
+does not take the level falls back to its default, with a notice.
 Codex takes it with each turn, so a change applies from the next turn.
 Claude takes it at launch, so a change reconnects to the same session. The
 level carries across `/model`, `/new` and `/reconnect`.
 
 **Fork.** `/fork` continues this conversation in a new vendor session and
 leaves the original as it was (Codex `thread/fork`, Claude
-`--resume ID --fork-session`). The transcript stays on screen, a notice names
-the session it came from, and the new session's ID replaces the old one. It
+`--resume ID --fork-session`). The transcript stays on screen and the new
+session's ID replaces the old one. "Forking from X…" shows at once;
+"Forked from X into Y" once the vendor names the new session. It
 needs an idle session that the vendor has already named. Claude names the
 fork with its first turn; a reconnect before then (for example `/effort`)
 forks again, so the original is never written to.
@@ -202,7 +211,9 @@ the file's path and reads it itself. Claude receives the bytes inside the
 prompt, which limits each image to 3.75 MiB and a prompt's images to
 5.25 MiB together; `/image` refuses more. The bytes are read when the prompt
 is sent; if a file has gone or grown past the limits by then, the turn fails
-with a message and the session carries on. The transcript and journal show `[+ image name.png]`,
+with a message and the session carries on. Up recalls a prompt together with
+the images it was sent with; a failed `/image` leaves the line in the prompt
+box to correct. The transcript and journal show `[+ image name.png]`,
 never the image. Esc on an empty prompt drops attached images and `!` output.
 
 ## Permission modes

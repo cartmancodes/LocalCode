@@ -1,13 +1,30 @@
 name: release
-# A pushed tag v* builds octet on each platform's native runner and
-# attaches the archives, with SHA-256 files, to a GitHub release.
+# A pushed tag v* that matches crates/octet's version is checked, built on
+# each platform's native runner, and its archives, with SHA-256 files, are
+# attached to a GitHub release. A tag with a "-" (v0.2.0-rc1) is a
+# pre-release. Re-running replaces the archives of an existing release.
 on:
   push:
     tags: ["v*"]
 permissions:
   contents: read
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: The tag names the crate's version
+        run: scripts/release-tag-check.sh "$TAG" crates/octet/Cargo.toml
+  check:
+    needs: version
+    uses: ./.github/workflows/check.yml
+    permissions:
+      contents: read
+      checks: write
   build:
+    needs: check
     strategy:
       fail-fast: false
       matrix:
@@ -51,8 +68,9 @@ jobs:
       TAG: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      - run: gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "Octet $TAG" --generate-notes
+      - run: scripts/release-publish.sh "$TAG" dist
