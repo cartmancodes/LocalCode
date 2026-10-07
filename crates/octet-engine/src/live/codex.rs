@@ -4,7 +4,7 @@ use super::{
     BoxFuture, Channels, Config, DriverError, EVENT_BYTES, Event, ImageAttachment, Limits, Mode,
     ModelInfo, Outcome, Provider, limited, model_catalog_with,
     protocol::{Core, Phase, Protocol},
-    push_bounded, valid_identifier,
+    push_bounded, short, valid_identifier,
 };
 use serde_json::{Value, json};
 use std::{
@@ -253,7 +253,7 @@ impl Protocol for CodexProtocol {
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
                 let error = (status == "failed").then(|| error_text(&v["params"]["turn"]["error"]));
-                core.finish_turn(Outcome::from_vendor(status), error)?;
+                core.finish_turn(Outcome::from_vendor(&short(status)), error)?;
             }
             _ => {}
         }
@@ -457,7 +457,7 @@ impl CodexProtocol {
             return core.queue_approval(v, detail).await;
         }
         if let Some(reply) = Self::stray_reply(&v) {
-            let notice = format!("Request declined: {method}");
+            let notice = format!("Request declined: {}", short(method));
             core.send(reply).await?;
             core.emit(Event::Notice(notice))?;
         }

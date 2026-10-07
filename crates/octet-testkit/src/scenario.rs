@@ -42,6 +42,16 @@ pub const MODES: &str = "modes";
 pub const FLUSH: &str = "flush";
 /// Claude: a result without `is_error`.
 pub const NO_IS_ERROR: &str = "no-is-error";
+/// Claude: 200 one-character deltas, then the result.
+pub const DELTA_BURST: &str = "delta-burst";
+/// Claude: a main reply, then a subagent's (Task tool) messages.
+pub const SUBAGENT: &str = "subagent";
+/// Claude: a result whose session ID holds an escape sequence.
+pub const ODD_SESSION: &str = "odd-session";
+/// Codex: a huge unknown server request, then a huge unknown turn status.
+pub const ODD_STRINGS: &str = "odd-strings";
+/// Codex: hold the turn and acknowledge interrupts without ending it.
+pub const IGNORE_INTERRUPT: &str = "ignore-interrupt";
 
 /// Claude launch argument (`--model`): exit at the handshake with stderr.
 pub const DIE_STDERR: &str = "die-stderr";

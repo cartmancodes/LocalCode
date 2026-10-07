@@ -156,6 +156,16 @@ struct DemoTurn<'a> {
     gate: &'a mut TurnGate,
 }
 
+/// How the demo's approval dialog ended.
+enum DemoApproval {
+    Allowed,
+    Denied,
+    /// The user cancelled the turn while the dialog was open.
+    Cancelled,
+    /// The session is stopping.
+    Stopping,
+}
+
 impl DemoTurn<'_> {
     async fn run(&mut self, text: &str, display: String) -> Result<Flow, DriverError> {
         emit(self.tx, Event::User(display.clone()))?;
@@ -183,11 +193,20 @@ impl DemoTurn<'_> {
                 .to_owned()
         } else {
             match self.approval().await? {
-                None => return Ok(Flow::Stop),
-                Some(true) => {
+                DemoApproval::Stopping => return Ok(Flow::Stop),
+                DemoApproval::Cancelled => {
+                    emit(
+                        self.tx,
+                        Event::Finished {
+                            outcome: Outcome::Interrupted,
+                        },
+                    )?;
+                    return Ok(Flow::Continue);
+                }
+                DemoApproval::Allowed => {
                     "Approved. In a live session, the vendor would now continue.".to_owned()
                 }
-                Some(false) => "Denied. No action was performed.".to_owned(),
+                DemoApproval::Denied => "Denied. No action was performed.".to_owned(),
             }
         };
         let mut interrupted = false;
@@ -212,8 +231,8 @@ impl DemoTurn<'_> {
         Ok(Flow::Continue)
     }
 
-    /// Shows the demo approval. `None` means the driver is stopping.
-    async fn approval(&mut self) -> Result<Option<bool>, DriverError> {
+    /// Shows the demo approval and waits for its answer.
+    async fn approval(&mut self) -> Result<DemoApproval, DriverError> {
         emit(
             self.tx,
             Event::Approval {
@@ -225,11 +244,11 @@ impl DemoTurn<'_> {
         let expiry = tokio::time::sleep(self.approval);
         tokio::pin!(expiry);
         // A mode switch while the dialog is open applies and keeps waiting.
-        let allowed = loop {
+        let answer = loop {
             tokio::select! {
-                _ = self.stop.changed() => return Ok(None),
-                _ = self.cancel.changed() => break false,
-                _ = &mut expiry => break false,
+                _ = self.stop.changed() => return Ok(DemoApproval::Stopping),
+                _ = self.cancel.changed() => break DemoApproval::Cancelled,
+                _ = &mut expiry => break DemoApproval::Denied,
                 command = self.commands.recv() => match command {
                     Some(Command::SetMode(target)) => demo_set_mode(self.tx, self.mode, target)?,
                     Some(Command::Steer(_)) => emit(
@@ -246,11 +265,12 @@ impl DemoTurn<'_> {
                         self.gate.cancelled(&turn, self.cancel);
                         emit(self.tx, Event::Notice(BUSY.into()))?;
                     }
-                    command => break matches!(command, Some(Command::Answer { id: 1, allow: true })),
+                    Some(Command::Answer { id: 1, allow: true }) => break DemoApproval::Allowed,
+                    _ => break DemoApproval::Denied,
                 },
             }
         };
         emit(self.tx, Event::ApprovalClosed(1))?;
-        Ok(Some(allowed))
+        Ok(answer)
     }
 }

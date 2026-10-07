@@ -42,6 +42,10 @@ pub struct Limits {
     /// Unanswered mode switch before it is reported as unconfirmed, for a
     /// protocol whose switches are confirmed by the vendor (Claude's are).
     pub mode_confirm: Duration,
+    /// Reading an attached image when its prompt is sent, for a vendor that
+    /// takes the bytes inline: a file swapped for a FIFO, or on a stalled
+    /// mount, must not hold the session.
+    pub image_read: Duration,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -50,7 +54,27 @@ impl Default for Limits {
             turn_idle: Duration::from_secs(600),
             interrupt: Duration::from_secs(10),
             mode_confirm: Duration::from_secs(10),
+            image_read: Duration::from_secs(10),
         }
+    }
+}
+
+/// `d` from now. A duration too large for the clock (a library caller's
+/// `Duration::MAX`) means "about never" instead of a panic.
+pub(crate) fn deadline_after(d: Duration) -> tokio::time::Instant {
+    let now = tokio::time::Instant::now();
+    now.checked_add(d)
+        .unwrap_or_else(|| now + Duration::from_secs(30 * 365 * 86_400))
+}
+
+/// `text` cut to 256 bytes, for vendor strings that should be short (a
+/// status, a method name) but come from an untrusted pipe.
+pub(crate) fn short(text: &str) -> String {
+    const SHORT: usize = 256;
+    if text.len() <= SHORT {
+        text.to_owned()
+    } else {
+        format!("{}…", &text[..text.floor_char_boundary(SHORT)])
     }
 }
 
@@ -504,16 +528,15 @@ impl Handle {
         if command.prompt_bytes() > PROMPT_LIMIT {
             return Err(SendError::PromptTooLong);
         }
-        let turn = command.starts_turn();
-        if turn {
+        // Reserve the slot first: a turn is counted only once nothing can
+        // fail, so a concurrent `interrupt` never covers a turn that was
+        // refused (and whose number the next prompt would reuse).
+        let permit = self.commands.try_reserve().map_err(|_| SendError::Busy)?;
+        if command.starts_turn() {
             self.turns.fetch_add(1, Ordering::SeqCst);
         }
-        self.commands.try_send(command).map_err(|_| {
-            if turn {
-                self.turns.fetch_sub(1, Ordering::SeqCst);
-            }
-            SendError::Busy
-        })
+        permit.send(command);
+        Ok(())
     }
     /// Cancels the running turn, any turn already sent but not yet started,
     /// or the connection while it is being made.
@@ -528,6 +551,10 @@ impl Handle {
 }
 // Output is split before enqueueing. A stalled consumer fails the session rather
 // than blocking the control path or silently dropping semantic output.
+/// Free event-queue slots below which the driver stops reading the vendor's
+/// output until the interface catches up. One frame expands to at most a
+/// few events, so this leaves room for it and for the turn's end.
+pub(crate) const HEADROOM: usize = 32;
 /// The most text one reply adds to the transcript: half the event queue.
 const TEXT_LIMIT: usize = 2 * 1024 * 1024;
 /// Queue slots text leaves free, for the events that end a turn. Text is
@@ -648,7 +675,12 @@ pub fn spawn_with_limits(
             stopping,
             events: events.clone(),
         };
-        let result = (config.engine.provider().start)(config, limits, channels).await;
+        // The driver runs as its own task, so a bug that panics in it still
+        // ends the session with an error and `Stopped`.
+        let driver = tokio::spawn((config.engine.provider().start)(config, limits, channels));
+        let result = driver
+            .await
+            .unwrap_or_else(|failure| Err(format!("The session's driver failed: {failure}")));
         if let Err(error) = result {
             // After the driver stops, bounded waiting can deliver the final error.
             let _ = timeout(Duration::from_secs(2), events.send(Event::Error(error))).await;
@@ -685,6 +717,33 @@ mod tests {
         }
         assert!(text.len() < TEXT_LIMIT + 200, "{}", text.len());
         assert!(text.ends_with("[Octet shows at most 2 MiB of one reply; the rest is cut]"));
+    }
+    #[test]
+    fn send_counts_a_turn_only_when_queued() {
+        let (commands, _rx) = mpsc::channel(1);
+        let (interrupt, _cancel) = watch::channel(0);
+        let (stop, _stopping) = watch::channel(false);
+        let handle = Handle {
+            commands,
+            interrupt,
+            stop,
+            turns: std::sync::Arc::default(),
+        };
+        handle.send(Command::Compact).unwrap();
+        // The queue is full: the prompt is refused and never counted.
+        assert_eq!(
+            handle.send(Command::Prompt("a".into())),
+            Err(SendError::Busy)
+        );
+        assert_eq!(handle.turns.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn deadlines_never_overflow() {
+        let far = deadline_after(Duration::MAX);
+        let now = tokio::time::Instant::now();
+        assert!(far > now + Duration::from_secs(86_400 * 365));
+        let near = deadline_after(Duration::from_secs(1));
+        assert!(near <= tokio::time::Instant::now() + Duration::from_secs(1));
     }
     #[test]
     fn many_large_blocks_in_one_frame_leave_room_to_finish() {

@@ -2,7 +2,7 @@
 //! the frame handler.
 use super::{
     BoxFuture, Channels, Config, DriverError, Event, ImageAttachment, Limits, Mode, ModelInfo,
-    Outcome, Provider, check_inline, limited,
+    Outcome, Provider, check_inline, deadline_after, limited,
     mode::confirm_mode,
     model_catalog_with,
     protocol::{Core, Phase, Protocol},
@@ -111,6 +111,8 @@ pub(super) struct ClaudeProtocol {
     /// a stricter mode than the vendor is really in.
     late_modes: Vec<(String, Mode)>,
     mode_seq: u64,
+    /// A session ID that failed `valid_identifier` was reported once.
+    odd_session_noted: bool,
 }
 
 impl Protocol for ClaudeProtocol {
@@ -183,9 +185,21 @@ impl Protocol for ClaudeProtocol {
         let mut content = vec![json!({"type": "text", "text": text})];
         let mut encoded = Vec::with_capacity(images.len());
         for image in images {
-            match image.read_base64().await {
-                Ok(data) => encoded.push((image, data)),
-                Err(error) => return fail_turn(core, error.to_string()),
+            // A file swapped for a FIFO, or on a stalled mount, must not hold
+            // the session: cancel and stop wait while this runs.
+            match tokio::time::timeout(core.limits.image_read, image.read_base64()).await {
+                Ok(Ok(data)) => encoded.push((image, data)),
+                Ok(Err(error)) => return fail_turn(core, error.to_string()),
+                Err(_) => {
+                    return fail_turn(
+                        core,
+                        format!(
+                            "Reading {} took longer than {}; the prompt was not sent",
+                            image.name,
+                            super::driver::seconds(core.limits.image_read)
+                        ),
+                    );
+                }
             }
         }
         // Files can change after they were attached; check what is sent.
@@ -223,7 +237,7 @@ impl Protocol for ClaudeProtocol {
         self.mode_request = Some(ModeRequest {
             id,
             target,
-            deadline: Instant::now() + core.limits.mode_confirm,
+            deadline: deadline_after(core.limits.mode_confirm),
         });
         Ok(())
     }
@@ -236,12 +250,24 @@ impl Protocol for ClaudeProtocol {
         if let Some(id) = v["session_id"].as_str()
             && core.session != id
         {
-            core.session = id.to_owned();
-            core.emit(Event::Ready {
-                session: core.session.clone(),
-            })?;
+            // The ID goes into the journal and later `--resume` arguments.
+            if valid_identifier(id) {
+                core.session = id.to_owned();
+                core.emit(Event::Ready {
+                    session: core.session.clone(),
+                })?;
+            } else if !self.odd_session_noted {
+                self.odd_session_noted = true;
+                core.emit(Event::Notice(
+                    "Claude reported a session ID Octet cannot use; it was ignored".into(),
+                ))?;
+            }
         }
+        // A subagent's (Task tool) messages carry the tool use that started
+        // it: its text is not the reply and its model is not the session's.
+        let subagent = !v["parent_tool_use_id"].is_null();
         let actual = match kind {
+            _ if subagent => None,
             "system" if v["subtype"] == "init" => v["model"].as_str(),
             "assistant" => v["message"]["model"].as_str(),
             "stream_event" => v["event"]["message"]["model"].as_str(),
@@ -283,7 +309,9 @@ impl Protocol for ClaudeProtocol {
         }
         match kind {
             "stream_event" => {
-                if let Some(text) = v.pointer("/event/delta/text").and_then(Value::as_str) {
+                if let Some(text) = v.pointer("/event/delta/text").and_then(Value::as_str)
+                    && !subagent
+                {
                     self.streamed = true;
                     core.emit(Event::Text(text.into()))?;
                 }
@@ -296,6 +324,7 @@ impl Protocol for ClaudeProtocol {
                     .flatten()
                 {
                     if !self.streamed
+                        && !subagent
                         && block["type"] == "text"
                         && let Some(text) = block["text"].as_str()
                     {
@@ -306,7 +335,9 @@ impl Protocol for ClaudeProtocol {
                         core.emit(Event::Tool(format!("{name}\n{}", block["input"])))?;
                     }
                 }
-                self.streamed = false;
+                if !subagent {
+                    self.streamed = false;
+                }
             }
             "result" => Self::result(core, &v)?,
             _ => {}

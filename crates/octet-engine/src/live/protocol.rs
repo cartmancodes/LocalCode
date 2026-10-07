@@ -2,8 +2,8 @@
 //! supplies (`Protocol`). The driver loop in `driver.rs` joins the two; a new
 //! vendor implements `Protocol` in its own file and adds a provider row.
 use super::{
-    Config, DriverError, EVENT_BYTES, Event, ImageAttachment, Limits, Mode, Outcome, emit,
-    mode::confirm_mode,
+    Config, DriverError, EVENT_BYTES, Event, ImageAttachment, Limits, Mode, Outcome,
+    deadline_after, emit, mode::confirm_mode,
 };
 use octet_proc::Process;
 use serde_json::Value;
@@ -90,7 +90,7 @@ impl Core {
             tx,
             phase: Phase::Starting,
             session: String::new(),
-            deadline: Instant::now() + limits.connect,
+            deadline: deadline_after(limits.connect),
             approval_id: 0,
             pending: HashMap::new(),
             answer: P::answer,
@@ -127,7 +127,7 @@ impl Core {
     /// Restarts the silence watchdog once no approval is waiting on the user.
     pub(super) fn resume_watchdog(&mut self) {
         if self.pending.is_empty() && self.phase == Phase::InTurn {
-            self.deadline = Instant::now() + self.limits.turn_idle;
+            self.deadline = deadline_after(self.limits.turn_idle);
         }
     }
 
@@ -160,7 +160,7 @@ impl Core {
             id: self.approval_id,
             detail,
         })?;
-        let deadline = Instant::now() + self.config.approval_timeout;
+        let deadline = deadline_after(self.config.approval_timeout);
         self.pending
             .insert(self.approval_id, Pending { wire, deadline });
         Ok(())

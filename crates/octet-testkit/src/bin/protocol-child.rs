@@ -129,6 +129,8 @@ fn interactive_codex() {
     // "die-on-interrupt" holds its turn and exits when asked to stop it, as
     // a vendor that ignores the interrupt is eventually stopped.
     let mut dies_on_interrupt = false;
+    // "ignore-interrupt" acknowledges interrupts but never ends the turn.
+    let mut ignores_interrupt = false;
     let mut thread_params = Value::Null;
     for line in io::stdin().lock().lines() {
         let v: Value = serde_json::from_str(&line.unwrap()).unwrap();
@@ -236,6 +238,16 @@ fn interactive_codex() {
                 }
                 if text == scenario::DIE_ON_INTERRUPT {
                     dies_on_interrupt = true;
+                    continue;
+                }
+                if text == scenario::IGNORE_INTERRUPT {
+                    ignores_interrupt = true;
+                    continue;
+                }
+                if text == scenario::ODD_STRINGS {
+                    let method = format!("x/{}", "y".repeat(100_000));
+                    emit(&json!({"id":"srv-1","method":method,"params":{}}));
+                    emit(&codex_turn_completed(&active, &"z".repeat(100_000)));
                     continue;
                 }
                 if text == scenario::APPROVALS_9 {
@@ -352,6 +364,10 @@ fn interactive_codex() {
             Some("turn/interrupt") => {
                 if dies_on_interrupt {
                     std::process::exit(3);
+                }
+                if ignores_interrupt {
+                    emit(&json!({"id":v["id"],"result":{}}));
+                    continue;
                 }
                 emit(&codex_turn_completed(&active, "interrupted"));
                 emit(&json!({"id":v["id"],"result":{}}));
@@ -514,6 +530,35 @@ fn interactive_claude() {
                 for n in 1..=9 {
                     emit(&permission(&format!("cap-{n}")));
                 }
+                continue;
+            }
+            if text == scenario::DELTA_BURST {
+                emit(&claude_init(sid));
+                for _ in 0..200 {
+                    emit(
+                        &json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}}),
+                    );
+                }
+                emit(&claude_result(sid, ""));
+                continue;
+            }
+            if text == scenario::SUBAGENT {
+                emit(&claude_init(sid));
+                emit(
+                    &json!({"type":"assistant","parent_tool_use_id":null,"message":{"model":"claude-main","content":[{"type":"text","text":"MAIN"}]}}),
+                );
+                emit(
+                    &json!({"type":"stream_event","parent_tool_use_id":"toolu_1","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"SUBDELTA"}}}),
+                );
+                emit(
+                    &json!({"type":"assistant","parent_tool_use_id":"toolu_1","message":{"model":"claude-sub","content":[{"type":"text","text":"SUBAGENT"},{"type":"tool_use","id":"toolu_2","name":"Read","input":{"file":"a"}}]}}),
+                );
+                emit(&claude_result(sid, ""));
+                continue;
+            }
+            if text == scenario::ODD_SESSION {
+                emit(&claude_init(sid));
+                emit(&claude_result("s\u{1b}[2Jx", ""));
                 continue;
             }
             if text == scenario::NO_IS_ERROR {

@@ -1537,3 +1537,241 @@ async fn claude_cancel_request_closes_the_approval() {
     );
     stop(&handle, task).await;
 }
+
+/// Every event up to the end of the turn (or the session).
+async fn until_finished(events: &mut mpsc::Receiver<Event>) -> Vec<Event> {
+    let mut seen = Vec::new();
+    loop {
+        let event = next(events).await;
+        let done = matches!(event, Event::Finished { .. } | Event::Stopped);
+        seen.push(event);
+        if done {
+            return seen;
+        }
+    }
+}
+fn text_of(seen: &[Event]) -> String {
+    seen.iter()
+        .filter_map(|event| match event {
+            Event::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_burst_of_deltas_during_a_stall_is_delivered() {
+    let (handle, mut events, task) = spawn(claude());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle
+        .send(Command::Prompt(scenario::DELTA_BURST.into()))
+        .unwrap();
+    // The interface stalls (a slow disk, a busy screen) while Claude streams.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let seen = until_finished(&mut events).await;
+    assert_eq!(text_of(&seen), "x".repeat(200), "{:?}", seen.last());
+    assert!(matches!(
+        seen.last(),
+        Some(Event::Finished {
+            outcome: Outcome::Completed
+        })
+    ));
+    stop(&handle, task).await;
+}
+
+#[tokio::test]
+async fn claude_subagent_text_is_not_the_reply() {
+    let (handle, mut events, task) = spawn(claude());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle
+        .send(Command::Prompt(scenario::SUBAGENT.into()))
+        .unwrap();
+    let seen = until_finished(&mut events).await;
+    assert_eq!(text_of(&seen), "MAIN");
+    assert!(
+        !seen
+            .iter()
+            .any(|e| matches!(e, Event::ModelSelected(m) if m == "claude-sub")),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|e| matches!(e, Event::Tool(t) if t.starts_with("Read"))),
+        "the subagent's tool activity still shows: {seen:?}"
+    );
+    stop(&handle, task).await;
+}
+
+#[tokio::test]
+async fn a_huge_approval_timeout_does_not_panic() {
+    let mut config = claude();
+    config.approval_timeout = Duration::MAX;
+    let (handle, mut events, task) = spawn(config);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle
+        .send(Command::Prompt(scenario::APPROVAL.into()))
+        .unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await;
+    handle.interrupt();
+    let seen = until_finished(&mut events).await;
+    assert!(
+        matches!(seen.last(), Some(Event::Finished { .. })),
+        "{seen:?}"
+    );
+    stop(&handle, task).await;
+}
+
+#[tokio::test]
+async fn a_second_cancel_keeps_the_interrupt_deadline() {
+    let limits = Limits {
+        interrupt: Duration::from_secs(2),
+        ..Limits::default()
+    };
+    let (handle, mut events, task) = spawn_with_limits(config(), limits);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle
+        .send(Command::Prompt(scenario::IGNORE_INTERRUPT.into()))
+        .unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::Started)).await;
+    // Let Codex name the turn, so the interrupt reaches it.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let first = std::time::Instant::now();
+    handle.interrupt();
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    handle.interrupt();
+    let error = expect_error(&mut events).await;
+    assert!(error.contains("did not stop within"), "{error}");
+    let waited = first.elapsed();
+    // The deadline runs from the first cancel (2 s), not the second (3.2 s).
+    assert!(waited < Duration::from_millis(2800), "{waited:?}");
+    ended(task).await;
+}
+
+#[tokio::test]
+async fn an_unsafe_session_id_is_ignored() {
+    let (handle, mut events, task) = spawn(claude());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle
+        .send(Command::Prompt(scenario::ODD_SESSION.into()))
+        .unwrap();
+    let seen = until_finished(&mut events).await;
+    assert!(
+        !seen
+            .iter()
+            .any(|e| matches!(e, Event::Ready { session } if session.contains('\u{1b}'))),
+        "{seen:?}"
+    );
+    stop(&handle, task).await;
+}
+
+#[tokio::test]
+async fn codex_cuts_huge_vendor_strings() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle
+        .send(Command::Prompt(scenario::ODD_STRINGS.into()))
+        .unwrap();
+    let seen = until_finished(&mut events).await;
+    let declined = seen
+        .iter()
+        .find_map(|e| match e {
+            Event::Notice(n) if n.starts_with("Request declined") => Some(n.len()),
+            _ => None,
+        })
+        .expect("the request is declined with a notice");
+    assert!(declined < 400, "notice of {declined} bytes");
+    match seen.last() {
+        Some(Event::Finished {
+            outcome: Outcome::Other(status),
+        }) => assert!(status.len() <= 300, "status of {} bytes", status.len()),
+        other => panic!("{other:?}"),
+    }
+    stop(&handle, task).await;
+}
+
+#[tokio::test]
+async fn demo_cancel_in_the_dialog_is_interrupted() {
+    let mut config = config();
+    config.engine = Engine::DEMO;
+    config.mode = Mode::Ask;
+    let (handle, mut events, task) = spawn(config);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle
+        .send(Command::Prompt("/approval-demo".into()))
+        .unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await;
+    handle.interrupt();
+    let seen = until_finished(&mut events).await;
+    assert!(
+        matches!(
+            seen.last(),
+            Some(Event::Finished {
+                outcome: Outcome::Interrupted
+            })
+        ),
+        "{seen:?}"
+    );
+    assert!(!text_of(&seen).contains("Denied"), "{seen:?}");
+    stop(&handle, task).await;
+}
+
+#[tokio::test]
+async fn an_image_read_that_hangs_fails_the_turn() {
+    /// Opens the FIFO for writing without blocking: a reader stuck in its
+    /// open then returns.
+    struct ReleaseFifo(std::path::PathBuf);
+    impl Drop for ReleaseFifo {
+        fn drop(&mut self) {
+            use std::os::unix::fs::OpenOptionsExt;
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&self.0);
+        }
+    }
+    let dir = octet_testkit::TempDir::new("octet-live-fifo-image");
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let path = dir.path().join("shot.png");
+    std::fs::write(&path, b"png").unwrap();
+    let image = ImageAttachment::open(&path).unwrap();
+    // Swapped for a FIFO after it was attached: opening it waits for a writer.
+    std::fs::remove_file(&path).unwrap();
+    let made = std::process::Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    // Releases the stuck open when the test ends, before the FIFO's
+    // directory goes: otherwise the runtime would wait for it forever.
+    let _release = ReleaseFifo(path.clone());
+    let limits = Limits {
+        image_read: Duration::from_millis(500),
+        ..Limits::default()
+    };
+    let (handle, mut events, task) = spawn_with_limits(claude(), limits);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    let started = std::time::Instant::now();
+    handle
+        .send(Command::PromptWithDisplay {
+            wire: "hello".into(),
+            display: "hello".into(),
+            images: vec![image],
+        })
+        .unwrap();
+    let seen = until_finished(&mut events).await;
+    assert!(
+        matches!(
+            seen.last(),
+            Some(Event::Finished {
+                outcome: Outcome::Failed
+            })
+        ),
+        "{seen:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    stop(&handle, task).await;
+}

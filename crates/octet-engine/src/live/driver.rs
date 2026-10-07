@@ -2,8 +2,8 @@
 //! lives in its own file as a `Protocol`; this loop owns the timers,
 //! approvals and commands, and calls the protocol for the rest.
 use super::{
-    BUSY, Channels, Command, Config, DriverError, Engine, Event, FULL_ACCESS_RECONNECTS,
-    ImageAttachment, Limits, Mode, NO_TURN, Outcome, TurnGate,
+    BUSY, Channels, Command, Config, DriverError, Engine, Event, FULL_ACCESS_RECONNECTS, HEADROOM,
+    ImageAttachment, Limits, Mode, NO_TURN, Outcome, TurnGate, deadline_after,
     protocol::{Core, Phase, Protocol},
 };
 use octet_proc::{Process, ProcessConfig};
@@ -85,9 +85,14 @@ impl<P: Protocol> Driver<P> {
         stopping: &mut watch::Receiver<bool>,
     ) -> Result<(), DriverError> {
         self.protocol.initialize(&mut self.core).await?;
-        self.core.deadline = Instant::now() + self.core.limits.connect;
+        self.core.deadline = deadline_after(self.core.limits.connect);
         loop {
             let wake = self.next_wake();
+            // Backpressure: while the interface is behind, leave the vendor's
+            // output in the transport's queue (and then the pipe) instead of
+            // overflowing the event queue. Commands, cancel and timers stay live.
+            let roomy = self.core.tx.capacity() > HEADROOM;
+            let tx = &self.core.tx;
             tokio::select! {
                 biased;
                 _ = stopping.changed() => break,
@@ -108,7 +113,14 @@ impl<P: Protocol> Driver<P> {
                         }
                     }
                 },
-                frame = self.core.process.next_frame() => {
+                // Waits for room; the permits are released at once.
+                room = async { tx.reserve_many(HEADROOM + 1).await.map(drop) }, if !roomy => {
+                    // The interface has gone: the session is over.
+                    if room.is_err() {
+                        break;
+                    }
+                }
+                frame = self.core.process.next_frame(), if roomy => {
                     let frame = frame
                         .map_err(|e| e.to_string())?
                         .ok_or("Vendor disconnected. Check its login and installation.")?;
@@ -147,12 +159,14 @@ impl<P: Protocol> Driver<P> {
         if !self.core.phase.is_ready() {
             return Err(DriverError::Cancelled);
         }
-        if !self.core.phase.is_running() {
+        // Already stopping: a second Esc must not resend the interrupt or
+        // push the deadline for an unresponsive vendor further out.
+        if !self.core.phase.is_running() || self.core.phase == Phase::Interrupting {
             return Ok(());
         }
         self.core.phase = Phase::Interrupting;
         self.protocol.interrupt(&mut self.core).await?;
-        self.core.deadline = Instant::now() + self.core.limits.interrupt;
+        self.core.deadline = deadline_after(self.core.limits.interrupt);
         self.core.deny_all_pending().await
     }
 
@@ -263,7 +277,7 @@ impl<P: Protocol> Driver<P> {
         }
         self.core.phase = Phase::InTurn;
         self.protocol.turn_started();
-        self.core.deadline = Instant::now() + self.core.limits.turn_idle;
+        self.core.deadline = deadline_after(self.core.limits.turn_idle);
         self.core.emit(Event::User(display))?;
         self.core.emit(Event::Started)?;
         Ok(true)
@@ -349,7 +363,7 @@ impl<P: Protocol> Driver<P> {
         // frames the protocol counts as progress reset it.
         let ours = self.protocol.is_progress(&self.core, &frame);
         if self.core.phase == Phase::InTurn && ours {
-            self.core.deadline = Instant::now() + self.core.limits.turn_idle;
+            self.core.deadline = deadline_after(self.core.limits.turn_idle);
         }
         self.protocol.on_frame(&mut self.core, frame).await
     }
