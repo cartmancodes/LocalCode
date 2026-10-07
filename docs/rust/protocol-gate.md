@@ -3,7 +3,10 @@
 `protocol-gate` runs one scenario against a real vendor CLI (`claude` or
 `codex`) and prints what happened as JSON evidence. It is how Octet checks
 that a vendor's wire protocol still behaves the way the drivers expect,
-before a CLI update reaches users.
+before a CLI update reaches users. It launches the CLI with Octet's own
+arguments and process limits (`octet_engine::live::launch_args` and
+`vendor_process`), adding only what a scenario needs (Claude's `--tools`,
+and the fixture MCP server), so it checks the contract Octet ships.
 
 It talks to the real vendor, so each run uses your login and your quota.
 Keep runs few and small.
@@ -23,8 +26,9 @@ scripts/rust-env.sh cargo run --locked -p octet-gate --bin protocol-gate -- \
 ```
 
 - **`--binary`:** the CLI to run; the engine's name on `PATH` by default.
-- **`--workdir`:** a fixture workspace to create; a temporary one by default.
-  It must not exist yet.
+- **`--workdir`:** a fixture workspace to create, and keep; by default a
+  temporary one, removed when the run ends, whatever its outcome. It must
+  not exist yet.
 - **`--output`:** also write the evidence to this file.
 - **`--timeout`:** 1–300 seconds for the scenario.
 
@@ -32,7 +36,7 @@ scripts/rust-env.sh cargo run --locked -p octet-gate --bin protocol-gate -- \
 
 | Scenario | Checks | Claude | Codex |
 | --- | --- | --- | --- |
-| `initialize` | The handshake and the mode the CLI reports | yes | yes |
+| `initialize` | The handshake | yes | yes |
 | `simple` | One turn to completion | yes | yes |
 | `interrupt` | Cancelling a running turn | yes | yes |
 | `approval-allow` | An approval allowed; the fixture file is written | yes | yes |

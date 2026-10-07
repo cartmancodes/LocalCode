@@ -2,9 +2,9 @@
 //! records contract evidence. Default replies are Octet's own
 //! (`octet_engine::live::{codex_stray_reply, claude_stray_reply}`).
 
-use octet_proc::{Process, ProcessConfig, ProcessError, ProcessSender, ShutdownReport};
+use octet_proc::{Process, ProcessError, ProcessSender, ShutdownReport};
 use serde_json::{Value, json};
-use std::{ffi::OsString, path::PathBuf, time::Duration};
+use std::{ffi::OsString, path::PathBuf};
 use thiserror::Error;
 use tokio::time::{Instant, timeout};
 
@@ -25,16 +25,11 @@ pub enum GateError {
     Protocol(&'static str),
 }
 
-/// A vendor process under a scenario, with counters for the contract evidence.
-pub struct GateProcess {
-    /// The vendor process.
-    pub process: Process,
-    /// Writes to the vendor.
-    pub sender: ProcessSender,
-    /// When the whole scenario must be done.
-    pub deadline: Instant,
+/// The contract evidence one run collects.
+#[derive(Clone, Debug, Default)]
+pub struct Evidence {
     /// Frames received.
-    pub event_count: u64,
+    pub events: u64,
     /// Approval requests the vendor sent.
     pub approval_requests: u64,
     /// MCP tool calls answered.
@@ -55,15 +50,50 @@ pub struct GateProcess {
     pub late_usage_turns: u64,
     /// Turns with tool items but no assistant message.
     pub tool_only_turns: u64,
-    turn_agent_messages: u64,
-    turn_tool_items: u64,
+}
+
+impl Evidence {
+    /// Adds what a resumed (second) process saw to the first run's counts.
+    pub fn add_resumed(&mut self, resumed: &Evidence) {
+        self.events += resumed.events;
+        self.approval_requests += resumed.approval_requests;
+        self.compact_boundaries += resumed.compact_boundaries;
+    }
+}
+
+/// Per-turn tallies behind `late_usage_turns` and `tool_only_turns`.
+#[derive(Debug, Default)]
+struct TurnTally {
+    agent_messages: u64,
+    tool_items: u64,
     last_message_seq: u64,
     last_usage_seq: u64,
 }
 
+/// A vendor process under a scenario, counting the contract evidence.
+pub struct GateProcess {
+    process: Process,
+    sender: ProcessSender,
+    /// When the whole scenario must be done.
+    deadline: Instant,
+    /// `OCTET_GATE_TRACE` was set: each frame is summarized on stderr.
+    trace: bool,
+    evidence: Evidence,
+    turn: TurnTally,
+}
+
+impl std::fmt::Debug for GateProcess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GateProcess")
+            .field("process", &self.process)
+            .field("evidence", &self.evidence)
+            .finish_non_exhaustive()
+    }
+}
+
 impl GateProcess {
-    /// Starts `executable` with `args` in `cwd`; the scenario must end by
-    /// `deadline`.
+    /// Starts `executable` with `args` in `cwd`, with the limits Octet's
+    /// driver uses; the scenario must end by `deadline`.
     ///
     /// # Errors
     ///
@@ -74,37 +104,41 @@ impl GateProcess {
         cwd: PathBuf,
         deadline: Instant,
     ) -> Result<Self, GateError> {
-        let process = Process::spawn(&ProcessConfig {
-            executable,
-            args,
-            cwd: Some(cwd),
-            max_frame_bytes: 8 * 1024 * 1024,
-            queue_bytes: 16 * 1024 * 1024,
-            stderr_bytes: 4096,
-            shutdown_grace: Duration::from_millis(150),
-            term_grace: Duration::from_millis(250),
-        })?;
+        let process = Process::spawn(&octet_engine::live::vendor_process(executable, args, cwd))?;
         let sender = process.sender();
         Ok(Self {
             process,
             sender,
             deadline,
-            event_count: 0,
-            approval_requests: 0,
-            mcp_calls: 0,
-            hook_calls: 0,
-            user_questions: 0,
-            failure_kind: None,
-            session_id: None,
-            compact_boundaries: 0,
-            agent_messages: 0,
-            late_usage_turns: 0,
-            tool_only_turns: 0,
-            turn_agent_messages: 0,
-            turn_tool_items: 0,
-            last_message_seq: 0,
-            last_usage_seq: 0,
+            trace: std::env::var_os("OCTET_GATE_TRACE").is_some(),
+            evidence: Evidence::default(),
+            turn: TurnTally::default(),
         })
+    }
+
+    /// What this run has seen so far.
+    pub fn evidence(&self) -> &Evidence {
+        &self.evidence
+    }
+    /// Counts an approval request the scenario expected.
+    pub fn record_approval(&mut self) {
+        self.evidence.approval_requests += 1;
+    }
+    /// Counts an answered MCP tool call.
+    pub fn record_mcp_call(&mut self) {
+        self.evidence.mcp_calls += 1;
+    }
+    /// Counts an answered hook callback.
+    pub fn record_hook_call(&mut self) {
+        self.evidence.hook_calls += 1;
+    }
+    /// Counts a question the vendor asked the user.
+    pub fn record_user_question(&mut self) {
+        self.evidence.user_questions += 1;
+    }
+    /// Records how the vendor failed the turn.
+    pub fn record_failure(&mut self, kind: &'static str) {
+        self.evidence.failure_kind = Some(kind);
     }
 
     /// Sends one frame before the deadline.
@@ -136,53 +170,8 @@ impl GateProcess {
         .await
         .map_err(|_| GateError::Deadline)??
         .ok_or(GateError::Eof)?;
-        self.event_count += 1;
-        let method = value.get("method").and_then(Value::as_str);
-        if method == Some("turn/started") {
-            self.turn_agent_messages = 0;
-            self.turn_tool_items = 0;
-            self.last_message_seq = 0;
-            self.last_usage_seq = 0;
-        }
-        if method == Some("item/completed") {
-            match value.pointer("/params/item/type").and_then(Value::as_str) {
-                Some("agentMessage") => {
-                    self.agent_messages += 1;
-                    self.turn_agent_messages += 1;
-                    self.last_message_seq = self.event_count;
-                }
-                Some("commandExecution") => {
-                    self.turn_tool_items += 1;
-                }
-                _ => {}
-            }
-        }
-        if method == Some("thread/tokenUsage/updated") {
-            self.last_usage_seq = self.event_count;
-        }
-        if method == Some("turn/completed") {
-            if self.last_message_seq > 0 && self.last_usage_seq > self.last_message_seq {
-                self.late_usage_turns += 1;
-            }
-            if self.turn_tool_items > 0 && self.turn_agent_messages == 0 {
-                self.tool_only_turns += 1;
-            }
-        }
-        if let Some(id) = value.get("session_id").and_then(Value::as_str) {
-            self.session_id = Some(id.to_owned());
-        }
-        if value.get("type").and_then(Value::as_str) == Some("system")
-            && value.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
-        {
-            self.compact_boundaries += 1;
-        }
-        if value.get("method").and_then(Value::as_str) == Some("item/completed")
-            && value.pointer("/params/item/type").and_then(Value::as_str)
-                == Some("contextCompaction")
-        {
-            self.compact_boundaries += 1;
-        }
-        if std::env::var_os("OCTET_GATE_TRACE").is_some() {
+        self.count(&value);
+        if self.trace {
             eprintln!(
                 "event id={:?} method={:?} type={:?} control={:?} status={:?}",
                 value.get("id"),
@@ -193,6 +182,46 @@ impl GateProcess {
             );
         }
         Ok(value)
+    }
+
+    /// Counts `value` into the evidence.
+    fn count(&mut self, value: &Value) {
+        let evidence = &mut self.evidence;
+        let turn = &mut self.turn;
+        evidence.events += 1;
+        match value.get("method").and_then(Value::as_str) {
+            Some("turn/started") => *turn = TurnTally::default(),
+            Some("item/completed") => {
+                match value.pointer("/params/item/type").and_then(Value::as_str) {
+                    Some("agentMessage") => {
+                        evidence.agent_messages += 1;
+                        turn.agent_messages += 1;
+                        turn.last_message_seq = evidence.events;
+                    }
+                    Some("commandExecution") => turn.tool_items += 1,
+                    Some("contextCompaction") => evidence.compact_boundaries += 1,
+                    _ => {}
+                }
+            }
+            Some("thread/tokenUsage/updated") => turn.last_usage_seq = evidence.events,
+            Some("turn/completed") => {
+                if turn.last_message_seq > 0 && turn.last_usage_seq > turn.last_message_seq {
+                    evidence.late_usage_turns += 1;
+                }
+                if turn.tool_items > 0 && turn.agent_messages == 0 {
+                    evidence.tool_only_turns += 1;
+                }
+            }
+            _ => {}
+        }
+        if let Some(id) = value.get("session_id").and_then(Value::as_str) {
+            evidence.session_id = Some(id.to_owned());
+        }
+        if value.get("type").and_then(Value::as_str) == Some("system")
+            && value.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
+        {
+            evidence.compact_boundaries += 1;
+        }
     }
 
     /// Stops the vendor and its process group.
