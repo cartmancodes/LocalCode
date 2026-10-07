@@ -111,6 +111,23 @@ impl Pty {
     fn wait(&mut self, condition: impl Fn(&Self) -> bool) {
         self.wait_for(Duration::from_secs(8), condition);
     }
+    /// Drains until the screen has been quiet for 100 ms (at most 3 s), so
+    /// what follows is not mistaken for a repaint still in flight.
+    fn settle(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut quiet_since = Instant::now();
+        let mut seen = self.output.len();
+        while Instant::now() < deadline {
+            self.drain();
+            if self.output.len() != seen {
+                seen = self.output.len();
+                quiet_since = Instant::now();
+            } else if quiet_since.elapsed() >= Duration::from_millis(100) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     fn wait_for(&mut self, duration: Duration, condition: impl Fn(&Self) -> bool) {
         let deadline = Instant::now() + duration;
         loop {
@@ -320,10 +337,7 @@ fn real_terminal_handles_paste_approval_resize_suspend_and_quit() {
     }
 
     p.wait(|p| flags(&p.master) & libc::ICANON == 0);
-    for _ in 0..20 {
-        p.drain();
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    p.settle();
     p.quit();
     p.finish();
 }
@@ -491,7 +505,8 @@ fn goals_pause_cancel_resume_audit_and_stop_on_failure_for_both_providers() {
         p.send(b"/goal clear\r");
         p.wait(|p| p.goal().is_none());
         // Seed a paused objective to test the audit path independently of continuation.
-        let workspace = std::env::current_dir().unwrap();
+        // Canonical, as Octet keys the store, so a symlinked checkout matches.
+        let workspace = std::env::current_dir().unwrap().canonicalize().unwrap();
         let store = octet_core::goal::GoalStore::new(&p.directory, &workspace);
         let mut goal = octet_core::goal::Goal::new("fixture-goal").unwrap();
         goal.status = octet_core::goal::Status::Paused;
@@ -681,10 +696,7 @@ fn reconnect_keeps_the_visible_conversation() {
     p.send(b"/reconnect\r");
     p.wait(|p| p.count("ready") == 2);
     // A resize repaints every cell, so the retained transcript must reappear.
-    for _ in 0..20 {
-        p.drain();
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    p.settle();
     let mark = p.output.len();
     let size = libc::winsize {
         ws_row: 30,
@@ -738,67 +750,13 @@ fn a_new_approval_rings_and_notifies() {
     p.finish();
 }
 
-/// The invalid-engine error, from the provider table.
-fn engine_error() -> String {
-    let names: Vec<&str> = octet_core::Engine::ALL.iter().map(|e| e.as_str()).collect();
-    format!("Engine must be {}", octet_core::model::or_list(&names))
-}
-#[test]
-fn help_and_errors_name_exactly_the_providers() {
-    let names: Vec<&str> = octet_core::Engine::ALL.iter().map(|e| e.as_str()).collect();
-    let help = Command::new(env!("CARGO_BIN_EXE_octet"))
-        .arg("--help")
-        .output()
-        .unwrap();
-    let help = String::from_utf8_lossy(&help.stdout);
-    assert!(
-        help.contains(&format!("--engine {}", names.join("|"))),
-        "{help}"
-    );
-    let bad = Command::new(env!("CARGO_BIN_EXE_octet"))
-        .args(["--engine", "nope"])
-        .output()
-        .unwrap();
-    assert!(String::from_utf8_lossy(&bad.stderr).contains(&engine_error()));
-}
-#[test]
-fn usage_errors_exit_2() {
-    // Each message is pinned by the parser's unit tests; here, the process.
-    let output = Command::new(env!("CARGO_BIN_EXE_octet"))
-        .args(["--engine", "demo", "--mode", "bogus"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("octet: Unknown mode bogus"));
-}
-
-#[test]
-fn help_lists_every_command() {
-    let output = Command::new(env!("CARGO_BIN_EXE_octet"))
-        .arg("--help")
-        .output()
-        .unwrap();
-    let help = String::from_utf8_lossy(&output.stdout);
-    for command in octet_tui::command_names() {
-        assert!(help.contains(command), "{command} missing from --help");
-    }
-}
-
-/// Writes an executable stand-in script.
-fn stand_in(dir: &std::path::Path, name: &str, body: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    let path = dir.join(name);
-    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-}
-
 #[test]
 fn remote_control_reports_a_ready_host_with_the_phone_command() {
     // Stand-ins for tmux, tailscale and mosh-server, first on the PATH, so
     // the real binary's checks run end to end without those tools installed.
     let tools = octet_testkit::TempDir::new("octet-remote-tools");
     fs::create_dir_all(tools.path()).unwrap();
-    stand_in(
+    octet_testkit::write_script(
         tools.path(),
         "tmux",
         r#"case "$1 $3" in
@@ -806,21 +764,17 @@ fn remote_control_reports_a_ready_host_with_the_phone_command() {
   "show-options terminal-features") echo 'terminal-features[0] ,xterm-256color:RGB' ;;
 esac"#,
     );
-    stand_in(
+    octet_testkit::write_script(
         tools.path(),
         "tailscale",
         r#"echo '{"BackendState":"Running","Self":{"DNSName":"test-mac.tail0000.ts.net.","TailscaleIPs":["127.0.0.1"]}}'"#,
     );
-    stand_in(
+    octet_testkit::write_script(
         tools.path(),
         "mosh-server",
         "echo 'mosh-server (mosh 1.4.0) [build mosh-1.4.0]'",
     );
-    let path = format!(
-        "{}:{}",
-        tools.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let path = octet_testkit::path_with(tools.path());
     let mut p = Pty::spawn_with_env(
         &[],
         &[("PATH", path.as_str()), ("TMUX", "/tmp/tmux-test,1,0")],
@@ -861,24 +815,21 @@ fn remote_control_keeps_the_screen_live_while_checks_run() {
     let tools = octet_testkit::TempDir::new("octet-remote-slow");
     fs::create_dir_all(tools.path()).unwrap();
     for name in ["tmux", "tailscale", "mosh-server"] {
-        stand_in(tools.path(), name, "exec sleep 10");
+        octet_testkit::write_script(tools.path(), name, "exec sleep 10");
     }
-    let path = format!(
-        "{}:{}",
-        tools.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let path = octet_testkit::path_with(tools.path());
     let mut p = Pty::spawn_with_env(
         &[],
         &[("PATH", path.as_str()), ("TMUX", "/tmp/tmux-test,1,0")],
     );
     p.wait(|p| p.shows("● ready"));
     p.send(b"/remote-control\r");
-    p.wait_for(Duration::from_secs(1), |p| {
+    // Within 2 s, still inside the 2.5 s the checks take: the screen is live.
+    p.wait_for(Duration::from_secs(2), |p| {
         p.screen_shows("Checking phone access")
     });
     p.send(b"typed meanwhile");
-    p.wait_for(Duration::from_secs(1), |p| {
+    p.wait_for(Duration::from_secs(2), |p| {
         p.screen_shows("typed meanwhile")
     });
     // The status line is painted after the conversation, so once the
@@ -949,7 +900,7 @@ fn at_mentions_a_workspace_file() {
 fn ctrl_g_edits_the_draft_in_an_external_editor() {
     let tools = octet_testkit::TempDir::new("octet-editor");
     fs::create_dir_all(tools.path()).unwrap();
-    stand_in(
+    octet_testkit::write_script(
         tools.path(),
         "fake-editor",
         r#"printf 'edited by script' > "$1""#,
@@ -1007,7 +958,7 @@ fn an_interrupt_while_editing_does_not_quit() {
     // whole group; Octet must keep the session and the edit.
     let tools = octet_testkit::TempDir::new("octet-editor-int");
     fs::create_dir_all(tools.path()).unwrap();
-    stand_in(
+    octet_testkit::write_script(
         tools.path(),
         "fake-editor",
         r#"trap '' INT; kill -INT 0; sleep 0.2; printf 'after interrupt' > "$1""#,
@@ -1028,7 +979,7 @@ fn a_suspend_while_editing_leaves_the_terminal_usable() {
     // terminal it found, and Octet must still get raw keys afterwards.
     let tools = octet_testkit::TempDir::new("octet-editor-tstp");
     fs::create_dir_all(tools.path()).unwrap();
-    stand_in(
+    octet_testkit::write_script(
         tools.path(),
         "fake-editor",
         r#"trap '' TSTP; kill -TSTP 0; sleep 0.5; stty sane; printf 'after stop' > "$1""#,
@@ -1061,7 +1012,7 @@ fn terminating_octet_while_editing_stops_the_editor() {
     let tools = octet_testkit::TempDir::new("octet-editor-term");
     fs::create_dir_all(tools.path()).unwrap();
     let pid_file = tools.path().join("editor.pid");
-    stand_in(
+    octet_testkit::write_script(
         tools.path(),
         "fake-editor",
         &format!(

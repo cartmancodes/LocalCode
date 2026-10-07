@@ -56,12 +56,8 @@ async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
 /// A fake vendor from a shell script, in a directory that lives as long as
 /// the returned guard.
 fn script_vendor(name: &str, body: &str) -> (octet_testkit::TempDir, std::path::PathBuf) {
-    use std::os::unix::fs::PermissionsExt;
     let dir = octet_testkit::TempDir::new(name);
-    std::fs::create_dir_all(dir.path()).unwrap();
-    let path = dir.path().join("vendor");
-    std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = octet_testkit::write_script(dir.path(), "vendor", body);
     (dir, path)
 }
 #[tokio::test]

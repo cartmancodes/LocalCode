@@ -2,7 +2,7 @@
 #![cfg(unix)]
 // Test code: an unwrap that fails is the test failing.
 #![allow(clippy::unwrap_used)]
-use std::{os::unix::fs::PermissionsExt, path::Path, process::Command};
+use std::{path::Path, process::Command};
 
 fn script(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -47,15 +47,13 @@ fn publish(tag: &str, view_exit: i32) -> Vec<String> {
     std::fs::create_dir_all(&dist).unwrap();
     std::fs::write(dist.join("octet.tar.gz"), "x").unwrap();
     let log = dir.path().join("gh.log");
-    let gh = bin.join("gh");
-    std::fs::write(
-        &gh,
-        "#!/bin/sh\necho \"$*\" >> \"$GH_LOG\"\n\
-         if [ \"$1 $2\" = \"release view\" ]; then exit \"$GH_VIEW_EXIT\"; fi\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    octet_testkit::write_script(
+        &bin,
+        "gh",
+        "echo \"$*\" >> \"$GH_LOG\"\n\
+         if [ \"$1 $2\" = \"release view\" ]; then exit \"$GH_VIEW_EXIT\"; fi",
+    );
+    let path = octet_testkit::path_with(&bin);
     let status = Command::new(script("release-publish.sh"))
         .args([tag, dist.to_str().unwrap()])
         .env("PATH", path)

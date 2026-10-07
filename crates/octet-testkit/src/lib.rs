@@ -78,6 +78,62 @@ fn testkit_bin(name: &str) -> PathBuf {
     profile_dir.join(name)
 }
 
+/// Writes an executable shell script `dir/name` (creating `dir`): a
+/// `#!/bin/sh` line, then `body`. Returns its path.
+///
+/// # Panics
+///
+/// If the script cannot be written.
+pub fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).expect("script directory");
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("script");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("mode");
+    path
+}
+
+/// `PATH` with `dir` first, so programs written there shadow real ones.
+pub fn path_with(dir: &Path) -> String {
+    format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+/// Waits for `child` to exit, collecting its output, at most `limit`.
+///
+/// # Panics
+///
+/// If it has not exited within `limit`, or cannot be waited for.
+pub fn wait_child(child: std::process::Child, limit: Duration) -> std::process::Output {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(child.wait_with_output()));
+    rx.recv_timeout(limit)
+        .expect("the process did not exit in time")
+        .expect("wait for the process")
+}
+
+/// Each line `output` prints, read on a thread of its own.
+pub fn line_reader(
+    output: impl std::io::Read + Send + 'static,
+) -> std::sync::mpsc::Receiver<String> {
+    use std::io::BufRead;
+    let (tx, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(output)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    lines
+}
+
 /// The journal record format; `octet_store::FORMAT` is pinned to it by a
 /// store test.
 pub const JOURNAL_FORMAT: &str = "octet-preview-1";

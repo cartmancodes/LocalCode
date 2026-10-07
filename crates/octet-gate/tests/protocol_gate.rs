@@ -3,12 +3,7 @@
 // Test code: an unwrap that fails is the test failing.
 #![allow(clippy::unwrap_used)]
 use serde_json::{json, Value};
-use std::{
-    fs,
-    os::unix::fs::PermissionsExt,
-    process::Command,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::process::Command;
 
 /// A probe expected to fail waits out its whole budget, so that budget is short.
 fn probe_engine(engine: &str, scenario: &str, frames: &[Value]) -> Value {
@@ -20,28 +15,25 @@ fn passing_probe_engine(engine: &str, scenario: &str, frames: &[Value]) -> Value
     probe_engine_within(engine, scenario, frames, 20)
 }
 fn probe_engine_within(engine: &str, scenario: &str, frames: &[Value], seconds: u64) -> Value {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let root = std::env::temp_dir().join(format!(
-        "octet-gate-test-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::create_dir(&root).unwrap();
-    let executable = root.join("vendor");
+    let root = octet_testkit::TempDir::new("octet-gate-test");
     let wire = frames
         .iter()
         .map(Value::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    fs::write(&executable, format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo fixture; exit; fi\ncat <<'WIRE'\n{wire}\nWIRE\ncat >/dev/null\n")).unwrap();
-    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let executable = octet_testkit::write_script(
+        root.path(),
+        "vendor",
+        &format!(
+            "if [ \"$1\" = --version ]; then echo fixture; exit; fi\ncat <<'WIRE'\n{wire}\nWIRE\ncat >/dev/null"
+        ),
+    );
     let output = Command::new(env!("CARGO_BIN_EXE_protocol-gate"))
         .args(["--engine", engine, "--scenario", scenario, "--binary"])
         .arg(&executable)
         .args(["--timeout", &seconds.to_string()])
         .output()
         .unwrap();
-    fs::remove_dir_all(root).unwrap();
     serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("gate output: {:?}", output))
 }
 fn probe(scenario: &str, events: Vec<Value>) -> Value {

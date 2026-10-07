@@ -6,6 +6,7 @@
 // Test code: an unwrap that fails is the test failing.
 #![allow(clippy::unwrap_used)]
 use std::path::{Path, PathBuf};
+mod common;
 
 const MARKERS: [&str; 12] = [
     ".credentials.json",
@@ -23,22 +24,22 @@ const MARKERS: [&str; 12] = [
 ];
 const SECRET_SUFFIXES: [&str; 4] = ["API_KEY", "OAUTH_TOKEN", "SESSION_KEY", "AUTH_TOKEN"];
 
-/// A quoted all-caps name ending in a secret suffix, wherever it appears:
-/// `.env(`, `.envs(`, `set_var(`, an env list, or a call rustfmt split across
-/// lines so the name stands alone.
+/// A name ending in a secret suffix inside a quoted literal, wherever it
+/// appears: `.env(`, `.envs(`, `set_var(`, an env list, a call rustfmt split
+/// across lines, or a name built at run time (`"_API_KEY"`,
+/// `format!("{vendor}_API_KEY")`). A suffix in the middle of a name
+/// (`API_KEY_HELP`) is not a secret name.
 fn secret_names(line: &str) -> Vec<String> {
-    let bytes = line.as_bytes();
     let mut names = Vec::new();
-    for (start, _) in line.match_indices('"') {
-        let rest = &bytes[start + 1..];
-        let len = rest
-            .iter()
-            .take_while(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || **b == b'_')
-            .count();
-        if len > 0 && rest.get(len) == Some(&b'"') && rest[0].is_ascii_uppercase() {
-            let name = &line[start + 1..start + 1 + len];
-            if SECRET_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)) {
-                names.push(name.to_owned());
+    let mut quoted = line.split('"');
+    // The text before the first quote is code, then literals and code alternate.
+    quoted.next();
+    for literal in quoted.step_by(2) {
+        let tokens =
+            literal.split(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'));
+        for token in tokens {
+            if SECRET_SUFFIXES.iter().any(|suffix| token.ends_with(suffix)) {
+                names.push(token.to_owned());
             }
         }
     }
@@ -63,18 +64,15 @@ fn violations(source: &str) -> Vec<(usize, String)> {
     found
 }
 
-fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            if path.file_name().is_some_and(|name| name == "target") {
-                continue;
-            }
-            rust_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
-        }
+/// Everything the guard reads: the crates' Rust sources, and the scripts
+/// and workflows that run with the repository's secrets nearby.
+fn guarded_files() -> Vec<PathBuf> {
+    let root = common::root();
+    let mut files = common::files_under(&root.join("crates"), &common::is_rust);
+    for dir in ["scripts", ".github"] {
+        files.extend(common::files_under(&root.join(dir), &|_| true));
     }
+    files
 }
 
 #[test]
@@ -103,11 +101,9 @@ fn raw_strings_are_scanned() {
 
 #[test]
 fn workspace_names_no_credential_store() {
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let this = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/credentials.rs");
-    let mut files = Vec::new();
-    rust_files(&crates, &mut files);
-    assert!(files.len() > 10, "found only {} Rust files", files.len());
+    let files = guarded_files();
+    assert!(files.len() > 10, "found only {} files", files.len());
     let mut report = Vec::new();
     for file in files {
         if file.canonicalize().unwrap() == this.canonicalize().unwrap() {
@@ -163,6 +159,28 @@ fn no_keychain_crate_is_a_dependency() {
         assert!(
             !lock.contains(&format!("name = \"{name}\"")),
             "{name} would let harness code read the OS keychain"
+        );
+    }
+}
+
+#[test]
+fn secret_names_built_at_run_time_are_caught() {
+    for shape in [
+        "let name = \"_API_KEY\";\n",
+        "let name = format!(\"{vendor}_API_KEY\");\n",
+        "cmd.env(format!(\"{}_OAUTH_TOKEN\", prefix), token);\n",
+    ] {
+        assert!(!violations(shape).is_empty(), "missed: {shape}");
+    }
+}
+
+#[test]
+fn the_guard_reads_scripts_and_workflows() {
+    let files = guarded_files();
+    for expected in ["scripts/rust-env.sh", ".github/workflows/release.yml"] {
+        assert!(
+            files.iter().any(|file| file.ends_with(expected)),
+            "{expected} is not guarded"
         );
     }
 }

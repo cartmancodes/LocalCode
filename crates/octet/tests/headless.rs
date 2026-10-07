@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used)]
 use serde_json::{json, Value};
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::Write,
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc,
     time::Duration,
@@ -42,9 +42,7 @@ fn run(args: &[&str], input: &str) -> (i32, String, String) {
         .unwrap()
         .write_all(input.as_bytes())
         .unwrap();
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || tx.send(child.wait_with_output().unwrap()));
-    let output = rx.recv_timeout(LIMIT).expect("octet did not exit");
+    let output = octet_testkit::wait_child(child, LIMIT);
     (
         output.status.code().unwrap_or(-1),
         String::from_utf8(output.stdout).unwrap(),
@@ -117,14 +115,7 @@ impl Rpc {
         let (mut child, temp) = octet(&["--rpc"]);
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().unwrap();
-        let (tx, lines) = mpsc::channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                if tx.send(line.unwrap()).is_err() {
-                    break;
-                }
-            }
-        });
+        let lines = octet_testkit::line_reader(stdout);
         Self {
             child,
             stdin,
@@ -149,10 +140,8 @@ impl Rpc {
     }
     fn exit_code(mut self) -> i32 {
         drop(self.stdin.take());
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || tx.send(self.child.wait().unwrap()));
-        rx.recv_timeout(LIMIT)
-            .expect("octet did not exit")
+        octet_testkit::wait_child(self.child, LIMIT)
+            .status
             .code()
             .unwrap_or(-1)
     }
@@ -193,14 +182,7 @@ fn print_sigint_interrupts_the_turn_and_exits_130() {
     let (mut child, _temp) = octet(&["--print", "hold", "--output", "json"]);
     drop(child.stdin.take());
     let stdout = child.stdout.take().unwrap();
-    let (tx, lines) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            if tx.send(line.unwrap()).is_err() {
-                break;
-            }
-        }
-    });
+    let lines = octet_testkit::line_reader(stdout);
     loop {
         let line = lines.recv_timeout(LIMIT).expect("the turn never started");
         if line.contains(r#""type":"started""#) {
@@ -215,9 +197,10 @@ fn print_sigint_interrupts_the_turn_and_exits_130() {
         last.as_deref(),
         Some(r#"{"data":"interrupted","type":"finished"}"#)
     );
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || tx.send(child.wait().unwrap()));
-    assert_eq!(rx.recv_timeout(LIMIT).unwrap().code(), Some(130));
+    assert_eq!(
+        octet_testkit::wait_child(child, LIMIT).status.code(),
+        Some(130)
+    );
 }
 
 #[test]
@@ -261,14 +244,7 @@ fn rpc_denies_approvals_once_stdin_closes() {
 fn with_lines(args: &[&str]) -> (Child, mpsc::Receiver<String>, octet_testkit::TempDir) {
     let (mut child, temp) = octet(args);
     let stdout = child.stdout.take().unwrap();
-    let (tx, lines) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            if tx.send(line.unwrap()).is_err() {
-                break;
-            }
-        }
-    });
+    let lines = octet_testkit::line_reader(stdout);
     (child, lines, temp)
 }
 
@@ -283,13 +259,11 @@ fn wait_line(lines: &mpsc::Receiver<String>, wanted: &str) {
 }
 
 /// Sends `signal` to `child` and returns its exit code.
-fn signal_and_wait(mut child: Child, signal: libc::c_int) -> Option<i32> {
+fn signal_and_wait(child: Child, signal: libc::c_int) -> Option<i32> {
     let pid = libc::pid_t::try_from(child.id()).unwrap();
     // SAFETY: kill only sends a signal to our own child process.
     assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || tx.send(child.wait().unwrap()));
-    rx.recv_timeout(LIMIT).unwrap().code()
+    octet_testkit::wait_child(child, LIMIT).status.code()
 }
 
 #[test]
@@ -349,9 +323,10 @@ fn print_shuts_down_when_stdout_closes() {
     drop(child.stdin.take());
     // Nobody reads the replies: the first write fails.
     drop(child.stdout.take());
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || tx.send(child.wait().unwrap()));
-    assert_eq!(rx.recv_timeout(LIMIT).unwrap().code(), Some(1));
+    assert_eq!(
+        octet_testkit::wait_child(child, LIMIT).status.code(),
+        Some(1)
+    );
     assert!(last_journal_record(temp.path()).contains(r#""type":"stopped""#));
 }
 
@@ -360,9 +335,7 @@ fn an_argument_prompt_over_the_limit_is_refused_before_opening() {
     let long = "x".repeat(70 * 1024);
     let (mut child, temp) = octet(&["--print", &long]);
     drop(child.stdin.take());
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || tx.send(child.wait_with_output().unwrap()));
-    let output = rx.recv_timeout(LIMIT).unwrap();
+    let output = octet_testkit::wait_child(child, LIMIT);
     assert_eq!(output.status.code(), Some(2), "a usage error");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("The prompt is over 64 KiB"), "{stderr}");
