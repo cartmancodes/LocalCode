@@ -68,12 +68,12 @@ will not be merged.
   build if a crate names a vendor credential store or sets a secret-looking
   environment variable.
 - **Approvals fail closed.** Octet never answers a vendor's permission request
-  by itself. Anything expired, cancelled, too large to show or not understood
-  is denied.
+  by itself. Anything expired, cancelled, too large to show, over the cap of
+  eight waiting, or not understood is denied.
 - **Stay bounded.** Queues, buffers, journals and the visible transcript all
   have limits (listed in [docs/tui.md](docs/tui.md)). New data paths need a
   limit too, and an overload must stop the session visibly rather than drop
-  output silently.
+  output silently. (The one cut, a reply over 2 MiB, ends with a note.)
 - **Journals are private.** They hold prompts, source code and tool output.
   Keep their files at mode 0600 and never overwrite one.
 

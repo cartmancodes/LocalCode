@@ -23,8 +23,11 @@ Start Octet normally, for example:
 
 Esc/Ctrl+C pauses an active goal while interrupting its turn. Failed turns and
 the 200-turn guard also pause it. Once the guard is reached, set a new goal to
-continue. Model switches pause goals. Switching providers retains the objective
-but starts fresh vendor context; earlier conversation is not transferred.
+continue. Anything that reconnects the session pauses an active goal: `/model`,
+`/reconnect`, `/fork`, `/resume`, `/mode full-access` or a Claude `/effort`
+change; a new connection never continues a goal by itself. Switching providers
+retains the objective but starts fresh vendor context; earlier conversation is
+not transferred.
 
 Goal files are written atomically with private permissions. After restart, an
 active goal loads paused and requires `/goal resume`; no inference starts

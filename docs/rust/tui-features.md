@@ -19,9 +19,15 @@ removed from the repository on 2026-10-04.
 | Prompt editor | Multiline input, Unicode-aware cursor movement, bracketed paste, a 50-prompt history, and a 64 KiB prompt limit. Enter sends; Alt+Enter or Ctrl+J inserts a newline. The prompt box grows with the draft, from 4 rows up to 7. `@` file mentions with fuzzy search, Tab completion for paths and commands, Ctrl+G to edit in `$EDITOR`, and `!`/`!!` shell commands whose output can be attached to the next prompt. |
 | Conversation view | Scrollback, cached word wrapping, a responsive workspace panel, a help view, and a command palette that also offers Ctrl+G, `@` and `!`. The interface accepts terminals as small as 38 by 12 cells and respects `NO_COLOR`. |
 | Permission modes | `ask`, `accept-edits`, `auto` (the vendor's own reviewer decides) and `full-access`, mapped onto each vendor's settings. Set with `--mode`, `/mode` or Shift+Tab; `full-access` has to be typed and reconnects with every check off. The header shows the mode the vendor confirmed. |
-| Approval and cancellation | Command and file-change requests can be allowed once or denied in a modal showing the complete request. Esc or Ctrl+C cancels an active turn. Oversized, expired, cancelled and unknown requests are denied. An approval waits 120 seconds by default; `--approval-timeout SECONDS` sets 10–3600. When one opens, Octet rings the bell and sends a desktop notification (OSC 9). |
+| Approval and cancellation | Command and file-change requests can be allowed once or denied in a modal showing the complete request. Esc or Ctrl+C cancels an active turn. Oversized, expired, cancelled and unknown requests are denied, and so is any request beyond eight waiting at once; Claude is told the reason for each denial. An approval waits 120 seconds by default; `--approval-timeout SECONDS` sets 10–3600. When one opens, Octet rings the bell and sends a desktop notification (OSC 9). |
+| Follow-up queue and steering | Enter during a turn queues the prompt (up to 8, with its attachments); `/queue` lists or clears them, and Esc drops them with the turn. `/steer TEXT` adds to the running Codex turn; Claude has no steering request, so the text is queued. |
+| Reasoning effort | `--effort LEVEL` or `/effort LEVEL`; `/effort default` returns to the vendor default. Claude takes `low` to `max` and reconnects to apply it; Codex applies it from the next turn. |
+| Fork and compaction | `/fork` continues the conversation in a new vendor session and leaves the original untouched; `/compact` asks the vendor to compact its context, as a cancellable turn. |
+| Images | `/image PATH` attaches PNG, JPEG, GIF or WebP images to the next prompt: up to 5 MiB each and 4 per prompt (3.75 MiB each and 5.25 MiB together for Claude, which receives the bytes). Up recalls a prompt with its images. |
+| Session browser | `/sessions` lists up to 20 recent vendor sessions in this workspace, from Octet's journals; `/resume N` reopens one, switching provider if needed. |
+| Without the interface | `--print` (`-p`) runs one turn and writes the reply, `--output json` writes every event as a JSON line, and `--rpc` takes JSON-line commands on stdin. Print mode denies approvals; exit codes are 0, 1, 2 (usage), 130 (SIGINT) and 143 (SIGTERM). |
 | Phone access | Run Octet in tmux and reach it from a phone over Tailscale SSH and mosh. `/remote-control` checks tmux, Tailscale, SSH, mosh and tmux colour without changing anything, names the fix for each problem, and prints the exact Blink and Termius commands. The checks run in the background; see [Use Octet from your phone](../remote-control.md). |
-| Sessions and journals | `/new` starts a fresh vendor context; `/reconnect` reopens the current one. `--resume ID` opens a vendor session on launch. Events are written to a private JSONL journal before appearing in the UI. `/session` shows its path; `/export [NEW_PATH]` creates a copy without overwriting an existing file. |
+| Sessions and journals | `/new` starts a fresh vendor context; `/reconnect` reopens the current one. `--resume ID` opens a vendor session on launch. Events are written to a private JSONL journal before appearing in the UI. `/session` shows its path; `/export [NEW_PATH]` creates a copy without overwriting an existing file, in the background; a session that ends waits for it. |
 | Copy | `/copy` or Ctrl+X copies the last reply through OSC 52, including over tmux and mosh. |
 | Terminal lifecycle | Ctrl+C twice on an idle, empty prompt exits (the first press asks for confirmation), Ctrl+Z suspends for shell use, and terminal modes are restored on ordinary exit, supported signals, and panic. |
 | Mascot | Octet, the crimson octopus in the header, changes pose with activity: idle, thinking, coding, searching, delegating, approval, success, error and sleeping. Poses change on events only; `NO_COLOR` replaces it with a text mark. |
@@ -59,8 +65,9 @@ scripts/rust-env.sh cargo install --locked --path crates/octet --root "$HOME/.lo
 ```
 
 An existing executable at the destination needs to be resolved before install;
-this command intentionally does not force replacement. Prebuilt release archives
-and cross-architecture installers have not been published.
+this command intentionally does not force replacement. A pushed version tag
+builds release archives for macOS (Apple silicon) and Linux (x86-64, ARM64);
+none has been published yet, and there are no installers.
 
 Once the TUI is open, a typical sequence is:
 

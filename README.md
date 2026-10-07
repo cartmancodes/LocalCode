@@ -45,6 +45,8 @@ running across turns, and pick the session up from your phone.
   the vendor to compact its context, and `--effort` or `/effort` sets the
   reasoning effort.
 - `/image PATH` attaches PNG, JPEG, GIF or WebP images to the next prompt.
+- `/sessions`, `/export` and `/remote-control` run in the background, so
+  replies and approvals keep flowing while they work.
 
 **Scripts and other programs**
 
@@ -112,10 +114,12 @@ running across turns, and pick the session up from your phone.
 
 ## Status
 
-Octet is a working preview (v0.1.0). The release binary has been checked
-end to end against Claude Code 2.1.270 and Codex CLI 0.154: streaming, tool
-approvals, interrupts, all four permission modes, model switching, resume,
-goals, export and clean shutdown.
+Octet is a working preview (v0.1.0). On 2026-10-07 the release binary was
+checked end to end against Claude Code 2.1.289 and Codex CLI 0.154: streaming,
+tool approvals (allow and deny), interrupts, all four permission modes, model
+and provider switching, resume, fork, compaction, reasoning effort, images,
+steering, the session browser, `!` and `@`, goals, export, print/JSON/RPC
+modes and clean shutdown.
 
 Not yet supported: multi-agent (fleet) orchestration and quota routing, the
 vendors' plugin, hook and resource surfaces, Octet-owned history with
@@ -163,6 +167,10 @@ octet --engine codex --cwd /path/to/project      # Codex (the default engine)
 | `--binary PATH` | Use a specific CLI binary |
 | `--journal-dir PATH` | Where journals go (default `~/.local/share/octet/rust-preview`) |
 | `--approval-timeout SECONDS` | How long an approval waits before it is denied (10–3600) |
+| `--effort LEVEL` | Reasoning effort (`low`, `medium`, `high`, `xhigh`, `max` for Claude; Codex decides per model) |
+| `--print PROMPT`, `-p PROMPT` | Run one turn without the interface and write the reply; `-` reads the prompt from stdin |
+| `--output text\|json` | With `--print`: the reply text (default), or every event as a JSON line |
+| `--rpc` | Take JSON-line commands on stdin and write events as JSON lines |
 
 **Keys**
 
@@ -170,7 +178,8 @@ octet --engine codex --cwd /path/to/project      # Codex (the default engine)
 | --- | --- |
 | Enter | Send the prompt |
 | Alt+Enter, Ctrl+J | New line |
-| Esc | Cancel the running turn |
+| Esc | Cancel the running turn (and drop queued prompts) |
+| Up / Down | Prompt history |
 | Shift+Tab | Cycle permission mode: ask → accept-edits → auto |
 | A / D | Allow once / deny a permission request |
 | PageUp / PageDown | Scroll the conversation |
@@ -180,6 +189,7 @@ octet --engine codex --cwd /path/to/project      # Codex (the default engine)
 | Ctrl+G | Edit the prompt in $EDITOR |
 | Ctrl+X | Copy the last reply |
 | F1 | Help |
+| Ctrl+Z | Suspend to the shell |
 | Ctrl+C twice | Quit |
 
 **Commands**
@@ -194,9 +204,16 @@ octet --engine codex --cwd /path/to/project      # Codex (the default engine)
 | `/reconnect` | Reopen the current vendor session |
 | `/export [PATH]` | Copy the journal to a new file |
 | `/copy` | Copy the last reply to the clipboard |
+| `/queue [clear]` | Show or clear prompts queued during a turn |
+| `/steer TEXT` | Add to the running turn (Codex); queued as the next prompt for Claude |
+| `/effort [LEVEL \| default]` | Show or set the reasoning effort |
+| `/fork` | Continue this conversation in a new vendor session |
+| `/compact` | Ask the vendor to compact its context |
+| `/image PATH` | Attach an image to the next prompt |
+| `/sessions`, `/resume N` | List this workspace's recent sessions; reopen one |
 | `!cmd`, `!!cmd` | Run a shell command; `!` attaches its output to the next prompt |
 | `/remote-control` | Check phone access |
-| `/help`, `/quit` | Help; save and exit |
+| `/help`, `/quit` (`/exit`) | Help; save and exit |
 
 The full reference, including how each permission mode maps onto each vendor
 and every limit, is in [docs/tui.md](docs/tui.md).

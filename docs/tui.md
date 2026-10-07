@@ -51,8 +51,9 @@ octet --rpc                                              # JSON-line commands on
 
 - **`--print PROMPT` (`-p`)** runs one turn and writes the reply text to
   stdout; notices and errors go to stderr. `-` reads the prompt from stdin.
-  The exit code is 0 when the turn completes, 1 when it fails, 2 for a
-  usage error (a bad option, an empty or over-long prompt), and 130 after
+  The exit code is 0 when the turn completes, 1 when it fails (or stdin
+  cannot be read), 2 for a usage error (a bad option, an empty, over-long
+  or non-UTF-8 prompt, a `--cwd` path that is not UTF-8), and 130 after
   Ctrl+C (SIGINT), which cancels the turn first (also if the vendor then
   stops). SIGTERM stops the session and exits 143.
 - **`--output json`** writes every event as one JSON line in the journal's
@@ -75,7 +76,9 @@ octet --rpc                                              # JSON-line commands on
   exits 0 at once; RPC exits 1 if the vendor stops. SIGINT and SIGTERM stop
   the session cleanly, finishing its journal, and exit 130 and 143.
 
-Every headless run is journaled like an interactive one.
+Every headless run is journaled like an interactive one, and shuts its
+session down on every exit path, even when stdout or stderr has been closed
+(`octet -p … | head`).
 
 ## Interaction
 
@@ -153,14 +156,26 @@ It uses the OSC 52 escape. Inside tmux it needs
 `set -g set-clipboard on`; mosh 1.4 and later pass it on; terminal and
 phone apps vary in whether they accept it.
 
-Commands: `/help`, `/model`, `/mode`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/copy`,
-`/remote-control`, `/queue`, `/steer`, `/effort`, `/fork`, `/compact`, `/image`, `/sessions`, `/resume`, `/quit`.
+Commands: `/help`, `/model`, `/mode`, `/goal`, `/session`, `/new`, `/reconnect`, `/export [new-path]`, `/copy`,
+`/remote-control`, `/queue`, `/steer`, `/effort`, `/fork`, `/compact`, `/image`, `/sessions`, `/resume`,
+`/quit` (or `/exit`).
 Help (F1) and the command palette (Ctrl+P) scroll when the screen is short.
 `/remote-control` checks, without changing anything, whether this session can be
 reached from a phone over tmux, Tailscale SSH and mosh, and prints the phone
 command. Setup steps: [Use Octet from your phone](remote-control.md).
 The preview also supports persistent multi-turn goals through `/goal`.
-Changing sessions or exporting requires an idle turn. In the demo, a prompt
+Changing sessions or exporting requires an idle turn, and `/compact` a
+connected one; a refused command explains why on the status line.
+
+`/sessions`, `/export` and `/remote-control` run in the background: the
+status line names the job, and replies, approvals and keys keep working.
+One runs at a time; a second is refused with "Wait for: …" and its line stays
+in the prompt box. A session that ends (quit, `/new`, `/reconnect`, `/model`,
+`/fork`, `/resume`) waits up to 5 seconds for a running job, so an export is
+never cut short, and shows its result in the next screen; a job still
+running after that is stopped, with a note.
+
+In the demo, a prompt
 sent with `!` attachments (or by a goal) gets a reply that also shows the
 full text a model would receive. `/approval-demo` exercises
 the dialog in offline demo mode. Unknown preview commands return a visible error and leave the draft in place. A

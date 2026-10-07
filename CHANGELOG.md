@@ -67,6 +67,9 @@ Claude Code and Codex CLIs.
   attachments or a goal change it.
 - Stopping Octet (SIGTERM, SIGHUP) while an external editor is open asks the
   editor to quit instead of leaving it on the terminal.
+- At most eight approvals wait at once; more are denied with a notice. Claude
+  is told why each approval was denied (your refusal, the timeout, the cap,
+  a request too large to show, a cancelled turn).
 - Dual licensing under MIT or Apache-2.0.
 - CI on macOS and Ubuntu (`make rust-check`) plus a `cargo audit` job.
 
@@ -80,12 +83,34 @@ Claude Code and Codex CLIs.
 - A `!` command stopped by its time limit names that limit.
 - Release builds are about 40% smaller (thin LTO, stripped symbols).
 - The protocol gate moved to its own `octet-gate` crate.
+- `/sessions`, `/export` and `/remote-control` run in the background. One
+  runs at a time; a second is refused and keeps its line in the prompt box.
+  A session that ends waits up to 5 seconds for a running job, so an export
+  is never cut short, and shows its result in the next screen.
+- Usage errors exit 2 and other failures 1. Journal directories Octet
+  creates are private (0700).
 - Vendors come from one provider table, and each vendor's wire protocol is
   its own `Protocol` implementation, so adding a vendor CLI is one file and
   one row ([guide](docs/rust/adding-a-provider.md)). No behaviour change.
 
 ### Fixed
 
+- A reply over 2 MiB is cut with a note instead of stopping the session.
+- `NO_COLOR` now removes every colour, not only the mascot's.
+- Esc in the instant a queued prompt is sent cancels that prompt's turn.
+- `/steer` during a cancel is queued instead of lost; a failed `/image`
+  keeps its line; Up recalls a prompt's images even if sending failed.
+- `/fork` announces the fork only once the vendor names the new session.
+- An effort level Claude does not take is refused instead of breaking every
+  reconnect.
+- Print mode exits 130 after Ctrl+C even if the vendor then stops, handles
+  SIGTERM (143), reports an over-long stdin prompt as one, shuts the session
+  down when stdout or stderr is closed, and exits 1 when stdin cannot be
+  read.
+- A `--cwd` path that is not UTF-8 is refused.
+- In the demo, a cancel from before a turn no longer stops the next one.
+- The release workflow runs the checks, matches the tag to the version,
+  publishes `-` tags as pre-releases and can be re-run.
 - PTY acceptance tests stop sending Ctrl+C after terminal restoration and
   capture trailing shutdown output, avoiding false cleanup failures with live
   providers.
