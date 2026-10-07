@@ -1577,3 +1577,40 @@ async fn held_steers_are_bounded() {
         .unwrap()
         .unwrap();
 }
+#[tokio::test]
+async fn a_prompt_sent_during_the_demo_dialog_is_refused_and_counted() {
+    let mut c = config();
+    c.engine = Engine::DEMO;
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle
+        .send(Command::Prompt("/approval-demo".into()))
+        .unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::Approval { .. })).await;
+    // Refused while the dialog waits, and still counted as a turn sent.
+    handle.send(Command::Prompt("too soon".into())).unwrap();
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::Notice(t) if t.starts_with("Wait for the current operation")),
+    )
+    .await;
+    handle.interrupt();
+    wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
+    // A prompt sent after the cancel runs.
+    handle.send(Command::Prompt("after".into())).unwrap();
+    let outcome = wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
+    assert!(
+        matches!(
+            outcome,
+            Event::Finished {
+                outcome: Outcome::Completed
+            }
+        ),
+        "{outcome:?}"
+    );
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}

@@ -4,6 +4,7 @@
 use super::{
     protocol::{Core, Phase, Protocol},
     Channels, Command, Config, DriverError, Engine, Event, ImageAttachment, Limits, Mode, Outcome,
+    TurnGate, BUSY, FULL_ACCESS_RECONNECTS, NO_TURN,
 };
 use octet_proc::{Process, ProcessConfig};
 use serde_json::Value;
@@ -17,9 +18,8 @@ use tokio::{
 struct Driver<P> {
     core: Core,
     protocol: P,
-    /// Turn commands received so far, matched against the count the
-    /// interface had sent when it last cancelled.
-    turns_taken: u64,
+    /// Turn commands the user cancelled before they started.
+    gate: TurnGate,
 }
 
 /// Runs one session with protocol `P` until it stops.
@@ -49,7 +49,7 @@ pub(super) async fn run<P: Protocol>(
     let mut driver = Driver {
         core: Core::new::<P>(config, limits, process, events),
         protocol: P::default(),
-        turns_taken: 0,
+        gate: TurnGate::default(),
     };
     let result = driver.run(&mut commands, &mut cancel, &mut stopping).await;
     let report = driver.core.process.shutdown().await;
@@ -101,11 +101,7 @@ impl<P: Protocol> Driver<P> {
                 command = commands.recv() => match command {
                     None => break,
                     Some(command) => {
-                        let cancelled = command.starts_turn() && {
-                            self.turns_taken += 1;
-                            *cancel.borrow() >= self.turns_taken
-                        };
-                        if cancelled {
+                        if self.gate.cancelled(&command, cancel) {
                             self.cancelled_before_start(&command)?;
                         } else {
                             self.on_command(command).await?;
@@ -261,9 +257,7 @@ impl<P: Protocol> Driver<P> {
     /// session is not ready for one.
     fn begin_turn(&mut self, display: String) -> Result<bool, DriverError> {
         if !self.core.phase.is_ready() || self.core.phase.is_running() {
-            self.core.emit(Event::Notice(
-                "Wait for the current operation, or cancel it first".into(),
-            ))?;
+            self.core.emit(Event::Notice(BUSY.into()))?;
             return Ok(false);
         }
         self.core.phase = Phase::InTurn;
@@ -304,9 +298,7 @@ impl<P: Protocol> Driver<P> {
                 )));
             }
             _ => {
-                return self.core.emit(Event::Notice(
-                    "No turn is running; send it as a prompt".into(),
-                ));
+                return self.core.emit(Event::Notice(NO_TURN.into()));
             }
         }
         if self.protocol.steer(&mut self.core, &text).await? {
@@ -335,9 +327,7 @@ impl<P: Protocol> Driver<P> {
         // Refusals re-emit the current mode so the TUI clears its pending indicator.
         let core = &self.core;
         if target == Mode::FullAccess || core.mode == Mode::FullAccess {
-            core.emit(Event::Notice(
-                "Full access is changed by reconnecting; use /mode".into(),
-            ))?;
+            core.emit(Event::Notice(FULL_ACCESS_RECONNECTS.into()))?;
             core.emit(Event::ModeChanged(core.mode))
         } else if !core.phase.is_ready() {
             core.emit(Event::Notice(

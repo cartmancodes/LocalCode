@@ -563,6 +563,32 @@ fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), DriverError> {
     Ok(())
 }
 
+/// Refusal: a turn is already running or the session is not ready.
+const BUSY: &str = "Wait for the current operation, or cancel it first";
+/// Refusal: a steer with no turn to add to.
+const NO_TURN: &str = "No turn is running; send it as a prompt";
+/// Refusal: full access needs a new launch.
+const FULL_ACCESS_RECONNECTS: &str = "Full access is changed by reconnecting; use /mode";
+
+/// Recognises a turn command the user cancelled before it started. The
+/// interface counts the turn commands it sends, and a cancel carries that
+/// count; a turn numbered at or below it must not run.
+#[derive(Default)]
+struct TurnGate {
+    taken: u64,
+}
+impl TurnGate {
+    /// Counts `command` if it starts a turn; true if it was cancelled. The
+    /// cancel is not marked seen, so the caller still handles it.
+    fn cancelled(&mut self, command: &Command, cancel: &watch::Receiver<u64>) -> bool {
+        if !command.starts_turn() {
+            return false;
+        }
+        self.taken += 1;
+        *cancel.borrow() >= self.taken
+    }
+}
+
 /// Appends `item`, dropping and returning the oldest entry once `list` holds
 /// `max`, so per-connection lists stay bounded.
 fn push_bounded<T>(list: &mut Vec<T>, item: T, max: usize) -> Option<T> {
@@ -620,6 +646,19 @@ pub fn spawn_with_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_turn_gate_stops_only_turns_sent_before_a_cancel() {
+        let (cancel_tx, cancel) = watch::channel(0u64);
+        let mut gate = TurnGate::default();
+        let prompt = Command::Prompt("a".into());
+        // Only turn commands count.
+        assert!(!gate.cancelled(&Command::SetMode(Mode::Auto), &cancel));
+        assert!(!gate.cancelled(&prompt, &cancel));
+        // The interface had sent two turns when the user cancelled.
+        cancel_tx.send_modify(|sent| *sent = 2);
+        assert!(gate.cancelled(&Command::Compact, &cancel));
+        assert!(!gate.cancelled(&prompt, &cancel));
+    }
     #[test]
     fn one_huge_reply_is_cut_instead_of_stopping_the_session() {
         let (tx, mut rx) = mpsc::channel(EVENT_CAPACITY);

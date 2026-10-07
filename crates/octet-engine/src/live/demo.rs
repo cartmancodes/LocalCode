@@ -1,6 +1,7 @@
 //! Offline demo engine: no vendor process.
 use super::{
-    emit, BoxFuture, Channels, Command, Config, DriverError, Event, Limits, Mode, Outcome, Provider,
+    emit, BoxFuture, Channels, Command, Config, DriverError, Event, Limits, Mode, Outcome,
+    Provider, TurnGate, BUSY, FULL_ACCESS_RECONNECTS, NO_TURN,
 };
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
@@ -55,10 +56,7 @@ pub(super) fn demo_set_mode(
     target: Mode,
 ) -> Result<(), DriverError> {
     if target == Mode::FullAccess || *mode == Mode::FullAccess {
-        emit(
-            tx,
-            Event::Notice("Full access is changed by reconnecting; use /mode".into()),
-        )?;
+        emit(tx, Event::Notice(FULL_ACCESS_RECONNECTS.into()))?;
     } else {
         *mode = target;
     }
@@ -79,24 +77,22 @@ pub(super) async fn demo(
         },
     )?;
     emit(tx, Event::ModeChanged(mode))?;
-    // Turn commands received, matched against the count the interface had
-    // sent when it last cancelled, as the live driver does.
-    let mut turns_taken = 0u64;
+    // Turns the user cancelled before they started.
+    let mut gate = TurnGate::default();
     loop {
         tokio::select! {
             _ = stop.changed() => break,
             _ = cancel.changed() => {}
             command = commands.recv() => {
-                if let Some(turn) = command.as_ref().filter(|c| c.starts_turn()) {
-                    turns_taken += 1;
-                    // Marked seen, so the cancel cannot also stop a later turn.
-                    if *cancel.borrow_and_update() >= turns_taken {
-                        let display = turn.turn_display().unwrap_or_default().to_owned();
-                        emit(tx, Event::User(display))?;
-                        emit(tx, Event::Started)?;
-                        emit(tx, Event::Finished { outcome: Outcome::Interrupted })?;
-                        continue;
-                    }
+                if let Some(turn) = command.as_ref().filter(|c| gate.cancelled(c, &cancel)) {
+                    // Seen here: the demo has no other cancel step, and a stale
+                    // cancel would stop the next turn.
+                    cancel.borrow_and_update();
+                    let display = turn.turn_display().unwrap_or_default().to_owned();
+                    emit(tx, Event::User(display))?;
+                    emit(tx, Event::Started)?;
+                    emit(tx, Event::Finished { outcome: Outcome::Interrupted })?;
+                    continue;
                 }
                 let (text, display) = match command {
                     None => break,
@@ -106,7 +102,7 @@ pub(super) async fn demo(
                     }
                     Some(Command::Answer { .. }) => continue,
                     Some(Command::Steer(_)) => {
-                        emit(tx, Event::Notice("No turn is running; send it as a prompt".into()))?;
+                        emit(tx, Event::Notice(NO_TURN.into()))?;
                         continue;
                     }
                     Some(Command::SetEffort(_)) => {
@@ -127,6 +123,7 @@ pub(super) async fn demo(
                     cancel: &mut cancel,
                     stop: &mut stop,
                     tx,
+                    gate: &mut gate,
                 };
                 if turn.run(&text, display).await? == Flow::Stop {
                     return Ok(());
@@ -151,6 +148,8 @@ struct DemoTurn<'a> {
     cancel: &'a mut watch::Receiver<u64>,
     stop: &'a mut watch::Receiver<bool>,
     tx: &'a mpsc::Sender<Event>,
+    /// Counts turns refused while the dialog waits, as the interface did.
+    gate: &'a mut TurnGate,
 }
 
 impl DemoTurn<'_> {
@@ -237,10 +236,12 @@ impl DemoTurn<'_> {
                         self.tx,
                         Event::Notice("The offline demo has no reasoning effort".into()),
                     )?,
-                    Some(Command::Compact) => emit(
-                        self.tx,
-                        Event::Notice("Wait for the current operation, or cancel it first".into()),
-                    )?,
+                    // A turn sent now is refused, but counted, so a later
+                    // cancel still matches the interface's count.
+                    Some(turn) if turn.starts_turn() => {
+                        self.gate.cancelled(&turn, self.cancel);
+                        emit(self.tx, Event::Notice(BUSY.into()))?;
+                    }
                     command => break matches!(command, Some(Command::Answer { id: 1, allow: true })),
                 },
             }
