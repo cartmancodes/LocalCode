@@ -20,8 +20,22 @@ pub enum Files {
     Unbuilt,
     /// Asked for; the session loop starts the build.
     Wanted,
-    Building,
+    /// Being built on a plain thread (a walk stuck on a dead mount must not
+    /// hold up the runtime's shutdown, as `spawn_blocking` would); the index
+    /// arrives here.
+    Building(tokio::sync::oneshot::Receiver<Index>),
     Ready(Index),
+}
+
+impl Files {
+    /// Starts building the index of `root`.
+    pub fn build(root: std::path::PathBuf) -> Self {
+        let (built, index) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let _ = built.send(Index::build(&root));
+        });
+        Files::Building(index)
+    }
 }
 
 impl Index {

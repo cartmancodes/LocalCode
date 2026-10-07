@@ -63,20 +63,21 @@ async fn next_user_text(session: &mut Session) -> String {
         }
     }
 }
-#[test]
-fn a_finished_command_replaces_the_running_notice() {
+#[tokio::test]
+async fn a_finished_command_replaces_the_running_notice() {
     let mut app = app();
-    app.composer.shell_running = true;
+    app.shell = Some(crate::test_support::running_shell(true));
     app.status_line = "Running echo hi · Esc to stop".into();
-    shell_finished(&mut app, Ok(ran("echo hi", "hi\n")), true);
-    assert!(!app.composer.shell_running);
+    shell_finished(&mut app, Ok(ran("echo hi", "hi\n")));
+    assert!(!app.shell_running());
     assert_eq!(app.status_line, "$ echo hi · exit 0");
     assert_eq!(app.composer.attachments.len(), 1);
     let gone = shell::ShellError::Run {
         shell: "/x".into(),
         source: std::io::Error::other("gone"),
     };
-    shell_finished(&mut app, Err(gone), false);
+    app.shell = Some(crate::test_support::running_shell(false));
+    shell_finished(&mut app, Err(gone));
     assert_eq!(app.status_line, "Cannot run /x: gone");
 }
 #[tokio::test]
@@ -435,4 +436,14 @@ fn the_panic_hook_restores_only_on_the_loop_thread() {
         .join()
         .unwrap();
     assert!(!elsewhere);
+}
+#[tokio::test]
+async fn shell_running_follows_the_task() {
+    let mut app = app();
+    assert!(!app.shell_running());
+    app.shell = Some(crate::test_support::running_shell(false));
+    assert!(app.shell_running());
+    // Its end, in whatever way, settles it: no flag to repair later.
+    shell_finished(&mut app, Ok(ran("true", "")));
+    assert!(!app.shell_running());
 }

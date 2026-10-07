@@ -166,6 +166,43 @@ async fn run_with(
     })
 }
 
+/// A `!` command running in the background, and whether its output goes
+/// with the next prompt. Dropping it (a session that ends) aborts the run,
+/// whose guard kills the command's whole process group.
+pub(crate) struct Running {
+    task: tokio::task::JoinHandle<Result<Ran, ShellError>>,
+    cancel: Option<oneshot::Sender<()>>,
+    pub(crate) attach: bool,
+}
+impl Running {
+    /// Starts `command` in `root`.
+    pub(crate) fn spawn(command: String, root: std::path::PathBuf, attach: bool) -> Self {
+        let (cancel, cancelled) = oneshot::channel();
+        Self {
+            task: tokio::spawn(async move { run(&command, &root, cancelled).await }),
+            cancel: Some(cancel),
+            attach,
+        }
+    }
+    /// Asks the command to stop (Esc); its result still arrives.
+    pub(crate) fn cancel(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+    }
+    /// Waits for the command to end.
+    pub(crate) async fn wait(&mut self) -> Result<Ran, ShellError> {
+        (&mut self.task)
+            .await
+            .unwrap_or_else(|error| Err(error.into()))
+    }
+}
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 /// Blocks until `pid` exits, leaving it unreaped.
 fn wait_exit(pid: Option<u32>) {
     let Some(pid) = pid.and_then(|pid| libc::id_t::try_from(pid).ok()) else {

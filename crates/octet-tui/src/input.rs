@@ -292,6 +292,124 @@ fn completion_key(app: &mut App, key: KeyEvent) -> Option<Action> {
     Some(Action::Continue)
 }
 /// The draft: editing, history, sending, and the keys that act on the session.
+/// Ctrl+C or Esc: what the press stops.
+enum Stop {
+    /// Ctrl+C, with when a second press would quit.
+    CtrlC(Option<Instant>),
+    Esc,
+}
+/// Like Claude Code: Ctrl+C and Esc stop what runs (a `!` command, then a
+/// turn). Otherwise Ctrl+C clears the draft, else asks for a second press
+/// within the window to quit; Esc drops attachments, else follows the latest
+/// output.
+async fn stop_key(app: &mut App, vendor: &dyn Vendor, stop: Stop) -> Action {
+    if app.shell_running() {
+        return Action::CancelShell;
+    }
+    if app.is_busy() {
+        cancel_turn(app, vendor).await;
+        app.status(StatusKind::Cancelling, CANCELLING);
+        return Action::Continue;
+    }
+    match stop {
+        Stop::CtrlC(_) if !app.composer.editor.text().is_empty() => {
+            app.composer.editor.take();
+        }
+        Stop::CtrlC(armed) if armed.is_some_and(|deadline| Instant::now() < deadline) => {
+            return Action::Exit(Exit::Quit);
+        }
+        Stop::CtrlC(_) => {
+            app.quit_armed = Some(Instant::now() + QUIT_WINDOW);
+            app.status(StatusKind::QuitHint, QUIT_HINT);
+        }
+        Stop::Esc
+            if app.composer.editor.text().is_empty()
+                && !(app.composer.attachments.is_empty() && app.composer.images.is_empty()) =>
+        {
+            app.composer.attachments.clear();
+            app.composer.images.clear();
+            app.hint("Attachments removed");
+        }
+        Stop::Esc => app.chat.scroll = 0,
+    }
+    refresh_completion(app);
+    Action::Continue
+}
+/// Enter: runs a `!` line, a `/command`, or sends the draft as a prompt.
+async fn submit_draft(app: &mut App, vendor: &dyn Vendor) -> Action {
+    let draft = app.composer.editor.text().trim().to_owned();
+    if draft.is_empty() {
+        return Action::Continue;
+    }
+    if let Some(rest) = draft.strip_prefix('!') {
+        let (attach, command) = match rest.strip_prefix('!') {
+            Some(command) => (false, command.trim()),
+            None => (true, rest.trim()),
+        };
+        if command.is_empty() {
+            app.hint("Type a command after !");
+            return Action::Continue;
+        }
+        if app.shell_running() {
+            app.hint("A command is already running");
+            return Action::Continue;
+        }
+        let command = command.to_owned();
+        app.composer.editor.take();
+        app.remember(draft);
+        return Action::RunShell { command, attach };
+    }
+    // "/usr/lib is broken" is a prompt: no command name contains a slash.
+    let path_like = draft
+        .split_whitespace()
+        .next()
+        .and_then(|first| first.strip_prefix('/'))
+        .is_some_and(|name| name.contains('/'));
+    if draft.starts_with('/') && draft != octet_core::APPROVAL_DEMO && !path_like {
+        return match try_command(app, vendor, &draft).await {
+            Some(action) => {
+                app.composer.editor.take();
+                action
+            }
+            None => Action::Continue,
+        };
+    }
+    if submit(app, vendor, draft) {
+        app.composer.editor.take();
+    }
+    refresh_completion(app);
+    Action::Continue
+}
+/// Tab: completes a path or a command, off the loop.
+async fn tab_key(app: &mut App) {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    app.composer.listing.store(true, Ordering::SeqCst);
+    let listing = Listing(Arc::clone(&app.composer.listing));
+    let (text, cursor, root) = (
+        app.composer.editor.text().to_owned(),
+        app.composer.editor.cursor(),
+        app.composer.root.clone(),
+    );
+    let tab = off_loop(TAB_WAIT, move || {
+        // Released when the listing ends, even one Tab gave up on.
+        let _listing = listing;
+        composer::tab(&text, cursor, &root, home.as_deref())
+    })
+    .await;
+    match tab.unwrap_or_else(|| {
+        app.hint("That folder is slow to read; Tab gave up");
+        composer::Tab::Nothing
+    }) {
+        composer::Tab::Replace { start, text, popup } => {
+            if app.replace_or_warn(start, &text) {
+                app.composer.completion = popup;
+            }
+        }
+        composer::Tab::Popup(completion) => app.composer.completion = Some(completion),
+        composer::Tab::Mention(start) => open_mentions(app, start),
+        composer::Tab::Nothing => {}
+    }
+}
 async fn composer_key(
     app: &mut App,
     vendor: &dyn Vendor,
@@ -317,87 +435,15 @@ async fn composer_key(
         KeyCode::Char('u') if ctrl => {
             app.composer.editor.take();
         }
-        // Like Claude Code: stop what runs, else clear the draft, else ask
-        // for a second press within the window to quit.
-        KeyCode::Char('c') if ctrl => {
-            if app.composer.shell_running {
-                return Action::CancelShell;
-            } else if app.is_busy() {
-                cancel_turn(app, vendor).await;
-                app.status(StatusKind::Cancelling, CANCELLING);
-            } else if !app.composer.editor.text().is_empty() {
-                app.composer.editor.take();
-            } else if quit_armed.is_some_and(|deadline| Instant::now() < deadline) {
-                return Action::Exit(Exit::Quit);
-            } else {
-                app.quit_armed = Some(Instant::now() + QUIT_WINDOW);
-                app.status(StatusKind::QuitHint, QUIT_HINT);
-            }
-        }
-        KeyCode::Esc => {
-            if app.composer.shell_running {
-                return Action::CancelShell;
-            } else if app.is_busy() {
-                cancel_turn(app, vendor).await;
-                app.status(StatusKind::Cancelling, CANCELLING);
-            } else if app.composer.editor.text().is_empty()
-                && !(app.composer.attachments.is_empty() && app.composer.images.is_empty())
-            {
-                app.composer.attachments.clear();
-                app.composer.images.clear();
-                app.hint("Attachments removed");
-            } else {
-                app.chat.scroll = 0;
-            }
-        }
+        KeyCode::Char('c') if ctrl => return stop_key(app, vendor, Stop::CtrlC(quit_armed)).await,
+        KeyCode::Esc => return stop_key(app, vendor, Stop::Esc).await,
         KeyCode::PageUp => app.scroll_by(10),
         KeyCode::PageDown => app.scroll_by(-10),
         KeyCode::End if ctrl => app.follow_latest(),
         _ if newline => {
             app.insert_or_warn("\n");
         }
-        KeyCode::Enter => {
-            let draft = app.composer.editor.text().trim().to_owned();
-            if draft.is_empty() {
-                return Action::Continue;
-            }
-            if let Some(rest) = draft.strip_prefix('!') {
-                let (attach, command) = match rest.strip_prefix('!') {
-                    Some(command) => (false, command.trim()),
-                    None => (true, rest.trim()),
-                };
-                if command.is_empty() {
-                    app.hint("Type a command after !");
-                    return Action::Continue;
-                }
-                if app.composer.shell_running {
-                    app.hint("A command is already running");
-                    return Action::Continue;
-                }
-                let command = command.to_owned();
-                app.composer.editor.take();
-                app.remember(draft);
-                return Action::RunShell { command, attach };
-            }
-            // "/usr/lib is broken" is a prompt: no command name contains a slash.
-            let path_like = draft
-                .split_whitespace()
-                .next()
-                .and_then(|first| first.strip_prefix('/'))
-                .is_some_and(|name| name.contains('/'));
-            if draft.starts_with('/') && draft != octet_core::APPROVAL_DEMO && !path_like {
-                return match try_command(app, vendor, &draft).await {
-                    Some(action) => {
-                        app.composer.editor.take();
-                        action
-                    }
-                    None => Action::Continue,
-                };
-            }
-            if submit(app, vendor, draft) {
-                app.composer.editor.take();
-            }
-        }
+        KeyCode::Enter => return submit_draft(app, vendor).await,
         KeyCode::Up if app.composer.editor.text().contains('\n') => {
             app.composer.editor.vertical(false)
         }
@@ -415,35 +461,7 @@ async fn composer_key(
         KeyCode::Tab if app.composer.listing.load(Ordering::SeqCst) => {
             app.hint("Still reading the last folder; try Tab again in a moment");
         }
-        KeyCode::Tab => {
-            let home = std::env::var_os("HOME").map(PathBuf::from);
-            app.composer.listing.store(true, Ordering::SeqCst);
-            let listing = Listing(Arc::clone(&app.composer.listing));
-            let (text, cursor, root) = (
-                app.composer.editor.text().to_owned(),
-                app.composer.editor.cursor(),
-                app.composer.root.clone(),
-            );
-            let tab = off_loop(TAB_WAIT, move || {
-                // Released when the listing ends, even one Tab gave up on.
-                let _listing = listing;
-                composer::tab(&text, cursor, &root, home.as_deref())
-            })
-            .await;
-            match tab.unwrap_or_else(|| {
-                app.hint("That folder is slow to read; Tab gave up");
-                composer::Tab::Nothing
-            }) {
-                composer::Tab::Replace { start, text, popup } => {
-                    if app.replace_or_warn(start, &text) {
-                        app.composer.completion = popup;
-                    }
-                }
-                composer::Tab::Popup(completion) => app.composer.completion = Some(completion),
-                composer::Tab::Mention(start) => open_mentions(app, start),
-                composer::Tab::Nothing => {}
-            }
-        }
+        KeyCode::Tab => tab_key(app).await,
         KeyCode::Char(c) if !ctrl && !alt => {
             app.insert_or_warn(&c.to_string());
         }

@@ -5,6 +5,7 @@ mod clipboard;
 mod commands;
 mod composer;
 mod editor;
+mod event_loop;
 mod external;
 mod files;
 mod input;
@@ -20,20 +21,13 @@ mod vendor;
 mod view;
 use app::App;
 use commands::goal_send_failed;
-use crossterm::event::{Event as Input, KeyEventKind};
-use input::{key_action, paste, refresh_completion};
 use octet_core::goal::Next;
 use octet_core::{Command, Config, Session};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use registry::COMMANDS;
-use std::{
-    io::{self, Stdout},
-    path::PathBuf,
-    time::Duration,
-};
+use std::{io, path::PathBuf, time::Duration};
 pub(crate) use terminal::write_terminal;
-use terminal::{InputReader, TerminalGuard, alert, fit, regain_terminal};
-use tokio::time::Instant;
+use terminal::{TerminalGuard, alert};
 use vendor::{By, Vendor};
 /// Shown after the first Ctrl+C on an idle, empty prompt, as in Claude Code.
 pub(crate) const QUIT_HINT: &str = "Press Ctrl+C again to quit";
@@ -132,7 +126,9 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
             attach_goal_store(&mut app, goal_store.clone()).await;
         }
         app.connection(&config, session.journal().to_path_buf());
-        let result = run_session(&mut terminal, &guard, &mut app, &mut session, &mut signals).await;
+        let result =
+            event_loop::run_session(&mut terminal, &guard, &mut app, &mut session, &mut signals)
+                .await;
         session.shutdown().await;
         let exit = match result {
             Ok(exit) => exit,
@@ -225,244 +221,6 @@ impl Signals {
         }
     }
 }
-/// A `!` command running in the background.
-struct ShellTask {
-    task: tokio::task::JoinHandle<Result<shell::Ran, shell::ShellError>>,
-    cancel: Option<tokio::sync::oneshot::Sender<()>>,
-    attach: bool,
-}
-impl Drop for ShellTask {
-    /// A session that ends (a reconnect, a quit) takes its command with it:
-    /// aborting drops the run, whose guard kills the command's group.
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-async fn run_session(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    guard: &TerminalGuard,
-    app: &mut App,
-    session: &mut Session,
-    signals: &mut Signals,
-) -> io::Result<Exit> {
-    let mut input = Some(InputReader::new());
-    let mut dirty = true;
-    let mut last_paint = Instant::now() - Duration::from_secs(1);
-    let frame_time = Duration::from_millis(33);
-    let mut events_open = true;
-    // The running `!` command, if any.
-    let mut shell_task: Option<ShellTask> = None;
-    // The @ index, built on a plain thread: a walk stuck on a dead mount
-    // must not hold up the runtime's shutdown, as spawn_blocking would.
-    let mut index_task: Option<tokio::sync::oneshot::Receiver<files::Index>> = None;
-    // The external editor, while it has the terminal.
-    let mut editing: Option<(tokio::process::Child, external::Edit)> = None;
-    loop {
-        if dirty && editing.is_none() && last_paint.elapsed() >= frame_time {
-            terminal.draw(|f| view::draw(f, app))?;
-            last_paint = Instant::now();
-            dirty = false;
-        }
-        let quit_deadline = app.quit_armed;
-        tokio::select! {
-            _ = tokio::time::sleep_until(last_paint + frame_time), if dirty && editing.is_none() => {}
-            // The only timer outside painting: the quit hint expires.
-            _ = tokio::time::sleep_until(quit_deadline.unwrap_or(last_paint)), if quit_deadline.is_some() => {
-                app.quit_armed = None;
-                app.clear_status(app::StatusKind::QuitHint);
-                dirty = true;
-            }
-            event = session.events.recv(), if events_open => {
-                match event {
-                    Some(event) => {
-                        // Turn ends paint at once rather than waiting for the frame timer.
-                        if matches!(event, octet_core::Event::Finished { .. } | octet_core::Event::Error(_)) {
-                            last_paint = Instant::now() - frame_time;
-                        }
-                        session_event(app, &session.handle, event).await;
-                    }
-                    None => {
-                        events_open = false;
-                        app.event(octet_core::Event::Stopped);
-                    }
-                }
-                dirty = true;
-            }
-            ended = async {
-                match app.job.as_mut() {
-                    Some(running) => running.wait().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                app.job = None;
-                jobs::apply(app, ended);
-                dirty = true;
-            }
-            index = async {
-                match index_task.as_mut() {
-                    Some(task) => task.await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                index_task = None;
-                app.composer.files = match index {
-                    Ok(index) => files::Files::Ready(index),
-                    Err(_) => files::Files::Unbuilt,
-                };
-                refresh_completion(app);
-                dirty = true;
-            }
-            result = async {
-                match shell_task.as_mut() {
-                    Some(running) => (&mut running.task).await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                let attach = shell_task.take().is_some_and(|running| running.attach);
-                let result = result.unwrap_or_else(|error| Err(error.into()));
-                shell_finished(app, result, attach);
-                dirty = true;
-            }
-            status = async {
-                match editing.as_mut() {
-                    Some((child, _)) => child.wait().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                if let Some((_, edit)) = editing.take() {
-                    // The editor may have changed the terminal behind
-                    // crossterm's record of it; clear the record first.
-                    let _ = crossterm::terminal::disable_raw_mode();
-                    regain_terminal(guard, terminal, &mut input)?;
-                    match edit.finish(status.is_ok_and(|status| status.success())) {
-                        Ok(text) => app.composer.editor.set(text),
-                        Err(error) => app.error(error.to_string()),
-                    }
-                }
-                dirty = true;
-            }
-            event = async {
-                match input.as_mut() {
-                    Some(reader) => reader.events.recv().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                let action = match event {
-                    Some(Ok(Input::Key(key))) if key.kind != KeyEventKind::Release => {
-                        key_action(app, &session.handle, key).await
-                    }
-                    Some(Ok(Input::Paste(value))) => {
-                        paste(app, &value);
-                        Action::Continue
-                    }
-                    Some(Ok(Input::Resize(_, _))) => {
-                        fit(terminal)?;
-                        Action::Continue
-                    }
-                    Some(Err(e)) => return Err(e),
-                    None => return Ok(Exit::Quit),
-                    _ => Action::Continue,
-                };
-                match action {
-                    Action::Continue => {}
-                    // The command checked that no job is running.
-                    Action::Job(next) => {
-                        app.hint(next.label);
-                        app.job = Some(jobs::Running::spawn(next));
-                    }
-                    Action::ExternalEditor => {
-                        match external::prepare(app.composer.editor.text(), external::editor_command()) {
-                            Err(error) => app.error(error.to_string()),
-                            Ok(edit) => {
-                                // Stop reading keys so the editor gets them all.
-                                input = None;
-                                TerminalGuard::restore();
-                                match tokio::process::Command::new(&edit.program)
-                                    .args(&edit.args)
-                                    .arg(&edit.path)
-                                    .kill_on_drop(true)
-                                    .spawn()
-                                {
-                                    Ok(child) => editing = Some((child, edit)),
-                                    Err(error) => {
-                                        regain_terminal(guard, terminal, &mut input)?;
-                                        app.note(format!(
-                                            "Cannot start {}: {error}",
-                                            edit.program
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Action::RunShell { command, attach } => {
-                        let (cancel, cancelled) = tokio::sync::oneshot::channel();
-                        let root = app.composer.root.clone();
-                        app.composer.shell_running = true;
-                        app.hint(format!("Running {command} · Esc to stop"));
-                        shell_task = Some(ShellTask {
-                            task: tokio::spawn(async move {
-                                shell::run(&command, &root, cancelled).await
-                            }),
-                            cancel: Some(cancel),
-                            attach,
-                        });
-                    }
-                    Action::CancelShell => {
-                        if let Some(cancel) =
-                            shell_task.as_mut().and_then(|running| running.cancel.take())
-                        {
-                            let _ = cancel.send(());
-                        }
-                    }
-                    Action::Suspend => {
-                        guard.suspend()?;
-                        fit(terminal)?;
-                    }
-                    Action::Exit(exit) => return Ok(exit),
-                }
-                if matches!(app.composer.files, files::Files::Wanted) {
-                    let root = app.composer.root.clone();
-                    let (built, index) = tokio::sync::oneshot::channel();
-                    std::thread::spawn(move || {
-                        let _ = built.send(files::Index::build(&root));
-                    });
-                    index_task = Some(index);
-                    app.composer.files = files::Files::Building;
-                }
-                dirty = true;
-            }
-            // While an editor waits in cooked mode, Ctrl+C is meant for it.
-            _ = signals.interrupt.recv() => {
-                if editing.is_none() {
-                    return Ok(Exit::Quit);
-                }
-            }
-            _ = signals.term.recv() => {
-                stop_editor(&mut editing).await;
-                return Ok(Exit::Quit);
-            }
-            _ = signals.hup.recv() => {
-                stop_editor(&mut editing).await;
-                return Ok(Exit::Quit);
-            }
-            _ = signals.suspend.recv() => {
-                if editing.is_some() {
-                    // The editor owns the terminal and restores it on fg;
-                    // Octet only stops alongside it.
-                    // SAFETY: raise only delivers SIGSTOP to this process.
-                    unsafe {
-                        libc::raise(libc::SIGSTOP);
-                    }
-                } else {
-                    guard.suspend()?;
-                    fit(terminal)?;
-                    dirty = true;
-                }
-            }
-        }
-    }
-}
 /// Applies a vendor event, then advances a goal whose turn just ended.
 async fn session_event(app: &mut App, vendor: &dyn Vendor, event: octet_core::Event) {
     if let octet_core::Event::Text(text) = &event {
@@ -520,29 +278,10 @@ fn send_queued(app: &mut App, vendor: &dyn Vendor) {
         app.error(format!("A queued prompt could not be sent: {error}"));
     }
 }
-/// Asks a running editor to quit, so it can put the terminal back, and
-/// kills it if it has not within a second.
-async fn stop_editor(editing: &mut Option<(tokio::process::Child, external::Edit)>) {
-    let Some((child, _)) = editing.as_mut() else {
-        return;
-    };
-    if let Some(pid) = child.id().and_then(|pid| libc::pid_t::try_from(pid).ok()) {
-        // SAFETY: signals only the editor this session started.
-        unsafe {
-            libc::kill(pid, libc::SIGTERM);
-        }
-    }
-    if tokio::time::timeout(Duration::from_secs(1), child.wait())
-        .await
-        .is_err()
-    {
-        let _ = child.kill().await;
-    }
-}
 /// A `!` command's result: in the transcript, on the status line in place
 /// of "Running …", and attached when asked.
-fn shell_finished(app: &mut App, result: Result<shell::Ran, shell::ShellError>, attach: bool) {
-    app.composer.shell_running = false;
+fn shell_finished(app: &mut App, result: Result<shell::Ran, shell::ShellError>) {
+    let attach = app.shell.take().is_some_and(|running| running.attach);
     match result {
         Ok(ran) => {
             app.shell_output(&ran);

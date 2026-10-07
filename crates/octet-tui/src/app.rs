@@ -174,8 +174,6 @@ pub(crate) struct Composer {
     pub(crate) attachments: Vec<crate::shell::Ran>,
     /// Images waiting to go with the next prompt (`/image`).
     pub(crate) images: Vec<octet_core::ImageAttachment>,
-    /// A `!` command is running.
-    pub(crate) shell_running: bool,
     /// The suggestion popup, when open.
     pub(crate) completion: Option<crate::composer::Completion>,
     /// The workspace file index for `@`.
@@ -226,6 +224,8 @@ pub struct App {
     pub(crate) goals: octet_core::goal::GoalRunner,
     /// The one job running off the loop.
     pub(crate) job: Option<crate::jobs::Running>,
+    /// The running `!` command, if any.
+    pub(crate) shell: Option<crate::shell::Running>,
 }
 impl App {
     pub fn new(config: &octet_core::Config, journal: PathBuf) -> Self {
@@ -252,7 +252,6 @@ impl App {
                 attachments: Vec::new(),
                 images: Vec::new(),
                 listing: std::sync::Arc::default(),
-                shell_running: false,
                 completion: None,
                 files: crate::files::Files::Unbuilt,
                 queue: VecDeque::new(),
@@ -272,15 +271,13 @@ impl App {
             quit_armed: None,
             goals: octet_core::goal::GoalRunner::default(),
             job: None,
+            shell: None,
         }
     }
     pub fn connection(&mut self, config: &octet_core::Config, journal: PathBuf) {
-        // Rebuilt per connection, so a build abandoned with the old session
-        // never leaves the index stuck at Building.
-        self.composer.files = crate::files::Files::Unbuilt;
         self.composer.completion = None;
-        // The old session's `!` command was dropped, and killed, with it.
-        if std::mem::take(&mut self.composer.shell_running) {
+        // A `!` command belongs to its session: dropping it kills its group.
+        if self.shell.take().is_some() {
             self.note("The running command stopped when the session changed");
         }
         // Only the last /sessions listing outlives a connection.
@@ -293,6 +290,10 @@ impl App {
         self.overlay.approvals.clear();
         self.overlay.approval_scroll = 0;
         self.goals.reset_turn();
+    }
+    /// A `!` command is running.
+    pub(crate) fn shell_running(&self) -> bool {
+        self.shell.is_some()
     }
     /// Neither connected nor stopped: the vendor is still starting.
     pub fn is_connecting(&self) -> bool {

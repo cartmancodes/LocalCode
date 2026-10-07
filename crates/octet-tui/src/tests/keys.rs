@@ -145,7 +145,7 @@ async fn bang_lines_run_locally_and_double_bang_does_not_attach() {
         Action::Continue
     ));
     assert_eq!(app.status_line, "Type a command after !");
-    app.composer.shell_running = true;
+    app.shell = Some(crate::test_support::running_shell(false));
     app.composer.editor.set("!ls".into());
     assert!(matches!(
         key_action(&mut app, &session.handle, key(KeyCode::Enter)).await,
@@ -225,7 +225,7 @@ async fn another_key_or_an_expired_window_disarms_quit() {
         Action::Continue
     ));
     // The window has passed: the press arms again instead of quitting.
-    app.quit_armed = Some(Instant::now() - Duration::from_millis(1));
+    app.quit_armed = Some(tokio::time::Instant::now() - Duration::from_millis(1));
     assert!(matches!(
         key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue

@@ -28,10 +28,10 @@ fn copy_takes_the_whole_reply_with_its_tabs() {
     });
     assert_eq!(app.composer.attachments[0].output, "all:\n\tcargo build\n");
 }
-#[test]
-fn a_new_connection_settles_the_old_sessions_command_and_popup() {
+#[tokio::test]
+async fn a_new_connection_settles_the_old_sessions_command_and_popup() {
     let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
-    app.composer.shell_running = true;
+    app.shell = Some(crate::test_support::running_shell(false));
     app.composer.completion = Some(crate::composer::Completion {
         kind: crate::composer::Kind::File,
         items: Vec::new(),
@@ -40,10 +40,7 @@ fn a_new_connection_settles_the_old_sessions_command_and_popup() {
     });
     let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     app.connection(&config, "journal-2".into());
-    assert!(
-        !app.composer.shell_running,
-        "the old session's command is gone"
-    );
+    assert!(!app.shell_running(), "the old session's command is gone");
     assert!(app.composer.completion.is_none());
     assert!(
         app.entries_text()
