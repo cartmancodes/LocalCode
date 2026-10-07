@@ -1,12 +1,12 @@
 //! Print, JSON and RPC modes: one session without the terminal interface.
 //! Approvals fail closed: print mode denies them, RPC clients answer them.
-use crate::args::{check_prompt_size, CliError};
-use octet_core::{event_json, Command, Config, Event, Mode, Outcome, Session};
+use crate::args::{CliError, check_prompt_size};
+use octet_core::{Command, Config, Event, Mode, Outcome, Session, event_json};
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    signal::unix::{signal, Signal, SignalKind},
+    signal::unix::{Signal, SignalKind, signal},
     sync::mpsc,
 };
 

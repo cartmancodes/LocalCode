@@ -103,7 +103,7 @@ pub(crate) fn apply(app: &mut App, ended: Ended) {
         Ended::Done(done) => done,
         Ended::Failed(error) => return app.error(format!("A background task failed: {error}")),
         Ended::Stopped(label) => {
-            return app.error(format!("{label} did not finish in time and was stopped"))
+            return app.error(format!("{label} did not finish in time and was stopped"));
         }
     };
     match done {

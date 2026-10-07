@@ -29,9 +29,11 @@ async fn demo_turn_is_journaled_and_export_never_overwrites() {
     octet_core::export_journal(&session.journal, &exported)
         .await
         .unwrap();
-    assert!(octet_core::export_journal(&session.journal, &exported)
-        .await
-        .is_err());
+    assert!(
+        octet_core::export_journal(&session.journal, &exported)
+            .await
+            .is_err()
+    );
     let text = tokio::fs::read_to_string(&exported).await.unwrap();
     assert!(text.contains("hello journal"));
     let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
@@ -100,9 +102,11 @@ async fn journal_keeps_engine_and_outcome_spelling() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(records[0]["data"]["engine"], "demo");
-    assert!(records
-        .iter()
-        .any(|record| record["type"] == "finished" && record["data"] == "completed"));
+    assert!(
+        records
+            .iter()
+            .any(|record| record["type"] == "finished" && record["data"] == "completed")
+    );
 }
 #[tokio::test]
 async fn the_session_uses_the_configured_approval_window() {

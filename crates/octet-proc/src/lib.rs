@@ -16,7 +16,7 @@ use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::{Child, ChildStdin, Command},
-    sync::{mpsc, Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore},
+    sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore, mpsc},
     task::JoinHandle,
     time::timeout,
 };

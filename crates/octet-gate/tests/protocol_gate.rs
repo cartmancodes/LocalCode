@@ -2,7 +2,7 @@
 #![cfg(unix)]
 // Test code: an unwrap that fails is the test failing.
 #![allow(clippy::unwrap_used)]
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::process::Command;
 
 /// A probe expected to fail waits out its whole budget, so that budget is short.
@@ -90,10 +90,12 @@ fn interrupt_terminal_can_precede_acknowledgement() {
 #[test]
 fn simple_probe_requires_expected_reply() {
     let done = terminal("t", &json!("u"), "completed");
-    assert!(probe("simple", vec![done.clone()])["status"]
-        .as_str()
-        .unwrap()
-        .starts_with("failed:"));
+    assert!(
+        probe("simple", vec![done.clone()])["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("failed:")
+    );
     let answer = json!({"method":"item/completed","params":{"threadId":"t","turnId":"u","item":{"type":"agentMessage","text":"READY"}}});
     assert_eq!(
         passing_probe("simple", vec![answer, done])["status"],
@@ -115,12 +117,14 @@ fn claude_checks_result_and_accepts_terminal_before_interrupt_ack() {
         passing_probe_engine("claude", "simple", &[init.clone(), done])["status"],
         "passed"
     );
-    assert!(probe_engine(
-        "claude",
-        "simple",
-        &[init, json!({"type":"result","result":"READY"})]
-    )["status"]
-        .as_str()
-        .unwrap()
-        .starts_with("failed:"));
+    assert!(
+        probe_engine(
+            "claude",
+            "simple",
+            &[init, json!({"type":"result","result":"READY"})]
+        )["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("failed:")
+    );
 }

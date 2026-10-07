@@ -1,14 +1,14 @@
 //! Claude Code stream-json protocol: launch arguments, control requests and
 //! the frame handler.
 use super::{
-    check_inline, limited,
+    BoxFuture, Channels, Config, DriverError, Event, ImageAttachment, Limits, Mode, ModelInfo,
+    Outcome, Provider, check_inline, limited,
     mode::confirm_mode,
     model_catalog_with,
     protocol::{Core, Phase, Protocol},
-    push_bounded, valid_identifier, BoxFuture, Channels, Config, DriverError, Event,
-    ImageAttachment, Limits, Mode, ModelInfo, Outcome, Provider,
+    push_bounded, valid_identifier,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::ffi::OsString;
 use tokio::{sync::mpsc, time::Instant};
 
@@ -233,13 +233,13 @@ impl Protocol for ClaudeProtocol {
         if kind == "control_response" && self.control_response(core, &v)? {
             return Ok(());
         }
-        if let Some(id) = v["session_id"].as_str() {
-            if core.session != id {
-                core.session = id.to_owned();
-                core.emit(Event::Ready {
-                    session: core.session.clone(),
-                })?;
-            }
+        if let Some(id) = v["session_id"].as_str()
+            && core.session != id
+        {
+            core.session = id.to_owned();
+            core.emit(Event::Ready {
+                session: core.session.clone(),
+            })?;
         }
         let actual = match kind {
             "system" if v["subtype"] == "init" => v["model"].as_str(),
@@ -247,11 +247,11 @@ impl Protocol for ClaudeProtocol {
             "stream_event" => v["event"]["message"]["model"].as_str(),
             _ => None,
         };
-        if let Some(model) = actual.filter(|model| valid_identifier(model)) {
-            if self.selected_model != model {
-                self.selected_model = model.into();
-                core.emit(Event::ModelSelected(self.selected_model.clone()))?;
-            }
+        if let Some(model) = actual.filter(|model| valid_identifier(model))
+            && self.selected_model != model
+        {
+            self.selected_model = model.into();
+            core.emit(Event::ModelSelected(self.selected_model.clone()))?;
         }
         if kind == "control_request" {
             let permission =
@@ -295,10 +295,11 @@ impl Protocol for ClaudeProtocol {
                     .into_iter()
                     .flatten()
                 {
-                    if !self.streamed && block["type"] == "text" {
-                        if let Some(text) = block["text"].as_str() {
-                            core.emit(Event::Text(text.into()))?;
-                        }
+                    if !self.streamed
+                        && block["type"] == "text"
+                        && let Some(text) = block["text"].as_str()
+                    {
+                        core.emit(Event::Text(text.into()))?;
                     }
                     if block["type"] == "tool_use" {
                         let name = block["name"].as_str().unwrap_or("tool");

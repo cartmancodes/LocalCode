@@ -1,12 +1,12 @@
 //! Presentation-independent session boundary. Persist events before publishing;
 //! disk and subscriber failures stop execution instead of losing output silently.
 pub use octet_engine::live::{
-    check_inline, encoded_len, valid_effort, Command, Config, Engine, Event, Handle,
-    ImageAttachment, ImageError, Mode, Outcome, SendError, DEFAULT_APPROVAL_TIMEOUT,
-    IMAGES_PER_PROMPT, IMAGE_LIMIT, PROMPT_LIMIT,
+    Command, Config, DEFAULT_APPROVAL_TIMEOUT, Engine, Event, Handle, IMAGE_LIMIT,
+    IMAGES_PER_PROMPT, ImageAttachment, ImageError, Mode, Outcome, PROMPT_LIMIT, SendError,
+    check_inline, encoded_len, valid_effort,
 };
 use octet_store::Journal;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
 use tokio::{sync::mpsc, time::timeout};
 /// A running session: commands go in through `handle`, journaled events
@@ -213,7 +213,7 @@ pub mod goal;
 pub mod model;
 pub mod sessions;
 pub use octet_store::JournalSummary;
-pub use sessions::{recent_sessions, RecentSession};
+pub use sessions::{RecentSession, recent_sessions};
 
 pub use octet_engine::live::ModelInfo;
 

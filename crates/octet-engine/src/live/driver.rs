@@ -2,9 +2,9 @@
 //! lives in its own file as a `Protocol`; this loop owns the timers,
 //! approvals and commands, and calls the protocol for the rest.
 use super::{
+    BUSY, Channels, Command, Config, DriverError, Engine, Event, FULL_ACCESS_RECONNECTS,
+    ImageAttachment, Limits, Mode, NO_TURN, Outcome, TurnGate,
     protocol::{Core, Phase, Protocol},
-    Channels, Command, Config, DriverError, Engine, Event, ImageAttachment, Limits, Mode, Outcome,
-    TurnGate, BUSY, FULL_ACCESS_RECONNECTS, NO_TURN,
 };
 use octet_proc::{Process, ProcessConfig};
 use serde_json::Value;

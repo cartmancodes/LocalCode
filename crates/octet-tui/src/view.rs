@@ -3,7 +3,7 @@
 use crate::{
     app::App,
     mascot,
-    registry::{Cmd, COMMANDS},
+    registry::{COMMANDS, Cmd},
 };
 use ratatui::{
     prelude::*,
@@ -294,13 +294,14 @@ fn completion_popup(frame: &mut Frame, composer: Rect, app: &App) {
             Style::default().fg(MUTED),
         )));
     }
-    if let crate::files::Files::Ready(index) = &app.composer.files {
-        if index.capped && completion.kind == crate::composer::Kind::File {
-            lines.push(Line::from(Span::styled(
-                format!(" Indexed the first {} files", crate::files::LIMIT),
-                Style::default().fg(MUTED),
-            )));
-        }
+    if let crate::files::Files::Ready(index) = &app.composer.files
+        && index.capped
+        && completion.kind == crate::composer::Kind::File
+    {
+        lines.push(Line::from(Span::styled(
+            format!(" Indexed the first {} files", crate::files::LIMIT),
+            Style::default().fg(MUTED),
+        )));
     }
     let title = match completion.kind {
         crate::composer::Kind::File => " Files · Enter choose · Esc close ",

@@ -1,6 +1,6 @@
 use super::*;
 use octet_core::Event;
-use ratatui::{backend::TestBackend, Terminal};
+use ratatui::{Terminal, backend::TestBackend};
 fn screen(width: u16, height: u16, app: &mut App) -> Vec<String> {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|frame| draw(frame, app)).unwrap();
@@ -435,21 +435,24 @@ mod model_detail_tests {
         assert!(visible.contains("256 entries"));
         assert!(visible.contains("Name 240"));
         assert!(a.chat.scroll > 0);
-        assert!(a
-            .chat
-            .entries
-            .iter()
-            .any(|e| e.text.contains("full-id-255")));
-        assert!(a
-            .chat
-            .entries
-            .iter()
-            .any(|e| e.text.contains("Requested selection")));
-        assert!(!a
-            .chat
-            .entries
-            .iter()
-            .any(|e| e.text.contains("full-id-0\n")));
+        assert!(
+            a.chat
+                .entries
+                .iter()
+                .any(|e| e.text.contains("full-id-255"))
+        );
+        assert!(
+            a.chat
+                .entries
+                .iter()
+                .any(|e| e.text.contains("Requested selection"))
+        );
+        assert!(
+            !a.chat
+                .entries
+                .iter()
+                .any(|e| e.text.contains("full-id-0\n"))
+        );
         let count = a.chat.entries.len();
         a.show_models(usize::MAX);
         assert_eq!(a.chat.entries.len(), count + 1);

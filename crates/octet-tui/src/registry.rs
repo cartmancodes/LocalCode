@@ -260,9 +260,11 @@ mod tests {
             }
         }
         for (i, a) in COMMANDS.iter().enumerate() {
-            assert!(COMMANDS[i + 1..]
-                .iter()
-                .all(|b| b.id != a.id && b.name != a.name));
+            assert!(
+                COMMANDS[i + 1..]
+                    .iter()
+                    .all(|b| b.id != a.id && b.name != a.name)
+            );
         }
         assert!(Spec::find("/bogus").is_none());
     }

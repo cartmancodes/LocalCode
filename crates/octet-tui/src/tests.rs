@@ -130,14 +130,18 @@ fn full_access_notice_says_what_the_reconnect_does() {
         entering.ends_with("Reconnecting to the same session…"),
         "{entering}"
     );
-    assert!(full_access_notice(Mode::FullAccess, Engine::CLAUDE, "")
-        .ends_with("Starting a new session (no session ID yet)…"));
+    assert!(
+        full_access_notice(Mode::FullAccess, Engine::CLAUDE, "")
+            .ends_with("Starting a new session (no session ID yet)…")
+    );
     assert!(
         full_access_notice(Mode::Ask, Engine::DEMO, "demo · offline")
             .ends_with("Restarting the offline demo…")
     );
-    assert!(full_access_notice(Mode::Ask, Engine::CODEX, "thread")
-        .starts_with("Leaving full access for ask."));
+    assert!(
+        full_access_notice(Mode::Ask, Engine::CODEX, "thread")
+            .starts_with("Leaving full access for ask.")
+    );
 }
 #[tokio::test]
 async fn reconnect_pauses_an_active_goal_and_names_the_previous_journal() {
@@ -289,16 +293,19 @@ fn a_fork_is_announced_when_the_vendor_names_it() {
     app.event(octet_core::Event::Ready {
         session: "forked".into(),
     });
-    assert!(app
-        .entries_text()
-        .contains("Forked from original into forked"));
+    assert!(
+        app.entries_text()
+            .contains("Forked from original into forked")
+    );
     assert!(app.conn.forking_from.is_none());
     let mut failed = self::app();
     failed.conn.forking_from = Some("original".into());
     failed.event(octet_core::Event::Stopped);
-    assert!(failed
-        .entries_text()
-        .contains("The fork from original did not open; /reconnect tries again"));
+    assert!(
+        failed
+            .entries_text()
+            .contains("The fork from original did not open; /reconnect tries again")
+    );
 }
 #[test]
 fn resume_opens_the_session_without_forking_and_with_an_effort_it_takes() {

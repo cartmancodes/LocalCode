@@ -1,5 +1,5 @@
 //! The prompt box's attachment and completion logic, free of terminal I/O.
-use crate::shell::{Ran, CUT};
+use crate::shell::{CUT, Ran};
 use std::path::Path;
 
 #[derive(Clone, Copy, PartialEq, Debug)]

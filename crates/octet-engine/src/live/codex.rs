@@ -1,12 +1,12 @@
 //! Codex app-server JSON-RPC protocol: session setup, the model catalog,
 //! server requests and turn notifications.
 use super::{
-    limited, model_catalog_with,
+    BoxFuture, Channels, Config, DriverError, EVENT_BYTES, Event, ImageAttachment, Limits, Mode,
+    ModelInfo, Outcome, Provider, limited, model_catalog_with,
     protocol::{Core, Phase, Protocol},
-    push_bounded, valid_identifier, BoxFuture, Channels, Config, DriverError, Event,
-    ImageAttachment, Limits, Mode, ModelInfo, Outcome, Provider, EVENT_BYTES,
+    push_bounded, valid_identifier,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
@@ -205,10 +205,10 @@ impl Protocol for CodexProtocol {
         if !core.phase.is_running() {
             return Ok(());
         }
-        if let Some(event_turn) = v.pointer("/params/turnId").and_then(Value::as_str) {
-            if Some(event_turn) != self.turn.as_deref() {
-                return Ok(());
-            }
+        if let Some(event_turn) = v.pointer("/params/turnId").and_then(Value::as_str)
+            && Some(event_turn) != self.turn.as_deref()
+        {
+            return Ok(());
         }
         match method {
             "item/agentMessage/delta" => {
@@ -226,10 +226,10 @@ impl Protocol for CodexProtocol {
                 let item = &v["params"]["item"];
                 match item["type"].as_str().unwrap_or("") {
                     "agentMessage" if method == "item/completed" => {
-                        if !self.text_items.contains(item["id"].as_str().unwrap_or("")) {
-                            if let Some(text) = item["text"].as_str() {
-                                core.emit(Event::Text(text.into()))?;
-                            }
+                        if !self.text_items.contains(item["id"].as_str().unwrap_or(""))
+                            && let Some(text) = item["text"].as_str()
+                        {
+                            core.emit(Event::Text(text.into()))?;
                         }
                     }
                     "commandExecution" | "fileChange" | "mcpToolCall" => {

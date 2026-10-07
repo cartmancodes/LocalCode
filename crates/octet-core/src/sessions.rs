@@ -1,6 +1,6 @@
 //! Recent vendor sessions in a workspace, read from Octet's own journals.
 use crate::Engine;
-use octet_store::{journal_stamp, read_summary, JournalSummary};
+use octet_store::{JournalSummary, journal_stamp, read_summary};
 use std::path::{Path, PathBuf};
 
 /// The most journals [`recent_sessions`] reads, newest first, so a long

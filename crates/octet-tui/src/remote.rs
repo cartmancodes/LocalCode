@@ -6,7 +6,7 @@ use std::{process::Stdio, time::Duration};
 use tokio::{
     net::TcpStream,
     process::Command,
-    time::{timeout, timeout_at, Instant},
+    time::{Instant, timeout, timeout_at},
 };
 
 /// All commands share one deadline, so the interface waits at most this

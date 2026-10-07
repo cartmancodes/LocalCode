@@ -398,13 +398,15 @@ mod tests {
         let dir = octet_testkit::TempDir::new("octet-files-git");
         std::fs::create_dir_all(dir.path()).unwrap();
         let run_git = |args: &[&str]| {
-            assert!(std::process::Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .output()
-                .unwrap()
-                .status
-                .success());
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(dir.path())
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
         };
         run_git(&["init", "-q"]);
         for (name, text) in [

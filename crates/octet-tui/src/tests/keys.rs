@@ -331,10 +331,11 @@ async fn unknown_command_keeps_the_draft() {
         .unwrap();
     let mut app = App::new(&config, session.journal.clone());
     let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-    assert!(app
-        .composer
-        .editor
-        .insert("/nope is not a command, keep my words"));
+    assert!(
+        app.composer
+            .editor
+            .insert("/nope is not a command, keep my words")
+    );
     assert!(matches!(
         key_action(&mut app, &session.handle, enter).await,
         Action::Continue
@@ -347,10 +348,11 @@ async fn unknown_command_keeps_the_draft() {
     app.composer.editor.take();
     // A path is a prompt, not a command.
     app.conn.phase = ConnPhase::Idle;
-    assert!(app
-        .composer
-        .editor
-        .insert("/usr/lib is where this breaks, please look"));
+    assert!(
+        app.composer
+            .editor
+            .insert("/usr/lib is where this breaks, please look")
+    );
     assert!(matches!(
         key_action(&mut app, &session.handle, enter).await,
         Action::Continue
@@ -479,8 +481,9 @@ async fn one_tab_listing_at_a_time() {
         .listing
         .store(false, std::sync::atomic::Ordering::SeqCst);
     key_action(&mut app, &vendor, key(KeyCode::Tab)).await;
-    assert!(!app
-        .composer
-        .listing
-        .load(std::sync::atomic::Ordering::SeqCst));
+    assert!(
+        !app.composer
+            .listing
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
 }

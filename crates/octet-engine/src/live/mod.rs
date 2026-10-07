@@ -17,7 +17,7 @@ mod protocol;
 pub use claude::claude_stray_reply;
 pub use codex::codex_stray_reply;
 pub use image::{
-    check_inline, encoded_len, ImageAttachment, ImageError, IMAGES_PER_PROMPT, IMAGE_LIMIT,
+    IMAGE_LIMIT, IMAGES_PER_PROMPT, ImageAttachment, ImageError, check_inline, encoded_len,
 };
 pub use mode::Mode;
 
@@ -544,12 +544,12 @@ fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), DriverError> {
         Event::Tool(text) => {
             return tx
                 .try_send(Event::Tool(limited(&text)))
-                .map_err(|_| DriverError::ConsumerOverloaded)
+                .map_err(|_| DriverError::ConsumerOverloaded);
         }
         event => {
             return tx
                 .try_send(event)
-                .map_err(|_| DriverError::ConsumerOverloaded)
+                .map_err(|_| DriverError::ConsumerOverloaded);
         }
     };
     let room = tx.capacity().saturating_sub(TEXT_RESERVE) * EVENT_BYTES;
@@ -698,13 +698,15 @@ mod tests {
                 "the queue overflowed"
             );
         }
-        assert!(emit(
-            &tx,
-            Event::Finished {
-                outcome: Outcome::Completed
-            }
-        )
-        .is_ok());
+        assert!(
+            emit(
+                &tx,
+                Event::Finished {
+                    outcome: Outcome::Completed
+                }
+            )
+            .is_ok()
+        );
         let mut text = String::new();
         while let Ok(Event::Text(chunk)) = rx.try_recv() {
             text.push_str(&chunk);

@@ -1,7 +1,7 @@
 //! Offline demo engine: no vendor process.
 use super::{
-    emit, BoxFuture, Channels, Command, Config, DriverError, Event, Limits, Mode, Outcome,
-    Provider, TurnGate, BUSY, FULL_ACCESS_RECONNECTS, NO_TURN,
+    BUSY, BoxFuture, Channels, Command, Config, DriverError, Event, FULL_ACCESS_RECONNECTS, Limits,
+    Mode, NO_TURN, Outcome, Provider, TurnGate, emit,
 };
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};

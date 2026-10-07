@@ -257,9 +257,10 @@ async fn slash_queue_lists_and_clears() {
 async fn effort_command_shows_and_sets() {
     let mut app = app();
     command(&mut app, "/effort").await;
-    assert!(app
-        .entries_text()
-        .contains("Reasoning effort: vendor default"));
+    assert!(
+        app.entries_text()
+            .contains("Reasoning effort: vendor default")
+    );
     // Codex takes effort per turn: no reconnect.
     assert_eq!(
         sends(&mut app, "/effort high").await,
@@ -294,18 +295,21 @@ async fn fork_needs_an_idle_vendor_session() {
         command(&mut fresh, "/fork").await,
         Action::Continue
     ));
-    assert!(fresh
-        .entries_text()
-        .contains("No vendor session to fork yet"));
+    assert!(
+        fresh
+            .entries_text()
+            .contains("No vendor session to fork yet")
+    );
     let mut demo = crate::test_support::app_for(octet_core::Engine::DEMO);
     demo.conn.phase = ConnPhase::Idle;
     assert!(matches!(
         command(&mut demo, "/fork").await,
         Action::Continue
     ));
-    assert!(demo
-        .entries_text()
-        .contains("The offline demo has no context to fork"));
+    assert!(
+        demo.entries_text()
+            .contains("The offline demo has no context to fork")
+    );
 }
 #[tokio::test]
 async fn compact_needs_an_idle_session() {
@@ -361,9 +365,10 @@ async fn oversized_or_unknown_images_are_refused() {
         command(&mut app, &format!("/image {file}")).await;
     }
     assert_eq!(app.composer.images.len(), 4);
-    assert!(app
-        .entries_text()
-        .contains("A prompt takes at most 4 images"));
+    assert!(
+        app.entries_text()
+            .contains("A prompt takes at most 4 images")
+    );
     assert!(crate::view::composer_title(&app).contains("+4 images"));
     // Esc on an empty prompt drops them.
     let (_temp, session) = demo_session("octet-image-esc").await;
@@ -422,9 +427,10 @@ async fn resume_picks_the_listed_session() {
     ));
     assert!(app.entries_text().contains("That is this session"));
     command(&mut app, "/resume 9").await;
-    assert!(app
-        .entries_text()
-        .contains("No session 9; /sessions listed 2"));
+    assert!(
+        app.entries_text()
+            .contains("No session 9; /sessions listed 2")
+    );
 }
 #[tokio::test]
 async fn claude_refuses_images_it_cannot_take_inline() {
@@ -439,9 +445,10 @@ async fn claude_refuses_images_it_cannot_take_inline() {
     let mut app = crate::test_support::app_for(octet_core::Engine::CLAUDE);
     app.composer.root = dir.path().to_path_buf();
     command(&mut app, "/image big.png").await;
-    assert!(app
-        .entries_text()
-        .contains("big.png is over 3.75 MiB, the largest image Claude accepts"));
+    assert!(
+        app.entries_text()
+            .contains("big.png is over 3.75 MiB, the largest image Claude accepts")
+    );
     command(&mut app, "/image a.png").await;
     command(&mut app, "/image b.png").await;
     assert_eq!(app.composer.images.len(), 1);
@@ -480,9 +487,11 @@ async fn effort_refuses_a_level_claude_does_not_take() {
         command(&mut claude, "/effort bogus").await,
         Action::Continue
     ));
-    assert!(claude
-        .entries_text()
-        .contains("Claude takes effort low, medium, high, xhigh or max"));
+    assert!(
+        claude
+            .entries_text()
+            .contains("Claude takes effort low, medium, high, xhigh or max")
+    );
 }
 #[tokio::test]
 async fn every_command_needing_no_open_turn_refuses_the_same_way() {
@@ -555,9 +564,10 @@ async fn a_session_ending_waits_for_its_job_and_reports_it() {
     // Shown in whichever interface comes next.
     let mut next = app();
     crate::jobs::apply(&mut next, ended.expect("a job was running"));
-    assert!(next
-        .entries_text()
-        .contains("Exported journal to out.jsonl"));
+    assert!(
+        next.entries_text()
+            .contains("Exported journal to out.jsonl")
+    );
 }
 #[tokio::test]
 async fn a_job_that_outlives_its_session_is_stopped_with_a_note() {
@@ -573,7 +583,9 @@ async fn a_job_that_outlives_its_session_is_stopped_with_a_note() {
         "{}",
         next.entries_text()
     );
-    assert!(crate::jobs::finish(None, Duration::from_secs(5))
-        .await
-        .is_none());
+    assert!(
+        crate::jobs::finish(None, Duration::from_secs(5))
+            .await
+            .is_none()
+    );
 }

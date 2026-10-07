@@ -121,15 +121,33 @@ mod tests {
         let io = || std::io::Error::other("disk full");
         let save = || Box::new(GoalError::Save(io()));
         let cases: Vec<(String, &str)> = vec![
-            (GoalError::InvalidObjective.to_string(), "Goal must be 1–8192 bytes on one line"),
-            (GoalError::Read(io()).to_string(), "Cannot read goal: disk full"),
+            (
+                GoalError::InvalidObjective.to_string(),
+                "Goal must be 1–8192 bytes on one line",
+            ),
+            (
+                GoalError::Read(io()).to_string(),
+                "Cannot read goal: disk full",
+            ),
             (GoalError::TooLarge.to_string(), "Goal file exceeds 48 KiB"),
-            (GoalError::MissingObjective.to_string(), "Goal objective missing"),
+            (
+                GoalError::MissingObjective.to_string(),
+                "Goal objective missing",
+            ),
             (GoalError::InvalidStatus.to_string(), "Invalid goal status"),
-            (GoalError::InvalidTurns.to_string(), "Invalid goal turn count"),
+            (
+                GoalError::InvalidTurns.to_string(),
+                "Invalid goal turn count",
+            ),
             (GoalError::InvalidPath.to_string(), "Invalid goal path"),
-            (GoalError::Save(io()).to_string(), "Cannot save goal: disk full"),
-            (GoalError::Clear(io()).to_string(), "Cannot clear goal: disk full"),
+            (
+                GoalError::Save(io()).to_string(),
+                "Cannot save goal: disk full",
+            ),
+            (
+                GoalError::Clear(io()).to_string(),
+                "Cannot clear goal: disk full",
+            ),
             (
                 GoalError::AlreadyActive.to_string(),
                 "Pause or clear the active goal before replacing it",
@@ -176,15 +194,27 @@ mod tests {
                 "Cannot write transcript journal: disk full",
             ),
             (
-                ExportError::Read { path: "/a".into(), source: io() }.to_string(),
+                ExportError::Read {
+                    path: "/a".into(),
+                    source: io(),
+                }
+                .to_string(),
                 "Cannot read journal /a: disk full",
             ),
             (
-                ExportError::Create { path: "/b".into(), source: io() }.to_string(),
+                ExportError::Create {
+                    path: "/b".into(),
+                    source: io(),
+                }
+                .to_string(),
                 "Cannot create /b: disk full",
             ),
             (
-                ExportError::Write { path: "/b".into(), source: io() }.to_string(),
+                ExportError::Write {
+                    path: "/b".into(),
+                    source: io(),
+                }
+                .to_string(),
                 "Cannot write /b: disk full",
             ),
         ];

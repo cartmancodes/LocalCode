@@ -1,7 +1,7 @@
 //! The JSON-line transport against a scripted child: framing, limits,
 //! back-pressure, stderr capture and process-group shutdown.
 use octet_proc::{Process, ProcessConfig, ProcessError, ShutdownStage};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
 use tokio::time::timeout;
 
@@ -243,9 +243,11 @@ async fn cancelled_write_closes_pipe_without_corrupting_next_frame() {
     let mut process = Process::spawn(&cfg).unwrap();
     let sender = process.sender();
     let value = json!({"large": "x".repeat(2 * 1024 * 1024)});
-    assert!(timeout(Duration::from_millis(100), sender.send(&value))
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(100), sender.send(&value))
+            .await
+            .is_err()
+    );
     assert!(matches!(
         sender.send(&json!({})).await,
         Err(ProcessError::StdinClosed)

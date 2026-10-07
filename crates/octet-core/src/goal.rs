@@ -1,7 +1,7 @@
 //! Durable, provider-neutral goal state. A vendor turn is never resumed merely
 //! because a goal file exists; the user explicitly resumes after restart.
 use crate::{GoalError, Outcome};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// Turns a goal may take before it pauses for the user.
@@ -348,10 +348,10 @@ impl GoalRunner {
     }
     async fn save_or_pause(&mut self) -> Result<(), GoalError> {
         let saved = self.save().await;
-        if saved.is_err() {
-            if let Some(goal) = &mut self.goal {
-                goal.status = Status::Paused;
-            }
+        if saved.is_err()
+            && let Some(goal) = &mut self.goal
+        {
+            goal.status = Status::Paused;
         }
         saved
     }
@@ -613,15 +613,18 @@ mod tests {
     #[test]
     fn prompts_name_their_step() {
         let goal = Goal::new("Ship the app").unwrap();
-        assert!(goal
-            .prompt(GoalStep::Begin)
-            .contains("Begin the objective."));
-        assert!(goal
-            .prompt(GoalStep::Continue)
-            .contains("Continue the objective"));
-        assert!(goal
-            .prompt(GoalStep::Audit)
-            .contains("Audit the entire objective"));
+        assert!(
+            goal.prompt(GoalStep::Begin)
+                .contains("Begin the objective.")
+        );
+        assert!(
+            goal.prompt(GoalStep::Continue)
+                .contains("Continue the objective")
+        );
+        assert!(
+            goal.prompt(GoalStep::Audit)
+                .contains("Audit the entire objective")
+        );
         assert!(goal.summary().contains("Status: Active"));
     }
     #[test]

@@ -190,11 +190,13 @@ mod tests {
     fn a_failed_or_oversized_edit_keeps_the_draft() {
         let failed = edit("keep");
         let path = failed.path.clone();
-        assert!(failed
-            .finish(false)
-            .unwrap_err()
-            .to_string()
-            .contains("draft is unchanged"));
+        assert!(
+            failed
+                .finish(false)
+                .unwrap_err()
+                .to_string()
+                .contains("draft is unchanged")
+        );
         assert!(!path.exists());
         let big = edit("keep");
         std::fs::write(&big.path, "x".repeat(octet_core::PROMPT_LIMIT + 1)).unwrap();

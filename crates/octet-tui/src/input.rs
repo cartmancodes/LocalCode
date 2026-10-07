@@ -1,11 +1,12 @@
 //! Keys, paste and the prompt box's popups: what each key does in each state.
 use crate::{
+    Action, Exit, QUIT_HINT, QUIT_WINDOW,
     app::{App, CANCELLING, QUEUE_LIMIT},
     clipboard,
     commands::{command, try_command},
     composer, files,
     registry::COMMANDS,
-    text, view, write_terminal, Action, Exit, QUIT_HINT, QUIT_WINDOW,
+    text, view, write_terminal,
 };
 use crate::{
     commands::switch_mode,
@@ -16,8 +17,8 @@ use octet_core::Command;
 use std::{
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -58,12 +59,11 @@ pub(crate) fn palette_key(app: &mut App, key: &str) -> Action {
                 .next_back()
                 .is_some_and(|c| !c.is_whitespace());
             let mention = if after_word { " @" } else { "@" };
-            if app.insert_or_warn(mention) {
-                if let Some((start, _)) =
+            if app.insert_or_warn(mention)
+                && let Some((start, _)) =
                     composer::mention_at(&app.composer.editor.text, app.composer.editor.cursor)
-                {
-                    open_mentions(app, start);
-                }
+            {
+                open_mentions(app, start);
             }
         }
         _ if app.composer.editor.text.is_empty() => app.composer.editor.set("!".into()),
@@ -446,12 +446,12 @@ async fn composer_key(
         }
         _ => {}
     }
-    if key.code == KeyCode::Char('@') && app.composer.completion.is_none() {
-        if let Some((start, "")) =
+    if key.code == KeyCode::Char('@')
+        && app.composer.completion.is_none()
+        && let Some((start, "")) =
             composer::mention_at(&app.composer.editor.text, app.composer.editor.cursor)
-        {
-            open_mentions(app, start);
-        }
+    {
+        open_mentions(app, start);
     }
     refresh_completion(app);
     Action::Continue

@@ -3,10 +3,10 @@
 //! (`octet_engine::live::{codex_stray_reply, claude_stray_reply}`).
 
 use octet_proc::{Process, ProcessConfig, ProcessError, ProcessSender, ShutdownReport};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{ffi::OsString, path::PathBuf, time::Duration};
 use thiserror::Error;
-use tokio::time::{timeout, Instant};
+use tokio::time::{Instant, timeout};
 
 #[derive(Debug, Error)]
 /// Why a gate scenario could not finish.
@@ -207,10 +207,10 @@ pub fn codex_fixture_allow(value: &Value, expected_cwd: &std::path::Path) -> Opt
         return None;
     }
     let command = value.pointer("/params/command")?.as_str()?;
-    if let Some(cwd) = value.pointer("/params/cwd").and_then(Value::as_str) {
-        if std::path::Path::new(cwd) != expected_cwd {
-            return None;
-        }
+    if let Some(cwd) = value.pointer("/params/cwd").and_then(Value::as_str)
+        && std::path::Path::new(cwd) != expected_cwd
+    {
+        return None;
     }
     if command != "printf READY > probe.out"
         && command != "printf 'READY' > probe.out"

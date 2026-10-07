@@ -24,7 +24,7 @@ use crossterm::event::{Event as Input, KeyEventKind};
 use input::{key_action, paste, refresh_completion};
 use octet_core::goal::Next;
 use octet_core::{Command, Config, Session};
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use registry::COMMANDS;
 use std::{
     io::{self, Stdout},
@@ -32,7 +32,7 @@ use std::{
     time::Duration,
 };
 pub(crate) use terminal::write_terminal;
-use terminal::{alert, fit, regain_terminal, unix_signal, InputReader, TerminalGuard};
+use terminal::{InputReader, TerminalGuard, alert, fit, regain_terminal, unix_signal};
 use tokio::time::Instant;
 use vendor::{By, Vendor};
 /// Shown after the first Ctrl+C on an idle, empty prompt, as in Claude Code.
@@ -419,10 +419,8 @@ async fn session_event(app: &mut App, vendor: &dyn Vendor, event: octet_core::Ev
         alert();
     }
     app.event(event);
-    if failed {
-        if let Err(error) = app.goals.turn_failed().await {
-            app.goal_save_failed(error, true);
-        }
+    if failed && let Err(error) = app.goals.turn_failed().await {
+        app.goal_save_failed(error, true);
     }
     let Some(outcome) = outcome else {
         return;

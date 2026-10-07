@@ -1,5 +1,5 @@
 //! Provider-neutral permission modes. Each vendor maps them in its own file.
-use super::{emit, DriverError, Engine, Event};
+use super::{DriverError, Engine, Event, emit};
 use tokio::sync::mpsc;
 
 /// Provider-neutral permission mode. The vendor mapping lives only in the

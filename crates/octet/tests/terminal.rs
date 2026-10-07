@@ -300,10 +300,11 @@ fn real_terminal_handles_paste_approval_resize_suspend_and_quit() {
     p.send("\x1b[200~Hello 世界\nsecond line\x1b[201~\r".as_bytes());
     p.wait(|p| p.count("finished") == 1);
     p.wait(|p| p.output.windows(9).any(|w| w == b"completed"));
-    assert!(p
-        .records()
-        .iter()
-        .any(|v| v["type"] == "user" && v["data"] == "Hello 世界\nsecond line"));
+    assert!(
+        p.records()
+            .iter()
+            .any(|v| v["type"] == "user" && v["data"] == "Hello 世界\nsecond line")
+    );
     p.send(b"/approval-demo\r");
     p.wait(|p| p.count("approval") == 1);
     p.wait(|p| p.output.windows(19).any(|w| w == b"Permission required"));
@@ -943,11 +944,12 @@ fn bang_commands_cannot_reach_the_terminal() {
     p.wait(|p| p.screen_shows("status="));
     assert!(!p.screen_shows("status=0"), "{}", p.screen().join("\n"));
     // The command line itself shows the text; nothing else may.
-    assert!(p
-        .screen()
-        .iter()
-        .filter(|row| row.contains("Username: "))
-        .all(|row| row.contains("printf")));
+    assert!(
+        p.screen()
+            .iter()
+            .filter(|row| row.contains("Username: "))
+            .all(|row| row.contains("printf"))
+    );
     p.quit();
     p.finish();
 }

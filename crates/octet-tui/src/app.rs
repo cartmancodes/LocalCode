@@ -3,7 +3,7 @@
 use crate::{
     editor::Editor,
     mascot::State,
-    text::{clean, strip, Sanitizer},
+    text::{Sanitizer, clean, strip},
 };
 use octet_core::Event;
 use ratatui::prelude::*;
@@ -352,17 +352,21 @@ impl App {
         format!(
             "Provider: {}\nRequested selection: {}\nConfirmed model ID: {}\nCatalog model ID: {}\nModel name: {}\n{}",
             self.conn.engine,
-            self.conn.requested_model
+            self.conn
+                .requested_model
                 .as_deref()
                 .unwrap_or("provider default"),
-            self.conn.resolved_model
+            self.conn
+                .resolved_model
                 .as_deref()
                 .unwrap_or(if self.conn.engine.offline() {
                     "none (offline demo)"
                 } else {
                     "not yet reported by provider"
                 }),
-            selected.and_then(|m|m.id.as_deref()).unwrap_or("not reported"),
+            selected
+                .and_then(|m| m.id.as_deref())
+                .unwrap_or("not reported"),
             selected.map(|m| m.name.as_str()).unwrap_or("not reported"),
             selected.map(|m| m.description.as_str()).unwrap_or("")
         )
@@ -501,10 +505,9 @@ impl App {
                         .forking_from
                         .as_ref()
                         .is_some_and(|from| *from != session)
+                    && let Some(from) = self.conn.forking_from.take()
                 {
-                    if let Some(from) = self.conn.forking_from.take() {
-                        self.note(format!("Forked from {from} into {session}"));
-                    }
+                    self.note(format!("Forked from {from} into {session}"));
                 }
                 if !self.conn.is_running() {
                     self.conn.status = "ready".into();

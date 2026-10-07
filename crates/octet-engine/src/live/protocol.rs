@@ -2,15 +2,15 @@
 //! supplies (`Protocol`). The driver loop in `driver.rs` joins the two; a new
 //! vendor implements `Protocol` in its own file and adds a provider row.
 use super::{
-    emit, mode::confirm_mode, Config, DriverError, Event, ImageAttachment, Limits, Mode, Outcome,
-    EVENT_BYTES,
+    Config, DriverError, EVENT_BYTES, Event, ImageAttachment, Limits, Mode, Outcome, emit,
+    mode::confirm_mode,
 };
 use octet_proc::Process;
 use serde_json::Value;
 use std::{collections::HashMap, ffi::OsString, future::Future, time::Duration};
 use tokio::{
     sync::mpsc,
-    time::{timeout, Instant},
+    time::{Instant, timeout},
 };
 
 /// Where a vendor connection is. The stages are ordered: a later stage

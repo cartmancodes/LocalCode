@@ -3,8 +3,8 @@
 // Test code: an unwrap that fails is the test failing.
 #![allow(clippy::unwrap_used)]
 use octet_engine::live::{
-    spawn, spawn_with_limits, Command, Config, Engine, Event, ImageAttachment, Limits, Mode,
-    Outcome,
+    Command, Config, Engine, Event, ImageAttachment, Limits, Mode, Outcome, spawn,
+    spawn_with_limits,
 };
 use octet_testkit::scenario;
 use std::time::Duration;
@@ -1530,8 +1530,10 @@ async fn claude_cancel_request_closes_the_approval() {
     )
     .await;
     handle.interrupt();
-    assert!(!turn_text(&mut events)
-        .await
-        .contains("answered a cancelled request"));
+    assert!(
+        !turn_text(&mut events)
+            .await
+            .contains("answered a cancelled request")
+    );
     stop(&handle, task).await;
 }

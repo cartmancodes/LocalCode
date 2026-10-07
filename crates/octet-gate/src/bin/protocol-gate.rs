@@ -1,11 +1,11 @@
 //! `protocol-gate`: runs one scenario against a real vendor CLI and prints
 //! the contract evidence as JSON.
 use octet_gate::{
-    claude_fixture_allow, claude_fixture_hook_response, claude_fixture_mcp_response,
-    claude_fixture_mcp_tool_allow, codex_fixture_allow, codex_fixture_user_input, GateError,
-    GateProcess,
+    GateError, GateProcess, claude_fixture_allow, claude_fixture_hook_response,
+    claude_fixture_mcp_response, claude_fixture_mcp_tool_allow, codex_fixture_allow,
+    codex_fixture_user_input,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     env,
     ffi::OsString,
@@ -394,12 +394,12 @@ async fn codex(gate: &mut GateProcess, scenario: &str, cwd: &Path) -> Result<(),
             gate.send(&json!({"id":4,"method":"turn/interrupt","params":{"threadId":thread_id,"turnId":id}})).await?;
             continue;
         }
-        if scenario == "user-input" {
-            if let Some(reply) = codex_fixture_user_input(&v) {
-                gate.user_questions += 1;
-                gate.send(&reply).await?;
-                continue;
-            }
+        if scenario == "user-input"
+            && let Some(reply) = codex_fixture_user_input(&v)
+        {
+            gate.user_questions += 1;
+            gate.send(&reply).await?;
+            continue;
         }
         if scenario == "approval-allow"
             && v.get("method")
@@ -446,11 +446,11 @@ async fn claude(gate: &mut GateProcess, scenario: &str, cwd: &Path) -> Result<()
             }
             break;
         }
-        if scenario == "mcp" {
-            if let Some((reply, _)) = claude_fixture_mcp_response(&v) {
-                gate.send(&reply).await?;
-                continue;
-            }
+        if scenario == "mcp"
+            && let Some((reply, _)) = claude_fixture_mcp_response(&v)
+        {
+            gate.send(&reply).await?;
+            continue;
         }
         if let Some(reply) = octet_engine::live::claude_stray_reply(&v) {
             gate.send(&reply).await?;
@@ -531,21 +531,21 @@ async fn claude(gate: &mut GateProcess, scenario: &str, cwd: &Path) -> Result<()
             }
             return Ok(());
         }
-        if scenario == "hook" {
-            if let Some(reply) = claude_fixture_hook_response(&v) {
-                gate.hook_calls += 1;
-                gate.send(&reply).await?;
-                continue;
-            }
+        if scenario == "hook"
+            && let Some(reply) = claude_fixture_hook_response(&v)
+        {
+            gate.hook_calls += 1;
+            gate.send(&reply).await?;
+            continue;
         }
-        if scenario == "mcp" {
-            if let Some((reply, called)) = claude_fixture_mcp_response(&v) {
-                if called {
-                    gate.mcp_calls += 1;
-                }
-                gate.send(&reply).await?;
-                continue;
+        if scenario == "mcp"
+            && let Some((reply, called)) = claude_fixture_mcp_response(&v)
+        {
+            if called {
+                gate.mcp_calls += 1;
             }
+            gate.send(&reply).await?;
+            continue;
         }
         if let Some(reply) = octet_engine::live::claude_stray_reply(&v) {
             if v.pointer("/request/subtype").and_then(Value::as_str) == Some("can_use_tool") {
@@ -761,11 +761,11 @@ async fn main() {
     let evidence = json!({"engine":opt.engine,"scenario":opt.scenario,"version":version(&opt.binary).await,"host":env::consts::OS,"arch":env::consts::ARCH,"status":status,"events":events,"approval_requests":approvals,"mcp_calls":mcp_calls,"hook_calls":hook_calls,"compact_boundaries":compact_boundaries,"agent_messages":agent_messages,"late_usage_turns":late_usage_turns,"tool_only_turns":tool_only_turns,"user_questions":user_questions,"failure_kind":failure_kind,"fixture_write":fixture_write,"child_cleanup":cleaned,"elapsed_ms":started.elapsed().as_millis()});
     let serialized =
         serde_json::to_string_pretty(&evidence).expect("evidence is plain JSON values");
-    if let Some(path) = opt.output {
-        if fs::write(path, &serialized).is_err() {
-            eprintln!("cannot write evidence");
-            std::process::exit(2);
-        }
+    if let Some(path) = opt.output
+        && fs::write(path, &serialized).is_err()
+    {
+        eprintln!("cannot write evidence");
+        std::process::exit(2);
     }
     println!("{serialized}");
     if temporary {

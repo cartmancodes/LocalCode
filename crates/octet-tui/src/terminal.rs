@@ -3,9 +3,9 @@
 use crossterm::{
     event::{DisableBracketedPaste, EnableBracketedPaste, Event as Input},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{
     io::{self, Stdout},
     time::Duration,
@@ -22,8 +22,8 @@ pub(crate) struct InputReader {
 impl InputReader {
     pub(crate) fn new() -> Self {
         use std::sync::{
-            atomic::{AtomicBool, Ordering},
             Arc,
+            atomic::{AtomicBool, Ordering},
         };
         let (tx, events) = tokio::sync::mpsc::channel(64);
         let stopping = Arc::new(AtomicBool::new(false));

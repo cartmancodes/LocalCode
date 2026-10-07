@@ -2,7 +2,7 @@
 //! terminal is attached: these modes must not need one.
 // Test code: an unwrap that fails is the test failing.
 #![allow(clippy::unwrap_used)]
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     io::Write,
     process::{Child, ChildStdin, Command, Stdio},

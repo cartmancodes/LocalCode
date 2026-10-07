@@ -3,7 +3,7 @@
 // Test fixture: a panic here fails the test that started it.
 #![allow(clippy::unwrap_used)]
 use octet_testkit::scenario;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     env,
     io::{self, BufRead, Write},

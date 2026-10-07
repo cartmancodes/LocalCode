@@ -1,12 +1,12 @@
 //! What each slash command does. The table of commands is in `registry`;
 //! `try_command` checks a row's requirement once, then dispatches on `Cmd`.
 use crate::{
+    Action, Exit,
     app::App,
     input::{copy_reply, submit},
     jobs::Job,
-    registry::{Cmd, Requires, Spec, NOT_CONNECTED, TURN_OPEN},
+    registry::{Cmd, NOT_CONNECTED, Requires, Spec, TURN_OPEN},
     vendor::{By, Vendor},
-    Action, Exit,
 };
 use octet_core::{Command, Mode};
 use std::path::PathBuf;
