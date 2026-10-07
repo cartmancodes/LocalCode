@@ -183,12 +183,10 @@ async fn run_session(
     let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
     let mut suspend =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(libc::SIGTSTP))?;
-    // The `/remote-control` checks, running while the screen stays live.
     // The one job running off the loop, with its label.
     let mut job: Option<(&'static str, tokio::task::JoinHandle<jobs::Done>)> = None;
     // The running `!` command, if any.
     let mut shell_task: Option<ShellTask> = None;
-    // The workspace file index being built for `@`.
     // The @ index, built on a plain thread: a walk stuck on a dead mount
     // must not hold up the runtime's shutdown, as spawn_blocking would.
     let mut index_task: Option<tokio::sync::oneshot::Receiver<files::Index>> = None;

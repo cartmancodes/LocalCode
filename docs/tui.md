@@ -108,6 +108,9 @@ Bracketed paste preserves newlines without submitting them. A rejected oversized
 paste leaves the draft intact. Approval requests are never answered by pasted
 text. Approval expiration (120 seconds by default; `--approval-timeout SECONDS`
 sets 10–3600), cancellation and unknown request types fail closed; requests too large to display completely are denied explicitly.
+At most eight approvals wait at once; a ninth is denied with a notice. Claude
+receives the reason with each denial (your refusal, the timeout, the cap), so it
+can tell a refusal from a limit; Codex's decline carries no reason.
 Vendor sandbox policy still applies. The vendor policy depends on the permission
 mode below; this is not a promise that every vendor action raises a dialog.
 When an approval starts waiting, Octet rings the terminal bell once and sends a desktop
@@ -356,8 +359,9 @@ Prompts are limited to 64 KiB, stdout frames to 8 MiB, queued raw frames to 16 M
 and each session journal to 64 MiB. Tool activity is a preview: each tool entry is
 cut at 32 KiB, in the journal as well, and the vendor keeps the full output. A Codex
 command shows what ran, its status and exit code, then the end of its output. Bounded
-event queues stop an overloaded session with an error; they do not silently discard
-a completed response.
+event queues stop an overloaded session with an error rather than silently discard
+output, with one exception: a reply shows at most 2 MiB, less while the interface is
+behind, and ends with a note where it is cut. The journal holds the same cut text.
 
 A turn may run for any length of time. The session is stopped only if the vendor
 sends nothing for this session for 10 minutes inside a turn (time spent waiting on

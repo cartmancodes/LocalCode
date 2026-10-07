@@ -68,7 +68,9 @@ running across turns, and pick the session up from your phone.
   `accept-edits`, `auto` (the vendor's reviewer decides) and `full-access`.
   Shift+Tab cycles the first three live; `full-access` has to be typed.
 - The approval dialog shows the whole request: allow once or deny. Expired,
-  cancelled, oversized and unknown requests are denied.
+  cancelled, oversized and unknown requests are denied, and so is any
+  request beyond eight waiting at once. Claude is told why.
+- One reply shows at most 2 MiB, with a note where it is cut.
 - Octet rings the bell and sends a desktop notification when an approval
   starts waiting. `--approval-timeout` sets how long it waits (10–3600
   seconds, default 120).
