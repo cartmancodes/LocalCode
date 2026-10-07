@@ -69,7 +69,10 @@ pub(crate) struct Core {
     /// wire requests.
     pub(super) approval_id: u64,
     pub(super) pending: HashMap<u64, Pending>,
-    /// The protocol's approval reply, for approvals denied here.
+    /// The protocol's approval reply, for approvals denied here. `Core`
+    /// keeps the protocol's functions as pointers rather than being generic
+    /// over it, so the driver, `Core` and every protocol share one
+    /// non-generic type.
     answer: fn(&Value, bool) -> Value,
     /// The protocol's deny with a reason, where the vendor takes one.
     deny: fn(&Value, &str) -> Value,
@@ -254,8 +257,6 @@ pub(crate) trait Protocol: Default + Send {
     fn deny(wire: &Value, _reason: &str) -> Value {
         Self::answer(wire, false)
     }
-    /// The reply to a request Octet will not put in front of the user.
-    fn stray_reply(request: &Value) -> Option<Value>;
     /// Whether `frame` shows the turn is alive, resetting its silence
     /// watchdog.
     fn is_progress(&self, _core: &Core, _frame: &Value) -> bool {

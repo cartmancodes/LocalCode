@@ -22,6 +22,7 @@ pub(super) const PROVIDER: Provider = Provider {
     inline_images: false,
     effort_live: false,
     efforts: &[],
+    launch_args: |_| Vec::new(),
     start,
 };
 

@@ -34,6 +34,7 @@ pub(super) const PROVIDER: Provider = Provider {
     inline_images: false,           // true if images go in the prompt as base64
     effort_live: false,             // true if effort is sent per turn, not at launch
     efforts: &[],                   // the effort levels it takes; empty passes any word
+    launch_args: <GeminiProtocol as Protocol>::launch_args, // shared with the protocol gate
     start,
 };
 
@@ -62,7 +63,6 @@ impl Protocol for GeminiProtocol {
     async fn set_mode(&mut self, core: &mut Core, target: Mode) -> Result<(), DriverError> { … }
     async fn on_frame(&mut self, core: &mut Core, frame: Value) -> Result<(), DriverError> { … }
     fn answer(wire: &Value, allow: bool) -> Value { … }
-    fn stray_reply(request: &Value) -> Option<Value> { … }
     // Optional: deny, is_progress, mode_change_pending, deadline, on_deadline, turn_started, steer.
 }
 ```
@@ -117,11 +117,16 @@ scenarios are per vendor.
 | `on_frame` | Turn vendor output into `Text`, `Tool`, `Usage`, `Approval` (through `core.queue_approval`, which denies a request too large to show or beyond the 8 already waiting) and, at the turn's end, `core.finish_turn(outcome, error)`, which closes the turn's approvals and makes the session idle. Ignore output for other sessions or turns. |
 | `answer` | The reply that allows or denies an approval request. The driver uses it for user answers, timeouts and oversized requests. |
 | `deny` | The reply denying an approval with a reason (the user's refusal, a timeout, the cap, a cancelled turn). Override it if the vendor passes a message on to the model, as Claude does; the default is `answer(wire, false)`. |
-| `stray_reply` | The reply to a request Octet will not show the user. Deny permissions; report anything else as unsupported. |
 | `mode_change_pending` | True while a mode switch waits for the vendor to confirm it. The driver then refuses another switch. |
 | `is_progress` | Whether a frame shows the turn is alive. Return false for another thread's output. |
 | `deadline` / `on_deadline` | An optional protocol timer, such as Claude's mode confirmation. |
 | `turn_started` | Clear per-turn state. |
+
+Requests Octet will not show the user (a permission outside a turn, a
+method it does not know) get a reply from a plain function in the vendor's
+file, as Claude's and Codex's `stray` do: deny permissions, and report
+anything else as unsupported. Export it as `<vendor>_stray_reply` when the
+protocol gate needs it.
 
 ## Rules that apply
 

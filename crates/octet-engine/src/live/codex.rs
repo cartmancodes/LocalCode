@@ -8,8 +8,9 @@ use super::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
+    fmt::Write as _,
 };
 
 /// Codex's row in the provider table.
@@ -28,6 +29,7 @@ pub(super) const PROVIDER: Provider = Provider {
     inline_images: false,
     effort_live: true,
     efforts: &[],
+    launch_args: <CodexProtocol as Protocol>::launch_args,
     start,
 };
 
@@ -64,7 +66,7 @@ pub(super) struct CodexProtocol {
     catalog_pages: usize,
     catalog_cursors: HashSet<String>,
     /// Steering sent before Codex named the turn; sent once it does.
-    pending_steer: Vec<String>,
+    pending_steer: VecDeque<String>,
 }
 
 impl Protocol for CodexProtocol {
@@ -74,10 +76,6 @@ impl Protocol for CodexProtocol {
 
     fn answer(wire: &Value, allow: bool) -> Value {
         answer_wire(wire, allow)
-    }
-
-    fn stray_reply(request: &Value) -> Option<Value> {
-        stray(request)
     }
 
     /// Only frames for this session's thread count: another thread's
@@ -213,7 +211,10 @@ impl Protocol for CodexProtocol {
         match method {
             "item/agentMessage/delta" => {
                 if let Some(text) = v.pointer("/params/delta").and_then(Value::as_str) {
-                    if let Some(id) = v.pointer("/params/itemId").and_then(Value::as_str) {
+                    // A repeated item is already counted; only a new one can hit the limit.
+                    if let Some(id) = v.pointer("/params/itemId").and_then(Value::as_str)
+                        && !self.text_items.contains(id)
+                    {
                         if self.text_items.len() >= 4096 {
                             return Err(DriverError::TurnItemLimit);
                         }
@@ -456,7 +457,7 @@ impl CodexProtocol {
             let detail = serde_json::to_string_pretty(&v["params"]).unwrap_or_default();
             return core.queue_approval(v, detail).await;
         }
-        if let Some(reply) = Self::stray_reply(&v) {
+        if let Some(reply) = stray(&v) {
             let notice = format!("Request declined: {}", short(method));
             core.send(reply).await?;
             core.emit(Event::Notice(notice))?;
@@ -473,7 +474,7 @@ fn catalog(value: &Value) -> Vec<ModelInfo> {
 /// Codex counterpart of `claude_stray_reply`: the reply to a request Octet
 /// will not put in front of the user.
 pub fn codex_stray_reply(value: &Value) -> Option<Value> {
-    CodexProtocol::stray_reply(value)
+    stray(value)
 }
 
 /// A Codex item as a transcript preview. A command leads with what ran and how
@@ -488,13 +489,23 @@ pub(super) fn codex_tool_detail(item: &Value, phase: &str) -> String {
     }
     match &item["command"] {
         Value::Null => {}
-        Value::String(command) => text.push_str(&format!("\n$ {command}")),
-        other => text.push_str(&format!("\n$ {other}")),
+        Value::String(command) => {
+            let _ = write!(text, "\n$ {command}");
+        }
+        other => {
+            let _ = write!(text, "\n$ {other}");
+        }
     }
     match (item["status"].as_str(), item["exitCode"].as_i64()) {
-        (Some(status), Some(code)) => text.push_str(&format!("\n{status} · exit {code}")),
-        (Some(status), None) => text.push_str(&format!("\n{status}")),
-        (None, Some(code)) => text.push_str(&format!("\nexit {code}")),
+        (Some(status), Some(code)) => {
+            let _ = write!(text, "\n{status} · exit {code}");
+        }
+        (Some(status), None) => {
+            let _ = write!(text, "\n{status}");
+        }
+        (None, Some(code)) => {
+            let _ = write!(text, "\nexit {code}");
+        }
         (None, None) => {}
     }
     if let Some(output) = item["aggregatedOutput"].as_str().filter(|o| !o.is_empty()) {

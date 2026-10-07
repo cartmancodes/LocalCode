@@ -1,7 +1,8 @@
 //! Interactive vendor driver. A single owner correlates wire events while
 //! cancellation and shutdown use independent watch channels.
+use octet_proc::ProcessConfig;
 use serde_json::Value;
-use std::{path::PathBuf, time::Duration};
+use std::{collections::VecDeque, ffi::OsString, path::PathBuf, time::Duration};
 use tokio::{
     sync::{mpsc, watch},
     time::timeout,
@@ -102,26 +103,49 @@ pub struct Provider {
     /// The reasoning effort levels the vendor takes; empty passes any word
     /// on (Codex's levels depend on the model).
     pub efforts: &'static [&'static str],
+    /// The vendor CLI's arguments for `config` (none for the demo).
+    pub(crate) launch_args: fn(&Config) -> Vec<OsString>,
     /// Runs one session until it stops.
-    pub start: StartFn,
+    pub(crate) start: StartFn,
 }
 
 /// Starts a provider's session; the error is the final message to show.
-pub type StartFn = fn(Config, Limits, Channels) -> BoxFuture<Result<(), String>>;
+pub(crate) type StartFn = fn(Config, Limits, Channels) -> BoxFuture<Result<(), String>>;
 
 /// A boxed future that can move between threads.
-pub type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
+pub(crate) type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 
 /// The channels a session runs on.
-pub struct Channels {
+pub(crate) struct Channels {
     /// Commands from the interface.
-    pub commands: mpsc::Receiver<Command>,
+    pub(crate) commands: mpsc::Receiver<Command>,
     /// Bumped to cancel the running turn.
-    pub cancel: watch::Receiver<u64>,
+    pub(crate) cancel: watch::Receiver<u64>,
     /// Set to stop the session.
-    pub stopping: watch::Receiver<bool>,
+    pub(crate) stopping: watch::Receiver<bool>,
     /// Events to the interface.
-    pub events: mpsc::Sender<Event>,
+    pub(crate) events: mpsc::Sender<Event>,
+}
+
+/// The arguments Octet launches `config`'s vendor CLI with: the one
+/// contract the driver and the protocol gate share.
+pub fn launch_args(config: &Config) -> Vec<OsString> {
+    (config.engine.provider().launch_args)(config)
+}
+
+/// How Octet runs a vendor CLI: its limits on frames, queued output and
+/// stderr, and its shutdown graces. The protocol gate uses the same.
+pub fn vendor_process(executable: PathBuf, args: Vec<OsString>, cwd: PathBuf) -> ProcessConfig {
+    ProcessConfig {
+        executable,
+        args,
+        cwd: Some(cwd),
+        max_frame_bytes: 8 * 1024 * 1024,
+        queue_bytes: 16 * 1024 * 1024,
+        stderr_bytes: 4096,
+        shutdown_grace: Duration::from_millis(150),
+        term_grace: Duration::from_millis(250),
+    }
 }
 
 /// A provider, by its row in the table. Journals and the CLI use
@@ -462,9 +486,8 @@ impl Command {
     /// The longest text a prompt command carries; 0 for other commands.
     fn prompt_bytes(&self) -> usize {
         match self {
-            Command::Prompt(text) => text.len(),
+            Command::Prompt(text) | Command::Steer(text) => text.len(),
             Command::PromptWithDisplay { wire, display, .. } => wire.len().max(display.len()),
-            Command::Steer(text) => text.len(),
             Command::Answer { .. }
             | Command::SetMode(_)
             | Command::SetEffort(_)
@@ -633,9 +656,13 @@ impl TurnGate {
 
 /// Appends `item`, dropping and returning the oldest entry once `list` holds
 /// `max`, so per-connection lists stay bounded.
-fn push_bounded<T>(list: &mut Vec<T>, item: T, max: usize) -> Option<T> {
-    let dropped = (list.len() >= max).then(|| list.remove(0));
-    list.push(item);
+fn push_bounded<T>(list: &mut VecDeque<T>, item: T, max: usize) -> Option<T> {
+    let dropped = if list.len() >= max {
+        list.pop_front()
+    } else {
+        None
+    };
+    list.push_back(item);
     dropped
 }
 
@@ -774,7 +801,7 @@ mod tests {
     }
     #[test]
     fn bounded_lists_drop_their_oldest_entry() {
-        let mut list = vec![1, 2, 3];
+        let mut list = VecDeque::from([1, 2, 3]);
         assert_eq!(push_bounded(&mut list, 4, 3), Some(1));
         assert_eq!(list, [2, 3, 4]);
         assert_eq!(push_bounded(&mut list, 5, 8), None);

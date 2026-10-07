@@ -118,14 +118,25 @@ async fn a_repeated_claude_handshake_mid_turn_does_not_end_the_turn() {
 }
 #[tokio::test]
 async fn cancel_while_handshaken_is_cancelled() {
-    // Codex answers initialize but never opens the session.
-    let (_dir, vendor) = script_vendor(
+    // Codex answers initialize but never opens the session. The marker shows
+    // the handshake was answered before the cancel, as the test's name says.
+    let (dir, vendor) = script_vendor(
         "octet-live-handshaken",
-        "read line\necho '{\"id\":1,\"result\":{}}'\nexec sleep 30\n",
+        "read line\necho '{\"id\":1,\"result\":{}}'\ntouch \"$(dirname \"$0\")/answered\"\nexec sleep 30\n",
     );
     let (handle, mut events, task) =
         spawn(Config::new(Engine::CODEX, vendor, std::env::temp_dir()));
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let answered = dir.path().join("answered");
+    // Polled without blocking: the driver runs on this test's runtime.
+    timeout(Duration::from_secs(5), async {
+        while !answered.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the handshake was never answered");
+    // The frame is in the pipe; give the driver a moment to read it.
+    tokio::time::sleep(Duration::from_millis(100)).await;
     handle.interrupt();
     loop {
         match next(&mut events).await {
@@ -532,7 +543,7 @@ fn quick() -> Limits {
 async fn wait_for_within(
     events: &mut mpsc::Receiver<Event>,
     seconds: u64,
-    wanted: impl Fn(&Event) -> bool,
+    wanted: impl Fn(&Event) -> bool + Send,
 ) -> Event {
     timeout(Duration::from_secs(seconds), async {
         loop {
@@ -884,9 +895,10 @@ async fn other_thread_chatter_does_not_keep_a_silent_turn_alive() {
         .unwrap();
     let error = expect_error(&mut events).await;
     assert!(error.contains("sent nothing for 1 second"), "{error}");
-    // The 1 s idle limit fired, not a longer one.
+    // The 1 s idle limit fired. Had the chatter reset it, the error would
+    // come only after the chatter's 2.4 s plus the limit: 3.4 s at least.
     assert!(
-        sent.elapsed() < Duration::from_millis(2200),
+        sent.elapsed() < Duration::from_secs(3),
         "{:?}",
         sent.elapsed()
     );
@@ -1772,6 +1784,86 @@ async fn an_image_read_that_hangs_fails_the_turn() {
         started.elapsed() < Duration::from_secs(2),
         "{:?}",
         started.elapsed()
+    );
+    stop(&handle, task).await;
+}
+
+#[tokio::test]
+async fn launch_args_match_what_the_driver_runs() {
+    let config = claude();
+    let expected: Vec<String> = octet_engine::live::launch_args(&config)
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let (handle, mut events, task) = spawn(config);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt(scenario::ARGV.into())).unwrap();
+    // The fake Claude echoes the arguments it was started with.
+    assert_eq!(turn_text(&mut events).await, expected.join(" "));
+    stop(&handle, task).await;
+}
+
+#[tokio::test]
+async fn odd_claude_frames_are_ignored() {
+    let init = r#"{"type":"control_response","response":{"subtype":"success","request_id":"octet-init","response":{}}}"#;
+    let odd = [
+        "[1,2]",
+        r#""a string""#,
+        "42",
+        "null",
+        r#"{"type":42}"#,
+        r#"{"type":"assistant","message":"not an object"}"#,
+        r#"{"type":"stream_event","event":{"delta":{"text":7}}}"#,
+        r#"{"type":"result","session_id":5,"is_error":"no"}"#,
+    ];
+    let result = r#"{"type":"result","is_error":false,"result":"done","session_id":"s1"}"#;
+    let mut body = format!("read line\necho '{init}'\nread line\n");
+    for frame in odd {
+        body.push_str(&format!("echo '{frame}'\n"));
+    }
+    body.push_str(&format!("echo '{result}'\nexec sleep 30\n"));
+    let (_dir, vendor) = script_vendor("octet-live-odd-claude", &body);
+    let (handle, mut events, task) =
+        spawn(Config::new(Engine::CLAUDE, vendor, std::env::temp_dir()));
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
+    handle.send(Command::Prompt("hello".into())).unwrap();
+    let seen = until_finished(&mut events).await;
+    assert!(
+        matches!(seen.last(), Some(Event::Finished { .. })),
+        "the session survived odd frames: {seen:?}"
+    );
+    stop(&handle, task).await;
+}
+
+#[tokio::test]
+async fn odd_codex_frames_are_ignored() {
+    let odd = [
+        "[1,2]",
+        "42",
+        r#"{"method":7}"#,
+        r#"{"method":"item/agentMessage/delta","params":"not an object"}"#,
+        r#"{"method":"turn/completed","params":{"turn":"not an object"}}"#,
+        r#"{"id":{"nested":true},"result":5}"#,
+    ];
+    let mut body = String::from(
+        "read line\necho '{\"id\":1,\"result\":{}}'\nread line\nread line\n\
+         echo '{\"id\":2,\"result\":{\"thread\":{\"id\":\"t1\"}}}'\n",
+    );
+    for frame in odd {
+        body.push_str(&format!("echo '{frame}'\n"));
+    }
+    body.push_str("exec sleep 30\n");
+    let (_dir, vendor) = script_vendor("octet-live-odd-codex", &body);
+    let (handle, mut events, task) =
+        spawn(Config::new(Engine::CODEX, vendor, std::env::temp_dir()));
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    // The odd frames come after the session opened; it must still be up.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        events
+            .try_recv()
+            .map_or(true, |e| !matches!(e, Event::Error(_) | Event::Stopped)),
+        "the session survived odd frames"
     );
     stop(&handle, task).await;
 }

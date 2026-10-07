@@ -5,8 +5,9 @@ use super::{
     BUSY, Channels, Command, Config, DriverError, Engine, Event, FULL_ACCESS_RECONNECTS, HEADROOM,
     ImageAttachment, Limits, Mode, NO_TURN, Outcome, TurnGate, deadline_after,
     protocol::{Core, Phase, Protocol},
+    vendor_process,
 };
-use octet_proc::{Process, ProcessConfig};
+use octet_proc::Process;
 use serde_json::Value;
 use std::time::Duration;
 use tokio::{
@@ -35,16 +36,11 @@ pub(super) async fn run<P: Protocol>(
         events,
     } = channels;
     let engine = config.engine;
-    let process = Process::spawn(&ProcessConfig {
-        executable: config.binary.clone(),
-        args: P::launch_args(&config),
-        cwd: Some(config.cwd.clone()),
-        max_frame_bytes: 8 * 1024 * 1024,
-        queue_bytes: 16 * 1024 * 1024,
-        stderr_bytes: 4096,
-        shutdown_grace: Duration::from_millis(150),
-        term_grace: Duration::from_millis(250),
-    })
+    let process = Process::spawn(&vendor_process(
+        config.binary.clone(),
+        P::launch_args(&config),
+        config.cwd.clone(),
+    ))
     .map_err(|e| format!("Cannot start {engine}: {e}. Install the CLI and sign in first."))?;
     let mut driver = Driver {
         core: Core::new::<P>(config, limits, process, events),

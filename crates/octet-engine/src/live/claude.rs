@@ -9,7 +9,7 @@ use super::{
     push_bounded, valid_identifier,
 };
 use serde_json::{Value, json};
-use std::ffi::OsString;
+use std::{collections::VecDeque, ffi::OsString};
 use tokio::{sync::mpsc, time::Instant};
 
 /// Claude Code's row in the provider table.
@@ -28,6 +28,7 @@ pub(super) const PROVIDER: Provider = Provider {
     inline_images: true,
     effort_live: false,
     efforts: &["low", "medium", "high", "xhigh", "max"],
+    launch_args: <ClaudeProtocol as Protocol>::launch_args,
     start,
 };
 
@@ -109,7 +110,7 @@ pub(super) struct ClaudeProtocol {
     mode_request: Option<ModeRequest>,
     /// Timed-out switches Claude may still confirm; the header must never show
     /// a stricter mode than the vendor is really in.
-    late_modes: Vec<(String, Mode)>,
+    late_modes: VecDeque<(String, Mode)>,
     mode_seq: u64,
     /// A session ID that failed `valid_identifier` was reported once.
     odd_session_noted: bool,
@@ -126,10 +127,6 @@ impl Protocol for ClaudeProtocol {
 
     fn deny(wire: &Value, reason: &str) -> Value {
         deny_wire(wire, reason)
-    }
-
-    fn stray_reply(request: &Value) -> Option<Value> {
-        stray(request)
     }
 
     fn mode_change_pending(&self) -> bool {
@@ -286,7 +283,7 @@ impl Protocol for ClaudeProtocol {
                 let detail = serde_json::to_string_pretty(&v["request"]).unwrap_or_default();
                 return core.queue_approval(v, detail).await;
             }
-            if let Some(reply) = Self::stray_reply(&v) {
+            if let Some(reply) = stray(&v) {
                 core.send(reply).await?;
             }
             return Ok(());
@@ -352,12 +349,12 @@ impl ClaudeProtocol {
     fn control_response(&mut self, core: &mut Core, v: &Value) -> Result<bool, DriverError> {
         let response_id = v.pointer("/response/request_id").and_then(Value::as_str);
         let succeeded = v.pointer("/response/subtype").and_then(Value::as_str) == Some("success");
-        if let Some(index) = self
+        if let Some((_, target)) = self
             .late_modes
             .iter()
             .position(|(id, _)| Some(id.as_str()) == response_id)
+            .and_then(|index| self.late_modes.remove(index))
         {
-            let (_, target) = self.late_modes.remove(index);
             if succeeded {
                 core.mode = switch_reply_mode(&core.tx, v, target)?;
                 core.emit(Event::Notice(format!(
@@ -467,7 +464,7 @@ fn catalog(value: &Value) -> Vec<ModelInfo> {
 /// Reply to a Claude control request the driver will not put in front of the
 /// user; see `stray`.
 pub fn claude_stray_reply(value: &Value) -> Option<Value> {
-    ClaudeProtocol::stray_reply(value)
+    stray(value)
 }
 
 /// Reply to a Claude control request the driver will not put in front of the
