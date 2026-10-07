@@ -15,7 +15,7 @@ async fn at_opens_the_file_popup_and_enter_accepts() {
     let completion = app.composer.completion.as_ref().expect("popup open");
     assert_eq!(completion.items, ["src/main.rs"]);
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
-    assert_eq!(app.composer.editor.text, "see @src/main.rs ");
+    assert_eq!(app.composer.editor.text(), "see @src/main.rs ");
     assert!(app.composer.completion.is_none());
     assert!(!app.conn.is_running(), "Enter accepted instead of sending");
 }
@@ -29,13 +29,13 @@ async fn the_palette_offers_the_editor_mentions_and_shell() {
     };
     open_at(&mut app, COMMANDS.len() + 1);
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
-    assert_eq!(app.composer.editor.text, "@");
+    assert_eq!(app.composer.editor.text(), "@");
     assert!(app.composer.completion.is_some(), "@ opens the file popup");
     app.composer.completion = None;
     app.composer.editor.take();
     open_at(&mut app, COMMANDS.len() + 2);
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
-    assert_eq!(app.composer.editor.text, "!");
+    assert_eq!(app.composer.editor.text(), "!");
     open_at(&mut app, COMMANDS.len());
     assert!(matches!(
         key_action(&mut app, &session.handle, key(KeyCode::Enter)).await,
@@ -98,7 +98,7 @@ async fn the_popup_closes_before_the_editor_and_follows_a_paste() {
         "a paste closes a command popup"
     );
     key_action(&mut app, &session.handle, key(KeyCode::Char('x'))).await;
-    assert_eq!(app.composer.editor.text, "/report the bugx");
+    assert_eq!(app.composer.editor.text(), "/report the bugx");
 }
 #[tokio::test]
 async fn the_first_at_asks_for_the_index_and_esc_closes_the_popup() {
@@ -109,7 +109,7 @@ async fn the_first_at_asks_for_the_index_and_esc_closes_the_popup() {
     assert!(app.composer.completion.is_some());
     key_action(&mut app, &session.handle, key(KeyCode::Esc)).await;
     assert!(app.composer.completion.is_none());
-    assert_eq!(app.composer.editor.text, "@");
+    assert_eq!(app.composer.editor.text(), "@");
 }
 #[tokio::test]
 async fn an_at_inside_a_word_opens_nothing() {
@@ -129,7 +129,7 @@ async fn bang_lines_run_locally_and_double_bang_does_not_attach() {
         key_action(&mut app, &session.handle, key(KeyCode::Enter)).await,
         Action::RunShell { ref command, attach: true } if command == "echo hi"
     ));
-    assert!(app.composer.editor.text.is_empty());
+    assert!(app.composer.editor.text().is_empty());
     assert_eq!(
         app.composer.history.back().map(|sent| sent.text.as_str()),
         Some("!echo hi")
@@ -200,7 +200,7 @@ async fn ctrl_c_clears_a_draft_before_it_can_quit() {
         key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue
     ));
-    assert!(app.composer.editor.text.is_empty());
+    assert!(app.composer.editor.text().is_empty());
     assert_ne!(app.status_line, QUIT_HINT);
     assert!(matches!(
         key_action(&mut app, &session.handle, ctrl('c')).await,
@@ -341,7 +341,7 @@ async fn unknown_command_keeps_the_draft() {
         Action::Continue
     ));
     assert_eq!(
-        app.composer.editor.text,
+        app.composer.editor.text(),
         "/nope is not a command, keep my words"
     );
     assert!(app.status_line.contains("Unknown command"));
@@ -358,7 +358,7 @@ async fn unknown_command_keeps_the_draft() {
         Action::Continue
     ));
     assert!(
-        app.composer.editor.text.is_empty() && app.conn.is_running(),
+        app.composer.editor.text().is_empty() && app.conn.is_running(),
         "{}",
         app.status_line
     );
@@ -383,7 +383,7 @@ async fn unknown_command_keeps_the_draft() {
         key_action(&mut app, &session.handle, enter).await,
         Action::Continue
     ));
-    assert!(app.composer.editor.text.is_empty());
+    assert!(app.composer.editor.text().is_empty());
     session.shutdown().await;
 }
 #[tokio::test]
@@ -394,7 +394,7 @@ async fn enter_while_running_queues_the_prompt() {
     assert!(app.composer.editor.insert("next please"));
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert_eq!(app.composer.queue.len(), 1);
-    assert!(app.composer.editor.text.is_empty());
+    assert!(app.composer.editor.text().is_empty());
     assert!(crate::view::composer_title(&app).contains("+1 queued"));
 }
 #[tokio::test]
@@ -419,7 +419,7 @@ async fn the_queue_is_bounded() {
     assert!(app.composer.editor.insert("one more"));
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert_eq!(app.composer.queue.len(), 8);
-    assert_eq!(app.composer.editor.text, "one more");
+    assert_eq!(app.composer.editor.text(), "one more");
     assert!(
         app.status_line.contains("queue is full"),
         "{}",
@@ -434,13 +434,13 @@ async fn a_failed_image_keeps_the_draft() {
     let (_temp, session) = demo_session("octet-image-draft-session").await;
     assert!(app.composer.editor.insert("/image notes.txt"));
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
-    assert_eq!(app.composer.editor.text, "/image notes.txt");
+    assert_eq!(app.composer.editor.text(), "/image notes.txt");
     assert!(app.entries_text().contains("not a PNG"));
     app.composer.editor.take();
     std::fs::write(dir.path().join("ok.png"), b"x").unwrap();
     assert!(app.composer.editor.insert("/image ok.png"));
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
-    assert!(app.composer.editor.text.is_empty());
+    assert!(app.composer.editor.text().is_empty());
 }
 #[tokio::test]
 async fn steer_while_cancelling_queues_it() {
@@ -475,7 +475,7 @@ async fn one_tab_listing_at_a_time() {
         "{}",
         app.status_line
     );
-    assert_eq!(app.composer.editor.text, "/tm");
+    assert_eq!(app.composer.editor.text(), "/tm");
     // A listing that finishes frees the next Tab.
     app.composer
         .listing
@@ -485,5 +485,108 @@ async fn one_tab_listing_at_a_time() {
         !app.composer
             .listing
             .load(std::sync::atomic::Ordering::SeqCst)
+    );
+}
+#[tokio::test]
+async fn an_answer_key_right_after_an_approval_is_ignored() {
+    let mut app = app();
+    let vendor = RecordingVendor::default();
+    app.event(octet_core::Event::Approval {
+        id: 7,
+        detail: "rm -rf build".into(),
+    });
+    // A letter typed as the dialog opens must not answer it.
+    key_action(&mut app, &vendor, key(KeyCode::Char('a'))).await;
+    assert!(
+        vendor.sent.borrow().is_empty(),
+        "{:?}",
+        vendor.sent.borrow()
+    );
+    assert_eq!(app.overlay.approvals.len(), 1);
+    // Once the dialog has been up a moment, the same key answers.
+    app.overlay.approval_shown -= Duration::from_secs(1);
+    key_action(&mut app, &vendor, key(KeyCode::Char('a'))).await;
+    assert!(matches!(
+        vendor.sent.borrow().as_slice(),
+        [Command::Answer { id: 7, allow: true }]
+    ));
+}
+#[tokio::test]
+async fn esc_while_connecting_does_not_leave_cancelling() {
+    let mut app = app();
+    app.conn.phase = ConnPhase::Connecting;
+    let vendor = RecordingVendor::default();
+    key_action(&mut app, &vendor, key(KeyCode::Esc)).await;
+    assert_eq!(app.status_line, crate::app::CANCELLING);
+    // The cancelled connection reports an error and stops; no turn finishes.
+    app.event(octet_core::Event::Error("Connection cancelled".into()));
+    app.event(octet_core::Event::Stopped);
+    assert_ne!(app.status_line, crate::app::CANCELLING);
+}
+#[test]
+fn paste_keeps_tabs() {
+    let mut app = app();
+    paste(&mut app, "all:\n\tmake build");
+    assert_eq!(app.composer.editor.text(), "all:\n\tmake build");
+}
+#[test]
+fn paste_into_an_overlay_hints() {
+    let mut app = app();
+    app.overlay.help = true;
+    paste(&mut app, "lost");
+    assert!(app.status_line.contains("Close"), "{}", app.status_line);
+}
+#[test]
+fn size_label_says_kib() {
+    assert_eq!(size_label(2048), "2.0 KiB");
+    assert_eq!(size_label(10), "10 B");
+}
+#[test]
+fn a_queued_prompt_that_fails_to_send_is_kept() {
+    let mut app = app();
+    app.composer
+        .queue
+        .push_back(crate::vendor::Prompt::plain("next".into()));
+    let vendor = RecordingVendor::default();
+    vendor.refuse.set(true);
+    crate::send_queued(&mut app, &vendor);
+    assert_eq!(app.composer.queue.len(), 1, "the prompt was lost");
+}
+#[tokio::test]
+async fn cancel_interrupts_before_saving_the_goal() {
+    /// Notes what the goal file said when the interrupt arrived.
+    struct Watching {
+        file: std::path::PathBuf,
+        seen: std::cell::RefCell<String>,
+    }
+    impl crate::vendor::Vendor for Watching {
+        fn send(&self, _: Command) -> Result<(), octet_core::SendError> {
+            Ok(())
+        }
+        fn interrupt(&self) {
+            *self.seen.borrow_mut() = std::fs::read_to_string(&self.file).unwrap_or_default();
+        }
+    }
+    let temp = octet_testkit::TempDir::new("octet-cancel-order");
+    let mut app = app();
+    let store = octet_core::goal::GoalStore::new(temp.path(), std::path::Path::new("/w"));
+    app.goals.attach(store).await.unwrap();
+    app.goals.start("Ship it").await.unwrap();
+    app.goals.goal_prompt_sent();
+    let file = std::fs::read_dir(temp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|e| e == "json"))
+        .unwrap();
+    let vendor = Watching {
+        file,
+        seen: std::cell::RefCell::default(),
+    };
+    cancel_turn(&mut app, &vendor).await;
+    // The cancel went out before the pause was written.
+    assert!(
+        vendor.seen.borrow().contains("\"active\""),
+        "{}",
+        vendor.seen.borrow()
     );
 }

@@ -190,11 +190,24 @@ pub(crate) struct Composer {
 pub(crate) struct Overlays {
     pub(crate) approvals: VecDeque<(u64, String)>,
     pub(crate) approval_scroll: u16,
+    /// When the front approval was first shown: answer keys wait
+    /// `APPROVAL_ARM` after that, so a key typed as it opens cannot answer it.
+    pub(crate) approval_shown: std::time::Instant,
     pub(crate) help: bool,
     /// Lines scrolled past at the top of the help screen.
     pub(crate) help_scroll: u16,
     pub(crate) palette: bool,
     pub(crate) selection: usize,
+}
+/// How long answer keys wait after an approval is shown.
+pub(crate) const APPROVAL_ARM: std::time::Duration = std::time::Duration::from_millis(400);
+impl Overlays {
+    /// A different approval is now in front: it starts unscrolled, and its
+    /// answer keys wait `APPROVAL_ARM`.
+    pub(crate) fn front_changed(&mut self) {
+        self.approval_scroll = 0;
+        self.approval_shown = std::time::Instant::now();
+    }
 }
 pub struct App {
     pub(crate) conn: Connection,
@@ -204,6 +217,9 @@ pub struct App {
     pub(crate) monochrome: bool,
     /// The status bar's message: the latest note, hint or error.
     pub(crate) status_line: String,
+    /// What the status line holds, so a passing state (the quit hint,
+    /// "Cancelling…") is cleared by kind, never by comparing text.
+    pub(crate) status_kind: StatusKind,
     /// Until when a second Ctrl+C quits; set by the first press on an idle,
     /// empty prompt.
     pub(crate) quit_armed: Option<tokio::time::Instant>,
@@ -244,6 +260,7 @@ impl App {
             overlay: Overlays {
                 approvals: VecDeque::new(),
                 approval_scroll: 0,
+                approval_shown: std::time::Instant::now(),
                 help: false,
                 help_scroll: 0,
                 palette: false,
@@ -251,6 +268,7 @@ impl App {
             },
             monochrome: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
             status_line: String::new(),
+            status_kind: StatusKind::Plain,
             quit_armed: None,
             goals: octet_core::goal::GoalRunner::default(),
             job: None,
@@ -450,7 +468,7 @@ impl App {
     /// Something that failed, as an `ERROR` entry and on the status line.
     pub fn error(&mut self, text: impl Into<String>) {
         let text = text.into();
-        self.status_line = clean(&text);
+        self.status(StatusKind::Plain, &text);
         self.add(Role::Error, &text);
     }
     #[cfg(test)]
@@ -460,7 +478,7 @@ impl App {
     /// Information, as a transcript note and on the status line.
     pub fn note(&mut self, text: impl Into<String>) {
         let text = text.into();
-        self.status_line = clean(&text);
+        self.status(StatusKind::Plain, &text);
         self.add(Role::Notice, &text);
     }
     /// The goal file could not be saved; `paused` when the goal was paused
@@ -475,7 +493,19 @@ impl App {
     }
     /// A refusal or a passing hint, on the status line only.
     pub fn hint(&mut self, text: impl Into<String>) {
-        self.status_line = clean(&text.into());
+        self.status(StatusKind::Plain, &text.into());
+    }
+    /// Shows `text` on the status line as a `kind` of message.
+    pub(crate) fn status(&mut self, kind: StatusKind, text: &str) {
+        self.status_line = clean(text);
+        self.status_kind = kind;
+    }
+    /// Clears the status line if it still shows a `kind` message.
+    pub(crate) fn clear_status(&mut self, kind: StatusKind) {
+        if self.status_kind == kind {
+            self.status_line.clear();
+            self.status_kind = StatusKind::Plain;
+        }
     }
     pub fn event(&mut self, event: Event) {
         match event {
@@ -522,7 +552,7 @@ impl App {
                 self.conn.start_turn();
                 self.conn.activity = State::Thinking;
                 self.conn.status = "working".into();
-                self.status_line.clear();
+                self.status(StatusKind::Plain, "");
                 self.chat.sanitizer = Sanitizer::default();
                 self.chat.reply_stale = true;
             }
@@ -559,19 +589,23 @@ impl App {
                 self.add(Role::Tool, &text);
             }
             Event::Approval { id, detail } => {
+                let first = self.overlay.approvals.is_empty();
                 self.overlay.approvals.push_back((id, clean(&detail)));
-                self.overlay.approval_scroll = 0;
+                if first {
+                    self.overlay.front_changed();
+                }
             }
             Event::ApprovalClosed(id) => {
+                let front = self.overlay.approvals.front().map(|(key, _)| *key);
                 self.overlay.approvals.retain(|(key, _)| *key != id);
-                self.overlay.approval_scroll = 0;
+                if front == Some(id) {
+                    self.overlay.front_changed();
+                }
             }
             Event::Usage(text) => self.conn.usage = clean(&text),
             Event::Finished { outcome } => {
                 self.conn.end_turn();
-                if self.status_line == CANCELLING {
-                    self.status_line.clear();
-                }
+                self.clear_status(StatusKind::Cancelling);
                 self.conn.status = clean(outcome.as_str());
                 self.conn.activity = match outcome {
                     octet_core::Outcome::Completed => State::Success,
@@ -586,6 +620,8 @@ impl App {
                 self.conn.activity = State::Error;
             }
             Event::Stopped => {
+                // A cancelled connection stops without finishing a turn.
+                self.clear_status(StatusKind::Cancelling);
                 if self.conn.activity != State::Error {
                     self.conn.activity = State::Sleeping;
                 }
@@ -747,7 +783,7 @@ impl App {
                 .unwrap_or_else(|| {
                     self.composer.recall_images = self.composer.images.is_empty();
                     self.composer.saved_draft = Sent {
-                        text: self.composer.editor.text.clone(),
+                        text: self.composer.editor.text().to_owned(),
                         images: Vec::new(),
                     };
                     self.composer.history.len() - 1
@@ -787,6 +823,18 @@ pub(crate) fn queued_prompts(count: usize) -> String {
 }
 /// The bottom-line notice while a cancelled turn winds down.
 pub(crate) const CANCELLING: &str = "Cancelling…";
+
+/// What the status line holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum StatusKind {
+    /// A note, hint or error.
+    #[default]
+    Plain,
+    /// "Press Ctrl+C again to quit", until it expires.
+    QuitHint,
+    /// "Cancelling…", until the turn (or connection) ends.
+    Cancelling,
+}
 
 #[cfg(test)]
 mod tests;

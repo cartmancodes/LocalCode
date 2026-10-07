@@ -1,7 +1,7 @@
 //! Offline demo engine: no vendor process.
 use super::{
-    BUSY, BoxFuture, Channels, Command, Config, DriverError, Event, FULL_ACCESS_RECONNECTS, Limits,
-    Mode, NO_TURN, Outcome, Provider, TurnGate, emit,
+    APPROVAL_DEMO, BUSY, BoxFuture, Channels, Command, Config, DriverError, Event,
+    FULL_ACCESS_RECONNECTS, Limits, Mode, NO_TURN, Outcome, Provider, TurnGate, emit,
 };
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
@@ -171,7 +171,7 @@ impl DemoTurn<'_> {
     async fn run(&mut self, text: &str, display: String) -> Result<Flow, DriverError> {
         emit(self.tx, Event::User(display.clone()))?;
         emit(self.tx, Event::Started)?;
-        let reply = if text.trim() != "/approval-demo" {
+        let reply = if text.trim() != APPROVAL_DEMO {
             // Attachments make what a model receives differ from what is
             // shown; the demo shows it so the difference can be checked.
             let sent = if text == display {

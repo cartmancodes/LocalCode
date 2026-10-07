@@ -122,6 +122,10 @@ async fn run_with(
         cmd.spawn().map_err(fail)?
     };
     let group = child.id();
+    // Declared after `child`, so on an early drop (a reconnect or quit drops
+    // this future) it runs first, while the shell is unreaped and its pid,
+    // the group's id, still reserved.
+    let guard = Group(group);
     let tail = std::sync::Arc::new(std::sync::Mutex::new(Tail::default()));
     let reader_tail = std::sync::Arc::clone(&tail);
     // A plain thread, not spawn_blocking: a reader stuck on a pipe held by a
@@ -140,7 +144,7 @@ async fn run_with(
         _ = &mut cancel => Some(Status::Cancelled),
     };
     // Children left in the group would hold the pipe open.
-    kill_group(group);
+    drop(guard);
     let code = child.wait().await.map_err(fail)?.code();
     if status.is_none() {
         status = Some(code.map_or(Status::Signalled, Status::Exited));
@@ -178,6 +182,15 @@ fn wait_exit(pid: Option<u32>) {
         {
             return;
         }
+    }
+}
+
+/// Kills a command's process group when dropped, so no path leaves the
+/// pipeline running: `kill_on_drop` alone stops only the shell.
+struct Group(Option<u32>);
+impl Drop for Group {
+    fn drop(&mut self) {
+        kill_group(self.0.take());
     }
 }
 
@@ -243,6 +256,35 @@ fn overstrike(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Multi-threaded: the run makes progress while this test polls for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_a_shell_run_kills_its_group() {
+        let dir = octet_testkit::TempDir::new("octet-shell-drop");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let pidfile = dir.path().join("group");
+        // The shell's pid is its group's id (setsid); the pipeline lives on in it.
+        let command = format!("echo $$ > {}; sleep 30 | cat", pidfile.display());
+        let run = tokio::spawn(async move {
+            let (_keep, cancel) = oneshot::channel();
+            run_with("sh", &command, Path::new("."), cancel, TIME_LIMIT).await
+        });
+        assert!(octet_testkit::wait_until(octet_testkit::QUICK, || {
+            std::fs::read_to_string(&pidfile).is_ok_and(|text| text.ends_with('\n'))
+        }));
+        let group: libc::pid_t = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // A reconnect or quit drops the run mid-way.
+        run.abort();
+        let _ = run.await;
+        // SAFETY: signal 0 to the group only checks that a member exists.
+        let gone = octet_testkit::wait_until(octet_testkit::QUICK, || unsafe {
+            libc::kill(-group, 0) != 0
+        });
+        assert!(gone, "the command's processes outlived it");
+    }
     async fn sh(command: &str) -> Ran {
         let (_keep, cancel) = oneshot::channel();
         run_with("sh", command, Path::new("."), cancel, TIME_LIMIT)

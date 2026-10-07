@@ -189,7 +189,7 @@ fn composer(
     };
     let (lines, (col, row)) = draft;
     let offset = row.saturating_sub(input.height.saturating_sub(1) as usize);
-    if app.composer.editor.text.is_empty() {
+    if app.composer.editor.text().is_empty() {
         frame.render_widget(
             Paragraph::new("Ask about this workspace, describe a change, or type /help…")
                 .style(Style::default().fg(MUTED)),

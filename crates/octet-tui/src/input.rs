@@ -1,7 +1,7 @@
 //! Keys, paste and the prompt box's popups: what each key does in each state.
 use crate::{
     Action, Exit, QUIT_HINT, QUIT_WINDOW,
-    app::{App, CANCELLING, QUEUE_LIMIT},
+    app::{APPROVAL_ARM, App, CANCELLING, QUEUE_LIMIT, StatusKind},
     clipboard,
     commands::{command, try_command},
     composer, files,
@@ -54,20 +54,20 @@ pub(crate) fn palette_key(app: &mut App, key: &str) -> Action {
             return Action::ExternalEditor;
         }
         "@" => {
-            let after_word = app.composer.editor.text[..app.composer.editor.cursor]
+            let after_word = app.composer.editor.text()[..app.composer.editor.cursor()]
                 .chars()
                 .next_back()
                 .is_some_and(|c| !c.is_whitespace());
             let mention = if after_word { " @" } else { "@" };
             if app.insert_or_warn(mention)
                 && let Some((start, _)) =
-                    composer::mention_at(&app.composer.editor.text, app.composer.editor.cursor)
+                    composer::mention_at(app.composer.editor.text(), app.composer.editor.cursor())
             {
                 open_mentions(app, start);
             }
         }
-        _ if app.composer.editor.text.is_empty() => app.composer.editor.set("!".into()),
-        _ => app.status_line = "Clear the prompt to start a ! command".into(),
+        _ if app.composer.editor.text().is_empty() => app.composer.editor.set("!".into()),
+        _ => app.hint("Clear the prompt to start a ! command"),
     }
     Action::Continue
 }
@@ -94,7 +94,7 @@ pub(crate) fn refresh_completion(app: &mut App) {
     if completion.kind != composer::Kind::File {
         return;
     }
-    match composer::mention_at(&app.composer.editor.text, app.composer.editor.cursor) {
+    match composer::mention_at(app.composer.editor.text(), app.composer.editor.cursor()) {
         Some((start, query)) if start == completion.start => {
             completion.items = match &app.composer.files {
                 files::Files::Ready(index) => {
@@ -133,29 +133,29 @@ pub(crate) fn copy_reply(app: &mut App) {
         return;
     };
     write_terminal(&bytes);
-    app.status_line = if cut {
+    app.hint(if cut {
         format!(
             "Copied the first {} KiB to the clipboard",
             clipboard::LIMIT / 1024
         )
     } else {
         format!("Copied {} to the clipboard", size_label(size))
-    };
+    });
 }
 pub(crate) fn size_label(bytes: usize) -> String {
     if bytes < 1024 {
         format!("{bytes} B")
     } else {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
     }
 }
-/// Pasted text goes into the draft unless a dialog has focus.
+/// Pasted text goes into the draft, tabs and all, unless a dialog has
+/// focus; then it is dropped with a hint.
 pub(crate) fn paste(app: &mut App, value: &str) {
-    if app.overlay.approvals.is_empty()
-        && !app.overlay.help
-        && !app.overlay.palette
-        && !app.composer.editor.insert(&text::clean(value))
-    {
+    let dialog = !app.overlay.approvals.is_empty() || app.overlay.help || app.overlay.palette;
+    if dialog {
+        app.hint("Close the dialog to paste into the prompt");
+    } else if !app.composer.editor.insert(&text::strip(value)) {
         app.hint(format!(
             "Paste exceeds the {} KiB prompt limit; draft preserved",
             octet_core::PROMPT_LIMIT / 1024
@@ -177,8 +177,8 @@ pub(crate) fn paste(app: &mut App, value: &str) {
 pub(crate) async fn key_action(app: &mut App, vendor: &dyn Vendor, key: KeyEvent) -> Action {
     // Any key ends a pending quit; only a second Ctrl+C in time completes it.
     let quit_armed = app.quit_armed.take();
-    if quit_armed.is_some() && app.status_line == QUIT_HINT {
-        app.status_line.clear();
+    if quit_armed.is_some() {
+        app.clear_status(StatusKind::QuitHint);
     }
     if ctrl(key, 'z') {
         return Action::Suspend;
@@ -226,11 +226,14 @@ async fn approval_key(app: &mut App, vendor: &dyn Vendor, key: KeyEvent, id: u64
         KeyCode::Char('d' | 'D') | KeyCode::Esc => Some(false),
         _ => None,
     };
-    if let Some(allow) = answer {
+    if answer.is_some() && app.overlay.approval_shown.elapsed() < APPROVAL_ARM {
+        // Typed as the dialog opened: never an answer.
+        app.hint("The approval just opened; press A or D again to answer");
+    } else if let Some(allow) = answer {
         match vendor.send(Command::Answer { id, allow }) {
             Ok(()) => {
                 app.overlay.approvals.pop_front();
-                app.overlay.approval_scroll = 0;
+                app.overlay.front_changed();
             }
             Err(error) => app.error(error.to_string()),
         }
@@ -321,14 +324,14 @@ async fn composer_key(
                 return Action::CancelShell;
             } else if app.is_busy() {
                 cancel_turn(app, vendor).await;
-                app.hint(CANCELLING);
-            } else if !app.composer.editor.text.is_empty() {
+                app.status(StatusKind::Cancelling, CANCELLING);
+            } else if !app.composer.editor.text().is_empty() {
                 app.composer.editor.take();
             } else if quit_armed.is_some_and(|deadline| Instant::now() < deadline) {
                 return Action::Exit(Exit::Quit);
             } else {
                 app.quit_armed = Some(Instant::now() + QUIT_WINDOW);
-                app.hint(QUIT_HINT);
+                app.status(StatusKind::QuitHint, QUIT_HINT);
             }
         }
         KeyCode::Esc => {
@@ -336,8 +339,8 @@ async fn composer_key(
                 return Action::CancelShell;
             } else if app.is_busy() {
                 cancel_turn(app, vendor).await;
-                app.hint(CANCELLING);
-            } else if app.composer.editor.text.is_empty()
+                app.status(StatusKind::Cancelling, CANCELLING);
+            } else if app.composer.editor.text().is_empty()
                 && !(app.composer.attachments.is_empty() && app.composer.images.is_empty())
             {
                 app.composer.attachments.clear();
@@ -354,7 +357,7 @@ async fn composer_key(
             app.insert_or_warn("\n");
         }
         KeyCode::Enter => {
-            let draft = app.composer.editor.text.trim().to_owned();
+            let draft = app.composer.editor.text().trim().to_owned();
             if draft.is_empty() {
                 return Action::Continue;
             }
@@ -382,7 +385,7 @@ async fn composer_key(
                 .next()
                 .and_then(|first| first.strip_prefix('/'))
                 .is_some_and(|name| name.contains('/'));
-            if draft.starts_with('/') && draft != "/approval-demo" && !path_like {
+            if draft.starts_with('/') && draft != octet_core::APPROVAL_DEMO && !path_like {
                 return match try_command(app, vendor, &draft).await {
                     Some(action) => {
                         app.composer.editor.take();
@@ -395,10 +398,10 @@ async fn composer_key(
                 app.composer.editor.take();
             }
         }
-        KeyCode::Up if app.composer.editor.text.contains('\n') => {
+        KeyCode::Up if app.composer.editor.text().contains('\n') => {
             app.composer.editor.vertical(false)
         }
-        KeyCode::Down if app.composer.editor.text.contains('\n') => {
+        KeyCode::Down if app.composer.editor.text().contains('\n') => {
             app.composer.editor.vertical(true)
         }
         KeyCode::Up => app.recall(true),
@@ -417,8 +420,8 @@ async fn composer_key(
             app.composer.listing.store(true, Ordering::SeqCst);
             let listing = Listing(Arc::clone(&app.composer.listing));
             let (text, cursor, root) = (
-                app.composer.editor.text.clone(),
-                app.composer.editor.cursor,
+                app.composer.editor.text().to_owned(),
+                app.composer.editor.cursor(),
                 app.composer.root.clone(),
             );
             let tab = off_loop(TAB_WAIT, move || {
@@ -449,7 +452,7 @@ async fn composer_key(
     if key.code == KeyCode::Char('@')
         && app.composer.completion.is_none()
         && let Some((start, "")) =
-            composer::mention_at(&app.composer.editor.text, app.composer.editor.cursor)
+            composer::mention_at(app.composer.editor.text(), app.composer.editor.cursor())
     {
         open_mentions(app, start);
     }
@@ -459,15 +462,16 @@ async fn composer_key(
 /// Interrupts the turn; a goal working on it is paused first, and prompts
 /// queued behind it are dropped: stopping the agent stops what was lined up.
 pub(crate) async fn cancel_turn(app: &mut App, vendor: &dyn Vendor) {
-    if let Err(error) = app.goals.pause_running_turn().await {
-        app.goal_save_failed(error, false);
-    }
+    // Interrupt first: saving the paused goal must not delay the cancel.
+    app.conn.cancel();
+    vendor.interrupt();
     let dropped = std::mem::take(&mut app.composer.queue).len();
     if dropped > 0 {
         app.note(format!("Dropped {}", crate::app::queued_prompts(dropped)));
     }
-    app.conn.cancel();
-    vendor.interrupt();
+    if let Err(error) = app.goals.pause_running_turn().await {
+        app.goal_save_failed(error, false);
+    }
 }
 pub(crate) fn cycle_mode(app: &mut App, vendor: &dyn Vendor) -> Action {
     if app.conn.mode == octet_core::Mode::FullAccess {
@@ -526,7 +530,7 @@ pub(crate) fn submit(app: &mut App, vendor: &dyn Vendor, draft: String) -> bool 
     if app.conn.is_running() {
         // The running turn keeps going; this one goes when it ends.
         app.composer.queue.push_back(prompt);
-        app.status_line = format!("Queued ({} waiting)", app.composer.queue.len());
+        app.hint(format!("Queued ({} waiting)", app.composer.queue.len()));
     } else if let Err(error) = app.begin_turn(vendor, prompt.into_command(), By::User, "sending") {
         app.error(error.to_string());
         return false;

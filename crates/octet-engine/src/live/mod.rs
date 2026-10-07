@@ -628,6 +628,8 @@ fn emit(tx: &mpsc::Sender<Event>, event: Event) -> Result<(), DriverError> {
     Ok(())
 }
 
+/// The demo prompt that opens its sample approval dialog.
+pub const APPROVAL_DEMO: &str = "/approval-demo";
 /// Refusal: a turn is already running or the session is not ready.
 const BUSY: &str = "Wait for the current operation, or cancel it first";
 /// Refusal: a steer with no turn to add to.

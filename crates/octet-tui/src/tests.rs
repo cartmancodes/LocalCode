@@ -1,3 +1,7 @@
+#![expect(
+    unused_must_use,
+    reason = "tests drive keys and commands for their effect and often ignore the action"
+)]
 use super::*;
 use crate::app::ConnPhase;
 use crate::{
@@ -39,8 +43,8 @@ fn ctrl(c: char) -> KeyEvent {
 #[test]
 fn sizes_read_naturally() {
     assert_eq!(size_label(5), "5 B");
-    assert_eq!(size_label(1229), "1.2 KB");
-    assert_eq!(size_label(100 * 1024), "100.0 KB");
+    assert_eq!(size_label(1229), "1.2 KiB");
+    assert_eq!(size_label(100 * 1024), "100.0 KiB");
 }
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -225,19 +229,19 @@ fn image_paths_resolve_against_the_workspace_and_home() {
     let root = Path::new("/work");
     let home = Some(Path::new("/home/me"));
     assert_eq!(
-        commands::image_path(root, home, "shots/a.png"),
+        commands::path_in(root, home, "shots/a.png"),
         Path::new("/work/shots/a.png")
     );
     assert_eq!(
-        commands::image_path(root, home, "~/a.png"),
+        commands::path_in(root, home, "~/a.png"),
         Path::new("/home/me/a.png")
     );
     assert_eq!(
-        commands::image_path(root, home, "/abs/a.png"),
+        commands::path_in(root, home, "/abs/a.png"),
         Path::new("/abs/a.png")
     );
     assert_eq!(
-        commands::image_path(root, None, "~/a.png"),
+        commands::path_in(root, None, "~/a.png"),
         Path::new("/work/~/a.png")
     );
 }
@@ -263,7 +267,7 @@ fn dragged_image_paths_are_unquoted() {
         (r"~/My\ Shots/a.png", "/home/me/My Shots/a.png"),
     ] {
         assert_eq!(
-            commands::image_path(root, home, typed),
+            commands::path_in(root, home, typed),
             Path::new(wanted),
             "{typed}"
         );
@@ -363,7 +367,7 @@ fn browsing_history_keeps_the_drafts_own_images() {
     let image = octet_core::ImageAttachment::open(&dir.path().join("draft.png")).unwrap();
     app.composer.images.push(image);
     app.recall(true);
-    assert_eq!(app.composer.editor.text, "earlier");
+    assert_eq!(app.composer.editor.text(), "earlier");
     assert_eq!(
         app.composer.images.len(),
         1,
@@ -421,3 +425,14 @@ fn one_dropped_prompt_is_singular() {
 
 mod keys;
 mod slash;
+#[test]
+fn the_panic_hook_restores_only_on_the_loop_thread() {
+    let owner = std::thread::current().id();
+    assert!(crate::panic_restores_terminal(owner));
+    // A background job or index thread that panics is survived; the
+    // terminal stays as the interface left it.
+    let elsewhere = std::thread::spawn(move || crate::panic_restores_terminal(owner))
+        .join()
+        .unwrap();
+    assert!(!elsewhere);
+}

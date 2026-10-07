@@ -32,14 +32,16 @@ use std::{
     time::Duration,
 };
 pub(crate) use terminal::write_terminal;
-use terminal::{InputReader, TerminalGuard, alert, fit, regain_terminal, unix_signal};
+use terminal::{InputReader, TerminalGuard, alert, fit, regain_terminal};
 use tokio::time::Instant;
 use vendor::{By, Vendor};
 /// Shown after the first Ctrl+C on an idle, empty prompt, as in Claude Code.
 pub(crate) const QUIT_HINT: &str = "Press Ctrl+C again to quit";
 /// How long that first press stays armed.
 pub(crate) const QUIT_WINDOW: Duration = Duration::from_millis(1500);
-/// What a key or command asks the session loop to do.
+/// What a key or command asks the session loop to do. Dropping one loses
+/// work (a job, an exit), so it must be used.
+#[must_use]
 pub(crate) enum Action {
     Continue,
     Suspend,
@@ -89,8 +91,11 @@ pub fn command_names() -> impl Iterator<Item = &'static str> {
 /// start (for example, the journal directory is not writable).
 pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     let old = std::panic::take_hook();
+    let owner = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
-        TerminalGuard::restore();
+        if panic_restores_terminal(owner) {
+            TerminalGuard::restore();
+        }
         old(info);
     }));
     let guard = TerminalGuard::enter()?;
@@ -100,9 +105,17 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     let mut opening_notice: Option<String> = None;
     let mut binaries = std::collections::HashMap::from([(config.engine, config.binary.clone())]);
     let goal_store = octet_core::goal::GoalStore::new(&directory, &config.cwd);
-    // How the last session's job ended, for whichever interface comes next.
-    let mut ended_job: Option<jobs::Ended> = None;
+    // Registered once: a signal that arrives while one session ends and the
+    // next opens is kept for the check below, not lost.
+    let mut signals = Signals::new()?;
+    // A job still running when a session ended, for whichever interface
+    // comes next.
+    let mut carried_job: Option<jobs::Running> = None;
     loop {
+        if signals.stop_pending().await {
+            jobs::on_quit(carried_job.take()).await;
+            break;
+        }
         let mut session = Session::open(config.clone(), directory.clone())
             .await
             .map_err(io::Error::other)?;
@@ -112,24 +125,30 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         if let Some(notice) = opening_notice.take() {
             app.note(notice);
         }
-        if let Some(ended) = ended_job.take() {
-            jobs::apply(&mut app, ended);
+        if let Some(job) = carried_job.take() {
+            app.job = Some(job);
         }
         if !app.goals.is_attached() {
             attach_goal_store(&mut app, goal_store.clone()).await;
         }
         app.connection(&config, session.journal().to_path_buf());
-        let result = run_session(&mut terminal, &guard, &mut app, &mut session).await;
-        // Every exit path: an export is finished, not cut short or orphaned.
-        ended_job = jobs::finish(app.job.take(), jobs::GRACE).await;
+        let result = run_session(&mut terminal, &guard, &mut app, &mut session, &mut signals).await;
         session.shutdown().await;
+        let exit = match result {
+            Ok(exit) => exit,
+            Err(error) => {
+                jobs::on_quit(app.job.take()).await;
+                return Err(error);
+            }
+        };
         let ended = reconnect::Ended {
             session: &app.conn.session,
             journal: &app.conn.journal,
             mode: app.conn.mode,
             effort: app.conn.effort.clone(),
         };
-        let Some(plan) = reconnect::plan(result?, &config, &ended, &mut binaries) else {
+        let Some(plan) = reconnect::plan(exit, &config, &ended, &mut binaries) else {
+            jobs::on_quit(app.job.take()).await;
             break;
         };
         if let Some(why) = plan.pause {
@@ -140,11 +159,22 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         }
         opening_notice = plan.opening;
         config = plan.config;
+        // A job moves with the interface: a fresh one takes it over.
+        if !plan.keep_app {
+            carried_job = app.job.take();
+        }
         retained_app = plan.keep_app.then_some(app);
     }
     drop(terminal);
     drop(guard);
     Ok(())
+}
+/// Whether a panic on this thread should restore the terminal: only one on
+/// the event loop's thread (`owner`) ends the interface. A background job or
+/// index thread that panics is reported and survived, so the terminal must
+/// stay as the interface left it.
+fn panic_restores_terminal(owner: std::thread::ThreadId) -> bool {
+    std::thread::current().id() == owner
 }
 /// Loads the stored goal on the first connection. A load failure leaves chat
 /// usable and the file in place.
@@ -167,29 +197,59 @@ async fn attach_goal_store(app: &mut App, store: octet_core::goal::GoalStore) {
         Ok(()) => {}
     }
 }
+/// The signals the interface handles, registered once for the whole run.
+struct Signals {
+    interrupt: tokio::signal::unix::Signal,
+    term: tokio::signal::unix::Signal,
+    hup: tokio::signal::unix::Signal,
+    suspend: tokio::signal::unix::Signal,
+}
+impl Signals {
+    fn new() -> io::Result<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt())?,
+            term: signal(SignalKind::terminate())?,
+            hup: signal(SignalKind::hangup())?,
+            suspend: signal(SignalKind::from_raw(libc::SIGTSTP))?,
+        })
+    }
+    /// Whether a signal that stops the interface arrived between sessions.
+    async fn stop_pending(&mut self) -> bool {
+        tokio::select! {
+            biased;
+            _ = self.interrupt.recv() => true,
+            _ = self.term.recv() => true,
+            _ = self.hup.recv() => true,
+            () = std::future::ready(()) => false,
+        }
+    }
+}
 /// A `!` command running in the background.
 struct ShellTask {
     task: tokio::task::JoinHandle<Result<shell::Ran, shell::ShellError>>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
     attach: bool,
 }
+impl Drop for ShellTask {
+    /// A session that ends (a reconnect, a quit) takes its command with it:
+    /// aborting drops the run, whose guard kills the command's group.
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
 async fn run_session(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     guard: &TerminalGuard,
     app: &mut App,
     session: &mut Session,
+    signals: &mut Signals,
 ) -> io::Result<Exit> {
     let mut input = Some(InputReader::new());
     let mut dirty = true;
     let mut last_paint = Instant::now() - Duration::from_secs(1);
     let frame_time = Duration::from_millis(33);
     let mut events_open = true;
-    // Registered once, so no signal is lost between loop turns.
-    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
-    let mut suspend =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(libc::SIGTSTP))?;
     // The running `!` command, if any.
     let mut shell_task: Option<ShellTask> = None;
     // The @ index, built on a plain thread: a walk stuck on a dead mount
@@ -209,9 +269,7 @@ async fn run_session(
             // The only timer outside painting: the quit hint expires.
             _ = tokio::time::sleep_until(quit_deadline.unwrap_or(last_paint)), if quit_deadline.is_some() => {
                 app.quit_armed = None;
-                if app.status_line == QUIT_HINT {
-                    app.status_line.clear();
-                }
+                app.clear_status(app::StatusKind::QuitHint);
                 dirty = true;
             }
             event = session.events.recv(), if events_open => {
@@ -313,7 +371,7 @@ async fn run_session(
                         app.job = Some(jobs::Running::spawn(next));
                     }
                     Action::ExternalEditor => {
-                        match external::prepare(&app.composer.editor.text, external::editor_command()) {
+                        match external::prepare(app.composer.editor.text(), external::editor_command()) {
                             Err(error) => app.error(error.to_string()),
                             Ok(edit) => {
                                 // Stop reading keys so the editor gets them all.
@@ -341,7 +399,7 @@ async fn run_session(
                         let (cancel, cancelled) = tokio::sync::oneshot::channel();
                         let root = app.composer.root.clone();
                         app.composer.shell_running = true;
-                        app.status_line = format!("Running {command} · Esc to stop");
+                        app.hint(format!("Running {command} · Esc to stop"));
                         shell_task = Some(ShellTask {
                             task: tokio::spawn(async move {
                                 shell::run(&command, &root, cancelled).await
@@ -375,20 +433,20 @@ async fn run_session(
                 dirty = true;
             }
             // While an editor waits in cooked mode, Ctrl+C is meant for it.
-            _ = unix_signal(&mut interrupt) => {
+            _ = signals.interrupt.recv() => {
                 if editing.is_none() {
                     return Ok(Exit::Quit);
                 }
             }
-            _ = unix_signal(&mut term) => {
+            _ = signals.term.recv() => {
                 stop_editor(&mut editing).await;
                 return Ok(Exit::Quit);
             }
-            _ = unix_signal(&mut hup) => {
+            _ = signals.hup.recv() => {
                 stop_editor(&mut editing).await;
                 return Ok(Exit::Quit);
             }
-            _ = unix_signal(&mut suspend) => {
+            _ = signals.suspend.recv() => {
                 if editing.is_some() {
                     // The editor owns the terminal and restores it on fg;
                     // Octet only stops alongside it.
@@ -456,7 +514,9 @@ fn send_queued(app: &mut App, vendor: &dyn Vendor) {
     let Some(prompt) = app.composer.queue.pop_front() else {
         return;
     };
-    if let Err(error) = app.begin_turn(vendor, prompt.into_command(), By::User, "sending") {
+    // A failed send keeps the prompt at the front, to go with the next turn.
+    if let Err(error) = app.begin_turn(vendor, prompt.clone().into_command(), By::User, "sending") {
+        app.composer.queue.push_front(prompt);
         app.error(format!("A queued prompt could not be sent: {error}"));
     }
 }
@@ -486,7 +546,7 @@ fn shell_finished(app: &mut App, result: Result<shell::Ran, shell::ShellError>, 
     match result {
         Ok(ran) => {
             app.shell_output(&ran);
-            app.status_line = format!("$ {} · {}", ran.command, ran.summary());
+            app.hint(format!("$ {} · {}", ran.command, ran.summary()));
             if attach {
                 app.attach(ran);
             }

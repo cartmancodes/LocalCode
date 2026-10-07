@@ -116,7 +116,7 @@ fn a_full_prompt_warns_instead_of_inserting() {
 fn a_finished_turn_clears_the_cancelling_notice() {
     let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     app.event(Event::Started);
-    app.status_line = CANCELLING.into();
+    app.status(StatusKind::Cancelling, CANCELLING);
     app.event(Event::Finished {
         outcome: octet_core::Outcome::Interrupted,
     });

@@ -9,7 +9,6 @@ use crate::{
     vendor::{By, Vendor},
 };
 use octet_core::{Command, Mode};
-use std::path::PathBuf;
 pub(crate) async fn send_goal_prompt(app: &mut App, vendor: &dyn Vendor, prompt: String) {
     let command = Command::PromptWithDisplay {
         wire: prompt,
@@ -31,7 +30,7 @@ pub(crate) async fn goal_send_failed(app: &mut App, error: octet_core::SendError
 /// not a command (it may be a prompt that merely starts with a slash), or the
 /// command failed on input worth correcting (a `/image` path).
 pub(crate) async fn try_command(app: &mut App, vendor: &dyn Vendor, input: &str) -> Option<Action> {
-    let (name, argument) = input.split_once(' ').unwrap_or((input, ""));
+    let (name, argument) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
     let argument = argument.trim();
     let Some(spec) = Spec::find(name) else {
         app.note(format!(
@@ -58,7 +57,7 @@ pub(crate) async fn try_command(app: &mut App, vendor: &dyn Vendor, input: &str)
         Cmd::Fork => return Some(fork_command(app)),
         Cmd::Compact => compact_command(app, vendor),
         // A failed /image leaves the line in the prompt box to correct.
-        Cmd::Image if !image_command(app, argument) => return None,
+        Cmd::Image if !image_command(app, argument).await => return None,
         Cmd::Image => {}
         Cmd::Sessions => return start_job(app, sessions_job(app)),
         Cmd::Resume => return Some(resume_command(app, argument)),
@@ -125,14 +124,23 @@ fn effort_command(app: &mut App, vendor: &dyn Vendor, argument: &str) -> Action 
             Err(error) => app.error(error.to_string()),
         }
         Action::Continue
-    } else if app.turn_open() {
-        app.hint(TURN_OPEN);
-        Action::Continue
-    } else if app.is_connecting() {
-        app.hint(NOT_CONNECTED);
+    } else if let Err(refusal) = can_reconnect(app) {
+        app.hint(refusal);
         Action::Continue
     } else {
         Action::Exit(Exit::Effort(level))
+    }
+}
+
+/// Whether a command may end this session to reconnect: not while a turn
+/// runs or an approval waits, nor while connecting. The refusal otherwise.
+fn can_reconnect(app: &App) -> Result<(), &'static str> {
+    if app.turn_open() {
+        Err(TURN_OPEN)
+    } else if app.is_connecting() {
+        Err(NOT_CONNECTED)
+    } else {
+        Ok(())
     }
 }
 
@@ -189,7 +197,7 @@ pub(crate) fn switch_mode(app: &mut App, vendor: &dyn Vendor, target: Mode) {
 }
 
 /// `/image PATH`: attach an image to the next prompt; whether it did.
-fn image_command(app: &mut App, argument: &str) -> bool {
+async fn image_command(app: &mut App, argument: &str) -> bool {
     if argument.is_empty() {
         app.note(format!(
             "Usage: /image PATH (PNG, JPEG, GIF or WebP, up to {} MiB)",
@@ -204,10 +212,19 @@ fn image_command(app: &mut App, argument: &str) -> bool {
         ));
         return false;
     }
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let path = image_path(&app.composer.root, home.as_deref(), argument);
+    let path = resolve_path(&app.composer.root, argument);
     let provider = app.conn.engine.provider();
-    let opened = octet_core::ImageAttachment::open(&path).and_then(|image| {
+    // Opening resolves and stats the file: off the loop, so a dead mount
+    // cannot freeze the screen.
+    let Some(opened) = crate::input::off_loop(crate::input::TAB_WAIT, move || {
+        octet_core::ImageAttachment::open(&path)
+    })
+    .await
+    else {
+        app.note("The image could not be read in time; is its disk slow or gone?");
+        return false;
+    };
+    let opened = opened.and_then(|image| {
         if provider.inline_images {
             let sizes = app
                 .composer
@@ -232,10 +249,16 @@ fn image_command(app: &mut App, argument: &str) -> bool {
     }
 }
 
-/// Where `/image` looks: `~/` is the home directory, and a relative path is
-/// in the workspace. A path dragged into the terminal arrives quoted or with
-/// backslash escapes; both are undone.
-pub(crate) fn image_path(
+/// Where `/image` and `/export` look: `~/` is the home directory, and a
+/// relative path is in the workspace. A path dragged into the terminal
+/// arrives quoted or with backslash escapes; both are undone.
+pub(crate) fn resolve_path(root: &std::path::Path, argument: &str) -> std::path::PathBuf {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    path_in(root, home.as_deref(), argument)
+}
+
+/// `resolve_path` with the home directory given.
+pub(crate) fn path_in(
     root: &std::path::Path,
     home: Option<&std::path::Path>,
     argument: &str,
@@ -326,6 +349,10 @@ fn resume_command(app: &mut App, argument: &str) -> Action {
         return Action::Continue;
     }
     let count = app.conn.listed.len();
+    if argument.is_empty() {
+        app.hint(format!("Use /resume N, from 1 to {count}"));
+        return Action::Continue;
+    }
     let Some(entry) = argument
         .parse::<usize>()
         .ok()
@@ -419,10 +446,8 @@ fn model_command(app: &mut App, argument: &str) -> Action {
                 Err(_) => app.note("Use /model list <page number>"),
             },
         }
-    } else if app.turn_open() {
-        app.hint(TURN_OPEN);
-    } else if app.is_connecting() {
-        app.hint(NOT_CONNECTED);
+    } else if let Err(refusal) = can_reconnect(app) {
+        app.hint(refusal);
     } else {
         match octet_core::model::Selection::parse(argument, app.conn.engine) {
             Ok(selection) => return Action::Exit(Exit::Model(selection)),
@@ -449,8 +474,8 @@ fn mode_command(app: &mut App, vendor: &dyn Vendor, argument: &str) -> Action {
                 // stopped, so a session that failed can still leave it.
                 let can_switch =
                     app.conn.is_ready() || (app.conn.is_stopped() && target != Mode::FullAccess);
-                if app.turn_open() {
-                    app.hint(TURN_OPEN);
+                if let Err(refusal @ TURN_OPEN) = can_reconnect(app) {
+                    app.hint(refusal);
                 } else if !can_switch {
                     app.hint(NOT_CONNECTED);
                 } else {
@@ -503,12 +528,13 @@ async fn goal_command(app: &mut App, vendor: &dyn Vendor, argument: &str) {
     }
 }
 fn export_job(app: &App, argument: &str) -> Job {
+    // The workspace, not Octet's own directory: `--cwd` is where the user is.
     let path = if argument.trim().is_empty() {
-        std::env::current_dir()
-            .unwrap_or_default()
+        app.composer
+            .root
             .join(app.conn.journal.file_name().unwrap_or_default())
     } else {
-        PathBuf::from(argument.trim())
+        resolve_path(&app.composer.root, argument.trim())
     };
     Job::export(app.conn.journal.clone(), path)
 }

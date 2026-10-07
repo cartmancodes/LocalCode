@@ -1,7 +1,7 @@
 //! Presentation-independent session boundary. Persist events before publishing;
 //! disk and subscriber failures stop execution instead of losing output silently.
 pub use octet_engine::live::{
-    Command, Config, DEFAULT_APPROVAL_TIMEOUT, Engine, Event, Handle, IMAGE_LIMIT,
+    APPROVAL_DEMO, Command, Config, DEFAULT_APPROVAL_TIMEOUT, Engine, Event, Handle, IMAGE_LIMIT,
     IMAGES_PER_PROMPT, ImageAttachment, ImageError, Mode, Outcome, PROMPT_LIMIT, SendError,
     check_inline, encoded_len, valid_effort,
 };

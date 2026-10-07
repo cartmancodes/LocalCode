@@ -1,11 +1,32 @@
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+/// The prompt being written: its text and a cursor that is always on a
+/// grapheme boundary, which every edit relies on (so the fields are private).
 #[derive(Default)]
 pub struct Editor {
-    pub text: String,
-    pub cursor: usize,
+    text: String,
+    cursor: usize,
+}
+/// Columns between tab stops, as the composer shows a tab.
+const TAB_STOP: usize = 4;
+/// How many columns grapheme `g` takes at column `col`: a tab reaches the
+/// next tab stop.
+fn columns(g: &str, col: usize) -> usize {
+    if g == "\t" {
+        TAB_STOP - col % TAB_STOP
+    } else {
+        g.width()
+    }
 }
 impl Editor {
+    /// The draft.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+    /// Where the cursor is, as a byte offset into `text`.
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
     #[must_use = "false means the text did not fit the prompt limit"]
     pub fn insert(&mut self, text: &str) -> bool {
         if self.text.len() + text.len() > octet_core::PROMPT_LIMIT {
@@ -96,10 +117,11 @@ impl Editor {
             let mut width = 0;
             self.cursor = target;
             for g in line.graphemes(true) {
-                if width + g.width() > column {
+                let w = columns(g, width);
+                if width + w > column {
                     break;
                 }
-                width += g.width();
+                width += w;
                 self.cursor += g.len();
             }
         }
@@ -111,7 +133,7 @@ impl Editor {
         let mut cursor = (0, 0);
         let mut byte = 0;
         for g in self.text.graphemes(true) {
-            if g != "\n" && col + g.width() > width {
+            if g != "\n" && col + columns(g, col) > width {
                 lines.push(String::new());
                 col = 0;
             }
@@ -122,11 +144,15 @@ impl Editor {
                 lines.push(String::new());
                 col = 0;
             } else {
-                lines
-                    .last_mut()
-                    .expect("lines starts non-empty")
-                    .push_str(g);
-                col += g.width();
+                // A tab is shown as spaces to the next stop; the text keeps it.
+                let w = columns(g, col);
+                let line = lines.last_mut().expect("lines starts non-empty");
+                if g == "\t" {
+                    line.push_str(&" ".repeat(w));
+                } else {
+                    line.push_str(g);
+                }
+                col += w;
             }
             byte += g.len();
         }
@@ -165,6 +191,15 @@ mod tests {
         assert_eq!(e.cursor, 5);
         e.home();
         assert_eq!(e.cursor, 0);
+    }
+    #[test]
+    fn tabs_are_laid_out_to_the_next_stop() {
+        let mut e = Editor::default();
+        assert!(e.insert("a\tb"));
+        let (lines, cursor) = e.layout(20);
+        assert_eq!(lines, ["a   b"]);
+        assert_eq!(cursor, (5, 0));
+        assert_eq!(e.text(), "a\tb");
     }
     #[test]
     fn oversized_paste_does_not_destroy_draft() {

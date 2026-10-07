@@ -471,12 +471,12 @@ async fn up_recalls_a_prompt_with_its_images() {
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert!(app.composer.images.is_empty());
     app.recall(true);
-    assert_eq!(app.composer.editor.text, "look");
+    assert_eq!(app.composer.editor.text(), "look");
     assert_eq!(app.composer.images.len(), 1);
     assert!(crate::view::composer_title(&app).contains("+ image shot.png"));
     // Back down: the empty draft, without the recalled images.
     app.recall(false);
-    assert!(app.composer.editor.text.is_empty());
+    assert!(app.composer.editor.text().is_empty());
     assert!(app.composer.images.is_empty());
 }
 #[tokio::test]
@@ -532,6 +532,7 @@ async fn sessions_listing_runs_off_the_loop() {
 fn job_after(delay: Option<Duration>, done: fn() -> crate::jobs::Done) -> crate::jobs::Job {
     crate::jobs::Job {
         label: "Exporting the journal…",
+        must_finish: true,
         work: Box::pin(async move {
             match delay {
                 Some(delay) => tokio::time::sleep(delay).await,
@@ -554,7 +555,7 @@ async fn a_second_job_keeps_the_draft() {
     app.job = Some(crate::jobs::Running::spawn(job_after(None, exported)));
     assert!(app.composer.editor.insert("/sessions"));
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
-    assert_eq!(app.composer.editor.text, "/sessions");
+    assert_eq!(app.composer.editor.text(), "/sessions");
     assert_eq!(app.status_line, "Wait for: Exporting the journal…");
 }
 #[tokio::test]
@@ -587,5 +588,121 @@ async fn a_job_that_outlives_its_session_is_stopped_with_a_note() {
         crate::jobs::finish(None, Duration::from_secs(5))
             .await
             .is_none()
+    );
+}
+#[tokio::test]
+async fn a_job_carries_into_the_next_session() {
+    // A reconnect opens the next interface while the job still runs; the
+    // job moves with it and reports there.
+    let mut old = app();
+    old.job = Some(crate::jobs::Running::spawn(job_after(
+        Some(Duration::from_millis(50)),
+        exported,
+    )));
+    let mut next = app();
+    next.job = old.job.take();
+    let ended = next.job.as_mut().unwrap().wait().await;
+    next.job = None;
+    crate::jobs::apply(&mut next, ended);
+    assert!(
+        next.entries_text()
+            .contains("Exported journal to out.jsonl")
+    );
+}
+#[tokio::test]
+async fn quit_waits_only_for_an_export() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WRITTEN: AtomicBool = AtomicBool::new(false);
+    let export = crate::jobs::Job {
+        label: "Exporting the journal…",
+        must_finish: true,
+        work: Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            WRITTEN.store(true, Ordering::SeqCst);
+            exported()
+        }),
+    };
+    crate::jobs::on_quit(Some(crate::jobs::Running::spawn(export))).await;
+    assert!(WRITTEN.load(Ordering::SeqCst), "quit cut the export short");
+    let listing = crate::jobs::Job {
+        label: "Reading recent sessions…",
+        must_finish: false,
+        work: Box::pin(async {
+            std::future::pending::<()>().await;
+            exported()
+        }),
+    };
+    let started = std::time::Instant::now();
+    crate::jobs::on_quit(Some(crate::jobs::Running::spawn(listing))).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "quit waited for a listing"
+    );
+}
+#[tokio::test]
+async fn export_resolves_against_the_workspace() {
+    let workspace = octet_testkit::TempDir::new("octet-export-workspace");
+    std::fs::create_dir_all(workspace.path()).unwrap();
+    let journal = workspace.path().join("journal.jsonl");
+    std::fs::write(&journal, b"{}\n").unwrap();
+    let mut app = app();
+    app.composer.root = workspace.path().to_path_buf();
+    app.conn.journal = journal;
+    let action = command(&mut app, "/export saved.jsonl").await;
+    run_job(&mut app, action).await;
+    assert!(
+        workspace.path().join("saved.jsonl").exists(),
+        "{}",
+        app.entries_text()
+    );
+}
+#[tokio::test]
+async fn reconnecting_commands_share_one_guard() {
+    for line in ["/model other", "/effort high", "/mode full-access"] {
+        let mut busy = app();
+        busy.conn.engine = Engine::CLAUDE;
+        busy.event(octet_core::Event::Approval {
+            id: 1,
+            detail: "x".into(),
+        });
+        command(&mut busy, line).await;
+        assert_eq!(busy.status_line, TURN_OPEN, "{line}");
+        let mut connecting = app();
+        connecting.conn.engine = Engine::CLAUDE;
+        connecting.conn.phase = ConnPhase::Connecting;
+        command(&mut connecting, line).await;
+        assert_eq!(connecting.status_line, NOT_CONNECTED, "{line}");
+    }
+}
+#[tokio::test]
+async fn resume_without_an_argument_shows_usage() {
+    let mut app = app();
+    let temp = octet_testkit::TempDir::new("octet-resume-usage");
+    octet_testkit::write_journal(
+        temp.path(),
+        1_700_000_000_000_000_000,
+        &[
+            (
+                "session",
+                serde_json::json!({"engine":"codex","cwd":"/tmp","resume":null,"model":null,"mode":"ask"}),
+            ),
+            ("ready", serde_json::json!("old-thread")),
+        ],
+        "",
+    );
+    app.conn.listed =
+        octet_core::recent_sessions(temp.path(), std::path::Path::new("/tmp"), 20).await;
+    assert_eq!(app.conn.listed.len(), 1);
+    command(&mut app, "/resume").await;
+    assert_eq!(app.status_line, "Use /resume N, from 1 to 1");
+}
+#[tokio::test]
+async fn commands_split_on_any_whitespace() {
+    let mut app = app();
+    command(&mut app, "/queue\tclear").await;
+    assert!(
+        !app.status_line.contains("Unknown command"),
+        "{}",
+        app.status_line
     );
 }

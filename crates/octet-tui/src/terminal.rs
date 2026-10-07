@@ -130,6 +130,3 @@ pub(crate) fn write_terminal(bytes: &[u8]) {
     let mut stdout = io::stdout();
     let _ = stdout.write_all(bytes).and_then(|()| stdout.flush());
 }
-pub(crate) async fn unix_signal(signal: &mut tokio::signal::unix::Signal) {
-    signal.recv().await;
-}

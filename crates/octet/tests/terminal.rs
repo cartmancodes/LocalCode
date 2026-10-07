@@ -14,6 +14,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
+/// Longer than the interface waits before an approval takes answer keys.
+const APPROVAL_ARM: Duration = Duration::from_millis(600);
 struct Pty {
     master: File,
     _slave: File,
@@ -308,6 +310,9 @@ fn real_terminal_handles_paste_approval_resize_suspend_and_quit() {
     p.send(b"/approval-demo\r");
     p.wait(|p| p.count("approval") == 1);
     p.wait(|p| p.output.windows(19).any(|w| w == b"Permission required"));
+    // Answer keys wait a moment after a dialog opens, so a key typed as it
+    // appears cannot answer it.
+    std::thread::sleep(APPROVAL_ARM);
     p.send(b"d");
     p.wait(|p| p.count("finished") == 2);
     let size = libc::winsize {
@@ -746,6 +751,7 @@ fn a_new_approval_rings_and_notifies() {
             .windows(26)
             .any(|w| w == b"\x1b]9;Octet: approval needed")
     });
+    std::thread::sleep(APPROVAL_ARM);
     p.send(b"d");
     p.quit();
     p.finish();
