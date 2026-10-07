@@ -165,7 +165,8 @@ pub struct App {
     pub(crate) composer: Composer,
     pub(crate) overlay: Overlays,
     pub(crate) monochrome: bool,
-    pub(crate) notice: String,
+    /// The status bar's message: the latest note, hint or error.
+    pub(crate) status_line: String,
     /// Until when a second Ctrl+C quits; set by the first press on an idle,
     /// empty prompt.
     pub(crate) quit_armed: Option<tokio::time::Instant>,
@@ -228,7 +229,7 @@ impl App {
                 selection: 0,
             },
             monochrome: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
-            notice: String::new(),
+            status_line: String::new(),
             quit_armed: None,
             goals: octet_core::goal::GoalRunner::default(),
         }
@@ -240,7 +241,7 @@ impl App {
         self.composer.completion = None;
         // The old session's `!` command was dropped, and killed, with it.
         if std::mem::take(&mut self.composer.shell_running) {
-            self.notice("The running command stopped when the session changed");
+            self.note("The running command stopped when the session changed");
         }
         self.conn.engine = config.engine;
         self.conn.mode = config.mode;
@@ -356,20 +357,20 @@ impl App {
     pub fn show_models(&mut self, page: usize) {
         let pages = self.conn.models.len().div_ceil(20).max(1);
         if page == 0 || page > pages {
-            self.notice(format!(
+            self.note(format!(
                 "Choose a catalog page from 1 to {pages}: /model list <page>"
             ));
             return;
         }
-        self.notice(self.model_details());
+        self.note(self.model_details());
         if self.conn.models.is_empty() {
-            self.notice(
+            self.note(
                 "No catalog reported yet. Explicit model IDs remain supported; /reconnect refreshes discovery.",
             );
         } else {
             let engine = self.conn.engine;
             let count = self.conn.models.len();
-            self.notice(format!(
+            self.note(format!(
                 "{engine} catalog · {count} entries · page {page}/{pages}. \
                  PgUp/PgDn scroll; /model list <page>. Account access may vary."
             ));
@@ -392,11 +393,11 @@ impl App {
                 })
                 .collect();
             for entry in entries {
-                self.notice(entry);
+                self.note(entry);
             }
         }
         let vendors = octet_core::model::vendor_names();
-        self.notice(format!(
+        self.note(format!(
             "{}\n/model default uses the provider default. Switching providers starts fresh context.",
             octet_core::model::catalog_hint(&vendors)
         ));
@@ -431,17 +432,26 @@ impl App {
     /// Something that failed, as an `ERROR` entry and on the status line.
     pub fn error(&mut self, text: impl Into<String>) {
         let text = text.into();
-        self.notice = clean(&text);
+        self.status_line = clean(&text);
         self.add(Role::Error, &text);
     }
     #[cfg(test)]
     pub fn last_role(&self) -> Option<Role> {
         self.chat.entries.back().map(|entry| entry.role)
     }
-    pub fn notice(&mut self, text: impl Into<String>) {
+    /// Information, as a transcript note and on the status line.
+    pub fn note(&mut self, text: impl Into<String>) {
         let text = text.into();
-        self.notice = clean(&text);
+        self.status_line = clean(&text);
         self.add(Role::Notice, &text);
+    }
+    /// A turn is running or an approval waits: the session is busy.
+    pub(crate) fn turn_open(&self) -> bool {
+        self.conn.is_running() || !self.overlay.approvals.is_empty()
+    }
+    /// A refusal or a passing hint, on the status line only.
+    pub fn hint(&mut self, text: impl Into<String>) {
+        self.status_line = clean(&text.into());
     }
     pub fn event(&mut self, event: Event) {
         match event {
@@ -473,7 +483,7 @@ impl App {
                         .is_some_and(|from| *from != session)
                 {
                     if let Some(from) = self.conn.forking_from.take() {
-                        self.notice(format!("Forked from {from} into {session}"));
+                        self.note(format!("Forked from {from} into {session}"));
                     }
                 }
                 if !self.conn.is_running() {
@@ -489,7 +499,7 @@ impl App {
                 self.conn.start_turn();
                 self.conn.activity = State::Thinking;
                 self.conn.status = "working".into();
-                self.notice.clear();
+                self.status_line.clear();
                 self.chat.sanitizer = Sanitizer::default();
                 self.chat.reply_stale = true;
             }
@@ -536,8 +546,8 @@ impl App {
             Event::Usage(text) => self.conn.usage = clean(&text),
             Event::Finished { outcome } => {
                 self.conn.end_turn();
-                if self.notice == CANCELLING {
-                    self.notice.clear();
+                if self.status_line == CANCELLING {
+                    self.status_line.clear();
                 }
                 self.conn.status = clean(outcome.as_str());
                 self.conn.activity = match outcome {
@@ -546,7 +556,7 @@ impl App {
                     _ => State::Error,
                 };
             }
-            Event::Notice(text) => self.notice(text),
+            Event::Notice(text) => self.note(text),
             Event::Error(text) => {
                 self.add(Role::Error, &text);
                 self.conn.status = "error".into();
@@ -560,7 +570,7 @@ impl App {
                 self.conn.phase = ConnPhase::Stopped;
                 self.conn.cancelling = false;
                 if let Some(from) = self.conn.forking_from.take() {
-                    self.notice(format!(
+                    self.note(format!(
                         "The fork from {from} did not open; /reconnect tries again"
                     ));
                 }
@@ -569,7 +579,7 @@ impl App {
                 // follow newer prompts.
                 let dropped = std::mem::take(&mut self.composer.queue).len();
                 if dropped > 0 {
-                    self.notice(format!(
+                    self.note(format!(
                         "Dropped {dropped} queued prompts: the session stopped"
                     ));
                 }
@@ -616,7 +626,7 @@ impl App {
             dropped = true;
         }
         if dropped {
-            self.notice = "Dropped the oldest attachment to stay within 32 KiB".into();
+            self.hint("Dropped the oldest attachment to stay within 32 KiB");
         }
     }
     /// Back to the newest output, cancelling a catalog scroll that the next
@@ -687,7 +697,7 @@ impl App {
     pub fn insert_or_warn(&mut self, text: &str) -> bool {
         let fits = self.composer.editor.insert(text);
         if !fits {
-            self.notice = PROMPT_FULL.into();
+            self.hint(PROMPT_FULL);
         }
         fits
     }
@@ -695,7 +705,7 @@ impl App {
     pub fn replace_or_warn(&mut self, start: usize, text: &str) -> bool {
         let fits = self.composer.editor.replace(start, text);
         if !fits {
-            self.notice = PROMPT_FULL.into();
+            self.hint(PROMPT_FULL);
         }
         fits
     }

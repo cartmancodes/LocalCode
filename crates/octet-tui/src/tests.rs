@@ -73,9 +73,10 @@ async fn failed_goal_pause_still_says_the_goal_stopped() {
         Action::Continue
     ));
     assert!(
-        app.notice.starts_with("Goal paused, but saving it failed:"),
+        app.status_line
+            .starts_with("Goal paused, but saving it failed:"),
         "{}",
-        app.notice
+        app.status_line
     );
     assert!(!app.goals.is_active());
 }
@@ -105,7 +106,7 @@ fn ctrl(c: char) -> KeyEvent {
 async fn copy_reports_the_size_of_the_last_reply() {
     let mut app = app();
     assert!(matches!(command(&mut app, "/copy").await, Action::Continue));
-    assert_eq!(app.notice, "Nothing to copy yet");
+    assert_eq!(app.status_line, "Nothing to copy yet");
     app.event(octet_core::Event::Started);
     app.event(octet_core::Event::Text("hello".into()));
     app.event(octet_core::Event::Finished {
@@ -113,7 +114,7 @@ async fn copy_reports_the_size_of_the_last_reply() {
     });
     assert_eq!(app.last_reply(), Some("hello"));
     assert!(matches!(command(&mut app, "/copy").await, Action::Continue));
-    assert_eq!(app.notice, "Copied 5 B to the clipboard");
+    assert_eq!(app.status_line, "Copied 5 B to the clipboard");
 }
 #[test]
 fn sizes_read_naturally() {
@@ -198,7 +199,7 @@ async fn a_prompt_too_long_for_its_attachments_says_so() {
         .set("x".repeat(octet_core::PROMPT_LIMIT - 6));
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert_eq!(
-        app.notice,
+        app.status_line,
         "The prompt and its attachments are over 64 KiB. Shorten the prompt, or press Esc on an empty prompt to drop them"
     );
     assert_eq!(app.composer.attachments.len(), 1, "kept");
@@ -208,17 +209,17 @@ async fn a_prompt_too_long_for_its_attachments_says_so() {
 fn a_finished_command_replaces_the_running_notice() {
     let mut app = app();
     app.composer.shell_running = true;
-    app.notice = "Running echo hi · Esc to stop".into();
+    app.status_line = "Running echo hi · Esc to stop".into();
     shell_finished(&mut app, Ok(ran("echo hi", "hi\n")), true);
     assert!(!app.composer.shell_running);
-    assert_eq!(app.notice, "$ echo hi · exit 0");
+    assert_eq!(app.status_line, "$ echo hi · exit 0");
     assert_eq!(app.composer.attachments.len(), 1);
     let gone = shell::ShellError::Run {
         shell: "/x".into(),
         source: std::io::Error::other("gone"),
     };
     shell_finished(&mut app, Err(gone), false);
-    assert_eq!(app.notice, "Cannot run /x: gone");
+    assert_eq!(app.status_line, "Cannot run /x: gone");
 }
 #[tokio::test]
 async fn slow_work_off_the_loop_gives_up_at_its_limit() {
@@ -310,14 +311,14 @@ async fn bang_lines_run_locally_and_double_bang_does_not_attach() {
         key_action(&mut app, &session.handle, key(KeyCode::Enter)).await,
         Action::Continue
     ));
-    assert_eq!(app.notice, "Type a command after !");
+    assert_eq!(app.status_line, "Type a command after !");
     app.composer.shell_running = true;
     app.composer.editor.set("!ls".into());
     assert!(matches!(
         key_action(&mut app, &session.handle, key(KeyCode::Enter)).await,
         Action::Continue
     ));
-    assert_eq!(app.notice, "A command is already running");
+    assert_eq!(app.status_line, "A command is already running");
     assert!(matches!(
         key_action(&mut app, &session.handle, key(KeyCode::Esc)).await,
         Action::CancelShell
@@ -340,7 +341,7 @@ async fn esc_on_an_empty_idle_draft_removes_attachments() {
     app.attach(ran("ls", ""));
     key_action(&mut app, &session.handle, key(KeyCode::Esc)).await;
     assert!(app.composer.attachments.is_empty());
-    assert_eq!(app.notice, "Attachments removed");
+    assert_eq!(app.status_line, "Attachments removed");
 }
 #[tokio::test]
 async fn goal_prompts_never_carry_attachments() {
@@ -384,10 +385,10 @@ async fn remote_control_reports_without_changing_the_session() {
     ));
     let mut check = None;
     start_remote_check(&mut app, &mut check);
-    assert_eq!(app.notice, "Checking phone access…");
+    assert_eq!(app.status_line, "Checking phone access…");
     // A second request while one runs starts nothing new.
     start_remote_check(&mut app, &mut check);
-    assert_eq!(app.notice, "Phone-access check already running");
+    assert_eq!(app.status_line, "Phone-access check already running");
     // Under test the checks run stand-in program names that never exist,
     // so the result doesn't depend on what this machine has installed.
     let checks = check.take().unwrap().await.unwrap();
@@ -395,11 +396,15 @@ async fn remote_control_reports_without_changing_the_session() {
     let text = app.entries_text();
     assert!(text.contains("Remote control setup"), "{text}");
     assert!(text.contains("[!!] Tailscale isn't connected"), "{text}");
-    assert!(app.notice.starts_with("Remote control: "), "{}", app.notice);
     assert!(
-        app.notice.ends_with("problems (report above)"),
+        app.status_line.starts_with("Remote control: "),
         "{}",
-        app.notice
+        app.status_line
+    );
+    assert!(
+        app.status_line.ends_with("problems (report above)"),
+        "{}",
+        app.status_line
     );
     assert_eq!(app.conn.session, "thread-1");
 }
@@ -411,7 +416,7 @@ async fn ctrl_c_twice_on_an_idle_empty_prompt_quits() {
         key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue
     ));
-    assert_eq!(app.notice, QUIT_HINT);
+    assert_eq!(app.status_line, QUIT_HINT);
     assert!(matches!(
         key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Exit(Exit::Quit)
@@ -428,7 +433,7 @@ async fn ctrl_c_clears_a_draft_before_it_can_quit() {
         Action::Continue
     ));
     assert!(app.composer.editor.text.is_empty());
-    assert_ne!(app.notice, QUIT_HINT);
+    assert_ne!(app.status_line, QUIT_HINT);
     assert!(matches!(
         key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue
@@ -446,7 +451,7 @@ async fn another_key_or_an_expired_window_disarms_quit() {
     key_action(&mut app, &session.handle, ctrl('c')).await;
     let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
     key_action(&mut app, &session.handle, left).await;
-    assert_ne!(app.notice, QUIT_HINT, "another key clears the hint");
+    assert_ne!(app.status_line, QUIT_HINT, "another key clears the hint");
     assert!(matches!(
         key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue
@@ -457,7 +462,7 @@ async fn another_key_or_an_expired_window_disarms_quit() {
         key_action(&mut app, &session.handle, ctrl('c')).await,
         Action::Continue
     ));
-    assert_eq!(app.notice, QUIT_HINT);
+    assert_eq!(app.status_line, QUIT_HINT);
     session.shutdown().await;
 }
 #[tokio::test]
@@ -476,7 +481,7 @@ async fn ctrl_c_closes_help_and_the_palette_without_quitting() {
         Action::Continue
     ));
     assert!(!app.overlay.palette);
-    assert_ne!(app.notice, QUIT_HINT);
+    assert_ne!(app.status_line, QUIT_HINT);
     session.shutdown().await;
 }
 #[tokio::test]
@@ -489,7 +494,7 @@ async fn ctrl_c_interrupts_a_running_turn_instead_of_quitting() {
             key_action(&mut app, &session.handle, ctrl('c')).await,
             Action::Continue
         ));
-        assert_eq!(app.notice, crate::app::CANCELLING);
+        assert_eq!(app.status_line, crate::app::CANCELLING);
     }
     session.shutdown().await;
 }
@@ -586,9 +591,9 @@ async fn mode_command_switches_live_modes_and_rejects_unknown() {
         command(&mut app, "/mode yolo").await,
         Action::Continue
     ));
-    assert!(app.notice.contains("Unknown mode"));
+    assert!(app.status_line.contains("Unknown mode"));
     assert!(matches!(command(&mut app, "/mode").await, Action::Continue));
-    assert!(app.notice.contains("auto_review"));
+    assert!(app.status_line.contains("auto_review"));
 }
 #[tokio::test]
 async fn full_access_requires_idle_ready_session() {
@@ -636,7 +641,7 @@ fn cycle_follows_order_and_never_reaches_full_access() {
     app.conn.mode_pending = None;
     app.conn.mode = octet_core::Mode::FullAccess;
     cycle_mode(&mut app, &vendor);
-    assert!(app.notice.contains("/mode"));
+    assert!(app.status_line.contains("/mode"));
     assert_eq!(
         vendor.sent.take(),
         [
@@ -653,12 +658,12 @@ async fn cycle_is_ignored_while_a_switch_is_pending() {
         cycle_mode(&mut app, &RecordingVendor::default()),
         Action::Continue
     ));
-    assert!(app.notice.contains("pending"));
+    assert!(app.status_line.contains("pending"));
     assert!(matches!(
         command(&mut app, "/mode auto").await,
         Action::Continue
     ));
-    assert!(app.notice.contains("pending"));
+    assert!(app.status_line.contains("pending"));
 }
 #[tokio::test]
 async fn stopped_session_can_always_leave_full_access() {
@@ -716,7 +721,7 @@ async fn unknown_command_keeps_the_draft() {
         app.composer.editor.text,
         "/nope is not a command, keep my words"
     );
-    assert!(app.notice.contains("Unknown command"));
+    assert!(app.status_line.contains("Unknown command"));
     app.composer.editor.take();
     // A path is a prompt, not a command.
     app.conn.phase = ConnPhase::Idle;
@@ -731,7 +736,7 @@ async fn unknown_command_keeps_the_draft() {
     assert!(
         app.composer.editor.text.is_empty() && app.conn.is_running(),
         "{}",
-        app.notice
+        app.status_line
     );
     assert_eq!(
         app.composer.history.back().map(|sent| sent.text.as_str()),
@@ -766,7 +771,7 @@ async fn reconnect_pauses_an_active_goal_and_names_the_previous_journal() {
         app.goals.goal.as_ref().unwrap().status,
         octet_core::goal::Status::Paused
     );
-    assert!(app.notice.contains("Goal paused for reconnect"));
+    assert!(app.status_line.contains("Goal paused for reconnect"));
     let previous = std::path::Path::new("/data/session-1.jsonl");
     let resumed = reconnect_notice(true, previous);
     assert!(
@@ -834,7 +839,11 @@ async fn the_queue_is_bounded() {
     key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
     assert_eq!(app.composer.queue.len(), 8);
     assert_eq!(app.composer.editor.text, "one more");
-    assert!(app.notice.contains("queue is full"), "{}", app.notice);
+    assert!(
+        app.status_line.contains("queue is full"),
+        "{}",
+        app.status_line
+    );
 }
 #[tokio::test]
 async fn slash_queue_lists_and_clears() {
@@ -907,7 +916,7 @@ async fn fork_needs_an_idle_vendor_session() {
     ));
     app.conn.phase = ConnPhase::Running;
     assert!(matches!(command(&mut app, "/fork").await, Action::Continue));
-    assert!(app.entries_text().contains("Cancel the active turn"));
+    assert_eq!(app.status_line, TURN_OPEN);
     let mut fresh = self::app();
     fresh.conn.session.clear();
     assert!(matches!(
@@ -937,9 +946,7 @@ async fn compact_needs_an_idle_session() {
         command(&mut app, "/compact").await,
         Action::Continue
     ));
-    assert!(app
-        .entries_text()
-        .contains("Finish or cancel the turn before compacting"));
+    assert_eq!(app.status_line, TURN_OPEN);
 }
 /// A workspace holding `files`, each one byte long.
 fn image_workspace(prefix: &str, files: &[&str]) -> octet_testkit::TempDir {
@@ -1342,4 +1349,27 @@ async fn idle_steer_sends_attachments_like_enter() {
         other => panic!("{other:?}"),
     }
     assert!(app.composer.attachments.is_empty());
+}
+#[tokio::test]
+async fn every_command_needing_no_open_turn_refuses_the_same_way() {
+    let guarded: Vec<&Spec> = COMMANDS
+        .iter()
+        .filter(|spec| spec.requires != Requires::Nothing)
+        .collect();
+    assert!(guarded.len() >= 6, "the registry lost its guards");
+    for spec in guarded {
+        for open in ["running", "approval"] {
+            let mut app = app();
+            if open == "running" {
+                app.conn.phase = ConnPhase::Running;
+            } else {
+                app.overlay.approvals.push_back((1, "x".into()));
+            }
+            let vendor = RecordingVendor::default();
+            let action = commands::command(&mut app, &vendor, &format!("{} 1", spec.name)).await;
+            assert!(matches!(action, Action::Continue), "{} ({open})", spec.name);
+            assert_eq!(app.status_line, TURN_OPEN, "{} ({open})", spec.name);
+            assert!(vendor.sent.borrow().is_empty(), "{} sent", spec.name);
+        }
+    }
 }

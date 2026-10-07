@@ -192,7 +192,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
             .take()
             .unwrap_or_else(|| App::new(&config, session.journal.clone()));
         if let Some(notice) = opening_notice.take() {
-            app.notice(notice);
+            app.note(notice);
         }
         if !app.goals.is_attached() {
             attach_goal_store(&mut app, goal_store.clone()).await;
@@ -219,9 +219,9 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                     next.engine,
                     next.effort.as_deref(),
                 ) {
-                    app.notice(notice);
+                    app.note(notice);
                 }
-                app.notice(format!(
+                app.note(format!(
                     "Model → {} / {}. {} Previous journal: {}",
                     next.engine,
                     next.model.as_deref().unwrap_or("vendor default"),
@@ -237,7 +237,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
             }
             Exit::Mode(mode) => {
                 pause_active_goal(&mut app, "mode switch").await;
-                app.notice(full_access_notice(mode, config.engine, &app.conn.session));
+                app.note(full_access_notice(mode, config.engine, &app.conn.session));
                 config.mode = mode;
                 if let Some(id) = resume_id(&app, &config) {
                     config.resume = Some(id);
@@ -246,7 +246,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
             }
             Exit::Effort(level) => {
                 pause_active_goal(&mut app, "effort change").await;
-                app.notice(format!(
+                app.note(format!(
                     "Reasoning effort → {}. Reconnecting to the same session…",
                     level.as_deref().unwrap_or("vendor default")
                 ));
@@ -258,7 +258,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
             }
             Exit::Fork => {
                 pause_active_goal(&mut app, "fork").await;
-                app.notice(format!("Forking from {}…", app.conn.session));
+                app.note(format!("Forking from {}…", app.conn.session));
                 config.resume = Some(app.conn.session.clone());
                 config.fork = true;
                 retained_app = Some(app);
@@ -293,7 +293,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                     config.resume = Some(id);
                 }
                 pause_active_goal(&mut app, "reconnect").await;
-                app.notice(reconnect_notice(config.resume.is_some(), &app.conn.journal));
+                app.note(reconnect_notice(config.resume.is_some(), &app.conn.journal));
                 retained_app = Some(app);
             }
             Exit::Quit => break,
@@ -371,7 +371,7 @@ fn regain_terminal(
 /// usable and the file in place.
 async fn attach_goal_store(app: &mut App, store: octet_core::goal::GoalStore) {
     match app.goals.attach(store).await {
-        Err(error) => app.notice(format!(
+        Err(error) => app.note(format!(
             "Stored goal could not be loaded: {error}. Chat is available. Use /goal clear to remove the saved goal, or /goal <objective> to replace it."
         )),
         Ok(())
@@ -383,9 +383,9 @@ async fn attach_goal_store(app: &mut App, store: octet_core::goal::GoalStore) {
         {
             // Rewrites a stored "active" as "paused".
             if let Err(error) = app.goals.save().await {
-                app.notice(format!("Goal persistence failed: {error}"));
+                app.note(format!("Goal persistence failed: {error}"));
             }
-            app.notice("Stored goal loaded in paused state. Use /goal resume to continue.");
+            app.note("Stored goal loaded in paused state. Use /goal resume to continue.");
         }
         Ok(()) => {}
     }
@@ -431,8 +431,8 @@ async fn run_session(
             // The only timer outside painting: the quit hint expires.
             _ = tokio::time::sleep_until(quit_deadline.unwrap_or(last_paint)), if quit_deadline.is_some() => {
                 app.quit_armed = None;
-                if app.notice == QUIT_HINT {
-                    app.notice.clear();
+                if app.status_line == QUIT_HINT {
+                    app.status_line.clear();
                 }
                 dirty = true;
             }
@@ -461,7 +461,7 @@ async fn run_session(
                 remote_check = None;
                 match checks {
                     Ok(checks) => show_remote_report(app, &checks),
-                    Err(error) => app.notice(format!("Phone-access check failed: {error}")),
+                    Err(error) => app.note(format!("Phone-access check failed: {error}")),
                 }
                 dirty = true;
             }
@@ -503,7 +503,7 @@ async fn run_session(
                     regain_terminal(guard, terminal, &mut input)?;
                     match edit.finish(status.is_ok_and(|status| status.success())) {
                         Ok(text) => app.composer.editor.set(text),
-                        Err(error) => app.notice(error.to_string()),
+                        Err(error) => app.error(error.to_string()),
                     }
                 }
                 dirty = true;
@@ -535,7 +535,7 @@ async fn run_session(
                     Action::RemoteControl => start_remote_check(app, &mut remote_check),
                     Action::ExternalEditor => {
                         match external::prepare(&app.composer.editor.text, external::editor_command()) {
-                            Err(error) => app.notice(error.to_string()),
+                            Err(error) => app.error(error.to_string()),
                             Ok(edit) => {
                                 // Stop reading keys so the editor gets them all.
                                 input = None;
@@ -549,7 +549,7 @@ async fn run_session(
                                     Ok(child) => editing = Some((child, edit)),
                                     Err(error) => {
                                         regain_terminal(guard, terminal, &mut input)?;
-                                        app.notice(format!(
+                                        app.note(format!(
                                             "Cannot start {}: {error}",
                                             edit.program
                                         ));
@@ -562,7 +562,7 @@ async fn run_session(
                         let (cancel, cancelled) = tokio::sync::oneshot::channel();
                         let root = app.composer.root.clone();
                         app.composer.shell_running = true;
-                        app.notice = format!("Running {command} · Esc to stop");
+                        app.status_line = format!("Running {command} · Esc to stop");
                         shell_task = Some(ShellTask {
                             task: tokio::spawn(async move {
                                 shell::run(&command, &root, cancelled).await
@@ -640,7 +640,7 @@ async fn session_event(app: &mut App, vendor: &dyn Vendor, event: octet_core::Ev
     app.event(event);
     if failed {
         if let Err(error) = app.goals.turn_failed().await {
-            app.notice(format!("Goal persistence failed; paused: {error}"));
+            app.note(format!("Goal persistence failed; paused: {error}"));
         }
     }
     let Some(outcome) = outcome else {
@@ -649,7 +649,7 @@ async fn session_event(app: &mut App, vendor: &dyn Vendor, event: octet_core::Ev
     match app.goals.turn_finished(&outcome).await {
         Ok(Next::Idle) => send_queued(app, vendor),
         Ok(Next::Stopped(summary)) => {
-            app.notice(summary);
+            app.note(summary);
             send_queued(app, vendor);
         }
         Ok(Next::Continue { prompt, display }) => {
@@ -664,7 +664,7 @@ async fn session_event(app: &mut App, vendor: &dyn Vendor, event: octet_core::Ev
             }
         }
         Err(error) => {
-            app.notice(format!("Goal persistence failed; paused: {error}"));
+            app.note(format!("Goal persistence failed; paused: {error}"));
             send_queued(app, vendor);
         }
     }
@@ -678,7 +678,7 @@ fn send_queued(app: &mut App, vendor: &dyn Vendor) {
         return;
     };
     if let Err(error) = app.begin_turn(vendor, prompt.into_command(), By::User, "sending") {
-        app.notice(format!("A queued prompt could not be sent: {error}"));
+        app.error(format!("A queued prompt could not be sent: {error}"));
     }
 }
 /// Asks a running editor to quit, so it can put the terminal back, and
@@ -707,7 +707,7 @@ fn shell_finished(app: &mut App, result: Result<shell::Ran, shell::ShellError>, 
     match result {
         Ok(ran) => {
             app.shell_output(&ran);
-            app.notice = format!("$ {} · {}", ran.command, ran.summary());
+            app.status_line = format!("$ {} · {}", ran.command, ran.summary());
             if attach {
                 app.attach(ran);
             }
@@ -719,18 +719,18 @@ fn shell_finished(app: &mut App, result: Result<shell::Ran, shell::ShellError>, 
 /// about 2.5 seconds, and the loop must keep draining vendor events meanwhile.
 fn start_remote_check(app: &mut App, check: &mut Option<tokio::task::JoinHandle<remote::Checks>>) {
     if check.is_some() {
-        app.notice = "Phone-access check already running".into();
+        app.hint("Phone-access check already running");
         return;
     }
-    app.notice = "Checking phone access…".into();
+    app.hint("Checking phone access…");
     *check = Some(tokio::spawn(remote::probe()));
 }
 /// The full report goes in the conversation; the status line, one row high,
 /// gets the count of problems.
 fn show_remote_report(app: &mut App, checks: &remote::Checks) {
     let report = remote::report(checks);
-    app.notice(report.as_str());
-    app.notice = remote::summary(&report);
+    app.note(report.as_str());
+    app.status_line = remote::summary(&report);
 }
 /// Ring once when an approval starts waiting; a burst of requests behind it
 /// rings no more.
@@ -761,11 +761,11 @@ async fn unix_signal(signal: &mut tokio::signal::unix::Signal) {
 /// A new connection must never continue an autonomous goal by itself.
 async fn pause_active_goal(app: &mut App, why: &str) {
     match app.goals.pause_active().await {
-        Ok(true) => app.notice(format!(
+        Ok(true) => app.note(format!(
             "Goal paused for {why}. Use /goal resume to continue."
         )),
         Ok(false) => {}
-        Err(error) => app.notice(format!(
+        Err(error) => app.note(format!(
             "Goal paused for {why}, but saving it failed: {error}"
         )),
     }

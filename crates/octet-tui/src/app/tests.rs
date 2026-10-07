@@ -60,7 +60,7 @@ fn a_shell_that_cannot_start_is_an_error_entry() {
     let mut app = App::new(&config, "journal".into());
     app.error("Cannot run /no/such/shell: No such file or directory");
     assert!(app.last_role() == Some(Role::Error));
-    assert!(app.notice.starts_with("Cannot run"));
+    assert!(app.status_line.starts_with("Cannot run"));
 }
 #[test]
 fn shell_output_is_cleaned_and_attachments_stay_bounded() {
@@ -90,7 +90,7 @@ fn shell_output_is_cleaned_and_attachments_stay_bounded() {
     );
     assert_eq!(app.composer.attachments[0].command, "big");
     assert_eq!(
-        app.notice,
+        app.status_line,
         "Dropped the oldest attachment to stay within 32 KiB"
     );
 }
@@ -115,7 +115,7 @@ fn a_full_prompt_warns_instead_of_inserting() {
     let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     assert!(!app.insert_or_warn(&"x".repeat(octet_core::PROMPT_LIMIT + 1)));
-    assert_eq!(app.notice, "Prompt limit reached");
+    assert_eq!(app.status_line, "Prompt limit reached");
     assert!(app.insert_or_warn("ok"));
 }
 #[test]
@@ -123,11 +123,11 @@ fn a_finished_turn_clears_the_cancelling_notice() {
     let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.event(Event::Started);
-    app.notice = CANCELLING.into();
+    app.status_line = CANCELLING.into();
     app.event(Event::Finished {
         outcome: octet_core::Outcome::Interrupted,
     });
-    assert_eq!(app.notice, "");
+    assert_eq!(app.status_line, "");
 }
 #[test]
 fn transcript_memory_is_bounded() {

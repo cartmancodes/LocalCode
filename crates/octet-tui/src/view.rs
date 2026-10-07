@@ -215,14 +215,14 @@ fn composer(
 /// The bottom line: the latest notice, or the standing hints.
 fn status_line(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
-        Paragraph::new(if app.notice.is_empty() {
+        Paragraph::new(if app.status_line.is_empty() {
             if app.conn.engine.offline() {
                 " Offline demo · no model calls   |   Ctrl+C twice to quit".into()
             } else {
                 " Journal saved locally   |   F1 help   |   Ctrl+C twice to quit".into()
             }
         } else {
-            app.notice.clone()
+            app.status_line.clone()
         })
         .style(Style::default().fg(MUTED)),
         area,

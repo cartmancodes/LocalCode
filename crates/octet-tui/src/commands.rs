@@ -42,7 +42,25 @@ pub struct Spec {
     pub summary: &'static str,
     /// The sidebar's short label, for the commands it lists.
     pub quick: Option<&'static str>,
+    /// What the session must be doing for the command to run.
+    pub requires: Requires,
 }
+
+/// What a command needs of the session, checked once in `try_command`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Requires {
+    /// Runs at any time.
+    Nothing,
+    /// No turn running and no approval waiting.
+    NoTurn,
+    /// As `NoTurn`, and connected.
+    Idle,
+}
+
+/// The refusal for a command that needs the turn to be over.
+pub(crate) const TURN_OPEN: &str = "Finish or cancel the current turn first";
+/// The refusal for a command that needs a connected session.
+pub(crate) const NOT_CONNECTED: &str = "Wait for the connection, or /reconnect";
 
 const fn spec(id: Cmd, name: &'static str, usage: &'static str, summary: &'static str) -> Spec {
     Spec {
@@ -52,6 +70,7 @@ const fn spec(id: Cmd, name: &'static str, usage: &'static str, summary: &'stati
         usage,
         summary,
         quick: None,
+        requires: Requires::Nothing,
     }
 }
 
@@ -61,6 +80,15 @@ impl Spec {
             quick: Some(label),
             ..self
         }
+    }
+    const fn requires(self, requires: Requires) -> Spec {
+        Spec { requires, ..self }
+    }
+    /// The row a typed name (or alias) names.
+    pub fn find(name: &str) -> Option<&'static Spec> {
+        COMMANDS
+            .iter()
+            .find(|spec| spec.name == name || spec.aliases.contains(&name))
     }
     const fn aliases(self, aliases: &'static [&'static str]) -> Spec {
         Spec { aliases, ..self }
@@ -107,7 +135,8 @@ pub const COMMANDS: &[Spec] = &[
         "/export [path]: copy the journal to a new file",
         "Export journal to a new file",
     )
-    .quick("Save journal"),
+    .quick("Save journal")
+    .requires(Requires::NoTurn),
     spec(
         Cmd::Copy,
         "/copy",
@@ -120,14 +149,16 @@ pub const COMMANDS: &[Spec] = &[
         "/new: start a fresh conversation",
         "Start a fresh conversation",
     )
-    .quick("Fresh context"),
+    .quick("Fresh context")
+    .requires(Requires::NoTurn),
     spec(
         Cmd::Reconnect,
         "/reconnect",
         "/reconnect: resume the vendor session",
         "Reconnect to the vendor session",
     )
-    .quick("Resume vendor"),
+    .quick("Resume vendor")
+    .requires(Requires::NoTurn),
     spec(
         Cmd::RemoteControl,
         "/remote-control",
@@ -157,13 +188,15 @@ pub const COMMANDS: &[Spec] = &[
         "/fork",
         "/fork: continue this conversation in a new vendor session",
         "Fork session",
-    ),
+    )
+    .requires(Requires::NoTurn),
     spec(
         Cmd::Compact,
         "/compact",
         "/compact: ask the vendor to compact its context",
         "Compact context",
-    ),
+    )
+    .requires(Requires::Idle),
     spec(
         Cmd::Image,
         "/image",
@@ -181,7 +214,8 @@ pub const COMMANDS: &[Spec] = &[
         "/resume",
         "/resume N: reconnect to session N from /sessions",
         "Resume a session",
-    ),
+    )
+    .requires(Requires::NoTurn),
     spec(
         Cmd::Quit,
         "/quit",
@@ -215,13 +249,6 @@ impl Cmd {
         Cmd::Resume,
         Cmd::Quit,
     ];
-    /// The command a typed name (or alias) names.
-    pub fn parse(name: &str) -> Option<Cmd> {
-        COMMANDS
-            .iter()
-            .find(|spec| spec.name == name || spec.aliases.contains(&name))
-            .map(|spec| spec.id)
-    }
 }
 
 pub(crate) async fn send_goal_prompt(app: &mut App, vendor: &dyn Vendor, prompt: String) {
@@ -236,9 +263,9 @@ pub(crate) async fn send_goal_prompt(app: &mut App, vendor: &dyn Vendor, prompt:
 }
 /// Pauses the goal whose prompt could not be sent and says why.
 pub(crate) async fn goal_send_failed(app: &mut App, error: octet_core::SendError) {
-    app.notice(format!("Goal paused: {error}"));
+    app.note(format!("Goal paused: {error}"));
     if let Err(error) = app.goals.send_failed().await {
-        app.notice(format!("Goal persistence failed: {error}"));
+        app.note(format!("Goal persistence failed: {error}"));
     }
 }
 /// Runs a slash command. `None` means the caller keeps the draft: the name is
@@ -247,13 +274,23 @@ pub(crate) async fn goal_send_failed(app: &mut App, error: octet_core::SendError
 pub(crate) async fn try_command(app: &mut App, vendor: &dyn Vendor, input: &str) -> Option<Action> {
     let (name, argument) = input.split_once(' ').unwrap_or((input, ""));
     let argument = argument.trim();
-    let Some(cmd) = Cmd::parse(name) else {
-        app.notice(format!(
+    let Some(spec) = Spec::find(name) else {
+        app.note(format!(
             "Unknown command {name}. Use /help, or edit the draft: \
              only a path such as /usr/lib can start a prompt with a slash."
         ));
         return None;
     };
+    let cmd = spec.id;
+    let refusal = match spec.requires {
+        Requires::NoTurn | Requires::Idle if app.turn_open() => Some(TURN_OPEN),
+        Requires::Idle if !app.is_idle() => Some(NOT_CONNECTED),
+        _ => None,
+    };
+    if let Some(refusal) = refusal {
+        app.hint(refusal);
+        return Some(Action::Continue);
+    }
     match cmd {
         Cmd::Quit => return Some(Action::Exit(Exit::Quit)),
         Cmd::Help => app.overlay.help = true,
@@ -266,23 +303,14 @@ pub(crate) async fn try_command(app: &mut App, vendor: &dyn Vendor, input: &str)
         Cmd::Image => {}
         Cmd::Sessions => sessions_command(app).await,
         Cmd::Resume => return Some(resume_command(app, argument)),
-        Cmd::Steer if argument.is_empty() => app.notice("Use /steer <text>"),
+        Cmd::Steer if argument.is_empty() => app.note("Use /steer <text>"),
         Cmd::Steer => steer(app, vendor, argument.to_owned()),
         Cmd::Copy => copy_reply(app),
         Cmd::Model => return Some(model_command(app, argument)),
         Cmd::Mode => return Some(mode_command(app, vendor, argument)),
-        Cmd::New | Cmd::Reconnect => {
-            if app.conn.is_running() {
-                app.notice = "Cancel the active turn before changing sessions".into();
-            } else {
-                return Some(if cmd == Cmd::New {
-                    Action::Exit(Exit::New)
-                } else {
-                    Action::Exit(Exit::Reconnect)
-                });
-            }
-        }
-        Cmd::Session => app.notice(format!(
+        Cmd::New => return Some(Action::Exit(Exit::New)),
+        Cmd::Reconnect => return Some(Action::Exit(Exit::Reconnect)),
+        Cmd::Session => app.note(format!(
             "{}\nSession: {}\nJournal: {}\nWorkspace: {}",
             app.model_details(),
             if app.conn.session.is_empty() {
@@ -296,7 +324,7 @@ pub(crate) async fn try_command(app: &mut App, vendor: &dyn Vendor, input: &str)
         Cmd::Goal => goal_command(app, vendor, argument).await,
         Cmd::RemoteControl => match argument {
             "" | "status" => return Some(Action::RemoteControl),
-            _ => app.notice("Use /remote-control or /remote-control status"),
+            _ => app.note("Use /remote-control or /remote-control status"),
         },
         Cmd::Export => return Some(export_command(app, argument).await),
     }
@@ -307,7 +335,7 @@ pub(crate) async fn try_command(app: &mut App, vendor: &dyn Vendor, input: &str)
 fn effort_command(app: &mut App, vendor: &dyn Vendor, argument: &str) -> Action {
     if argument.is_empty() {
         let current = app.conn.effort.as_deref().unwrap_or("vendor default");
-        app.notice(format!(
+        app.note(format!(
             "Reasoning effort: {current}. Use /effort <level> (low, medium, high, xhigh, max) \
              or /effort default."
         ));
@@ -318,28 +346,28 @@ fn effort_command(app: &mut App, vendor: &dyn Vendor, argument: &str) -> Action 
     } else if octet_core::valid_effort(argument) {
         Some(argument.to_owned())
     } else {
-        app.notice("Effort must be one word, at most 64 bytes");
+        app.note("Effort must be one word, at most 64 bytes");
         return Action::Continue;
     };
     if let Some(Err(error)) = level.as_deref().map(|l| app.conn.engine.check_effort(l)) {
-        app.notice(error);
+        app.note(error);
         return Action::Continue;
     }
     let provider = app.conn.engine.provider();
     if provider.offline {
-        app.notice("The offline demo has no reasoning effort");
+        app.note("The offline demo has no reasoning effort");
         Action::Continue
     } else if provider.effort_live {
         match vendor.send(Command::SetEffort(level.clone())) {
             Ok(()) => app.conn.effort = level,
-            Err(error) => app.notice(error.to_string()),
+            Err(error) => app.error(error.to_string()),
         }
         Action::Continue
-    } else if app.conn.is_running() || !app.overlay.approvals.is_empty() {
-        app.notice("Finish or cancel the turn before changing effort");
+    } else if app.turn_open() {
+        app.hint(TURN_OPEN);
         Action::Continue
     } else if app.is_connecting() {
-        app.notice("Wait for the connection before changing effort");
+        app.hint(NOT_CONNECTED);
         Action::Continue
     } else {
         Action::Exit(Exit::Effort(level))
@@ -349,11 +377,9 @@ fn effort_command(app: &mut App, vendor: &dyn Vendor, argument: &str) -> Action 
 /// `/fork`: reconnect as a new vendor session that continues this one.
 fn fork_command(app: &mut App) -> Action {
     if app.conn.engine.offline() {
-        app.notice("The offline demo has no context to fork");
-    } else if app.conn.is_running() || !app.overlay.approvals.is_empty() {
-        app.notice("Cancel the active turn before forking");
+        app.note("The offline demo has no context to fork");
     } else if app.conn.session.is_empty() {
-        app.notice("No vendor session to fork yet; send a prompt first");
+        app.note("No vendor session to fork yet; send a prompt first");
     } else {
         return Action::Exit(Exit::Fork);
     }
@@ -363,11 +389,9 @@ fn fork_command(app: &mut App) -> Action {
 /// `/compact`: the vendor compacts its context in a turn of its own.
 fn compact_command(app: &mut App, vendor: &dyn Vendor) {
     if app.conn.engine.offline() {
-        app.notice("The offline demo has no context to compact");
-    } else if !app.is_idle() {
-        app.notice("Finish or cancel the turn before compacting");
+        app.note("The offline demo has no context to compact");
     } else if let Err(error) = app.begin_turn(vendor, Command::Compact, By::User, "compacting") {
-        app.notice(error.to_string());
+        app.error(error.to_string());
     }
 }
 
@@ -378,12 +402,12 @@ pub(crate) fn steer(app: &mut App, vendor: &dyn Vendor, text: String) {
     let running = app.conn.is_running();
     if running && app.conn.engine.provider().steer && !app.conn.cancelling {
         if let Err(error) = vendor.send(Command::Steer(text)) {
-            app.notice(error.to_string());
+            app.error(error.to_string());
         }
         return;
     }
     if submit(app, vendor, text) && running {
-        app.notice(if app.conn.cancelling {
+        app.note(if app.conn.cancelling {
             "The turn is stopping; queued the steer as the next prompt".to_owned()
         } else {
             format!(
@@ -398,18 +422,18 @@ pub(crate) fn steer(app: &mut App, vendor: &dyn Vendor, text: String) {
 pub(crate) fn switch_mode(app: &mut App, vendor: &dyn Vendor, target: Mode) {
     match vendor.send(Command::SetMode(target)) {
         Ok(()) => app.conn.mode_pending = Some(target),
-        Err(error) => app.notice(error.to_string()),
+        Err(error) => app.error(error.to_string()),
     }
 }
 
 /// `/image PATH`: attach an image to the next prompt; whether it did.
 fn image_command(app: &mut App, argument: &str) -> bool {
     if argument.is_empty() {
-        app.notice("Usage: /image PATH (PNG, JPEG, GIF or WebP, up to 5 MiB)");
+        app.note("Usage: /image PATH (PNG, JPEG, GIF or WebP, up to 5 MiB)");
         return false;
     }
     if app.composer.images.len() >= octet_core::IMAGES_PER_PROMPT {
-        app.notice(format!(
+        app.note(format!(
             "A prompt takes at most {} images; press Esc on an empty prompt to drop them",
             octet_core::IMAGES_PER_PROMPT
         ));
@@ -432,12 +456,12 @@ fn image_command(app: &mut App, argument: &str) -> bool {
     });
     match opened {
         Ok(image) => {
-            app.notice(format!("Attached {} to the next prompt", image.name));
+            app.note(format!("Attached {} to the next prompt", image.name));
             app.composer.images.push(image);
             true
         }
         Err(error) => {
-            app.notice(error.to_string());
+            app.note(error.to_string());
             false
         }
     }
@@ -481,7 +505,7 @@ async fn sessions_command(app: &mut App) {
     app.conn.listed =
         octet_core::recent_sessions(&directory, &app.composer.root, SESSIONS_LISTED).await;
     if app.conn.listed.is_empty() {
-        app.notice("No earlier vendor sessions in this workspace");
+        app.note("No earlier vendor sessions in this workspace");
         return;
     }
     let now = std::time::SystemTime::now();
@@ -511,7 +535,7 @@ async fn sessions_command(app: &mut App) {
             )
         })
         .collect();
-    app.notice(format!(
+    app.note(format!(
         "Recent sessions (/resume N reconnects):\n{}",
         lines.join("\n")
     ));
@@ -520,7 +544,7 @@ async fn sessions_command(app: &mut App) {
 /// `/resume N`: reconnect to entry N of the last `/sessions` listing.
 fn resume_command(app: &mut App, argument: &str) -> Action {
     if app.conn.listed.is_empty() {
-        app.notice("Run /sessions first, then /resume N");
+        app.note("Run /sessions first, then /resume N");
         return Action::Continue;
     }
     let count = app.conn.listed.len();
@@ -530,15 +554,11 @@ fn resume_command(app: &mut App, argument: &str) -> Action {
         .and_then(|n| n.checked_sub(1))
         .and_then(|i| app.conn.listed.get(i))
     else {
-        app.notice(format!("No session {argument}; /sessions listed {count}"));
+        app.note(format!("No session {argument}; /sessions listed {count}"));
         return Action::Continue;
     };
     if entry.summary.session == app.conn.session {
-        app.notice("That is this session");
-        return Action::Continue;
-    }
-    if app.conn.is_running() || !app.overlay.approvals.is_empty() {
-        app.notice("Cancel the active turn before changing sessions");
+        app.note("That is this session");
         return Action::Continue;
     }
     Action::Exit(Exit::Resume {
@@ -586,7 +606,7 @@ fn unescape(text: &str) -> String {
 /// `/queue`: list the prompts waiting for the running turn, or clear them.
 fn queue_command(app: &mut App, argument: &str) {
     match argument {
-        "" if app.composer.queue.is_empty() => app.notice("No prompts are queued"),
+        "" if app.composer.queue.is_empty() => app.note("No prompts are queued"),
         "" => {
             let lines: Vec<String> = app
                 .composer
@@ -595,13 +615,13 @@ fn queue_command(app: &mut App, argument: &str) {
                 .enumerate()
                 .map(|(i, command)| format!("{}. {}", i + 1, queued_text(command)))
                 .collect();
-            app.notice(format!("Queued prompts:\n{}", lines.join("\n")));
+            app.note(format!("Queued prompts:\n{}", lines.join("\n")));
         }
         "clear" => {
             let dropped = std::mem::take(&mut app.composer.queue).len();
-            app.notice(format!("Cleared {dropped} queued prompts"));
+            app.note(format!("Cleared {dropped} queued prompts"));
         }
-        _ => app.notice("Use /queue or /queue clear"),
+        _ => app.note("Use /queue or /queue clear"),
     }
 }
 
@@ -619,44 +639,43 @@ fn model_command(app: &mut App, argument: &str) -> Action {
             "" => app.show_models(1),
             page => match page.parse::<usize>() {
                 Ok(page) => app.show_models(page),
-                Err(_) => app.notice("Use /model list <page number>"),
+                Err(_) => app.note("Use /model list <page number>"),
             },
         }
-    } else if app.conn.is_running() || !app.overlay.approvals.is_empty() {
-        app.notice = "Cancel or finish the current turn before switching models".into();
+    } else if app.turn_open() {
+        app.hint(TURN_OPEN);
     } else if app.is_connecting() {
-        app.notice = "Wait for connection, or cancel it, before switching models".into();
+        app.hint(NOT_CONNECTED);
     } else {
         match octet_core::model::Selection::parse(argument, app.conn.engine) {
             Ok(selection) => return Action::Exit(Exit::Model(selection)),
-            Err(error) => app.notice(error.to_string()),
+            Err(error) => app.note(error.to_string()),
         }
     }
     Action::Continue
 }
 fn mode_command(app: &mut App, vendor: &dyn Vendor, argument: &str) -> Action {
     if argument.is_empty() {
-        app.notice(app.mode_details());
+        app.note(app.mode_details());
     } else if app.conn.mode_pending.is_some() {
-        app.notice("Mode change pending; wait for the vendor to confirm");
+        app.note("Mode change pending; wait for the vendor to confirm");
     } else {
         match Mode::parse(argument) {
-            None => app.notice(format!(
+            None => app.note(format!(
                 "Unknown mode {argument}. Use ask, accept-edits, auto or full-access."
             )),
             Some(target) if target == app.conn.mode && target == Mode::FullAccess => {
-                app.notice("Already in full-access mode")
+                app.note("Already in full-access mode")
             }
             Some(target) if target == Mode::FullAccess || app.conn.mode == Mode::FullAccess => {
-                if app.conn.is_running() || !app.overlay.approvals.is_empty() {
-                    app.notice =
-                        "Cancel or finish the current turn before changing full access".into();
+                if app.turn_open() {
+                    app.hint(TURN_OPEN);
                 }
                 // Tightening out of full access is always allowed once the vendor has stopped.
                 else if !app.conn.is_ready()
                     && !(app.conn.is_stopped() && target != Mode::FullAccess)
                 {
-                    app.notice = "Wait for a ready session before changing full access".into();
+                    app.hint(NOT_CONNECTED);
                 } else {
                     return Action::Exit(Exit::Mode(target));
                 }
@@ -670,7 +689,7 @@ async fn goal_command(app: &mut App, vendor: &dyn Vendor, argument: &str) {
     use octet_core::goal::{Goal, GoalStep};
     let idle = app.is_idle();
     match argument {
-        "" | "status" => app.notice(
+        "" | "status" => app.note(
             app.goals
                 .goal
                 .as_ref()
@@ -678,16 +697,16 @@ async fn goal_command(app: &mut App, vendor: &dyn Vendor, argument: &str) {
                 .unwrap_or_else(|| "No goal set. Use /goal <objective>.".into()),
         ),
         "pause" => match app.goals.pause().await {
-            Ok(notice) => app.notice(notice),
+            Ok(notice) => app.note(notice),
             // The goal is paused in memory even though the file is stale.
-            Err(error) => app.notice(format!("Goal paused, but saving it failed: {error}")),
+            Err(error) => app.note(format!("Goal paused, but saving it failed: {error}")),
         },
         "clear" => match app.goals.clear().await {
-            Ok(()) => app.notice("Goal cleared. Current vendor turn may finish."),
-            Err(error) => app.notice(format!("Goal persistence failed: {error}")),
+            Ok(()) => app.note("Goal cleared. Current vendor turn may finish."),
+            Err(error) => app.note(format!("Goal persistence failed: {error}")),
         },
         "resume" | "complete" if !idle => {
-            app.notice("Wait for a ready, idle session before resuming or auditing a goal")
+            app.note("Wait for a ready, idle session before resuming or auditing a goal")
         }
         "resume" | "complete" => {
             let step = if argument == "complete" {
@@ -697,21 +716,17 @@ async fn goal_command(app: &mut App, vendor: &dyn Vendor, argument: &str) {
             };
             match app.goals.resume(step).await {
                 Ok(prompt) => send_goal_prompt(app, vendor, prompt).await,
-                Err(error) => app.notice(error.to_string()),
+                Err(error) => app.note(error.to_string()),
             }
         }
-        _ if !idle => app.notice("Wait for a ready, idle session before starting a goal"),
+        _ if !idle => app.note("Wait for a ready, idle session before starting a goal"),
         objective => match app.goals.start(objective).await {
             Ok(prompt) => send_goal_prompt(app, vendor, prompt).await,
-            Err(error) => app.notice(error.to_string()),
+            Err(error) => app.note(error.to_string()),
         },
     }
 }
 async fn export_command(app: &mut App, argument: &str) -> Action {
-    if app.conn.is_running() {
-        app.notice = "Wait for completion or cancel before exporting".into();
-        return Action::Continue;
-    }
     let path = if argument.trim().is_empty() {
         std::env::current_dir()
             .unwrap_or_default()
@@ -720,8 +735,8 @@ async fn export_command(app: &mut App, argument: &str) -> Action {
         PathBuf::from(argument.trim())
     };
     match octet_core::export_journal(&app.conn.journal, &path).await {
-        Ok(()) => app.notice(format!("Exported journal to {}", path.display())),
-        Err(error) => app.notice(format!("Export failed: {error}")),
+        Ok(()) => app.note(format!("Exported journal to {}", path.display())),
+        Err(error) => app.note(format!("Export failed: {error}")),
     }
     Action::Continue
 }
@@ -737,9 +752,14 @@ mod tests {
     #[test]
     fn every_entry_parses_to_its_id_and_ids_are_unique() {
         for spec in COMMANDS {
-            assert_eq!(Cmd::parse(spec.name), Some(spec.id), "{}", spec.name);
+            assert_eq!(
+                Spec::find(spec.name).map(|s| s.id),
+                Some(spec.id),
+                "{}",
+                spec.name
+            );
             for alias in spec.aliases {
-                assert_eq!(Cmd::parse(alias), Some(spec.id), "{alias}");
+                assert_eq!(Spec::find(alias).map(|s| s.id), Some(spec.id), "{alias}");
             }
         }
         for (i, a) in COMMANDS.iter().enumerate() {
@@ -747,7 +767,7 @@ mod tests {
                 .iter()
                 .all(|b| b.id != a.id && b.name != a.name));
         }
-        assert_eq!(Cmd::parse("/bogus"), None);
+        assert!(Spec::find("/bogus").is_none());
     }
     #[test]
     fn every_command_has_exactly_one_registry_row() {

@@ -51,7 +51,7 @@ pub(crate) fn palette_key(app: &mut App, key: &str) -> Action {
             }
         }
         _ if app.composer.editor.text.is_empty() => app.composer.editor.set("!".into()),
-        _ => app.notice = "Clear the prompt to start a ! command".into(),
+        _ => app.status_line = "Clear the prompt to start a ! command".into(),
     }
     Action::Continue
 }
@@ -113,11 +113,11 @@ pub(crate) fn copy_reply(app: &mut App) {
     let Some((bytes, cut, size)) = app.last_reply().and_then(|text| {
         clipboard::osc52(text).map(|(bytes, cut)| (bytes, cut, text.len().min(clipboard::LIMIT)))
     }) else {
-        app.notice = "Nothing to copy yet".into();
+        app.hint("Nothing to copy yet");
         return;
     };
     write_terminal(&bytes);
-    app.notice = if cut {
+    app.status_line = if cut {
         "Copied the first 100 KB to the clipboard".into()
     } else {
         format!("Copied {} to the clipboard", size_label(size))
@@ -137,7 +137,7 @@ pub(crate) fn paste(app: &mut App, value: &str) {
         && !app.overlay.palette
         && !app.composer.editor.insert(&text::clean(value))
     {
-        app.notice = "Paste exceeds the 64 KiB prompt limit; draft preserved".into();
+        app.hint("Paste exceeds the 64 KiB prompt limit; draft preserved");
     }
     // The file popup follows the pasted text; path and command popups close.
     if app
@@ -155,8 +155,8 @@ pub(crate) fn paste(app: &mut App, value: &str) {
 pub(crate) async fn key_action(app: &mut App, vendor: &dyn Vendor, key: KeyEvent) -> Action {
     // Any key ends a pending quit; only a second Ctrl+C in time completes it.
     let quit_armed = app.quit_armed.take();
-    if quit_armed.is_some() && app.notice == QUIT_HINT {
-        app.notice.clear();
+    if quit_armed.is_some() && app.status_line == QUIT_HINT {
+        app.status_line.clear();
     }
     if ctrl(key, 'z') {
         return Action::Suspend;
@@ -210,7 +210,7 @@ async fn approval_key(app: &mut App, vendor: &dyn Vendor, key: KeyEvent, id: u64
                 app.overlay.approvals.pop_front();
                 app.overlay.approval_scroll = 0;
             }
-            Err(error) => app.notice = error.to_string(),
+            Err(error) => app.error(error.to_string()),
         }
     } else if key.code == KeyCode::PageDown {
         app.overlay.approval_scroll = app.overlay.approval_scroll.saturating_add(8);
@@ -299,14 +299,14 @@ async fn composer_key(
                 return Action::CancelShell;
             } else if app.is_busy() {
                 cancel_turn(app, vendor).await;
-                app.notice = CANCELLING.into();
+                app.hint(CANCELLING);
             } else if !app.composer.editor.text.is_empty() {
                 app.composer.editor.take();
             } else if quit_armed.is_some_and(|deadline| Instant::now() < deadline) {
                 return Action::Exit(Exit::Quit);
             } else {
                 app.quit_armed = Some(Instant::now() + QUIT_WINDOW);
-                app.notice = QUIT_HINT.into();
+                app.hint(QUIT_HINT);
             }
         }
         KeyCode::Esc => {
@@ -314,13 +314,13 @@ async fn composer_key(
                 return Action::CancelShell;
             } else if app.is_busy() {
                 cancel_turn(app, vendor).await;
-                app.notice = CANCELLING.into();
+                app.hint(CANCELLING);
             } else if app.composer.editor.text.is_empty()
                 && !(app.composer.attachments.is_empty() && app.composer.images.is_empty())
             {
                 app.composer.attachments.clear();
                 app.composer.images.clear();
-                app.notice = "Attachments removed".into();
+                app.hint("Attachments removed");
             } else {
                 app.chat.scroll = 0;
             }
@@ -342,11 +342,11 @@ async fn composer_key(
                     None => (true, rest.trim()),
                 };
                 if command.is_empty() {
-                    app.notice = "Type a command after !".into();
+                    app.hint("Type a command after !");
                     return Action::Continue;
                 }
                 if app.composer.shell_running {
-                    app.notice = "A command is already running".into();
+                    app.hint("A command is already running");
                     return Action::Continue;
                 }
                 let command = command.to_owned();
@@ -399,7 +399,7 @@ async fn composer_key(
             })
             .await;
             match tab.unwrap_or_else(|| {
-                app.notice = "That folder is slow to read; Tab gave up".into();
+                app.hint("That folder is slow to read; Tab gave up");
                 composer::Tab::Nothing
             }) {
                 composer::Tab::Replace { start, text, popup } => {
@@ -431,21 +431,21 @@ async fn composer_key(
 /// queued behind it are dropped: stopping the agent stops what was lined up.
 pub(crate) async fn cancel_turn(app: &mut App, vendor: &dyn Vendor) {
     if let Err(error) = app.goals.pause_running_turn().await {
-        app.notice(format!("Goal persistence failed: {error}"));
+        app.note(format!("Goal persistence failed: {error}"));
     }
     let dropped = std::mem::take(&mut app.composer.queue).len();
     if dropped > 0 {
         let plural = if dropped == 1 { "" } else { "s" };
-        app.notice(format!("Dropped {dropped} queued prompt{plural}"));
+        app.note(format!("Dropped {dropped} queued prompt{plural}"));
     }
     app.conn.cancelling = app.conn.is_running();
     vendor.interrupt();
 }
 pub(crate) fn cycle_mode(app: &mut App, vendor: &dyn Vendor) -> Action {
     if app.conn.mode == octet_core::Mode::FullAccess {
-        app.notice = "Use /mode to leave full access".into();
+        app.hint("Use /mode to leave full access");
     } else if app.conn.mode_pending.is_some() {
-        app.notice = "Mode change pending; wait for the vendor to confirm".into();
+        app.hint("Mode change pending; wait for the vendor to confirm");
     } else {
         switch_mode(app, vendor, app.conn.mode.cycle());
     }
@@ -477,27 +477,27 @@ pub(crate) fn compose(app: &App, draft: &str) -> Result<Prompt, &'static str> {
 /// when it could not go.
 pub(crate) fn submit(app: &mut App, vendor: &dyn Vendor, draft: String) -> bool {
     if !app.is_idle() && !app.conn.is_running() {
-        app.notice = "Wait for the connection, or /reconnect".into();
+        app.hint(crate::commands::NOT_CONNECTED);
         return false;
     }
     if app.conn.is_running() && app.composer.queue.len() >= QUEUE_LIMIT {
-        app.notice =
+        app.status_line =
             format!("The queue is full ({QUEUE_LIMIT} prompts); wait for the turn or press Esc");
         return false;
     }
     let prompt = match compose(app, &draft) {
         Ok(prompt) => prompt,
         Err(reason) => {
-            app.notice = reason.into();
+            app.status_line = reason.into();
             return false;
         }
     };
     if app.conn.is_running() {
         // The running turn keeps going; this one goes when it ends.
         app.composer.queue.push_back(prompt);
-        app.notice = format!("Queued ({} waiting)", app.composer.queue.len());
+        app.status_line = format!("Queued ({} waiting)", app.composer.queue.len());
     } else if let Err(error) = app.begin_turn(vendor, prompt.into_command(), By::User, "sending") {
-        app.notice = error.to_string();
+        app.error(error.to_string());
         return false;
     }
     app.composer.attachments.clear();
