@@ -53,6 +53,8 @@ pub(crate) struct Connection {
     pub(crate) effort: Option<String>,
     /// The running turn was cancelled and has not ended yet.
     pub(crate) cancelling: bool,
+    /// The session a `/fork` started from, until the vendor names the fork.
+    pub(crate) forking_from: Option<String>,
     /// What `/sessions` last listed, for `/resume N`.
     pub(crate) listed: Vec<octet_core::RecentSession>,
     pub(crate) status: String,
@@ -183,6 +185,7 @@ impl App {
                 phase: ConnPhase::Connecting,
                 effort: config.effort.clone(),
                 cancelling: false,
+                forking_from: None,
                 listed: Vec::new(),
                 status: "connecting".into(),
                 usage: String::new(),
@@ -458,6 +461,17 @@ impl App {
                     self.conn.phase = ConnPhase::Idle;
                 }
                 self.conn.session = clean(&session);
+                if !session.is_empty()
+                    && self
+                        .conn
+                        .forking_from
+                        .as_ref()
+                        .is_some_and(|from| *from != session)
+                {
+                    if let Some(from) = self.conn.forking_from.take() {
+                        self.notice(format!("Forked from {from} into {session}"));
+                    }
+                }
                 if !self.conn.is_running() {
                     self.conn.status = "ready".into();
                     self.conn.activity = State::Idle;
@@ -541,6 +555,11 @@ impl App {
                 self.conn.mode_pending = None;
                 self.conn.phase = ConnPhase::Stopped;
                 self.conn.cancelling = false;
+                if let Some(from) = self.conn.forking_from.take() {
+                    self.notice(format!(
+                        "The fork from {from} did not open; /reconnect tries again"
+                    ));
+                }
                 self.overlay.approvals.clear();
                 // Nothing would send them, and after a reconnect they would
                 // follow newer prompts.

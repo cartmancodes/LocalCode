@@ -204,6 +204,9 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
             attach_goal_store(&mut app, goal_store.clone()).await;
         }
         app.connection(&config, session.journal.clone());
+        // Announced when the vendor names the fork, which for Claude is
+        // after its first turn, possibly several reconnects later.
+        app.conn.forking_from = config.resume.clone().filter(|_| config.fork);
         let result = run_session(&mut terminal, &guard, &mut app, &mut session).await;
         session.shutdown().await;
         // Carry the last vendor-confirmed mode, never an unconfirmed pending one.
@@ -254,10 +257,7 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
             }
             Exit::Fork => {
                 pause_active_goal(&mut app, "fork").await;
-                app.notice(format!(
-                    "Forked from {}. Continuing in a new vendor session…",
-                    app.conn.session
-                ));
+                app.notice(format!("Forking from {}…", app.conn.session));
                 config.resume = Some(app.conn.session.clone());
                 config.fork = true;
                 retained_app = Some(app);

@@ -1192,3 +1192,26 @@ async fn up_recalls_a_prompt_with_its_images() {
     assert!(app.composer.editor.text.is_empty());
     assert!(app.composer.images.is_empty());
 }
+#[test]
+fn a_fork_is_announced_when_the_vendor_names_it() {
+    let mut app = app();
+    app.conn.forking_from = Some("original".into());
+    // Claude reports no session until the fork's first turn.
+    app.event(octet_core::Event::Ready {
+        session: String::new(),
+    });
+    assert!(!app.entries_text().contains("Forked from"));
+    app.event(octet_core::Event::Ready {
+        session: "forked".into(),
+    });
+    assert!(app
+        .entries_text()
+        .contains("Forked from original into forked"));
+    assert!(app.conn.forking_from.is_none());
+    let mut failed = self::app();
+    failed.conn.forking_from = Some("original".into());
+    failed.event(octet_core::Event::Stopped);
+    assert!(failed
+        .entries_text()
+        .contains("The fork from original did not open; /reconnect tries again"));
+}
