@@ -35,14 +35,22 @@ make rust-check
 This is the gate every change must pass. It runs, in order:
 
 1. `cargo fmt --all -- --check`
-2. `cargo test --locked --workspace`
-3. `cargo clippy --locked --workspace --all-targets -- -D warnings`
+2. `cargo clippy --locked --workspace --all-targets -- -D warnings`
+3. `cargo doc --locked --workspace --no-deps`, with warnings as errors
+4. `cargo test --locked --workspace`
+
+CI also checks licences, banned crates and sources with `cargo-deny`
+(`deny.toml`), and audits dependencies weekly.
 
 Clippy also enforces the house Rust rules, set as workspace lints in
 `Cargo.toml`: no `unwrap()` outside tests (use `?` or `expect` with the reason
 it cannot fail), a `// SAFETY:` comment on every `unsafe` block, docs on every
 public item with `# Errors` and `# Panics` sections where they apply, and
-borrowing over taking ownership you do not need. The full guidance is the
+borrowing over taking ownership you do not need. `clippy::pedantic` is on, as
+are `missing_debug_implementations` and `unreachable_pub` (crate-only items
+are `pub(crate)`). An exception says why, as
+`#[expect(clippy::lint, reason = "…")]`; a bare `#[allow]` fails the check.
+Crates without `unsafe` code forbid it. The full guidance is the
 [rust-engineer skill](.claude/skills/rust-engineer/SKILL.md), which Claude Code
 loads when it works on this repository; its "In this repository" section
 lists what applies here.

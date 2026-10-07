@@ -51,6 +51,8 @@ octet --rpc                                              # JSON-line commands on
 
 - **`--print PROMPT` (`-p`)** runs one turn and writes the reply text to
   stdout; notices and errors go to stderr. `-` reads the prompt from stdin.
+  The prompt is taken as given, so it may start with dashes
+  (`-p "--help me"`); `--print=TEXT` works too.
   The exit code is 0 when the turn completes, 1 when it fails (or stdin
   cannot be read), 2 for a usage error (a bad option, an empty, over-long
   or non-UTF-8 prompt, a `--cwd` path that is not UTF-8), and 130 after
@@ -71,14 +73,19 @@ octet --rpc                                              # JSON-line commands on
   approval window ends. A command that cannot be read gets an `error` line.
   Commands sent before the `ready` event, and prompts sent while a turn
   runs, wait their turn in order (up to 64), so a script can be piped in.
+  An `answer` is sent at once (once `ready`), ahead of any prompt waiting
+  for the next turn.
   At the end of stdin Octet finishes the waiting work, denying any approval
   it can no longer ask about, then exits 0, or 1 if a turn failed. `quit`
-  exits 0 at once; RPC exits 1 if the vendor stops. SIGINT and SIGTERM stop
+  exits 0 at once, even while the client keeps stdin open; RPC exits 1 if
+  the vendor stops. SIGINT and SIGTERM stop
   the session cleanly, finishing its journal, and exit 130 and 143.
 
 Every headless run is journaled like an interactive one, and shuts its
 session down on every exit path, even when stdout or stderr has been closed
-(`octet -p … | head`).
+(`octet -p … | head`). If the session gives up on a reader that stopped
+reading, the run says the turn did not finish (on stderr, or as an `error`
+line) and the journal records why.
 
 ## Interaction
 
@@ -99,17 +106,20 @@ is respected. The minimum usable size is 38 columns by 12 rows.
 | Ctrl+P | Command palette (also offers Ctrl+G, `@` and `!`) |
 | `@` | Mention a workspace file; a popup suggests paths as you type (Enter or Tab inserts, Esc closes) |
 | Tab | Complete a path, or a `/command` at the start of the prompt |
-| Ctrl+G | Write the prompt in `$VISUAL` or `$EDITOR` (default `vi`) |
+| Ctrl+G | Write the prompt in `$VISUAL` or `$EDITOR` (default `vi`), run by the shell as git runs it: quote a path with spaces |
 | Ctrl+X | Copy the last reply to the clipboard (same as `/copy`) |
 | Shift+Tab | Cycle permission mode: ask → accept-edits → auto |
 | F1 | Help |
 | Ctrl+C twice | Quit, as in Claude Code: on an idle, empty prompt the first press shows "Press Ctrl+C again to quit", and a second within 1.5 seconds stops vendor children, finishes journal writes and exits |
 | Ctrl+Z | Restore terminal and suspend; use the shell's `fg` to return |
-| A / D / Esc in an approval | Allow once / deny / deny |
+| A / D / Esc in an approval | Allow once / deny / deny, from 0.4 s after the dialog opens |
 
-Bracketed paste preserves newlines without submitting them. A rejected oversized
-paste leaves the draft intact. Approval requests are never answered by pasted
-text. Approval expiration (120 seconds by default; `--approval-timeout SECONDS`
+Bracketed paste preserves newlines and tabs without submitting them (a tab
+shows as spaces to the next stop of four, and is sent as a tab). A rejected
+oversized paste leaves the draft intact; a paste while a dialog is open is
+dropped, with a hint. Approval requests are never answered by pasted text, and
+answer keys wait 0.4 seconds after a dialog opens, so a letter typed as it
+appears cannot answer it. Approval expiration (120 seconds by default; `--approval-timeout SECONDS`
 sets 10–3600), cancellation and unknown request types fail closed; requests too large to display completely are denied explicitly.
 At most eight approvals wait at once; a ninth is denied with a notice. Claude
 receives the reason with each denial (your refusal, the timeout, the cap), so it
@@ -137,15 +147,19 @@ removes them. `cd` and `export` do not carry over between commands.
 `@` inserts the path only; the vendor reads the file with its own tools.
 The file list comes from `git ls-files` (tracked and untracked, not
 ignored) or, outside git, a walk that skips hidden folders, `target` and
-`node_modules`, up to 50,000 files. While Ctrl+G's editor is open, Octet
-keeps receiving the vendor's output and repaints when you return; an
-approval that arrives meanwhile rings the bell and its timer keeps running.
+`node_modules`, up to 50,000 files and folders. A `git` that hangs is
+stopped after 10 seconds and the walk used instead. Ctrl+G's draft is written
+to a file in a private (0700) folder of its own, removed with it. While the
+editor is open, Octet keeps receiving the vendor's output and repaints when
+you return; an approval that arrives meanwhile rings the bell and its timer
+keeps running.
 
 A `!` command's output is kept as a terminal would show it: a carriage
 return starts a line over, so a progress counter keeps only its last state.
 Attached output keeps its tabs. Commands run in their own session, without
 access to Octet's terminal, so a credential prompt (git, ssh, sudo) fails at
-once rather than drawing over the screen.
+once rather than drawing over the screen. A command, and everything it
+started, is stopped when its session ends (a reconnect, `/new`, a quit).
 
 Tab fills the longest common start of several matches and lists them in the
 popup. It waits at most half a second for a folder listing, so a slow
@@ -170,10 +184,11 @@ connected one; a refused command explains why on the status line.
 `/sessions`, `/export` and `/remote-control` run in the background: the
 status line names the job, and replies, approvals and keys keep working.
 One runs at a time; a second is refused with "Wait for: …" and its line stays
-in the prompt box. A session that ends (quit, `/new`, `/reconnect`, `/model`,
-`/fork`, `/resume`) waits up to 5 seconds for a running job, so an export is
-never cut short, and shows its result in the next screen; a job still
-running after that is stopped, with a note.
+in the prompt box. A job outlives a reconnect (`/new`, `/reconnect`, `/model`,
+`/fork`, `/resume`): it carries on and reports in the next screen. Quitting
+waits up to 5 seconds for an export, so it is never cut short, and stops any
+other job at once. `/export PATH` is relative to the workspace (`~/` is your
+home folder); with no path it writes the journal's name into the workspace.
 
 In the demo, a prompt
 sent with `!` attachments (or by a goal) gets a reply that also shows the
@@ -374,9 +389,12 @@ Prompts are limited to 64 KiB, stdout frames to 8 MiB, queued raw frames to 16 M
 and each session journal to 64 MiB. Tool activity is a preview: each tool entry is
 cut at 32 KiB, in the journal as well, and the vendor keeps the full output. A Codex
 command shows what ran, its status and exit code, then the end of its output. Bounded
-event queues stop an overloaded session with an error rather than silently discard
-output, with one exception: a reply shows at most 2 MiB, less while the interface is
-behind, and ends with a note where it is cut. The journal holds the same cut text.
+event queues never silently discard output. While the interface is behind, Octet
+stops reading the vendor (whose output waits in the pipe) rather than stopping the
+session. A reply shows at most 2 MiB, and ends with a note where it is cut; the
+journal holds the same cut text. A Claude subagent's messages (the Task tool) show
+as tool activity, not as the reply. Escape sequences in vendor and command output
+are removed, including unterminated ones, which end at the line.
 
 A turn may run for any length of time. The session is stopped only if the vendor
 sends nothing for this session for 10 minutes inside a turn (time spent waiting on

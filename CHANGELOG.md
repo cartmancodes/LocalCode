@@ -75,6 +75,21 @@ Claude Code and Codex CLIs.
 
 ### Changed
 
+- An approval takes answer keys 0.4 seconds after it opens, so a letter
+  typed as it appears cannot allow it.
+- While the interface is behind, Octet stops reading the vendor instead of
+  stopping the session; a burst of output no longer ends it.
+- A background job carries on across a reconnect; quitting waits only for
+  an export. `/export PATH` is relative to the workspace.
+- Paste keeps tabs. The external editor runs as the shell runs `$EDITOR`
+  (a quoted path with spaces works), on a draft in a private folder.
+- `--print` takes a prompt that starts with dashes, and `--print=TEXT`.
+- The protocol gate launches the vendor with Octet's own arguments and
+  limits.
+- Edition 2024; clippy pedantic, `#[expect(lint, reason)]` for every
+  exception, `Debug` on every public type; a `cargo doc` build and a
+  `cargo-deny` licence check in CI.
+
 - `@` suggestions rank about four times faster in large workspaces (under
   25 ms for 50,000 files).
 - Help, the command palette, Tab completion, the sidebar and `octet --help`
@@ -94,6 +109,21 @@ Claude Code and Codex CLIs.
   one row ([guide](docs/rust/adding-a-provider.md)). No behaviour change.
 
 ### Fixed
+
+- A failed disk write could be reported as written (a torn journal record,
+  a truncated goal file installed over a good one); every write is now
+  flushed and checked, and new files and renames are synced.
+- A `!` command's processes outlived a reconnect or quit.
+- Claude subagent (Task tool) messages showed as the reply.
+- The panic hook restored the terminal for a background job's panic.
+- An RPC answer queued behind a pipelined prompt timed out; `--rpc` did
+  not exit on `quit` while stdin stayed open.
+- The vendor's last error line was occasionally lost; a blank line from
+  the vendor ended the session.
+- `tput`'s escapes left a stray "B"; an unterminated escape hid the rest
+  of a reply; Arabic text wrapped past the screen edge.
+- "Cancelling…" stayed after cancelling a connection; a signal during a
+  reconnect was lost; a hung `git` stalled the `@` index.
 
 - A reply over 2 MiB is cut with a note instead of stopping the session.
 - `NO_COLOR` now removes every colour, not only the mascot's.

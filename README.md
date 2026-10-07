@@ -46,7 +46,8 @@ running across turns, and pick the session up from your phone.
   reasoning effort.
 - `/image PATH` attaches PNG, JPEG, GIF or WebP images to the next prompt.
 - `/sessions`, `/export` and `/remote-control` run in the background, so
-  replies and approvals keep flowing while they work.
+  replies and approvals keep flowing while they work; a job carries on
+  across a reconnect.
 
 **Scripts and other programs**
 
@@ -168,7 +169,7 @@ octet --engine codex --cwd /path/to/project      # Codex (the default engine)
 | `--journal-dir PATH` | Where journals go (default `~/.local/share/octet/rust-preview`) |
 | `--approval-timeout SECONDS` | How long an approval waits before it is denied (10–3600) |
 | `--effort LEVEL` | Reasoning effort (`low`, `medium`, `high`, `xhigh`, `max` for Claude; Codex decides per model) |
-| `--print PROMPT`, `-p PROMPT` | Run one turn without the interface and write the reply; `-` reads the prompt from stdin |
+| `--print PROMPT`, `-p PROMPT` | Run one turn without the interface and write the reply; `-` reads the prompt from stdin; `--print=TEXT` also works |
 | `--output text\|json` | With `--print`: the reply text (default), or every event as a JSON line |
 | `--rpc` | Take JSON-line commands on stdin and write events as JSON lines |
 
@@ -181,7 +182,7 @@ octet --engine codex --cwd /path/to/project      # Codex (the default engine)
 | Esc | Cancel the running turn (and drop queued prompts) |
 | Up / Down | Prompt history |
 | Shift+Tab | Cycle permission mode: ask → accept-edits → auto |
-| A / D | Allow once / deny a permission request |
+| A / D | Allow once / deny a permission request (from 0.4 s after it opens) |
 | PageUp / PageDown | Scroll the conversation |
 | Ctrl+P | Command palette (also offers Ctrl+G, `@` and `!`) |
 | @ | Mention a file |
