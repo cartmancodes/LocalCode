@@ -67,7 +67,7 @@ another assistant in Octet. That session cannot be resumed here, so it is
 reproduced below as context. Do not redo its actions; tool calls already
 ran. The user's new message follows the transcript.
 
-<earlier-conversation>
+<earlier-conversation-3f9a…>
 User:
 Fix the failing build in crates/core.
 
@@ -81,7 +81,7 @@ Tool (claude): Bash · cargo build -p core
 User:
 Now run the tests.
 …
-</earlier-conversation>
+</earlier-conversation-3f9a…>
 
 The user's new message:
 ```
@@ -100,9 +100,12 @@ The user's new message:
   until the budget; the first user prompt is always included; a marker
   says how many turns were omitted between them. One entry longer than the
   budget is cut from its start, keeping its end.
-- **Escaping:** the text is already sanitized (`clean`) by the interface; a
-  literal `</earlier-conversation>` inside an entry is neutralised so the
-  block cannot be closed early.
+- **Escaping:** the text is already sanitized (`clean`) by the interface. The
+  block's tag carries a random suffix chosen for each handoff
+  (`<earlier-conversation-3f9a…>`), so no entry can predict its closing tag
+  or close the block early; an entry's literal "The user's new message:" is
+  quoted. (Revised after the final review: exact-string escaping missed case
+  and spacing variants.)
 
 ## Components
 

@@ -79,7 +79,6 @@ Once the TUI is open, a typical sequence is:
 /export /tmp/chat.jsonl  Save a new copy of the journal
 ```
 
-Switching to Claude does **not** send the earlier Codex conversation to Claude.
 Only one provider runs as the active conversation at a time. The two engines do
 not yet collaborate on one shared task. Switching providers keeps the displayed
 messages, and the new provider receives them as a transcript with your next prompt.
