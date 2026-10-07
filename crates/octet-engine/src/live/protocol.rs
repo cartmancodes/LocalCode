@@ -59,6 +59,8 @@ pub(crate) struct Core {
     pub(super) mode: Mode,
     /// Connect deadline, then the turn's silence watchdog.
     pub(super) deadline: Instant,
+    /// Octet's next approval ID and, for Codex, its next request ID. It
+    /// starts at 10 because Codex reserves the fixed IDs 1–4.
     pub(super) request_id: u64,
     pub(super) pending: HashMap<u64, Pending>,
     /// The protocol's approval reply, for approvals denied here.

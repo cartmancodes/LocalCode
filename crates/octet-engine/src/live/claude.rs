@@ -315,7 +315,7 @@ impl ClaudeProtocol {
                 .pointer("/response/response/current_permission_mode")
                 .and_then(Value::as_str)
                 .map(|raw| (claude_reported_mode(raw), limited(raw)));
-            core.mode = confirm_mode(&core.tx, super::Engine::CLAUDE.title(), core.mode, reported)?;
+            core.mode = confirm_mode(&core.tx, PROVIDER.title, core.mode, reported)?;
             core.emit(Event::ModeChanged(core.mode))?;
             core.emit(Event::Models(catalog(&v["response"]["response"]["models"])))?;
         }
@@ -373,7 +373,7 @@ pub(super) fn switch_reply_mode(
         .pointer("/response/response/mode")
         .and_then(Value::as_str)
         .map(|raw| (claude_reported_mode(raw), limited(raw)));
-    confirm_mode(tx, super::Engine::CLAUDE.title(), target, reported)
+    confirm_mode(tx, PROVIDER.title, target, reported)
 }
 /// The Claude catalog: `value` selects, `resolvedModel` is the full ID.
 fn catalog(value: &Value) -> Vec<ModelInfo> {

@@ -92,6 +92,32 @@ async fn a_repeated_claude_handshake_mid_turn_does_not_end_the_turn() {
         .unwrap();
 }
 #[tokio::test]
+async fn cancel_while_handshaken_is_cancelled() {
+    // Codex answers initialize but never opens the session.
+    let (_dir, vendor) = script_vendor(
+        "octet-live-handshaken",
+        "read line\necho '{\"id\":1,\"result\":{}}'\nexec sleep 30\n",
+    );
+    let (handle, mut events, task) =
+        spawn(Config::new(Engine::CODEX, vendor, std::env::temp_dir()));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    handle.interrupt();
+    loop {
+        match next(&mut events).await {
+            Event::Error(error) => {
+                assert_eq!(error, "Connection cancelled");
+                break;
+            }
+            Event::Ready { .. } => panic!("the session never opened"),
+            _ => {}
+        }
+    }
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
 async fn cancel_while_starting_is_cancelled() {
     // A vendor that never answers the handshake.
     use std::os::unix::fs::PermissionsExt;

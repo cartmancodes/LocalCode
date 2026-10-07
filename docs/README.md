@@ -13,6 +13,8 @@
 
 - [Features](rust/tui-features.md): what works today, feature by feature,
   and the preview's boundaries.
+- [Adding a provider](rust/adding-a-provider.md): how to support another
+  vendor CLI: one file and one row in the provider table.
 - [Parity matrix](rust/parity-matrix.md): the release requirements still
   open, measured against the earlier Python harness.
 - [Mascot artwork](design/octet-agent-modes/): the pixel-art reference for

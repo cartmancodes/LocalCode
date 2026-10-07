@@ -37,7 +37,8 @@ pub struct Limits {
     pub interrupt: Duration,
     /// Unanswered approval before it is denied.
     pub approval: Duration,
-    /// Unanswered Claude mode switch before it is reported as unconfirmed.
+    /// Unanswered mode switch before it is reported as unconfirmed, for a
+    /// protocol whose switches are confirmed by the vendor (Claude's are).
     pub mode_confirm: Duration,
 }
 impl Default for Limits {
@@ -100,10 +101,6 @@ impl Engine {
     pub const DEMO: Engine = Engine(&demo::PROVIDER);
     /// Every provider, in the order help lists them: the provider table.
     pub const ALL: &'static [Engine] = &[Engine::CODEX, Engine::CLAUDE, Engine::DEMO];
-    /// A handle onto a provider row.
-    pub const fn new(provider: &'static Provider) -> Engine {
-        Engine(provider)
-    }
     /// The engine named `value` (`codex`, `claude` or `demo`), exactly as
     /// spelled.
     ///

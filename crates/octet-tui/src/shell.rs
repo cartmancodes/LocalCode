@@ -42,8 +42,12 @@ impl Ran {
     }
 }
 
-/// A limit as people say it: whole minutes, else seconds, else milliseconds.
+/// A limit as people say it: whole minutes, else whole seconds, else
+/// milliseconds.
 pub fn duration_text(limit: Duration) -> String {
+    if limit.subsec_nanos() != 0 {
+        return format!("{} ms", limit.as_millis());
+    }
     match limit.as_secs() {
         0 => format!("{} ms", limit.as_millis()),
         60 => "1 minute".into(),
@@ -368,6 +372,11 @@ mod tests {
             summary(Duration::from_millis(300)),
             "timed out after 300 ms"
         );
+        assert_eq!(
+            summary(Duration::from_millis(1500)),
+            "timed out after 1500 ms"
+        );
+        assert_eq!(summary(Duration::ZERO), "timed out after 0 ms");
     }
     #[tokio::test]
     async fn a_missing_shell_is_an_error() {

@@ -68,11 +68,12 @@ format, built on `model_catalog_with`.
 
 ```rust
 pub const ALL: &'static [Engine] = &[Engine::CODEX, Engine::CLAUDE, Engine::DEMO,
-    Engine::new(&gemini::PROVIDER)];
+    Engine(&gemini::PROVIDER)];
 ```
 
-Add a named constant (`Engine::GEMINI`) only if code needs to name the
-vendor. Code should almost never need to: it asks `engine.offline()`, or it
+`ALL` lives in the same module as `Engine`, so it can build the row
+directly. Add a named constant (`Engine::GEMINI`) only if code needs to
+name the vendor. Code should almost never need to: it asks `engine.offline()`, or it
 reads the row.
 
 ### 3. Add a fake-vendor script and live tests
@@ -107,6 +108,7 @@ scenarios are per vendor.
 | `on_frame` | Turn vendor output into `Text`, `Tool`, `Usage`, `Approval` (through `core.queue_approval`) and, at the turn's end, `core.close_all_pending()`, `phase = Idle` and `Event::Finished`. Ignore output for other sessions or turns. |
 | `answer` | The reply that allows or denies an approval request. The driver uses it for user answers, timeouts and oversized requests. |
 | `stray_reply` | The reply to a request Octet will not show the user. Deny permissions; report anything else as unsupported. |
+| `mode_change_pending` | True while a mode switch waits for the vendor to confirm it. The driver then refuses another switch. |
 | `is_progress` | Whether a frame shows the turn is alive. Return false for another thread's output. |
 | `deadline` / `on_deadline` | An optional protocol timer, such as Claude's mode confirmation. |
 | `turn_started` | Clear per-turn state. |

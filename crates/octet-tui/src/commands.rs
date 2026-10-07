@@ -131,6 +131,21 @@ pub const COMMANDS: &[Spec] = &[
 ];
 
 impl Cmd {
+    /// Every command, for the registry coverage test.
+    #[cfg(test)]
+    pub(crate) const ALL: [Cmd; 11] = [
+        Cmd::Help,
+        Cmd::Model,
+        Cmd::Mode,
+        Cmd::Goal,
+        Cmd::Session,
+        Cmd::Export,
+        Cmd::Copy,
+        Cmd::New,
+        Cmd::Reconnect,
+        Cmd::RemoteControl,
+        Cmd::Quit,
+    ];
     /// The command a typed name (or alias) names.
     pub fn parse(name: &str) -> Option<Cmd> {
         COMMANDS
@@ -347,5 +362,13 @@ mod tests {
                 .all(|b| b.id != a.id && b.name != a.name));
         }
         assert_eq!(Cmd::parse("/bogus"), None);
+    }
+    #[test]
+    fn every_command_has_exactly_one_registry_row() {
+        for cmd in Cmd::ALL {
+            let rows = COMMANDS.iter().filter(|spec| spec.id == cmd).count();
+            assert_eq!(rows, 1, "{cmd:?}");
+        }
+        assert_eq!(Cmd::ALL.len(), COMMANDS.len());
     }
 }

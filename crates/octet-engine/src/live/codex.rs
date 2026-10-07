@@ -269,7 +269,7 @@ impl CodexProtocol {
             })?;
             core.mode = confirm_mode(
                 &core.tx,
-                super::Engine::CODEX.title(),
+                PROVIDER.title,
                 core.mode,
                 codex_reported(&v["result"]),
             )?;
