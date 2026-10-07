@@ -54,7 +54,10 @@ fn run(args: &[&str], input: &str) -> (i32, String, String) {
 fn print_writes_the_reply_and_exits_zero() {
     let (code, stdout, stderr) = run(&["--print", "hello"], "");
     assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout, "Hello fixture\n");
+    assert_eq!(
+        stdout,
+        format!("{}\n", octet_testkit::scenario::CODEX_REPLY)
+    );
 }
 
 #[test]
@@ -74,7 +77,7 @@ fn print_json_writes_event_lines() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert!(events.contains(&json!({"type":"user","data":"hello"})));
-    assert!(events.contains(&json!({"type":"text","data":"Hello fixture"})));
+    assert!(events.contains(&json!({"type":"text","data":octet_testkit::scenario::CODEX_REPLY})));
     assert_eq!(
         events.last(),
         Some(&json!({"type":"finished","data":"completed"}))
@@ -152,7 +155,7 @@ fn rpc_runs_prompts_and_answers_approvals() {
     let mut rpc = Rpc::start();
     rpc.until(|e| e["type"] == "ready");
     rpc.send(&json!({"type":"prompt","text":"hello"}));
-    rpc.until(|e| e == &json!({"type":"text","data":"Hello fixture"}));
+    rpc.until(|e| e == &json!({"type":"text","data":octet_testkit::scenario::CODEX_REPLY}));
     rpc.until(|e| e["type"] == "finished");
     rpc.send(&json!({"type":"prompt","text":"approval"}));
     let approval = rpc.until(|e| e["type"] == "approval");

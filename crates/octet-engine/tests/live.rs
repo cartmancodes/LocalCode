@@ -201,7 +201,7 @@ async fn live_driver_keeps_turns_separate_and_waits_for_terminal_after_usage() {
                 _ => {}
             }
         }
-        assert_eq!(text, "Hello fixture");
+        assert_eq!(text, scenario::CODEX_REPLY);
         assert!(usage);
     }
     stop(&handle, task).await;
@@ -266,7 +266,7 @@ async fn claude_stream_does_not_duplicate_final_assistant_message() {
                 _ => {}
             }
         }
-        assert_eq!(text, "Hello Claude");
+        assert_eq!(text, scenario::CLAUDE_REPLY);
     }
     stop(&handle, task).await;
 }
@@ -1214,7 +1214,7 @@ async fn claude_images_too_large_together_fail_the_turn_not_the_session() {
     assert!(error.contains("together"), "{error}");
     // The session is still usable.
     handle.send(Command::Prompt("hello".into())).unwrap();
-    assert_eq!(turn_text(&mut events).await, "Hello Claude");
+    assert_eq!(turn_text(&mut events).await, scenario::CLAUDE_REPLY);
     stop(&handle, task).await;
 }
 #[tokio::test]
@@ -1250,7 +1250,7 @@ async fn a_prompt_cancelled_before_it_starts_is_not_run() {
     );
     // A later prompt is not affected.
     handle.send(Command::Prompt("hello".into())).unwrap();
-    assert_eq!(turn_text(&mut events).await, "Hello fixture");
+    assert_eq!(turn_text(&mut events).await, scenario::CODEX_REPLY);
     stop(&handle, task).await;
 }
 #[tokio::test]

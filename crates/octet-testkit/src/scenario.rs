@@ -72,3 +72,32 @@ pub const REJECT_MODE: &str = "reject-mode";
 pub const REFUSE_THREAD: &str = "refuse-thread";
 /// Codex `--model`: report a stricter policy than asked for.
 pub const REPORT_STRICTER: &str = "report-stricter";
+
+/// The reply the fake Codex gives a prompt with no script.
+pub const CODEX_REPLY: &str = "Hello fixture";
+/// The reply the fake Claude gives a prompt with no script.
+pub const CLAUDE_REPLY: &str = "Hello Claude";
+
+/// Goal objective (`/goal …`): one step, then completion with evidence.
+pub const GOAL: &str = "fixture-goal";
+/// Goal objective: hold each goal turn open until interrupted.
+pub const GOAL_HOLD: &str = "fixture-hold";
+/// Goal objective: fail each goal turn.
+pub const GOAL_FAIL: &str = "fixture-fail";
+/// How every goal prompt starts; `octet_core::goal::PROMPT_PREFIX` must
+/// match (a test in octet-core pins it).
+pub const GOAL_PROMPT_PREFIX: &str = "Octet active goal: ";
+
+/// Whether `text` is the goal prompt for `objective`.
+pub fn is_goal_prompt(text: &str, objective: &str) -> bool {
+    text.strip_prefix(GOAL_PROMPT_PREFIX)
+        .and_then(|rest| rest.strip_prefix(objective))
+        .is_some_and(|rest| rest.starts_with('\n'))
+}
+
+/// Claude: the request ID of the `APPROVAL` script's permission request.
+pub const APPROVAL_ID: &str = "perm-1";
+/// Claude: the request ID `APPROVAL_CANCEL` asks for and then cancels.
+pub const CANCELLED_APPROVAL_ID: &str = "perm-2";
+/// Codex and Claude: `APPROVALS_9` numbers its requests `cap-1` … `cap-9`.
+pub const CAP_PREFIX: &str = "cap-";

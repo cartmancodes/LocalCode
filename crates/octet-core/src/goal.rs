@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 /// Turns a goal may take before it pauses for the user.
 pub const MAX_GOAL_TURNS: u32 = 200;
+/// How every goal prompt starts. The fake vendors recognise goal prompts
+/// by it (`octet_testkit::scenario::GOAL_PROMPT_PREFIX`).
+pub const PROMPT_PREFIX: &str = "Octet active goal: ";
 /// The line a vendor ends with when it claims the goal is done.
 pub const COMPLETION_MARKER: &str = "[[OCTET_GOAL_COMPLETE]]";
 
@@ -104,7 +107,7 @@ impl Goal {
             }
         };
         format!(
-            "Octet active goal: {}\n\n{direction}\n{}",
+            "{PROMPT_PREFIX}{}\n\n{direction}\n{}",
             self.objective,
             format_args!(
                 "If and only if the entire objective is achieved, explain the evidence and put {COMPLETION_MARKER} \
@@ -600,6 +603,16 @@ mod tests {
         runner.goal_prompt_sent();
         runner.pause_running_turn().await.unwrap();
         assert!(!runner.is_active());
+    }
+    #[test]
+    fn goal_prompts_start_with_the_pinned_prefix() {
+        // The fake vendors recognise goal prompts by this prefix.
+        assert_eq!(PROMPT_PREFIX, octet_testkit::scenario::GOAL_PROMPT_PREFIX);
+        let prompt = Goal::new("fixture-goal").unwrap().prompt(GoalStep::Begin);
+        assert!(octet_testkit::scenario::is_goal_prompt(
+            &prompt,
+            "fixture-goal"
+        ));
     }
     #[test]
     fn the_goal_prompt_keeps_its_wording() {

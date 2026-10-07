@@ -106,13 +106,22 @@ pub fn path_with(dir: &Path) -> String {
 ///
 /// # Panics
 ///
-/// If it has not exited within `limit`, or cannot be waited for.
+/// If it has not exited within `limit` (it is killed first, so a hung
+/// process never outlives the test), or cannot be waited for.
 pub fn wait_child(child: std::process::Child, limit: Duration) -> std::process::Output {
+    let pid = libc::pid_t::try_from(child.id()).expect("pid fits pid_t");
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || tx.send(child.wait_with_output()));
-    rx.recv_timeout(limit)
-        .expect("the process did not exit in time")
-        .expect("wait for the process")
+    match rx.recv_timeout(limit) {
+        Ok(output) => output.expect("wait for the process"),
+        Err(_) => {
+            // SAFETY: kill only sends a signal. The child is still unreaped
+            // (the waiting thread has not returned), unless it exited in this
+            // very instant; a test helper accepts that tiny window.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            panic!("the process did not exit in time");
+        }
+    }
 }
 
 /// Each line `output` prints, read on a thread of its own.
@@ -192,6 +201,19 @@ impl Drop for TempDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wait_child_kills_on_timeout() {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep starts");
+        let pid = libc::pid_t::try_from(child.id()).expect("pid fits pid_t");
+        let waited = std::panic::catch_unwind(|| wait_child(child, Duration::from_millis(100)));
+        assert!(waited.is_err(), "a hung process fails the test");
+        // SAFETY: signal 0 only checks that the process exists.
+        let gone = wait_until(QUICK, || unsafe { libc::kill(pid, 0) } != 0);
+        assert!(gone, "the hung process was left running");
+    }
     #[test]
     fn wait_until_reports_whether_the_condition_held() {
         let mut calls = 0;

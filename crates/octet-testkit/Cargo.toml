@@ -11,7 +11,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "protocol-child"
-path = "src/bin/protocol-child.rs"
+path = "src/bin/protocol-child/main.rs"
 
 [dependencies]
 serde_json.workspace = true
