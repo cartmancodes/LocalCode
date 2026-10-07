@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+[features]
+# Test set-up helpers for other crates' tests (GoalRunner::goal_mut).
+testing = []
+
 [dependencies]
 octet-engine = { path = "../octet-engine" }
 octet-store = { path = "../octet-store" }

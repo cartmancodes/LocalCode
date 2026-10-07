@@ -158,3 +158,10 @@ fn ready_mid_turn_keeps_running() {
     });
     assert!(app.conn.is_stopped() && !app.is_busy() && !app.is_idle());
 }
+#[test]
+fn the_catalog_hint_names_every_vendor() {
+    assert_eq!(
+        super::catalog_hint(&["codex", "claude", "gemini"]),
+        "/model <ID or alias> · /model codex <ID> · /model claude <ID> · /model gemini <ID>"
+    );
+}

@@ -409,7 +409,7 @@ impl App {
         let vendors = octet_core::model::vendor_names();
         self.note(format!(
             "{}\n/model default uses the provider default. Switching providers starts fresh context.",
-            octet_core::model::catalog_hint(&vendors)
+            catalog_hint(&vendors)
         ));
         if !self.conn.models.is_empty() {
             self.chat.catalog_focus =
@@ -767,6 +767,13 @@ impl App {
             self.composer.images = sent.images;
         }
     }
+}
+/// The `/model` catalog footer's first line.
+fn catalog_hint(vendors: &[&str]) -> String {
+    std::iter::once("/model <ID or alias>".to_owned())
+        .chain(vendors.iter().map(|v| format!("/model {v} <ID>")))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 /// "1 queued prompt", "3 queued prompts".
 pub(crate) fn queued_prompts(count: usize) -> String {

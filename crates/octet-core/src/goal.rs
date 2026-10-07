@@ -222,7 +222,7 @@ impl GoalStore {
     /// `InvalidPath` or `Save` if the file cannot be written.
     pub async fn save(&self, goal: &Goal) -> Result<(), GoalError> {
         let failed = GoalError::Save;
-        tokio::fs::create_dir_all(self.path.parent().ok_or(GoalError::InvalidPath)?)
+        octet_store::create_private_dir(self.path.parent().ok_or(GoalError::InvalidPath)?)
             .await
             .map_err(failed)?;
         let nonce = std::time::SystemTime::now()
@@ -232,7 +232,6 @@ impl GoalStore {
         let temp = self
             .path
             .with_extension(format!("{}.{}.tmp", std::process::id(), nonce));
-        let mut file = octet_store::create_private(&temp).await.map_err(failed)?;
         let bytes = serde_json::to_vec(&json!({
             "objective": goal.objective,
             "status": goal.status.as_str(),
@@ -240,11 +239,20 @@ impl GoalStore {
             "evidence": goal.evidence,
         }))
         .map_err(|e| GoalError::Save(std::io::Error::other(e)))?;
-        use tokio::io::AsyncWriteExt;
-        file.write_all(&bytes).await.map_err(failed)?;
-        file.sync_data().await.map_err(failed)?;
-        drop(file);
-        tokio::fs::rename(&temp, &self.path).await.map_err(failed)
+        let written = async {
+            use tokio::io::AsyncWriteExt;
+            let mut file = octet_store::create_private(&temp).await?;
+            file.write_all(&bytes).await?;
+            file.sync_data().await?;
+            drop(file);
+            tokio::fs::rename(&temp, &self.path).await
+        }
+        .await;
+        if written.is_err() {
+            // A failed save must not leave its temp file behind.
+            let _ = tokio::fs::remove_file(&temp).await;
+        }
+        written.map_err(failed)
     }
     /// Removes the stored goal; a missing file is already cleared.
     ///
@@ -282,14 +290,28 @@ const OUTPUT_LIMIT: usize = 64 * 1024;
 /// persistence failure is returned so the UI can say so; none is dropped.
 #[derive(Default)]
 pub struct GoalRunner {
-    /// The current goal, if any.
-    pub goal: Option<Goal>,
+    goal: Option<Goal>,
     store: Option<GoalStore>,
-    running: bool,
-    output: String,
+    /// The goal turn running, with its streamed text so far; `None` when no
+    /// turn works on the goal.
+    turn: Option<String>,
 }
 
 impl GoalRunner {
+    /// The current goal, if any.
+    pub fn goal(&self) -> Option<&Goal> {
+        self.goal.as_ref()
+    }
+    /// The current goal, to set up a test's state.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn goal_mut(&mut self) -> Option<&mut Goal> {
+        self.goal.as_mut()
+    }
+    /// Replaces the goal, unsaved, to set up a test's state.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_goal(&mut self, goal: Option<Goal>) {
+        self.goal = goal;
+    }
     /// A store is attached, so the goal is saved.
     pub fn is_attached(&self) -> bool {
         self.store.is_some()
@@ -336,31 +358,26 @@ impl GoalRunner {
     /// Streamed assistant text of a goal turn; the completion marker is read
     /// from the end, so only the last 64 KiB is kept.
     pub fn observe_text(&mut self, text: &str) {
-        if !self.running {
+        let Some(output) = &mut self.turn else {
             return;
-        }
-        self.output.push_str(text);
-        if self.output.len() > OUTPUT_LIMIT {
-            let start = self
-                .output
-                .ceil_char_boundary(self.output.len() - OUTPUT_LIMIT);
-            self.output.drain(..start);
+        };
+        output.push_str(text);
+        if output.len() > OUTPUT_LIMIT {
+            let start = output.ceil_char_boundary(output.len() - OUTPUT_LIMIT);
+            output.drain(..start);
         }
     }
     /// The user sent an ordinary prompt; it works on the goal only while active.
     pub fn user_prompt_sent(&mut self) {
-        self.running = self.is_active();
-        self.output.clear();
+        self.turn = self.is_active().then(String::new);
     }
     /// A goal prompt was sent; its turn works on the goal.
     pub fn goal_prompt_sent(&mut self) {
-        self.running = true;
-        self.output.clear();
+        self.turn = Some(String::new());
     }
     /// A new connection: no turn is running.
     pub fn reset_turn(&mut self) {
-        self.running = false;
-        self.output.clear();
+        self.turn = None;
     }
     /// What the transcript shows for a goal prompt.
     pub fn prompt_display(&self) -> String {
@@ -376,12 +393,11 @@ impl GoalRunner {
     ///
     /// Fails if saving fails; the goal is then paused.
     pub async fn turn_failed(&mut self) -> Result<(), GoalError> {
-        if !self.running {
+        let Some(output) = self.turn.take() else {
             return Ok(());
-        }
-        self.running = false;
+        };
         if let Some(goal) = &mut self.goal {
-            goal.finish_turn(&Outcome::Failed, &self.output);
+            goal.finish_turn(&Outcome::Failed, &output);
         }
         self.save_or_pause().await
     }
@@ -390,14 +406,13 @@ impl GoalRunner {
     ///
     /// Fails if saving fails; the goal is then paused.
     pub async fn turn_finished(&mut self, outcome: &Outcome) -> Result<Next, GoalError> {
-        if !self.running {
+        let Some(output) = self.turn.take() else {
             return Ok(Next::Idle);
-        }
-        self.running = false;
+        };
         let Some(goal) = &mut self.goal else {
             return Ok(Next::Idle);
         };
-        let more = goal.finish_turn(outcome, &self.output);
+        let more = goal.finish_turn(outcome, &output);
         self.save_or_pause().await?;
         let Some(goal) = &self.goal else {
             return Ok(Next::Idle);
@@ -417,9 +432,13 @@ impl GoalRunner {
     ///
     /// Fails if saving fails; the goal is paused in memory anyway.
     pub async fn pause_running_turn(&mut self) -> Result<(), GoalError> {
-        if !self.running {
+        if self.turn.is_none() {
             return Ok(());
         }
+        self.pause_and_save().await
+    }
+    /// Pauses the goal, if any, and saves it; paused in memory either way.
+    async fn pause_and_save(&mut self) -> Result<(), GoalError> {
         if let Some(goal) = &mut self.goal {
             goal.status = Status::Paused;
         }
@@ -434,10 +453,7 @@ impl GoalRunner {
         if !self.is_active() {
             return Ok(false);
         }
-        if let Some(goal) = &mut self.goal {
-            goal.status = Status::Paused;
-        }
-        self.save().await.map(|()| true)
+        self.pause_and_save().await.map(|()| true)
     }
     /// The goal prompt could not be sent.
     ///
@@ -445,10 +461,7 @@ impl GoalRunner {
     ///
     /// Fails if saving fails; the goal is paused in memory anyway.
     pub async fn send_failed(&mut self) -> Result<(), GoalError> {
-        if let Some(goal) = &mut self.goal {
-            goal.status = Status::Paused;
-        }
-        self.save().await
+        self.pause_and_save().await
     }
     /// `/goal <objective>`: the first prompt to send.
     ///
@@ -495,16 +508,13 @@ impl GoalRunner {
     /// # Errors
     ///
     /// Fails if saving fails; the goal is paused in memory anyway.
-    pub async fn pause(&mut self) -> Result<&'static str, GoalError> {
-        match &mut self.goal {
-            None => Ok("No goal set"),
-            Some(goal) if goal.status == Status::Complete => {
-                Ok("Goal is already complete; set a new goal to continue.")
-            }
-            Some(goal) => {
-                goal.status = Status::Paused;
-                self.save().await?;
-                Ok("Goal paused. Current vendor turn may finish; no next turn will start.")
+    pub async fn pause(&mut self) -> Result<String, GoalError> {
+        match &self.goal {
+            None => Ok(GoalError::NoGoal.to_string()),
+            Some(goal) if goal.status == Status::Complete => Ok(GoalError::Complete.to_string()),
+            Some(_) => {
+                self.pause_and_save().await?;
+                Ok("Goal paused. Current vendor turn may finish; no next turn will start.".into())
             }
         }
     }
@@ -514,7 +524,7 @@ impl GoalRunner {
     /// Fails if the file cannot be removed.
     pub async fn clear(&mut self) -> Result<(), GoalError> {
         self.goal = None;
-        self.running = false;
+        self.turn = None;
         self.save().await
     }
 }
@@ -564,8 +574,9 @@ mod tests {
         let mut runner = runner_with_goal();
         runner.goal_prompt_sent();
         runner.observe_text(&"界".repeat(30_000));
-        assert!(runner.output.len() <= 64 * 1024);
-        assert!(runner.output.starts_with('界'));
+        let output = runner.turn.as_deref().unwrap();
+        assert!(output.len() <= 64 * 1024);
+        assert!(output.starts_with('界'));
     }
     #[tokio::test]
     async fn pause_active_reports_persistence_failure() {
@@ -692,5 +703,20 @@ mod tests {
         assert_eq!(store.load().await.unwrap().unwrap().status, Status::Paused);
         store.clear().await.unwrap();
         assert!(store.load().await.unwrap().is_none());
+    }
+    #[tokio::test]
+    async fn a_failed_goal_save_leaves_no_temp_file() {
+        let temp = octet_testkit::TempDir::new("octet-goal-temp");
+        let store = GoalStore::new(temp.path(), Path::new("/project"));
+        // A directory where the goal file goes makes the final rename fail.
+        std::fs::create_dir_all(&store.path).unwrap();
+        let goal = Goal::new("Ship the app").unwrap();
+        assert!(store.save(&goal).await.is_err());
+        let left: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 }

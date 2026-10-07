@@ -78,6 +78,36 @@ fn testkit_bin(name: &str) -> PathBuf {
     profile_dir.join(name)
 }
 
+/// The journal record format; `octet_store::FORMAT` is pinned to it by a
+/// store test.
+pub const JOURNAL_FORMAT: &str = "octet-preview-1";
+
+/// Writes a journal named for `stamp` in `dir` (created if missing) from
+/// `records` (`(type, data)` pairs, numbered in order), then `tail`
+/// unterminated, as a crash might leave it. Returns its path.
+///
+/// # Panics
+///
+/// If the directory or file cannot be written.
+pub fn write_journal(
+    dir: &Path,
+    stamp: u64,
+    records: &[(&str, serde_json::Value)],
+    tail: &str,
+) -> PathBuf {
+    std::fs::create_dir_all(dir).expect("journal directory");
+    let path = dir.join(format!("session-{stamp}-1.jsonl"));
+    let mut text = String::new();
+    for (seq, (kind, data)) in records.iter().enumerate() {
+        let record =
+            serde_json::json!({"format": JOURNAL_FORMAT, "seq": seq, "type": kind, "data": data});
+        text.push_str(&format!("{record}\n"));
+    }
+    text.push_str(tail);
+    std::fs::write(&path, text).expect("journal file");
+    path
+}
+
 /// A unique path under the system temp dir, removed when dropped, so a
 /// failing test does not leave it behind. The path is not created.
 pub struct TempDir(PathBuf);

@@ -138,14 +138,6 @@ pub(crate) fn usage_demo(vendors: &[&str]) -> String {
     )
 }
 
-/// The catalog footer's first line.
-pub fn catalog_hint(vendors: &[&str]) -> String {
-    std::iter::once("/model <ID or alias>".to_owned())
-        .chain(vendors.iter().map(|v| format!("/model {v} <ID>")))
-        .collect::<Vec<_>>()
-        .join(" · ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,10 +191,6 @@ mod tests {
         assert_eq!(
             usage_demo(&three),
             "Choose a real provider: /model codex, /model claude or /model gemini. Demo has no model."
-        );
-        assert_eq!(
-            catalog_hint(&three),
-            "/model <ID or alias> · /model codex <ID> · /model claude <ID> · /model gemini <ID>"
         );
         assert_eq!(vendor_names(), ["codex", "claude"]);
     }

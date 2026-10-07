@@ -44,7 +44,9 @@ async fn failed_goal_pause_still_says_the_goal_stopped() {
     let mut app = app();
     let store = octet_core::goal::GoalStore::new(dir.path(), std::path::Path::new("/project"));
     assert!(app.goals.attach(store).await.is_err());
-    app.goals.goal = Some(octet_core::goal::Goal::new("Ship the project").unwrap());
+    app.goals.set_goal(Some(
+        octet_core::goal::Goal::new("Ship the project").unwrap(),
+    ));
     assert!(matches!(
         command(&mut app, "/goal pause").await,
         Action::Continue
@@ -65,10 +67,10 @@ async fn pausing_a_completed_goal_preserves_completion() {
         &octet_core::Outcome::Completed,
         "Verified tests.\n[[OCTET_GOAL_COMPLETE]]",
     );
-    app.goals.goal = Some(goal);
+    app.goals.set_goal(Some(goal));
     command(&mut app, "/goal pause").await;
     assert_eq!(
-        app.goals.goal.as_ref().unwrap().status,
+        app.goals.goal().unwrap().status,
         octet_core::goal::Status::Complete
     );
     assert!(matches!(
@@ -120,16 +122,13 @@ async fn goal_commands_start_pause_resume_and_clear_without_a_vendor_turn() {
         sends(&mut app, "/goal Ship the project").await[..],
         [Command::PromptWithDisplay { .. }]
     ));
-    assert_eq!(
-        app.goals.goal.as_ref().unwrap().objective,
-        "Ship the project"
-    );
+    assert_eq!(app.goals.goal().unwrap().objective, "Ship the project");
     assert!(matches!(
         command(&mut app, "/goal pause").await,
         Action::Continue
     ));
     assert_eq!(
-        app.goals.goal.as_ref().unwrap().status,
+        app.goals.goal().unwrap().status,
         octet_core::goal::Status::Paused
     );
     app.conn.phase = ConnPhase::Idle;
@@ -137,7 +136,7 @@ async fn goal_commands_start_pause_resume_and_clear_without_a_vendor_turn() {
         sends(&mut app, "/goal resume").await[..],
         [Command::PromptWithDisplay { .. }]
     ));
-    let goal = app.goals.goal.as_mut().unwrap();
+    let goal = app.goals.goal_mut().unwrap();
     goal.status = octet_core::goal::Status::Paused;
     goal.turns = octet_core::goal::MAX_GOAL_TURNS;
     assert!(matches!(
@@ -145,14 +144,14 @@ async fn goal_commands_start_pause_resume_and_clear_without_a_vendor_turn() {
         Action::Continue
     ));
     assert_eq!(
-        app.goals.goal.as_ref().unwrap().status,
+        app.goals.goal().unwrap().status,
         octet_core::goal::Status::Paused
     );
     assert!(matches!(
         command(&mut app, "/goal clear").await,
         Action::Continue
     ));
-    assert!(app.goals.goal.is_none());
+    assert!(app.goals.goal().is_none());
 }
 #[tokio::test]
 async fn mode_command_switches_live_modes_and_rejects_unknown() {
@@ -381,17 +380,12 @@ async fn resume_picks_the_listed_session() {
         (2, "claude", "c-1", "first claude prompt"),
     ] {
         let data = serde_json::json!({"engine":engine,"cwd":"/work","resume":null,"model":"m1","mode":"ask"});
-        let header =
-            serde_json::json!({"format":"octet-preview-1","seq":0,"type":"session","data":data});
-        let ready =
-            serde_json::json!({"format":"octet-preview-1","seq":1,"type":"ready","data":session});
-        let user =
-            serde_json::json!({"format":"octet-preview-1","seq":2,"type":"user","data":prompt});
-        std::fs::write(
-            dir.join(format!("session-{stamp}-1.jsonl")),
-            format!("{header}\n{ready}\n{user}\n"),
-        )
-        .unwrap();
+        let records = [
+            ("session", data),
+            ("ready", serde_json::json!(session)),
+            ("user", serde_json::json!(prompt)),
+        ];
+        octet_testkit::write_journal(dir, stamp, &records, "");
     }
     let mut app = App::new(
         &Config::new(Engine::CODEX, "codex", "/work"),

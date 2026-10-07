@@ -279,7 +279,9 @@ async fn ctrl_q_no_longer_quits() {
 #[tokio::test]
 async fn ctrl_c_in_approval_dialog_pauses_the_active_goal() {
     let mut app = app();
-    app.goals.goal = Some(octet_core::goal::Goal::new("Ship the project").unwrap());
+    app.goals.set_goal(Some(
+        octet_core::goal::Goal::new("Ship the project").unwrap(),
+    ));
     app.goals.goal_prompt_sent();
     app.conn.start_turn();
     app.overlay.approvals.push_back((1, "command".into()));
@@ -295,7 +297,7 @@ async fn ctrl_c_in_approval_dialog_pauses_the_active_goal() {
     .await;
     session.shutdown().await;
     assert_eq!(
-        app.goals.goal.as_ref().unwrap().status,
+        app.goals.goal().unwrap().status,
         octet_core::goal::Status::Paused
     );
 }

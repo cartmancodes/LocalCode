@@ -463,8 +463,7 @@ async fn goal_command(app: &mut App, vendor: &dyn Vendor, argument: &str) {
     match argument {
         "" | "status" => app.note(
             app.goals
-                .goal
-                .as_ref()
+                .goal()
                 .map(Goal::summary)
                 .unwrap_or_else(|| "No goal set. Use /goal <objective>.".into()),
         ),

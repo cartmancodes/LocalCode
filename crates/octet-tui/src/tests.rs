@@ -142,10 +142,11 @@ fn full_access_notice_says_what_the_reconnect_does() {
 #[tokio::test]
 async fn reconnect_pauses_an_active_goal_and_names_the_previous_journal() {
     let mut app = app();
-    app.goals.goal = Some(octet_core::goal::Goal::new("Ship it").unwrap());
+    app.goals
+        .set_goal(Some(octet_core::goal::Goal::new("Ship it").unwrap()));
     pause_active_goal(&mut app, "reconnect").await;
     assert_eq!(
-        app.goals.goal.as_ref().unwrap().status,
+        app.goals.goal().unwrap().status,
         octet_core::goal::Status::Paused
     );
     assert!(app.status_line.contains("Goal paused for reconnect"));

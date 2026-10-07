@@ -423,7 +423,7 @@ fn sidebar(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(format!(" {id}")),
         Line::default(),
         Line::from(Span::styled(" GOAL", Style::default().fg(MUTED))),
-        Line::from(match &app.goals.goal {
+        Line::from(match app.goals.goal() {
             Some(goal) => format!(
                 " {} · {}/{} turns",
                 goal.status,

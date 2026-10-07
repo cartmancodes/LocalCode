@@ -41,61 +41,9 @@ impl Session {
             .await
             .map_err(SessionError::Write)?;
         let path = journal.path.clone();
-        let (handle, mut engine_events, mut driver) = octet_engine::live::spawn(config);
-        let control = handle.clone();
+        let (handle, engine_events, driver) = octet_engine::live::spawn(config);
         let (tx, events) = mpsc::channel(128);
-        let task = tokio::spawn(async move {
-            // Refusals re-send the current mode so the UI can clear its pending
-            // state; the journal only records actual changes.
-            let mut journaled_mode = None;
-            while let Some(event) = engine_events.recv().await {
-                if let Event::ModeChanged(mode) = event {
-                    if journaled_mode == Some(mode) {
-                        if timeout(Duration::from_secs(2), tx.send(event))
-                            .await
-                            .is_err()
-                        {
-                            control.shutdown();
-                            break;
-                        }
-                        continue;
-                    }
-                    journaled_mode = Some(mode);
-                }
-                let (kind, data) = record(&event);
-                let durable = matches!(event, Event::Finished { .. } | Event::Stopped);
-                let written =
-                    timeout(Duration::from_secs(3), journal.append(kind, data, durable)).await;
-                if !matches!(written, Ok(Ok(()))) {
-                    control.shutdown();
-                    let reason = match written {
-                        Ok(Err(e)) => e.to_string(),
-                        _ => "Journal write timed out".into(),
-                    };
-                    let message = format!(
-                        "Storage failure: {reason}. Session stopped; journal may have an incomplete tail."
-                    );
-                    let _ = timeout(Duration::from_secs(1), tx.send(Event::Error(message))).await;
-                    break;
-                }
-                if timeout(Duration::from_secs(2), tx.send(event))
-                    .await
-                    .is_err()
-                {
-                    control.shutdown();
-                    break;
-                }
-                if tx.is_closed() {
-                    control.shutdown();
-                    break;
-                }
-            }
-            control.shutdown();
-            if timeout(Duration::from_secs(3), &mut driver).await.is_err() {
-                driver.abort();
-                let _ = driver.await;
-            }
-        });
+        let task = tokio::spawn(pump(engine_events, journal, tx, handle.clone(), driver));
         Ok(Self {
             handle,
             events,
@@ -131,6 +79,67 @@ pub fn event_json(event: &Event) -> Value {
     let (kind, data) = record(event);
     json!({"type": kind, "data": data})
 }
+/// How long the interface may take to accept one event.
+const DELIVERY: Duration = Duration::from_secs(2);
+/// How long one journal write may take.
+const JOURNAL_WRITE: Duration = Duration::from_secs(3);
+/// How long the storage-failure message may wait for the interface.
+const LAST_WORDS: Duration = Duration::from_secs(1);
+/// How long the driver may take to stop before it is aborted.
+const DRIVER_STOP: Duration = Duration::from_secs(3);
+
+/// Hands `event` to the interface; false when it is gone or too slow.
+async fn deliver(tx: &mpsc::Sender<Event>, event: Event) -> bool {
+    matches!(timeout(DELIVERY, tx.send(event)).await, Ok(Ok(())))
+}
+
+/// Journals each engine event, then hands it to the interface. A storage
+/// failure, or an interface that is gone or too slow, stops the session.
+async fn pump(
+    mut engine_events: mpsc::Receiver<Event>,
+    mut journal: Journal,
+    tx: mpsc::Sender<Event>,
+    control: Handle,
+    mut driver: tokio::task::JoinHandle<()>,
+) {
+    // Refusals re-send the current mode so the UI can clear its pending
+    // state; the journal only records actual changes.
+    let mut journaled_mode = None;
+    while let Some(event) = engine_events.recv().await {
+        if let Event::ModeChanged(mode) = event {
+            if journaled_mode == Some(mode) {
+                if !deliver(&tx, event).await {
+                    break;
+                }
+                continue;
+            }
+            journaled_mode = Some(mode);
+        }
+        let (kind, data) = record(&event);
+        let durable = matches!(event, Event::Finished { .. } | Event::Stopped);
+        let written = timeout(JOURNAL_WRITE, journal.append(kind, data, durable)).await;
+        if !matches!(written, Ok(Ok(()))) {
+            let reason = match written {
+                Ok(Err(e)) => e.to_string(),
+                _ => "Journal write timed out".into(),
+            };
+            let message = format!(
+                "Storage failure: {reason}. Session stopped; journal may have an incomplete tail."
+            );
+            let _ = timeout(LAST_WORDS, tx.send(Event::Error(message))).await;
+            break;
+        }
+        if !deliver(&tx, event).await {
+            break;
+        }
+    }
+    control.shutdown();
+    if timeout(DRIVER_STOP, &mut driver).await.is_err() {
+        driver.abort();
+        let _ = driver.await;
+    }
+}
+
 fn record(event: &Event) -> (&'static str, Value) {
     match event {
         Event::Models(models) => {
@@ -207,3 +216,18 @@ pub use octet_store::JournalSummary;
 pub use sessions::{recent_sessions, RecentSession};
 
 pub use octet_engine::live::ModelInfo;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_closed_receiver_is_not_a_delivery() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        assert!(!deliver(&tx, Event::Started).await);
+        let (tx, mut rx) = mpsc::channel(1);
+        assert!(deliver(&tx, Event::Started).await);
+        assert!(matches!(rx.recv().await, Some(Event::Started)));
+    }
+}

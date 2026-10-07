@@ -9,6 +9,21 @@ use tokio::{
     io::AsyncWriteExt,
 };
 const LIMIT: u64 = 64 * 1024 * 1024;
+/// The journal record format, written in every record.
+pub const FORMAT: &str = "octet-preview-1";
+/// Creates `path` and any missing parents, owner-only (0700), so the names of
+/// journals and goal files are private too.
+///
+/// # Errors
+///
+/// Fails if a directory cannot be created.
+pub async fn create_private_dir(path: &Path) -> io::Result<()> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)
+        .await
+}
 /// Opens a new owner-only file for writing; fails if `path` exists.
 ///
 /// # Errors
@@ -38,7 +53,7 @@ impl Journal {
     ///
     /// Fails if `directory` cannot be created or the file cannot be opened.
     pub async fn create(directory: &Path) -> io::Result<Self> {
-        fs::create_dir_all(directory).await?;
+        create_private_dir(directory).await?;
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
@@ -64,7 +79,8 @@ impl Journal {
         data: serde_json::Value,
         durable: bool,
     ) -> io::Result<()> {
-        let value = serde_json::json!({"format":"octet-preview-1","seq":self.sequence,"type":kind,"data":data});
+        let value =
+            serde_json::json!({"format":FORMAT,"seq":self.sequence,"type":kind,"data":data});
         let mut bytes = serde_json::to_vec(&value)?;
         bytes.push(b'\n');
         if self.bytes + bytes.len() as u64 > LIMIT {
@@ -136,7 +152,7 @@ pub async fn read_summary(path: &Path) -> Option<JournalSummary> {
         .split(|&b| b == b'\n')
         .map_while(|line| serde_json::from_slice::<serde_json::Value>(line).ok());
     let header = records.next()?;
-    if header["format"] != "octet-preview-1" || header["type"] != "session" {
+    if header["format"] != FORMAT || header["type"] != "session" {
         return None;
     }
     let data = &header["data"];
@@ -166,23 +182,10 @@ mod tests {
     use super::*;
     /// Writes `lines` (records as `(type, data)`) to a journal named for
     /// `stamp` in `dir`, then `tail` unterminated.
-    fn journal_file(
-        dir: &Path,
-        stamp: u128,
-        lines: &[(&str, serde_json::Value)],
-        tail: &str,
-    ) -> PathBuf {
-        std::fs::create_dir_all(dir).unwrap();
-        let path = dir.join(format!("session-{stamp}-1.jsonl"));
-        let mut text = String::new();
-        for (seq, (kind, data)) in lines.iter().enumerate() {
-            let record =
-                serde_json::json!({"format":"octet-preview-1","seq":seq,"type":kind,"data":data});
-            text.push_str(&format!("{record}\n"));
-        }
-        text.push_str(tail);
-        std::fs::write(&path, text).unwrap();
-        path
+    use octet_testkit::write_journal as journal_file;
+    #[test]
+    fn the_test_fixtures_write_this_format() {
+        assert_eq!(octet_testkit::JOURNAL_FORMAT, FORMAT);
     }
     fn header(engine: &str) -> (&'static str, serde_json::Value) {
         (
@@ -334,5 +337,16 @@ mod tests {
         }
         drop(first);
         drop(second);
+    }
+    #[tokio::test]
+    async fn journal_directories_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = octet_testkit::TempDir::new("octet-store-dirs");
+        let nested = temp.path().join("a/b");
+        drop(Journal::create(&nested).await.unwrap());
+        for dir in [temp.path().join("a"), nested] {
+            let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700, "{}", dir.display());
+        }
     }
 }

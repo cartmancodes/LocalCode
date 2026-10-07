@@ -148,9 +148,7 @@ async fn attach_goal_store(app: &mut App, store: octet_core::goal::GoalStore) {
         )),
         Ok(())
             if app
-                .goals
-                .goal
-                .as_ref()
+                .goals.goal()
                 .is_some_and(|goal| goal.status == octet_core::goal::Status::Paused) =>
         {
             // Rewrites a stored "active" as "paused".

@@ -88,15 +88,11 @@ mod tests {
         prompt: Option<&str>,
     ) {
         let header = json!({"engine":engine,"cwd":cwd,"resume":null,"model":null,"mode":"ask"});
-        let mut records = vec![
-            json!({"format":"octet-preview-1","seq":0,"type":"session","data":header}),
-            json!({"format":"octet-preview-1","seq":1,"type":"ready","data":session}),
-        ];
+        let mut records = vec![("session", header), ("ready", json!(session))];
         if let Some(prompt) = prompt {
-            records.push(json!({"format":"octet-preview-1","seq":2,"type":"user","data":prompt}));
+            records.push(("user", json!(prompt)));
         }
-        let text: String = records.iter().map(|r| format!("{r}\n")).collect();
-        std::fs::write(dir.join(format!("session-{stamp}-1.jsonl")), text).unwrap();
+        octet_testkit::write_journal(dir, stamp, &records, "");
     }
 
     #[tokio::test]
