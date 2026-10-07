@@ -1,0 +1,56 @@
+name: release
+# A pushed tag v* builds octet on each platform's native runner and
+# attaches the archives, with SHA-256 files, to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ github.ref_name }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v5
+      # rustup installs the toolchain that rust-toolchain.toml pins.
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add "$TARGET"
+      - run: cargo build --release --locked -p octet --target "$TARGET"
+      - name: Pack
+        run: |
+          name="octet-$TAG-$TARGET"
+          mkdir "$name"
+          cp "target/$TARGET/release/octet" README.md LICENSE-APACHE LICENSE-MIT CHANGELOG.md "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: octet-${{ matrix.target }}
+          path: octet-*.tar.gz*
+          if-no-files-found: error
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "Octet $TAG" --generate-notes
