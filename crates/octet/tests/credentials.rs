@@ -24,26 +24,17 @@ const MARKERS: [&str; 12] = [
 ];
 const SECRET_SUFFIXES: [&str; 4] = ["API_KEY", "OAUTH_TOKEN", "SESSION_KEY", "AUTH_TOKEN"];
 
-/// A name ending in a secret suffix inside a quoted literal, wherever it
-/// appears: `.env(`, `.envs(`, `set_var(`, an env list, a call rustfmt split
-/// across lines, or a name built at run time (`"_API_KEY"`,
-/// `format!("{vendor}_API_KEY")`). A suffix in the middle of a name
-/// (`API_KEY_HELP`) is not a secret name.
+/// A name ending in a secret suffix, anywhere on the line: in a literal
+/// (`.env(`, `set_var(`, an env list, a call rustfmt split across lines, a
+/// name built at run time such as `"_API_KEY"` or
+/// `format!("{vendor}_API_KEY")`), on a continued string's next line, or
+/// bare, as workflows and scripts write names. A suffix in the middle of a
+/// name (`API_KEY_HELP`) is not a secret name.
 fn secret_names(line: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut quoted = line.split('"');
-    // The text before the first quote is code, then literals and code alternate.
-    quoted.next();
-    for literal in quoted.step_by(2) {
-        let tokens =
-            literal.split(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'));
-        for token in tokens {
-            if SECRET_SUFFIXES.iter().any(|suffix| token.ends_with(suffix)) {
-                names.push(token.to_owned());
-            }
-        }
-    }
-    names
+    line.split(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+        .filter(|token| SECRET_SUFFIXES.iter().any(|suffix| token.ends_with(suffix)))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Markers are matched in the whole text, comments included: no harness file
@@ -182,5 +173,19 @@ fn the_guard_reads_scripts_and_workflows() {
             files.iter().any(|file| file.ends_with(expected)),
             "{expected} is not guarded"
         );
+    }
+}
+
+#[test]
+fn unquoted_secret_names_are_caught() {
+    for shape in [
+        // Workflows and scripts name variables without quotes.
+        "        env:\n          VENDOR_API_KEY: ${{ secrets.KEY }}\n",
+        "export VENDOR_OAUTH_TOKEN=abc\n",
+        "echo \"$VENDOR_SESSION_KEY\"\n",
+        // The continuation line of a multi-line Rust string.
+        "let s = \"first line \\\n    then VENDOR_AUTH_TOKEN\";\n",
+    ] {
+        assert!(!violations(shape).is_empty(), "missed: {shape}");
     }
 }

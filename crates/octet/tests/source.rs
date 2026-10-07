@@ -9,7 +9,8 @@ fn product_code_has_no_line_over_120_characters_outside_a_lone_literal() {
     let mut long = Vec::new();
     for krate in std::fs::read_dir(common::root().join("crates")).unwrap() {
         let krate = krate.unwrap().path();
-        if NOT_PRODUCT.iter().any(|name| krate.ends_with(name)) {
+        // A stray file such as `.DS_Store` is not a crate.
+        if !krate.is_dir() || NOT_PRODUCT.iter().any(|name| krate.ends_with(name)) {
             continue;
         }
         for path in common::files_under(&krate.join("src"), &common::is_rust) {
