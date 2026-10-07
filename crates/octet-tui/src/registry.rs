@@ -274,4 +274,12 @@ mod tests {
         }
         assert_eq!(Cmd::ALL.len(), COMMANDS.len());
     }
+    #[test]
+    fn help_text_names_the_real_limits() {
+        let usage = |cmd| COMMANDS.iter().find(|s| s.id == cmd).unwrap().usage;
+        let mib = octet_core::IMAGE_LIMIT / (1024 * 1024);
+        assert!(usage(Cmd::Image).contains(&format!("up to {mib} MiB")));
+        let levels = octet_core::Engine::CLAUDE.provider().efforts.join(", ");
+        assert!(usage(Cmd::Effort).contains(&format!("({levels})")));
+    }
 }

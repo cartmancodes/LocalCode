@@ -54,7 +54,7 @@ pub(crate) fn apply(app: &mut App, done: Done) {
     match done {
         Done::Remote(checks) => {
             let report = remote::report(&checks);
-            app.note(report.as_str());
+            app.note(report.text.as_str());
             // The status line, one row high, gets the count of problems.
             app.status_line = remote::summary(&report);
         }

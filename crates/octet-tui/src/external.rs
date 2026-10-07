@@ -53,7 +53,10 @@ pub enum EditorError {
     EditorFailed,
     #[error("Cannot read the edited draft: {0}; the draft is unchanged")]
     Read(#[source] std::io::Error),
-    #[error("The edited prompt is over the 64 KiB limit; the draft is unchanged")]
+    #[error(
+        "The edited prompt is over the {} KiB limit; the draft is unchanged",
+        octet_core::PROMPT_LIMIT / 1024
+    )]
     TooLarge,
     #[error("The edited prompt is not UTF-8 text; the draft is unchanged")]
     NotUtf8,

@@ -11,8 +11,7 @@ fn screen(width: u16, height: u16, app: &mut App) -> Vec<String> {
 }
 #[test]
 fn following_the_latest_cancels_a_pending_catalog_scroll() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     app.conn.models = (0..30)
         .map(|i| octet_core::ModelInfo {
             selection: format!("m{i}"),
@@ -31,8 +30,7 @@ fn following_the_latest_cancels_a_pending_catalog_scroll() {
 }
 #[test]
 fn the_popup_keeps_the_selected_row_in_sight_on_a_short_screen() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     app.composer.completion = Some(crate::composer::Completion {
         kind: crate::composer::Kind::File,
         items: (0..8).map(|i| format!("file{i}.rs")).collect(),
@@ -48,8 +46,7 @@ fn the_popup_keeps_the_selected_row_in_sight_on_a_short_screen() {
 }
 #[test]
 fn the_popup_lists_suggestions_above_the_prompt() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     app.composer.completion = Some(crate::composer::Completion {
         kind: crate::composer::Kind::File,
         items: vec!["src/main.rs".into(), "src/model.rs".into()],
@@ -67,8 +64,7 @@ fn the_popup_lists_suggestions_above_the_prompt() {
 fn sidebar_lines_fit_the_panel_without_wrapping() {
     // Every sidebar line starts with a space; a wrapped remainder would
     // start in the first column, against the border.
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     let rows = screen(120, 48, &mut app);
     let title = rows.iter().find(|row| row.contains("╭ Workspace")).unwrap();
     let border = title.chars().position(|c| c == '╭').unwrap();
@@ -85,8 +81,7 @@ fn sidebar_lines_fit_the_panel_without_wrapping() {
 }
 #[test]
 fn an_empty_composer_gives_rows_back_to_the_conversation() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     app.event(Event::User("hello".into()));
     let rows = screen(44, 16, &mut app);
     // The composer's top border sits 4 rows above the status line.
@@ -94,8 +89,7 @@ fn an_empty_composer_gives_rows_back_to_the_conversation() {
 }
 #[test]
 fn help_keeps_its_last_line_on_narrow_and_short_terminals() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     app.overlay.help = true;
     for (width, height) in [(100, 30), (75, 40), (70, 40), (60, 40), (100, 32), (80, 24)] {
         // How to close is always on the border, whatever fits inside.
@@ -118,8 +112,7 @@ fn help_keeps_its_last_line_on_narrow_and_short_terminals() {
 }
 #[test]
 fn help_names_the_command_palette_key() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     app.overlay.help = true;
     let rows = screen(100, 32, &mut app);
     assert!(
@@ -132,8 +125,7 @@ fn help_names_the_command_palette_key() {
 }
 #[test]
 fn the_draft_shows_at_the_minimum_size() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     assert!(app.composer.editor.insert("VISIBLE"));
     for width in [38, 80] {
         let rows = screen(width, 12, &mut app);
@@ -146,8 +138,7 @@ fn the_draft_shows_at_the_minimum_size() {
 }
 #[test]
 fn the_palette_shows_every_command_and_its_keys() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     app.overlay.palette = true;
     let mut columns = Vec::new();
     // The list scrolls to keep the selected row in sight, so every entry
@@ -267,8 +258,7 @@ fn status_shows_in_full_on_narrow_terminals() {
 }
 #[test]
 fn no_color_keeps_the_text_header() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     app.monochrome = true;
     let rows = screen(80, 24, &mut app);
     let mark = format!("◇ Octet v{}", env!("CARGO_PKG_VERSION"));
@@ -277,8 +267,7 @@ fn no_color_keeps_the_text_header() {
 }
 #[test]
 fn mascot_tracks_activity_and_keeps_errors_visible_after_disconnect() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     app.monochrome = false;
     for (event, expected) in [
         (
@@ -349,8 +338,7 @@ fn renders_narrow_wide_and_approval_without_panics() {
 
 #[test]
 fn composer_grows_with_the_draft() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     assert_eq!(
         composer_height(app.composer.editor.layout(draft_width(80)).0.len()),
         4
@@ -363,8 +351,7 @@ fn composer_grows_with_the_draft() {
 }
 #[test]
 fn composer_counts_wrapped_rows() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     // 80 columns leave 74 for text: 100 characters wrap onto a second row.
     assert!(app.composer.editor.insert(&"x".repeat(100)));
     assert_eq!(
@@ -374,8 +361,7 @@ fn composer_counts_wrapped_rows() {
 }
 #[test]
 fn composer_height_is_capped() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     assert!(app.composer.editor.insert(&"line\n".repeat(40)));
     assert_eq!(
         composer_height(app.composer.editor.layout(draft_width(80)).0.len()),
@@ -514,8 +500,7 @@ mod model_detail_tests {
 }
 #[test]
 fn no_color_renders_without_colour_and_marks_the_selection() {
-    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
-    let mut app = App::new(&config, "journal".into());
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
     app.monochrome = true;
     app.note("a note");
     app.overlay.palette = true;

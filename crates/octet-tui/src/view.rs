@@ -297,7 +297,7 @@ fn completion_popup(frame: &mut Frame, composer: Rect, app: &App) {
     if let crate::files::Files::Ready(index) = &app.composer.files {
         if index.capped && completion.kind == crate::composer::Kind::File {
             lines.push(Line::from(Span::styled(
-                " Indexed the first 50,000 files",
+                format!(" Indexed the first {} files", crate::files::LIMIT),
                 Style::default().fg(MUTED),
             )));
         }

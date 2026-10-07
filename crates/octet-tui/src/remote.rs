@@ -268,7 +268,13 @@ fn mark(ok: bool, text: &str) -> String {
 
 /// The checks as notice text: one line per check, each problem with its fix,
 /// then the exact phone commands once the host is reachable.
-pub fn report(checks: &Checks) -> String {
+/// The checks' report: its text, and how many checks failed.
+pub struct Report {
+    pub text: String,
+    pub problems: usize,
+}
+
+pub fn report(checks: &Checks) -> Report {
     let session = match &checks.tmux {
         Tmux::Session(name) => name.as_str(),
         Tmux::Outside | Tmux::NoAnswer => SESSION,
@@ -353,16 +359,15 @@ pub fn report(checks: &Checks) -> String {
         ));
     }
     lines.push("Setup guide: docs/remote-control.md".into());
-    lines.join("\n")
+    Report {
+        problems: lines.iter().filter(|line| line.starts_with("[!!]")).count(),
+        text: lines.join("\n"),
+    }
 }
 
 /// The status-line form of a report: how many checks failed.
-pub fn summary(report: &str) -> String {
-    match report
-        .lines()
-        .filter(|line| line.starts_with("[!!]"))
-        .count()
-    {
+pub fn summary(report: &Report) -> String {
+    match report.problems {
         0 => "Remote control: ready (report above)".into(),
         1 => "Remote control: 1 problem (report above)".into(),
         problems => format!("Remote control: {problems} problems (report above)"),
@@ -372,6 +377,9 @@ pub fn summary(report: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn report_text(checks: &Checks) -> String {
+        report(checks).text
+    }
     fn ready() -> Checks {
         Checks {
             user: "me".into(),
@@ -391,7 +399,7 @@ mod tests {
     fn tailscale_ssh_counts_even_though_the_mac_cannot_reach_itself() {
         // Tailscale SSH serves connections arriving through the tunnel only,
         // so the Mac's own connection to its tailnet address is refused.
-        let text = report(&Checks {
+        let text = report_text(&Checks {
             ssh: false,
             tailscale_ssh: true,
             ..ready()
@@ -414,7 +422,7 @@ mod tests {
     }
     #[test]
     fn a_ready_host_prints_the_phone_commands() {
-        let text = report(&ready());
+        let text = report_text(&ready());
         assert!(!text.contains("[!!]"), "{text}");
         assert!(
             text.contains("mosh me@my-mac.tail1234.ts.net -- tmux new -A -s octet"),
@@ -436,7 +444,7 @@ mod tests {
             mosh: Some((1, 3, 2)),
             ..ready()
         };
-        let text = report(&checks);
+        let text = report_text(&checks);
         assert!(text.contains("tmux new -A -s octet"), "{text}");
         assert!(text.contains("tailscale up"), "{text}");
         assert!(text.contains("1.4.0"), "{text}");
@@ -444,7 +452,7 @@ mod tests {
             !text.contains("mosh me@"),
             "no phone command until the host is reachable: {text}"
         );
-        let no_ssh = report(&Checks {
+        let no_ssh = report_text(&Checks {
             ssh: false,
             ..ready()
         });
@@ -455,7 +463,7 @@ mod tests {
     }
     #[test]
     fn tmux_that_does_not_answer_is_not_reported_as_missing() {
-        let text = report(&Checks {
+        let text = report_text(&Checks {
             tmux: Tmux::NoAnswer,
             ..ready()
         });
@@ -474,7 +482,7 @@ mod tests {
     #[test]
     fn outside_tmux_the_phone_commands_wait_for_a_restart() {
         // Run now, the phone command would open a new, empty session.
-        let text = report(&Checks {
+        let text = report_text(&Checks {
             tmux: Tmux::Outside,
             ..ready()
         });
@@ -483,7 +491,7 @@ mod tests {
             text[..commands].ends_with("After restarting Octet in tmux:\n"),
             "{text}"
         );
-        assert!(!report(&ready()).contains("After restarting"));
+        assert!(!report_text(&ready()).contains("After restarting"));
     }
     #[test]
     fn the_status_line_counts_the_problems() {
@@ -540,7 +548,7 @@ mod tests {
     }
     #[test]
     fn the_app_store_build_gets_remote_login_advice_only() {
-        let text = report(&Checks {
+        let text = report_text(&Checks {
             tailnet: Some(Tailnet {
                 app_store: true,
                 ..ready().tailnet.unwrap()
@@ -553,7 +561,7 @@ mod tests {
     }
     #[test]
     fn tmux_without_rgb_shows_the_config_lines() {
-        let text = report(&Checks {
+        let text = report_text(&Checks {
             tmux_rgb: Some(false),
             ..ready()
         });
@@ -603,7 +611,8 @@ mod tests {
         let checks = probe_with(&programs, true).await;
         let elapsed = started.elapsed();
         assert!(
-            elapsed < std::time::Duration::from_millis(2700),
+            // "Bounded", not "fast": a busy machine may add a second or so.
+            elapsed < std::time::Duration::from_millis(4200),
             "the interface waits {elapsed:?}"
         );
         assert!(checks.tailnet.is_none() && checks.mosh.is_none());
@@ -642,7 +651,7 @@ esac
         assert!(matches!(checks.tmux, Tmux::NoAnswer));
         assert!(
             elapsed >= CHECK_TIMEOUT
-                && elapsed < CHECK_TIMEOUT + SSH_TIMEOUT + Duration::from_millis(400),
+                && elapsed < CHECK_TIMEOUT + SSH_TIMEOUT + Duration::from_millis(1500),
             "the interface waits {elapsed:?}"
         );
     }

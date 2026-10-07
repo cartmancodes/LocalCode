@@ -24,7 +24,7 @@ pub(crate) async fn send_goal_prompt(app: &mut App, vendor: &dyn Vendor, prompt:
 pub(crate) async fn goal_send_failed(app: &mut App, error: octet_core::SendError) {
     app.note(format!("Goal paused: {error}"));
     if let Err(error) = app.goals.send_failed().await {
-        app.note(format!("Goal persistence failed: {error}"));
+        app.goal_save_failed(error, false);
     }
 }
 /// Runs a slash command. `None` means the caller keeps the draft: the name is
@@ -94,9 +94,12 @@ pub(crate) async fn try_command(app: &mut App, vendor: &dyn Vendor, input: &str)
 fn effort_command(app: &mut App, vendor: &dyn Vendor, argument: &str) -> Action {
     if argument.is_empty() {
         let current = app.conn.effort.as_deref().unwrap_or("vendor default");
+        let levels = match app.conn.engine.provider().efforts {
+            [] => "the levels your model offers".to_owned(),
+            levels => levels.join(", "),
+        };
         app.note(format!(
-            "Reasoning effort: {current}. Use /effort <level> (low, medium, high, xhigh, max) \
-             or /effort default."
+            "Reasoning effort: {current}. Use /effort <level> ({levels}) or /effort default."
         ));
         return Action::Continue;
     }
@@ -188,7 +191,10 @@ pub(crate) fn switch_mode(app: &mut App, vendor: &dyn Vendor, target: Mode) {
 /// `/image PATH`: attach an image to the next prompt; whether it did.
 fn image_command(app: &mut App, argument: &str) -> bool {
     if argument.is_empty() {
-        app.note("Usage: /image PATH (PNG, JPEG, GIF or WebP, up to 5 MiB)");
+        app.note(format!(
+            "Usage: /image PATH (PNG, JPEG, GIF or WebP, up to {} MiB)",
+            octet_core::IMAGE_LIMIT / (1024 * 1024)
+        ));
         return false;
     }
     if app.composer.images.len() >= octet_core::IMAGES_PER_PROMPT {
@@ -386,13 +392,12 @@ fn queue_command(app: &mut App, argument: &str) {
         }
         "clear" => {
             let dropped = std::mem::take(&mut app.composer.queue).len();
-            app.note(format!("Cleared {dropped} queued prompts"));
+            app.note(format!("Cleared {}", crate::app::queued_prompts(dropped)));
         }
         _ => app.note("Use /queue or /queue clear"),
     }
 }
 
-/// A queued prompt as the transcript shows it, on one line.
 /// A queued prompt's first line, as the queue lists it.
 fn queued_text(prompt: &crate::vendor::Prompt) -> String {
     cut(prompt.display.lines().next().unwrap_or(""), 60)
@@ -435,13 +440,13 @@ fn mode_command(app: &mut App, vendor: &dyn Vendor, argument: &str) -> Action {
                 app.note("Already in full-access mode")
             }
             Some(target) if target == Mode::FullAccess || app.conn.mode == Mode::FullAccess => {
+                // Tightening out of full access is allowed once the vendor has
+                // stopped, so a session that failed can still leave it.
+                let can_switch =
+                    app.conn.is_ready() || (app.conn.is_stopped() && target != Mode::FullAccess);
                 if app.turn_open() {
                     app.hint(TURN_OPEN);
-                }
-                // Tightening out of full access is always allowed once the vendor has stopped.
-                else if !app.conn.is_ready()
-                    && !(app.conn.is_stopped() && target != Mode::FullAccess)
-                {
+                } else if !can_switch {
                     app.hint(NOT_CONNECTED);
                 } else {
                     return Action::Exit(Exit::Mode(target));
@@ -470,7 +475,7 @@ async fn goal_command(app: &mut App, vendor: &dyn Vendor, argument: &str) {
         },
         "clear" => match app.goals.clear().await {
             Ok(()) => app.note("Goal cleared. Current vendor turn may finish."),
-            Err(error) => app.note(format!("Goal persistence failed: {error}")),
+            Err(error) => app.goal_save_failed(error, false),
         },
         "resume" | "complete" if !idle => {
             app.note("Wait for a ready, idle session before resuming or auditing a goal")

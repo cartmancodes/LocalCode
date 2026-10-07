@@ -17,6 +17,12 @@ const HISTORY_LIMIT: usize = 50;
 /// Shown when an edit would push the draft past the prompt limit.
 pub const PROMPT_FULL: &str = "Prompt limit reached";
 const BLOCK_BYTES: usize = 64 * 1024;
+/// Transcript entries kept on screen; older ones are in the journal.
+const MAX_ENTRIES: usize = 160;
+/// Models listed per `/model` page.
+pub(crate) const CATALOG_PAGE: usize = 20;
+/// The farthest the conversation scrolls back, in rows.
+const MAX_SCROLL: usize = 65_536;
 #[derive(Clone, Copy, PartialEq)]
 pub enum Role {
     User,
@@ -359,7 +365,7 @@ impl App {
         )
     }
     pub fn show_models(&mut self, page: usize) {
-        let pages = self.conn.models.len().div_ceil(20).max(1);
+        let pages = self.conn.models.len().div_ceil(CATALOG_PAGE).max(1);
         if page == 0 || page > pages {
             self.note(format!(
                 "Choose a catalog page from 1 to {pages}: /model list <page>"
@@ -383,8 +389,8 @@ impl App {
                 .conn
                 .models
                 .iter()
-                .skip((page - 1) * 20)
-                .take(20)
+                .skip((page - 1) * CATALOG_PAGE)
+                .take(CATALOG_PAGE)
                 .map(|model| {
                     format!(
                         "{}\nModel ID: {}\n{}\nSelect: /model {} {}",
@@ -406,7 +412,8 @@ impl App {
             octet_core::model::catalog_hint(&vendors)
         ));
         if !self.conn.models.is_empty() {
-            self.chat.catalog_focus = Some((self.conn.models.len() - (page - 1) * 20).min(20) + 2);
+            self.chat.catalog_focus =
+                Some((self.conn.models.len() - (page - 1) * CATALOG_PAGE).min(CATALOG_PAGE) + 2);
         }
     }
     fn add(&mut self, role: Role, text: &str) {
@@ -425,7 +432,7 @@ impl App {
         self.trim();
     }
     fn trim(&mut self) {
-        while self.chat.bytes > MAX_BYTES || self.chat.entries.len() > 160 {
+        while self.chat.bytes > MAX_BYTES || self.chat.entries.len() > MAX_ENTRIES {
             if let Some(old) = self.chat.entries.pop_front() {
                 self.chat.bytes -= old.text.len();
             } else {
@@ -448,6 +455,12 @@ impl App {
         let text = text.into();
         self.status_line = clean(&text);
         self.add(Role::Notice, &text);
+    }
+    /// The goal file could not be saved; `paused` when the goal was paused
+    /// because of it.
+    pub(crate) fn goal_save_failed(&mut self, error: impl std::fmt::Display, paused: bool) {
+        let paused = if paused { "; paused" } else { "" };
+        self.error(format!("Goal persistence failed{paused}: {error}"));
     }
     /// A turn is running or an approval waits: the session is busy.
     pub(crate) fn turn_open(&self) -> bool {
@@ -583,7 +596,8 @@ impl App {
                 let dropped = std::mem::take(&mut self.composer.queue).len();
                 if dropped > 0 {
                     self.note(format!(
-                        "Dropped {dropped} queued prompts: the session stopped"
+                        "Dropped {}: the session stopped",
+                        queued_prompts(dropped)
                     ));
                 }
                 self.conn.status = "disconnected".into();
@@ -629,7 +643,10 @@ impl App {
             dropped = true;
         }
         if dropped {
-            self.hint("Dropped the oldest attachment to stay within 32 KiB");
+            self.hint(format!(
+                "Dropped the oldest attachment to stay within {} KiB",
+                crate::shell::OUTPUT_LIMIT / 1024
+            ));
         }
     }
     /// Back to the newest output, cancelling a catalog scroll that the next
@@ -641,7 +658,7 @@ impl App {
     /// Scrolls the conversation by `rows`, up when positive.
     pub fn scroll_by(&mut self, rows: isize) {
         self.chat.catalog_focus = None;
-        self.chat.scroll = self.chat.scroll.saturating_add_signed(rows).min(65536);
+        self.chat.scroll = self.chat.scroll.saturating_add_signed(rows).min(MAX_SCROLL);
     }
     /// The most recent reply as the vendor sent it, every segment of the
     /// turn, for `/copy`.
@@ -750,6 +767,10 @@ impl App {
             self.composer.images = sent.images;
         }
     }
+}
+/// "1 queued prompt", "3 queued prompts".
+pub(crate) fn queued_prompts(count: usize) -> String {
+    format!("{count} queued prompt{}", if count == 1 { "" } else { "s" })
 }
 /// The bottom-line notice while a cancelled turn winds down.
 pub(crate) const CANCELLING: &str = "Cancelling…";

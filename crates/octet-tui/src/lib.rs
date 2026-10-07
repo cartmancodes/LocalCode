@@ -155,7 +155,7 @@ async fn attach_goal_store(app: &mut App, store: octet_core::goal::GoalStore) {
         {
             // Rewrites a stored "active" as "paused".
             if let Err(error) = app.goals.save().await {
-                app.note(format!("Goal persistence failed: {error}"));
+                app.goal_save_failed(error, false);
             }
             app.note("Stored goal loaded in paused state. Use /goal resume to continue.");
         }
@@ -425,7 +425,7 @@ async fn session_event(app: &mut App, vendor: &dyn Vendor, event: octet_core::Ev
     app.event(event);
     if failed {
         if let Err(error) = app.goals.turn_failed().await {
-            app.note(format!("Goal persistence failed; paused: {error}"));
+            app.goal_save_failed(error, true);
         }
     }
     let Some(outcome) = outcome else {
@@ -449,7 +449,7 @@ async fn session_event(app: &mut App, vendor: &dyn Vendor, event: octet_core::Ev
             }
         }
         Err(error) => {
-            app.note(format!("Goal persistence failed; paused: {error}"));
+            app.goal_save_failed(error, true);
             send_queued(app, vendor);
         }
     }
@@ -517,5 +517,7 @@ async fn pause_active_goal(app: &mut App, why: &str) {
         )),
     }
 }
+#[cfg(test)]
+mod test_support;
 #[cfg(test)]
 mod tests;

@@ -134,7 +134,10 @@ pub(crate) fn copy_reply(app: &mut App) {
     };
     write_terminal(&bytes);
     app.status_line = if cut {
-        "Copied the first 100 KB to the clipboard".into()
+        format!(
+            "Copied the first {} KiB to the clipboard",
+            clipboard::LIMIT / 1024
+        )
     } else {
         format!("Copied {} to the clipboard", size_label(size))
     };
@@ -153,7 +156,10 @@ pub(crate) fn paste(app: &mut App, value: &str) {
         && !app.overlay.palette
         && !app.composer.editor.insert(&text::clean(value))
     {
-        app.hint("Paste exceeds the 64 KiB prompt limit; draft preserved");
+        app.hint(format!(
+            "Paste exceeds the {} KiB prompt limit; draft preserved",
+            octet_core::PROMPT_LIMIT / 1024
+        ));
     }
     // The file popup follows the pasted text; path and command popups close.
     if app
@@ -454,12 +460,11 @@ async fn composer_key(
 /// queued behind it are dropped: stopping the agent stops what was lined up.
 pub(crate) async fn cancel_turn(app: &mut App, vendor: &dyn Vendor) {
     if let Err(error) = app.goals.pause_running_turn().await {
-        app.note(format!("Goal persistence failed: {error}"));
+        app.goal_save_failed(error, false);
     }
     let dropped = std::mem::take(&mut app.composer.queue).len();
     if dropped > 0 {
-        let plural = if dropped == 1 { "" } else { "s" };
-        app.note(format!("Dropped {dropped} queued prompt{plural}"));
+        app.note(format!("Dropped {}", crate::app::queued_prompts(dropped)));
     }
     app.conn.cancel();
     vendor.interrupt();
@@ -476,7 +481,7 @@ pub(crate) fn cycle_mode(app: &mut App, vendor: &dyn Vendor) -> Action {
 }
 /// The prompt for `draft`, with the waiting `!` output and images, or why it
 /// cannot be sent.
-pub(crate) fn compose(app: &App, draft: &str) -> Result<Prompt, &'static str> {
+pub(crate) fn compose(app: &App, draft: &str) -> Result<Prompt, String> {
     if app.composer.attachments.is_empty() && app.composer.images.is_empty() {
         return Ok(Prompt::plain(draft.to_owned()));
     }
@@ -486,8 +491,11 @@ pub(crate) fn compose(app: &App, draft: &str) -> Result<Prompt, &'static str> {
         display.push_str(&format!("\n[+ image {}]", image.name));
     }
     if wire.len().max(display.len()) > octet_core::PROMPT_LIMIT {
-        return Err("The prompt and its attachments are over 64 KiB. \
-                    Shorten the prompt, or press Esc on an empty prompt to drop them");
+        return Err(format!(
+            "The prompt and its attachments are over {} KiB. \
+             Shorten the prompt, or press Esc on an empty prompt to drop them",
+            octet_core::PROMPT_LIMIT / 1024
+        ));
     }
     Ok(Prompt {
         wire,
@@ -511,7 +519,7 @@ pub(crate) fn submit(app: &mut App, vendor: &dyn Vendor, draft: String) -> bool 
     let prompt = match compose(app, &draft) {
         Ok(prompt) => prompt,
         Err(reason) => {
-            app.status_line = reason.into();
+            app.hint(reason);
             return false;
         }
     };

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 /// Paths kept per workspace.
-const LIMIT: usize = 50_000;
+pub(crate) const LIMIT: usize = 50_000;
 /// Suggestions shown at once.
 pub const SHOWN: usize = 8;
 
