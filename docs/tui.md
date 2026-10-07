@@ -181,6 +181,9 @@ Discovery uses the existing CLI process and does not make inference calls or add
 an idle polling timer. Provider model metadata is also recorded in the journal.
 A missing catalog does not prevent entering a custom model ID.
 
+Providers come from one table; adding a vendor CLI is one file and one row
+([Adding a provider](rust/adding-a-provider.md)).
+
 Existing `--binary` overrides are
 remembered per provider for this TUI invocation; a newly selected provider otherwise
 uses its CLI from PATH. If a CLI is unavailable or login fails, fix it and use

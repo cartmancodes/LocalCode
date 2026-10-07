@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn copy_keeps_the_last_reply_until_new_text_arrives() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.event(Event::Started);
     app.event(Event::Text("first".into()));
@@ -16,7 +16,7 @@ fn copy_keeps_the_last_reply_until_new_text_arrives() {
 }
 #[test]
 fn copy_takes_the_whole_reply_with_its_tabs() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.event(Event::Started);
     app.event(Event::Text("one".into()));
@@ -32,7 +32,7 @@ fn copy_takes_the_whole_reply_with_its_tabs() {
 }
 #[test]
 fn a_new_connection_settles_the_old_sessions_command_and_popup() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.composer.shell_running = true;
     app.composer.completion = Some(crate::composer::Completion {
@@ -56,7 +56,7 @@ fn a_new_connection_settles_the_old_sessions_command_and_popup() {
 }
 #[test]
 fn a_shell_that_cannot_start_is_an_error_entry() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.error("Cannot run /no/such/shell: No such file or directory");
     assert!(app.last_role() == Some(Role::Error));
@@ -64,7 +64,7 @@ fn a_shell_that_cannot_start_is_an_error_entry() {
 }
 #[test]
 fn shell_output_is_cleaned_and_attachments_stay_bounded() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     let ran = crate::shell::Ran {
         command: "ls -G".into(),
@@ -96,7 +96,7 @@ fn shell_output_is_cleaned_and_attachments_stay_bounded() {
 }
 #[test]
 fn history_skips_repeats_and_keeps_fifty() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.remember("same".into());
     app.remember("same".into());
@@ -109,7 +109,7 @@ fn history_skips_repeats_and_keeps_fifty() {
 }
 #[test]
 fn a_full_prompt_warns_instead_of_inserting() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     assert!(!app.insert_or_warn(&"x".repeat(octet_core::PROMPT_LIMIT + 1)));
     assert_eq!(app.notice, "Prompt limit reached");
@@ -117,7 +117,7 @@ fn a_full_prompt_warns_instead_of_inserting() {
 }
 #[test]
 fn a_finished_turn_clears_the_cancelling_notice() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.event(Event::Started);
     app.notice = CANCELLING.into();
@@ -128,7 +128,7 @@ fn a_finished_turn_clears_the_cancelling_notice() {
 }
 #[test]
 fn transcript_memory_is_bounded() {
-    let c = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let c = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut a = App::new(&c, "journal".into());
     for _ in 0..100 {
         a.event(Event::User("x".repeat(64 * 1024)));
@@ -137,4 +137,29 @@ fn transcript_memory_is_bounded() {
     assert!(a.chat.bytes <= MAX_BYTES);
     assert!(a.chat.entries.len() <= 160);
     assert!(!a.visible_lines(60, 20).is_empty());
+}
+#[test]
+fn ready_mid_turn_keeps_running() {
+    let config = octet_core::Config::new(octet_core::Engine::CLAUDE, "claude", "/tmp");
+    let mut app = App::new(&config, "journal".into());
+    assert!(app.is_connecting());
+    app.event(Event::Ready {
+        session: String::new(),
+    });
+    assert!(app.is_idle());
+    app.event(Event::Started);
+    // Claude reports its session ID with the turn's first frames.
+    app.event(Event::Ready {
+        session: "s-1".into(),
+    });
+    assert!(app.conn.is_running());
+    app.event(Event::Finished {
+        outcome: octet_core::Outcome::Completed,
+    });
+    assert!(app.is_idle());
+    app.event(Event::Stopped);
+    app.event(Event::Ready {
+        session: "late".into(),
+    });
+    assert!(app.conn.is_stopped() && !app.is_busy() && !app.is_idle());
 }

@@ -201,7 +201,7 @@ Start at the [documentation index](docs/README.md). The main guides:
 | `crates/octet` | The `octet` binary, with its terminal and credential-guard tests |
 | `crates/octet-tui` | The terminal interface |
 | `crates/octet-core` | Session boundary, model selection and persistent goals |
-| `crates/octet-engine` | The vendor drivers |
+| `crates/octet-engine` | The provider table and vendor drivers ([adding a provider](docs/rust/adding-a-provider.md)) |
 | `crates/octet-gate` | The protocol gate that records live contract evidence from real vendor CLIs |
 | `crates/octet-proc` | Bounded JSON-line transport and process supervision for vendor CLIs |
 | `crates/octet-store` | Append-only session journals |

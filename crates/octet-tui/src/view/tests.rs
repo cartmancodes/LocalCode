@@ -11,7 +11,7 @@ fn screen(width: u16, height: u16, app: &mut App) -> Vec<String> {
 }
 #[test]
 fn following_the_latest_cancels_a_pending_catalog_scroll() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.conn.models = (0..30)
         .map(|i| octet_core::ModelInfo {
@@ -31,7 +31,7 @@ fn following_the_latest_cancels_a_pending_catalog_scroll() {
 }
 #[test]
 fn the_popup_keeps_the_selected_row_in_sight_on_a_short_screen() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.composer.completion = Some(crate::composer::Completion {
         kind: crate::composer::Kind::File,
@@ -48,7 +48,7 @@ fn the_popup_keeps_the_selected_row_in_sight_on_a_short_screen() {
 }
 #[test]
 fn the_popup_lists_suggestions_above_the_prompt() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.composer.completion = Some(crate::composer::Completion {
         kind: crate::composer::Kind::File,
@@ -67,7 +67,7 @@ fn the_popup_lists_suggestions_above_the_prompt() {
 fn sidebar_lines_fit_the_panel_without_wrapping() {
     // Every sidebar line starts with a space; a wrapped remainder would
     // start in the first column, against the border.
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     let rows = screen(120, 48, &mut app);
     let title = rows.iter().find(|row| row.contains("╭ Workspace")).unwrap();
@@ -85,7 +85,7 @@ fn sidebar_lines_fit_the_panel_without_wrapping() {
 }
 #[test]
 fn an_empty_composer_gives_rows_back_to_the_conversation() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.event(Event::User("hello".into()));
     let rows = screen(44, 16, &mut app);
@@ -94,7 +94,7 @@ fn an_empty_composer_gives_rows_back_to_the_conversation() {
 }
 #[test]
 fn help_keeps_its_last_line_on_narrow_and_short_terminals() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.overlay.help = true;
     for (width, height) in [(100, 30), (75, 40), (70, 40), (60, 40), (100, 32)] {
@@ -108,7 +108,7 @@ fn help_keeps_its_last_line_on_narrow_and_short_terminals() {
 }
 #[test]
 fn help_names_the_command_palette_key() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.overlay.help = true;
     let rows = screen(100, 32, &mut app);
@@ -121,7 +121,7 @@ fn help_names_the_command_palette_key() {
 }
 #[test]
 fn the_draft_shows_at_the_minimum_size() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     assert!(app.composer.editor.insert("VISIBLE"));
     for width in [38, 80] {
@@ -135,7 +135,7 @@ fn the_draft_shows_at_the_minimum_size() {
 }
 #[test]
 fn the_palette_shows_every_command_and_its_keys() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.overlay.palette = true;
     let rows = screen(80, 24, &mut app);
@@ -161,7 +161,7 @@ fn the_palette_shows_every_command_and_its_keys() {
 }
 #[test]
 fn empty_conversation_leaves_the_centre_blank() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     for (width, height) in [(80, 24), (60, 20)] {
         let mut app = App::new(&config, "journal".into());
         app.monochrome = false;
@@ -179,7 +179,7 @@ fn empty_conversation_leaves_the_centre_blank() {
 }
 #[test]
 fn header_banner_shows_mini_version_mode_activity_and_workspace() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     for (width, height) in [(160, 42), (80, 24), (60, 20), (40, 12)] {
         let mut app = App::new(&config, "journal".into());
         app.monochrome = false;
@@ -216,7 +216,7 @@ fn permission_mode_stays_visible_on_narrow_headers() {
     let config = octet_core::Config {
         model: Some("gpt-5.5-codex-max-preview-long-name".into()),
         mode: octet_core::Mode::FullAccess,
-        ..octet_core::Config::new(octet_core::Engine::Codex, "codex", "/tmp")
+        ..octet_core::Config::new(octet_core::Engine::CODEX, "codex", "/tmp")
     };
     for width in [80, 60, 40, 38] {
         let mut app = App::new(&config, "journal".into());
@@ -231,7 +231,7 @@ fn permission_mode_stays_visible_on_narrow_headers() {
 }
 #[test]
 fn status_shows_in_full_on_narrow_terminals() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     for width in [59, 50, 40] {
         let mut app = App::new(&config, "journal".into());
         app.monochrome = false;
@@ -252,7 +252,7 @@ fn status_shows_in_full_on_narrow_terminals() {
 }
 #[test]
 fn no_color_keeps_the_text_header() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.monochrome = true;
     let rows = screen(80, 24, &mut app);
@@ -262,7 +262,7 @@ fn no_color_keeps_the_text_header() {
 }
 #[test]
 fn mascot_tracks_activity_and_keeps_errors_visible_after_disconnect() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.monochrome = false;
     for (event, expected) in [
@@ -320,7 +320,7 @@ fn mascot_tracks_activity_and_keeps_errors_visible_after_disconnect() {
 #[test]
 fn renders_narrow_wide_and_approval_without_panics() {
     for (w, h) in [(30, 8), (40, 12), (80, 24), (120, 36)] {
-        let c = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp/project");
+        let c = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp/project");
         let mut a = App::new(&c, "journal".into());
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
         t.draw(|f| draw(f, &mut a)).unwrap();
@@ -334,7 +334,7 @@ fn renders_narrow_wide_and_approval_without_panics() {
 
 #[test]
 fn composer_grows_with_the_draft() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     assert_eq!(
         composer_height(app.composer.editor.layout(draft_width(80)).0.len()),
@@ -348,7 +348,7 @@ fn composer_grows_with_the_draft() {
 }
 #[test]
 fn composer_counts_wrapped_rows() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     // 80 columns leave 74 for text: 100 characters wrap onto a second row.
     assert!(app.composer.editor.insert(&"x".repeat(100)));
@@ -359,7 +359,7 @@ fn composer_counts_wrapped_rows() {
 }
 #[test]
 fn composer_height_is_capped() {
-    let config = octet_core::Config::new(octet_core::Engine::Demo, "demo", "/tmp");
+    let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     assert!(app.composer.editor.insert(&"line\n".repeat(40)));
     assert_eq!(
@@ -374,7 +374,7 @@ mod model_detail_tests {
         App::new(
             &octet_core::Config {
                 model: Some("sonnet".into()),
-                ..octet_core::Config::new(octet_core::Engine::Claude, "claude", "/tmp")
+                ..octet_core::Config::new(octet_core::Engine::CLAUDE, "claude", "/tmp")
             },
             "/tmp/journal".into(),
         )
@@ -403,7 +403,7 @@ mod model_detail_tests {
         assert!(details.contains("Complete Provider Model Name"));
         assert!(details.contains("Requested selection: sonnet"));
         a.connection(
-            &octet_core::Config::new(octet_core::Engine::Codex, "codex", "/tmp"),
+            &octet_core::Config::new(octet_core::Engine::CODEX, "codex", "/tmp"),
             "/tmp/new".into(),
         );
         assert!(a.conn.models.is_empty());
@@ -455,7 +455,7 @@ mod model_detail_tests {
     }
     #[test]
     fn stopped_session_clears_pending_mode() {
-        let c = octet_core::Config::new(octet_core::Engine::Claude, "claude", "/tmp");
+        let c = octet_core::Config::new(octet_core::Engine::CLAUDE, "claude", "/tmp");
         let mut a = App::new(&c, "journal".into());
         a.conn.mode_pending = Some(octet_core::Mode::Auto);
         a.event(Event::ModeChanged(octet_core::Mode::Auto));
@@ -474,7 +474,7 @@ mod model_detail_tests {
     fn header_shows_confirmed_and_pending_mode() {
         let c = octet_core::Config {
             mode: octet_core::Mode::Auto,
-            ..octet_core::Config::new(octet_core::Engine::Codex, "codex", "/tmp/project")
+            ..octet_core::Config::new(octet_core::Engine::CODEX, "codex", "/tmp/project")
         };
         let mut a = App::new(&c, "journal".into());
         let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 36)).unwrap();

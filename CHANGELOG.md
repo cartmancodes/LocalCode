@@ -66,6 +66,9 @@ Claude Code and Codex CLIs.
 - A `!` command stopped by its time limit names that limit.
 - Release builds are about 40% smaller (thin LTO, stripped symbols).
 - The protocol gate moved to its own `octet-gate` crate.
+- Vendors come from one provider table, and each vendor's wire protocol is
+  its own `Protocol` implementation, so adding a vendor CLI is one file and
+  one row ([guide](docs/rust/adding-a-provider.md)). No behaviour change.
 
 ### Fixed
 

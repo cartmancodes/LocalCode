@@ -548,7 +548,7 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
             match session.handle.send(command) {
                 Ok(()) => {
                     app.goals.goal_prompt_sent();
-                    app.conn.running = true;
+                    app.conn.start_turn();
                     app.conn.status = "continuing goal".into();
                 }
                 Err(error) => goal_send_failed(app, error).await,
@@ -666,7 +666,7 @@ fn full_access_notice(mode: octet_core::Mode, engine: octet_core::Engine, sessio
     } else {
         format!("Leaving full access for {}.", mode.label())
     };
-    let next = if engine == octet_core::Engine::Demo {
+    let next = if engine.offline() {
         "Restarting the offline demo…"
     } else if session.is_empty() {
         "Starting a new session (no session ID yet)…"

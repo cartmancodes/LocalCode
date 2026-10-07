@@ -1,7 +1,49 @@
 //! Offline demo engine: no vendor process.
-use super::{emit, Command, DriverError, Event, Mode, Outcome};
+use super::{
+    emit, BoxFuture, Channels, Command, Config, DriverError, Event, Limits, Mode, Outcome, Provider,
+};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
+
+/// The offline demo's row in the provider table.
+pub(super) const PROVIDER: Provider = Provider {
+    name: "demo",
+    title: "Demo",
+    default_binary: "demo",
+    offline: true,
+    modes: [
+        "Offline demo: /approval-demo shows the dialog",
+        "Offline demo: /approval-demo shows the dialog",
+        "Offline demo: /approval-demo is allowed without a dialog",
+        "Offline demo: /approval-demo is allowed without a dialog",
+    ],
+    start,
+};
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "StartFn's shape: the vendor providers take ownership of their Config"
+)]
+fn start(config: Config, limits: Limits, channels: Channels) -> BoxFuture<Result<(), String>> {
+    Box::pin(async move {
+        let Channels {
+            commands,
+            cancel,
+            stopping,
+            events,
+        } = channels;
+        demo(
+            config.mode,
+            limits.approval,
+            commands,
+            cancel,
+            stopping,
+            &events,
+        )
+        .await
+        .map_err(|error| error.to_string())
+    })
+}
 
 pub(super) fn demo_set_mode(
     tx: &mpsc::Sender<Event>,

@@ -52,21 +52,16 @@ impl Mode {
     }
     /// What this mode means for `engine`, for `/mode`.
     pub fn describe(self, engine: Engine) -> &'static str {
-        match (engine, self) {
-            (Engine::Claude, Mode::Ask) => "Claude asks before edits and commands (permission mode default)",
-            (Engine::Claude, Mode::AcceptEdits) => "File edits proceed; other actions ask (acceptEdits)",
-            (Engine::Claude, Mode::Auto) => "Claude's classifier approves or blocks each action (auto)",
-            (Engine::Claude, Mode::FullAccess) => "No permission checks at all (bypassPermissions)",
-            (Engine::Codex, Mode::Ask) => "Workspace sandbox; untrusted commands ask (untrusted)",
-            (Engine::Codex, Mode::AcceptEdits) => {
-                "Workspace sandbox; asks only to escalate (on-request). Codex has no edits-only mode"
-            }
-            (Engine::Codex, Mode::Auto) => {
-                "Workspace sandbox; Codex's auto-review agent decides escalations (auto_review)"
-            }
-            (Engine::Codex, Mode::FullAccess) => "No sandbox; never asks (danger-full-access)",
-            (Engine::Demo, Mode::Ask | Mode::AcceptEdits) => "Offline demo: /approval-demo shows the dialog",
-            (Engine::Demo, Mode::Auto | Mode::FullAccess) => "Offline demo: /approval-demo is allowed without a dialog",
+        engine.provider().modes[self.index()]
+    }
+    /// The position in `ALL`, which is also the order of a provider's
+    /// `modes`.
+    fn index(self) -> usize {
+        match self {
+            Mode::Ask => 0,
+            Mode::AcceptEdits => 1,
+            Mode::Auto => 2,
+            Mode::FullAccess => 3,
         }
     }
 }
@@ -228,7 +223,7 @@ mod tests {
     }
     #[test]
     fn every_mode_is_described_for_every_engine() {
-        for engine in Engine::ALL {
+        for engine in Engine::ALL.iter().copied() {
             for mode in Mode::ALL {
                 assert!(!mode.describe(engine).is_empty());
             }

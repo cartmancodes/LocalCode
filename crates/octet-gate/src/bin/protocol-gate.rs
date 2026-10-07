@@ -46,7 +46,10 @@ fn options() -> Result<Opt, &'static str> {
         i += 2;
     }
     let engine = engine.ok_or("missing --engine")?;
-    if engine != "claude" && engine != "codex" {
+    if octet_engine::live::Engine::parse(&engine)
+        .filter(|engine| engine.is_vendor())
+        .is_none()
+    {
         return Err("invalid engine");
     }
     let scenario = scenario.ok_or("missing --scenario")?;

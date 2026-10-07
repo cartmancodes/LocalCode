@@ -354,7 +354,7 @@ async fn composer_key(
                     None => Action::Continue,
                 };
             }
-            if !app.conn.ready || app.conn.running || app.conn.stopped {
+            if !app.is_idle() {
                 app.notice = "Wait for the current turn, press Esc to cancel, or /reconnect".into();
                 return Action::Continue;
             }
@@ -379,7 +379,7 @@ async fn composer_key(
                     app.composer.attachments.clear();
                     app.goals.user_prompt_sent();
                     app.composer.editor.take();
-                    app.conn.running = true;
+                    app.conn.start_turn();
                     app.conn.status = "sending".into();
                     app.remember(draft);
                 }

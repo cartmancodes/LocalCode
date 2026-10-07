@@ -12,10 +12,9 @@ mod codex;
 mod demo;
 mod driver;
 mod mode;
+mod protocol;
 pub use claude::claude_stray_reply;
 pub use codex::codex_stray_reply;
-use demo::demo;
-use driver::vendor;
 pub use mode::Mode;
 
 /// The longest prompt, in bytes, Octet sends to a vendor.
@@ -53,44 +52,108 @@ impl Default for Limits {
     }
 }
 
-/// The backend a session drives. Journals and the CLI use `as_str()`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Engine {
-    /// Claude Code, over its stream-json protocol.
-    Claude,
-    /// Codex, over its app-server JSON-RPC protocol.
-    Codex,
-    /// Offline preview; no vendor process.
-    Demo,
+/// One backend Octet can drive. A new vendor is one of these plus its
+/// `Protocol` file (see docs/rust/adding-a-provider.md).
+pub struct Provider {
+    /// The CLI flag, journal and `/model` spelling.
+    pub name: &'static str,
+    /// The name in notices ("Codex reports …").
+    pub title: &'static str,
+    /// The command to run when `--binary` is absent.
+    pub default_binary: &'static str,
+    /// No vendor process and no model (the demo).
+    pub offline: bool,
+    /// `/mode` descriptions, in `Mode::ALL` order.
+    pub modes: [&'static str; 4],
+    /// Runs one session until it stops.
+    pub start: StartFn,
 }
+
+/// Starts a provider's session; the error is the final message to show.
+pub type StartFn = fn(Config, Limits, Channels) -> BoxFuture<Result<(), String>>;
+
+/// A boxed future that can move between threads.
+pub type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
+
+/// The channels a session runs on.
+pub struct Channels {
+    /// Commands from the interface.
+    pub commands: mpsc::Receiver<Command>,
+    /// Bumped to cancel the running turn.
+    pub cancel: watch::Receiver<u64>,
+    /// Set to stop the session.
+    pub stopping: watch::Receiver<bool>,
+    /// Events to the interface.
+    pub events: mpsc::Sender<Event>,
+}
+
+/// A provider, by its row in the table. Journals and the CLI use
+/// `as_str()`; it compares, hashes and prints by name.
+#[derive(Clone, Copy)]
+pub struct Engine(&'static Provider);
 impl Engine {
-    /// Every engine, in the order help lists them.
-    pub const ALL: [Engine; 3] = [Engine::Codex, Engine::Claude, Engine::Demo];
+    /// Codex, over its app-server JSON-RPC protocol.
+    pub const CODEX: Engine = Engine(&codex::PROVIDER);
+    /// Claude Code, over its stream-json protocol.
+    pub const CLAUDE: Engine = Engine(&claude::PROVIDER);
+    /// The offline preview; no vendor process.
+    pub const DEMO: Engine = Engine(&demo::PROVIDER);
+    /// Every provider, in the order help lists them: the provider table.
+    pub const ALL: &'static [Engine] = &[Engine::CODEX, Engine::CLAUDE, Engine::DEMO];
+    /// A handle onto a provider row.
+    pub const fn new(provider: &'static Provider) -> Engine {
+        Engine(provider)
+    }
     /// The engine named `value` (`codex`, `claude` or `demo`), exactly as
     /// spelled.
     ///
     /// ```
     /// use octet_engine::live::Engine;
     ///
-    /// assert_eq!(Engine::parse("claude"), Some(Engine::Claude));
+    /// assert_eq!(Engine::parse("claude"), Some(Engine::CLAUDE));
     /// assert_eq!(Engine::parse("Claude"), None);
     /// ```
     pub fn parse(value: &str) -> Option<Engine> {
         Self::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .find(|engine| engine.as_str() == value)
+    }
+    /// The provider's row.
+    pub fn provider(self) -> &'static Provider {
+        self.0
     }
     /// The CLI and journal spelling.
     pub fn as_str(self) -> &'static str {
-        match self {
-            Engine::Claude => "claude",
-            Engine::Codex => "codex",
-            Engine::Demo => "demo",
-        }
+        self.0.name
+    }
+    /// The name in notices.
+    pub fn title(self) -> &'static str {
+        self.0.title
+    }
+    /// No vendor process and no model.
+    pub fn offline(self) -> bool {
+        self.0.offline
     }
     /// A real vendor CLI, not the offline demo.
     pub fn is_vendor(self) -> bool {
-        self != Engine::Demo
+        !self.0.offline
+    }
+}
+impl PartialEq for Engine {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.name == other.0.name
+    }
+}
+impl Eq for Engine {}
+impl std::hash::Hash for Engine {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.name.hash(state);
+    }
+}
+impl std::fmt::Debug for Engine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0.name)
     }
 }
 impl std::fmt::Display for Engine {
@@ -150,19 +213,21 @@ pub fn valid_identifier(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
 }
 
-fn model_catalog(value: &Value, claude: bool) -> Vec<ModelInfo> {
+/// A vendor catalog: `selection_key` names what to pass the vendor,
+/// `id_key` the full model ID it resolves to.
+fn model_catalog_with(value: &Value, selection_key: &str, id_key: &str) -> Vec<ModelInfo> {
     value
         .as_array()
         .into_iter()
         .flatten()
         .take(256)
         .filter_map(|v| {
-            let selection = v[if claude { "value" } else { "model" }].as_str()?;
+            let selection = v[selection_key].as_str()?;
             // Bound untrusted metadata without silently truncating model identifiers.
             if !valid_identifier(selection) {
                 return None;
             }
-            let id = v[if claude { "resolvedModel" } else { "model" }]
+            let id = v[id_key]
                 .as_str()
                 .filter(|id| valid_identifier(id))
                 .map(str::to_owned);
@@ -431,13 +496,13 @@ pub fn spawn_with_limits(
         stop,
     };
     let task = tokio::spawn(async move {
-        let result = if config.engine == Engine::Demo {
-            demo(config.mode, limits.approval, rx, cancel, stopping, &events)
-                .await
-                .map_err(|error| error.to_string())
-        } else {
-            vendor(config, limits, rx, cancel, stopping, &events).await
+        let channels = Channels {
+            commands: rx,
+            cancel,
+            stopping,
+            events: events.clone(),
         };
+        let result = (config.engine.provider().start)(config, limits, channels).await;
         if let Err(error) = result {
             // After the driver stops, bounded waiting can deliver the final error.
             let _ = timeout(Duration::from_secs(2), events.send(Event::Error(error))).await;
@@ -462,20 +527,21 @@ mod tests {
     }
     #[test]
     fn catalog_rejects_invalid_identifiers_and_bounds_metadata() {
-        let models = model_catalog(
+        let models = model_catalog_with(
             &json!([
                 {"value":"sonnet","displayName":"Sonnet"},
                 {"value":"bad\u{1b}id"},
                 {"value":"x".repeat(257)},
                 {"value":"custom","resolvedModel":"full-id","description":"x".repeat(2049)}
             ]),
-            true,
+            "value",
+            "resolvedModel",
         );
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].id, None);
         assert_eq!(models[1].id.as_deref(), Some("full-id"));
         assert!(models[1].description.is_empty());
-        assert!(model_catalog(&Value::Null, false).is_empty());
+        assert!(model_catalog_with(&Value::Null, "model", "model").is_empty());
     }
     #[test]
     fn unknown_vendor_status_is_kept_verbatim() {
@@ -488,13 +554,37 @@ mod tests {
         assert_eq!(other.to_string(), "inProgress");
     }
     #[test]
-    fn engines_parse_their_own_spelling_only() {
+    fn engines_compare_and_hash_by_name() {
+        use std::collections::HashMap;
+        let copy = Engine::parse("codex").unwrap();
+        assert_eq!(copy, Engine::CODEX);
+        assert_ne!(Engine::CODEX, Engine::CLAUDE);
+        let mut binaries = HashMap::new();
+        binaries.insert(Engine::CODEX, "a");
+        assert_eq!(binaries.get(&copy), Some(&"a"));
+        assert_eq!(format!("{:?}", Engine::CLAUDE), "claude");
+    }
+    #[test]
+    fn the_table_is_complete_and_unambiguous() {
+        let names: Vec<&str> = Engine::ALL.iter().map(|e| e.as_str()).collect();
+        // New rows go after these three; their order is what help shows.
+        assert_eq!(names[..3], ["codex", "claude", "demo"]);
         for engine in Engine::ALL {
+            assert_eq!(Engine::parse(engine.as_str()), Some(*engine));
+            assert!(engine.provider().modes.iter().all(|m| !m.is_empty()));
+            assert!(!engine.title().is_empty());
+        }
+        assert_eq!(Engine::ALL.iter().filter(|e| e.offline()).count(), 1);
+        assert!(Engine::DEMO.offline() && !Engine::DEMO.is_vendor());
+    }
+    #[test]
+    fn engines_parse_their_own_spelling_only() {
+        for engine in Engine::ALL.iter().copied() {
             assert_eq!(Engine::parse(engine.as_str()), Some(engine));
             assert_eq!(engine.to_string(), engine.as_str());
         }
         assert_eq!(Engine::parse("Claude"), None);
-        assert!(!Engine::Demo.is_vendor());
+        assert!(!Engine::DEMO.is_vendor());
     }
     #[test]
     fn send_errors_keep_their_wording() {

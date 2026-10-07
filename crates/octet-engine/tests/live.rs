@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::{sync::mpsc, time::timeout};
 fn config() -> Config {
     Config::new(
-        Engine::Codex,
+        Engine::CODEX,
         octet_testkit::protocol_child(),
         std::env::temp_dir(),
     )
@@ -19,6 +19,105 @@ async fn next(events: &mut mpsc::Receiver<Event>) -> Event {
         .await
         .unwrap()
         .unwrap()
+}
+/// A fake vendor from a shell script, in a directory that lives as long as
+/// the returned guard.
+fn script_vendor(name: &str, body: &str) -> (octet_testkit::TempDir, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = octet_testkit::TempDir::new(name);
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let path = dir.path().join("vendor");
+    std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (dir, path)
+}
+#[tokio::test]
+async fn codex_opening_the_session_before_the_handshake_is_an_error() {
+    // Codex answers thread/start (id 2) before initialize (id 1).
+    let (_dir, vendor) = script_vendor(
+        "octet-live-out-of-order",
+        "read line\n\
+         echo '{\"id\":2,\"result\":{\"thread\":{\"id\":\"t1\"}}}'\n\
+         echo '{\"id\":1,\"result\":{}}'\n\
+         exec sleep 30\n",
+    );
+    let (_handle, mut events, task) =
+        spawn(Config::new(Engine::CODEX, vendor, std::env::temp_dir()));
+    loop {
+        match next(&mut events).await {
+            Event::Error(error) => {
+                assert_eq!(error, "Unexpected protocol initialization order");
+                break;
+            }
+            Event::Ready { session } if session != "t1" => {
+                panic!("a second session opened: {session}")
+            }
+            _ => {}
+        }
+    }
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn a_repeated_claude_handshake_mid_turn_does_not_end_the_turn() {
+    let init = r#"{"type":"control_response","response":{"subtype":"success","request_id":"octet-init","response":{}}}"#;
+    let result = r#"{"type":"result","is_error":false,"result":"done","session_id":"s1"}"#;
+    let (_dir, vendor) = script_vendor(
+        "octet-live-repeated-init",
+        &format!(
+            "read line\necho '{init}'\nread line\necho '{init}'\necho '{result}'\nexec sleep 30\n"
+        ),
+    );
+    let mut config = Config::new(Engine::CLAUDE, vendor, std::env::temp_dir());
+    config.mode = Mode::Ask;
+    let (handle, mut events, task) = spawn(config);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("hello".into())).unwrap();
+    let finished = wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
+    assert!(
+        matches!(
+            finished,
+            Event::Finished {
+                outcome: Outcome::Completed
+            }
+        ),
+        "{finished:?}"
+    );
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn cancel_while_starting_is_cancelled() {
+    // A vendor that never answers the handshake.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = octet_testkit::TempDir::new("octet-live-silent");
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let silent = dir.path().join("silent-vendor");
+    std::fs::write(&silent, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    std::fs::set_permissions(&silent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (handle, mut events, task) =
+        spawn(Config::new(Engine::CODEX, silent, std::env::temp_dir()));
+    handle.interrupt();
+    loop {
+        match next(&mut events).await {
+            Event::Error(error) => {
+                assert_eq!(error, "Connection cancelled");
+                break;
+            }
+            Event::Ready { .. } => panic!("the silent vendor cannot be ready"),
+            _ => {}
+        }
+    }
+    assert!(matches!(next(&mut events).await, Event::Stopped));
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
 }
 #[tokio::test]
 async fn live_driver_keeps_turns_separate_and_waits_for_terminal_after_usage() {
@@ -94,7 +193,7 @@ async fn approvals_and_cancel_remain_routable_during_turn() {
 #[tokio::test]
 async fn claude_stream_does_not_duplicate_final_assistant_message() {
     let mut config = config();
-    config.engine = Engine::Claude;
+    config.engine = Engine::CLAUDE;
     let (handle, mut events, task) = spawn(config);
     assert!(matches!(next(&mut events).await, Event::Ready { .. }));
     for _ in 0..2 {
@@ -149,7 +248,7 @@ async fn codex_discovers_all_pages_and_uses_model_not_picker_id() {
 #[tokio::test]
 async fn claude_catalog_alias_is_distinct_from_confirmed_session_model() {
     let mut cfg = config();
-    cfg.engine = Engine::Claude;
+    cfg.engine = Engine::CLAUDE;
     cfg.model = Some("sonnet".into());
     let (handle, mut events, task) = spawn(cfg);
     loop {
@@ -251,7 +350,7 @@ async fn codex_launches_and_turns_with_the_configured_mode() {
 #[tokio::test]
 async fn claude_launches_with_the_mapped_permission_flag() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     c.mode = Mode::AcceptEdits;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| {
@@ -283,7 +382,7 @@ async fn codex_live_switch_applies_to_the_next_turn() {
 #[tokio::test]
 async fn claude_live_switch_uses_set_permission_mode() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     handle.send(Command::SetMode(Mode::Auto)).unwrap();
@@ -294,7 +393,7 @@ async fn claude_live_switch_uses_set_permission_mode() {
 #[tokio::test]
 async fn claude_refusal_keeps_the_previous_mode() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     c.model = Some("reject-mode".into());
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
@@ -337,7 +436,7 @@ async fn driver_refuses_live_full_access() {
 #[tokio::test]
 async fn claude_header_follows_the_mode_claude_reports() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     c.model = Some("report-auto".into());
     let (handle, mut events, task) = spawn(c);
     let event = wait_for(&mut events, |e| {
@@ -358,7 +457,7 @@ async fn claude_header_follows_the_mode_claude_reports() {
 #[tokio::test]
 async fn unmapped_claude_mode_keeps_the_requested_mode_with_a_notice() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     c.model = Some("report-plan".into());
     let (handle, mut events, task) = spawn(c);
     let event = wait_for(&mut events, |e| {
@@ -429,7 +528,7 @@ async fn wait_long(
 #[tokio::test]
 async fn unconfirmed_claude_switch_times_out_then_applies_a_late_confirmation() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     c.model = Some("late-mode".into());
     let (handle, mut events, task) = spawn_with_limits(c, quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
@@ -467,7 +566,7 @@ async fn unconfirmed_claude_switch_times_out_then_applies_a_late_confirmation() 
 #[tokio::test]
 async fn demo_mode_switch_during_approval_keeps_the_dialog_open() {
     let mut c = config();
-    c.engine = Engine::Demo;
+    c.engine = Engine::DEMO;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     handle
@@ -488,7 +587,7 @@ async fn demo_mode_switch_during_approval_keeps_the_dialog_open() {
 #[tokio::test]
 async fn claude_switch_sends_the_vendor_mode_name() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     for (mode, _) in [(Mode::AcceptEdits, ()), (Mode::Auto, ()), (Mode::Ask, ())] {
@@ -507,7 +606,7 @@ async fn claude_switch_sends_the_vendor_mode_name() {
 #[tokio::test]
 async fn claude_switch_applies_in_the_middle_of_a_turn() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     handle.send(Command::Prompt("hold".into())).unwrap();
@@ -550,7 +649,7 @@ async fn codex_resume_carries_the_mode() {
 #[tokio::test]
 async fn idle_switch_long_after_connect_confirms_promptly() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     let (handle, mut events, task) = spawn_with_limits(c, quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
     // Past the connect deadline, which is stale once idle.
@@ -568,7 +667,7 @@ async fn idle_switch_long_after_connect_confirms_promptly() {
 #[tokio::test]
 async fn every_timed_out_switch_can_still_be_confirmed_late() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     c.model = Some("hang-mode".into());
     let (handle, mut events, task) = spawn_with_limits(c, quick());
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
@@ -597,7 +696,7 @@ async fn every_timed_out_switch_can_still_be_confirmed_late() {
 #[tokio::test]
 async fn unmapped_switch_reply_keeps_the_target_with_a_notice() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     c.model = Some("odd-mode".into());
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
@@ -620,7 +719,7 @@ async fn unmapped_switch_reply_keeps_the_target_with_a_notice() {
 #[tokio::test]
 async fn vendor_exit_reports_its_stderr() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     c.model = Some("die-stderr".into());
     let (_handle, mut events, task) = spawn(c);
     let error = loop {
@@ -712,7 +811,7 @@ async fn turn_errors_show_the_vendor_message_not_raw_json() {
 #[tokio::test]
 async fn claude_result_errors_are_shown() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
     handle.send(Command::Prompt("errors".into())).unwrap();
@@ -730,7 +829,7 @@ async fn claude_result_errors_are_shown() {
 #[tokio::test]
 async fn claude_tool_is_announced_once_with_its_input() {
     let mut c = config();
-    c.engine = Engine::Claude;
+    c.engine = Engine::CLAUDE;
     let (handle, mut events, task) = spawn(c);
     wait_for(&mut events, |e| matches!(e, Event::ModeChanged(_))).await;
     handle.send(Command::Prompt("tool".into())).unwrap();
@@ -824,7 +923,7 @@ async fn waiting_for_the_user_is_not_vendor_silence() {
 async fn spawn_uses_the_configured_approval_window() {
     let config = Config {
         approval_timeout: Duration::from_millis(300),
-        ..Config::new(Engine::Demo, "demo", std::env::temp_dir())
+        ..Config::new(Engine::DEMO, "demo", std::env::temp_dir())
     };
     let (handle, mut events, task) = spawn(config);
     handle
