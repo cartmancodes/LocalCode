@@ -422,6 +422,22 @@ pub enum Command {
     Compact,
 }
 impl Command {
+    /// Whether this command starts a turn.
+    fn starts_turn(&self) -> bool {
+        matches!(
+            self,
+            Command::Prompt(_) | Command::PromptWithDisplay { .. } | Command::Compact
+        )
+    }
+    /// What the transcript shows for a turn command.
+    fn turn_display(&self) -> Option<&str> {
+        match self {
+            Command::Prompt(text) => Some(text),
+            Command::PromptWithDisplay { display, .. } => Some(display),
+            Command::Compact => Some("/compact"),
+            _ => None,
+        }
+    }
     /// The longest text a prompt command carries; 0 for other commands.
     fn prompt_bytes(&self) -> usize {
         match self {
@@ -472,8 +488,12 @@ impl From<&str> for DriverError {
 /// Sends commands to a running session; cheap to clone.
 pub struct Handle {
     commands: mpsc::Sender<Command>,
+    /// Carries how many turn commands had been sent when the user
+    /// cancelled, so a turn queued before the cancel never starts.
     interrupt: watch::Sender<u64>,
     stop: watch::Sender<bool>,
+    /// Turn commands sent so far.
+    turns: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 impl Handle {
     /// Queues `command` without waiting for it to run.
@@ -483,14 +503,26 @@ impl Handle {
     /// `PromptTooLong` for an oversized prompt, or `Busy` if the queue is
     /// full or the session has stopped.
     pub fn send(&self, command: Command) -> Result<(), SendError> {
+        use std::sync::atomic::Ordering;
         if command.prompt_bytes() > PROMPT_LIMIT {
             return Err(SendError::PromptTooLong);
         }
-        self.commands.try_send(command).map_err(|_| SendError::Busy)
+        let turn = command.starts_turn();
+        if turn {
+            self.turns.fetch_add(1, Ordering::SeqCst);
+        }
+        self.commands.try_send(command).map_err(|_| {
+            if turn {
+                self.turns.fetch_sub(1, Ordering::SeqCst);
+            }
+            SendError::Busy
+        })
     }
-    /// Cancels the running turn, or the connection while it is being made.
+    /// Cancels the running turn, any turn already sent but not yet started,
+    /// or the connection while it is being made.
     pub fn interrupt(&self) {
-        self.interrupt.send_modify(|n| *n = n.wrapping_add(1));
+        let sent = self.turns.load(std::sync::atomic::Ordering::SeqCst);
+        self.interrupt.send_modify(|n| *n = sent);
     }
     /// Stops the session.
     pub fn shutdown(&self) {
@@ -557,6 +589,7 @@ pub fn spawn_with_limits(
         commands,
         interrupt,
         stop,
+        turns: std::sync::Arc::default(),
     };
     let task = tokio::spawn(async move {
         let channels = Channels {

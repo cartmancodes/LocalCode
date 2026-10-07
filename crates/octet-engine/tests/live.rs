@@ -1317,3 +1317,29 @@ async fn steer_while_interrupting_names_the_text_it_did_not_send() {
         .unwrap()
         .unwrap();
 }
+#[tokio::test]
+async fn a_prompt_cancelled_before_it_starts_is_not_run() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    // Esc in the same instant as the send: the cancel must still win.
+    handle.send(Command::Prompt("hello".into())).unwrap();
+    handle.interrupt();
+    let outcome = wait_for(&mut events, |e| matches!(e, Event::Finished { .. })).await;
+    assert!(
+        matches!(
+            outcome,
+            Event::Finished {
+                outcome: Outcome::Interrupted
+            }
+        ),
+        "{outcome:?}"
+    );
+    // A later prompt is not affected.
+    handle.send(Command::Prompt("hello".into())).unwrap();
+    assert_eq!(turn_text(&mut events).await, "Hello fixture");
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
