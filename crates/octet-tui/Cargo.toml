@@ -2,11 +2,12 @@
 name = "octet-tui"
 version = "0.1.0"
 edition.workspace = true
+publish.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 [dependencies]
-octet-core = { path = "../octet-core" }
+octet-core.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
@@ -19,8 +20,8 @@ thiserror.workspace = true
 [dev-dependencies]
 # Paused time makes the job and grace tests exact and instant.
 tokio = { workspace = true, features = ["test-util"] }
-octet-testkit = { path = "../octet-testkit" }
-octet-core = { path = "../octet-core", features = ["testing"] }
+octet-testkit.workspace = true
+octet-core = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

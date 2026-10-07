@@ -3,10 +3,11 @@
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"}{printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-rust-check: ## Check formatting, tests and lint for the Rust workspace
+rust-check: ## Check formatting, lint, docs and tests for the Rust workspace
 	scripts/rust-env.sh cargo fmt --all -- --check
-	scripts/rust-env.sh cargo test --locked --workspace
 	scripts/rust-env.sh cargo clippy --locked --workspace --all-targets -- -D warnings
+	RUSTDOCFLAGS="-D warnings" scripts/rust-env.sh cargo doc --locked --workspace --no-deps
+	scripts/rust-env.sh cargo test --locked --workspace
 
 rust-build: ## Build the optimized terminal UI
 	scripts/rust-env.sh cargo build --release --locked -p octet

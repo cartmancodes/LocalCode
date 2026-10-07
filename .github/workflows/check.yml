@@ -5,6 +5,9 @@ on:
   pull_request:
   # The release workflow runs these checks before it builds.
   workflow_call:
+  # Weekly, so a new advisory against unchanged dependencies is seen.
+  schedule:
+    - cron: '0 6 * * 1'
 # Least privilege: jobs read the repository; the audit job alone may write
 # check results.
 permissions:
@@ -21,6 +24,7 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       # Actions are pinned to commits; the comment names the release.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -30,6 +34,7 @@ jobs:
       - run: make rust-check
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       checks: write
@@ -38,3 +43,12 @@ jobs:
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+  # Licenses, banned or duplicated crates, and sources (deny.toml).
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check licenses bans sources
