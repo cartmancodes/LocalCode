@@ -1,6 +1,18 @@
-//! `octet`: parses the command line and starts the terminal interface.
+//! `octet`: parses the command line and starts the terminal interface, or
+//! runs headless (`--print`, `--rpc`).
 use octet_core::Config;
 use std::{io::IsTerminal, path::PathBuf};
+mod headless;
+
+/// What the process runs once the options are read.
+enum Run {
+    /// The terminal interface.
+    Interface,
+    /// One prompt; the reply (or, with `json`, every event) on stdout.
+    Print { prompt: String, json: bool },
+    /// JSON-line commands in, events out.
+    Rpc,
+}
 
 /// `--help`: fixed usage and keys, then every command from the registry.
 fn help() -> String {
@@ -8,6 +20,13 @@ fn help() -> String {
         "                 [--model MODEL] [--mode MODE] [--resume VENDOR_SESSION_ID]",
         "                 [--binary PATH] [--journal-dir PATH]",
         "                 [--approval-timeout SECONDS] [--effort LEVEL]",
+        "                 [--print PROMPT|- [--output text|json] | --rpc]",
+        "",
+        "Headless: --print (-p) runs one prompt and writes the reply; - reads it",
+        "from stdin. --output json writes every event as a JSON line. --rpc reads",
+        "JSON-line commands (prompt, answer, interrupt, mode, effort, quit) from",
+        "stdin and writes events. Print mode denies approvals; exit codes are 0",
+        "(completed), 1 (failed) and 130 (interrupted).",
         "",
         "Defaults: Codex, current directory. Vendor CLI installation and login required.",
         "Modes: ask (default) · accept-edits · auto (vendor auto-review) · full-access",
@@ -50,12 +69,17 @@ fn help() -> String {
 }
 #[tokio::main]
 async fn main() {
-    if let Err(error) = run().await {
-        eprintln!("octet: {error}");
-        std::process::exit(1);
+    match run().await {
+        Ok(0) => {}
+        Ok(code) => std::process::exit(code),
+        Err(error) => {
+            eprintln!("octet: {error}");
+            std::process::exit(1);
+        }
     }
 }
-async fn run() -> Result<(), String> {
+/// Reads the options and runs; the process's exit code.
+async fn run() -> Result<i32, String> {
     let mut args = std::env::args().skip(1);
     let mut engine = "codex".to_owned();
     let mut binary = None;
@@ -66,16 +90,28 @@ async fn run() -> Result<(), String> {
     let mut mode = octet_core::Mode::Ask;
     let mut approval_timeout = octet_core::DEFAULT_APPROVAL_TIMEOUT;
     let mut effort = None;
+    let mut print = None;
+    let mut output = None;
+    let mut rpc = false;
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
             print!("{}", help());
-            return Ok(());
+            return Ok(0);
         }
         if arg == "--version" {
             println!("octet {} (Rust preview)", env!("CARGO_PKG_VERSION"));
-            return Ok(());
+            return Ok(0);
         }
-        const OPTIONS: [&str; 9] = [
+        if arg == "--rpc" {
+            rpc = true;
+            continue;
+        }
+        let arg = if arg == "-p" {
+            "--print".to_owned()
+        } else {
+            arg
+        };
+        const OPTIONS: [&str; 11] = [
             "--engine",
             "--binary",
             "--cwd",
@@ -85,6 +121,8 @@ async fn run() -> Result<(), String> {
             "--mode",
             "--approval-timeout",
             "--effort",
+            "--print",
+            "--output",
         ];
         if !OPTIONS.contains(&arg.as_str()) {
             return Err(format!("Unknown option {arg}. Use --help."));
@@ -121,6 +159,14 @@ async fn run() -> Result<(), String> {
                 }
                 effort = Some(value);
             }
+            "--print" => print = Some(value),
+            "--output" => {
+                output = Some(match value.as_str() {
+                    "text" => false,
+                    "json" => true,
+                    _ => return Err("Output must be text or json".into()),
+                })
+            }
             _ => unreachable!("{arg} is checked against OPTIONS"),
         }
     }
@@ -131,7 +177,26 @@ async fn run() -> Result<(), String> {
             .collect();
         format!("Engine must be {}", octet_core::model::or_list(&names))
     })?;
-    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+    let run = match (print, rpc) {
+        (Some(_), true) => return Err("--print and --rpc cannot be combined".into()),
+        (Some(prompt), false) => Run::Print {
+            prompt: if prompt == "-" {
+                headless::read_prompt().await?
+            } else {
+                prompt
+            },
+            json: output.unwrap_or(false),
+        },
+        (None, _) if output.is_some() => return Err("--output applies to --print".into()),
+        (None, true) => Run::Rpc,
+        (None, false) => Run::Interface,
+    };
+    if matches!(run, Run::Print { ref prompt, .. } if prompt.trim().is_empty()) {
+        return Err("The prompt is empty".into());
+    }
+    if matches!(run, Run::Interface)
+        && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal())
+    {
         return Err(
             "The terminal UI requires an interactive terminal. Use --help for options.".into(),
         );
@@ -165,7 +230,12 @@ async fn run() -> Result<(), String> {
         effort,
         fork: false,
     };
-    octet_tui::run(config, directory)
-        .await
-        .map_err(|e| e.to_string())
+    match run {
+        Run::Interface => octet_tui::run(config, directory)
+            .await
+            .map(|()| 0)
+            .map_err(|e| e.to_string()),
+        Run::Print { prompt, json } => headless::print(config, directory, prompt, json).await,
+        Run::Rpc => headless::rpc(config, directory).await,
+    }
 }

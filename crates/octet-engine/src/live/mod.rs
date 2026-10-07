@@ -365,7 +365,7 @@ pub enum Event {
     /// The session ended; no more events follow.
     Stopped,
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 /// What the interface asks a session to do.
 pub enum Command {
     /// Send a prompt, shown as sent.

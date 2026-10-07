@@ -124,6 +124,12 @@ impl Drop for Session {
         self.handle.shutdown();
     }
 }
+/// An event as one JSON object, in the journal's record shape:
+/// `{"type": kind, "data": data}`.
+pub fn event_json(event: &Event) -> Value {
+    let (kind, data) = record(event);
+    json!({"type": kind, "data": data})
+}
 fn record(event: &Event) -> (&'static str, Value) {
     match event {
         Event::Models(models) => {

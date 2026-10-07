@@ -1,0 +1,221 @@
+//! Print, JSON and RPC modes, run as processes against the fake vendor. No
+//! terminal is attached: these modes must not need one.
+// Test code: an unwrap that fails is the test failing.
+#![allow(clippy::unwrap_used)]
+use serde_json::{json, Value};
+use std::{
+    io::{BufRead, BufReader, Write},
+    process::{Child, ChildStdin, Command, Stdio},
+    sync::mpsc,
+    time::Duration,
+};
+
+/// How long any one process or line may take.
+const LIMIT: Duration = Duration::from_secs(20);
+
+/// `octet` against the fake Codex, journaling into its own directory.
+fn octet(args: &[&str]) -> (Child, octet_testkit::TempDir) {
+    let temp = octet_testkit::TempDir::new("octet-headless");
+    std::fs::create_dir_all(temp.path()).unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_octet"))
+        .arg("--binary")
+        .arg(octet_testkit::protocol_child())
+        .arg("--journal-dir")
+        .arg(temp.path())
+        .arg("--cwd")
+        .arg(temp.path())
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    (child, temp)
+}
+
+/// Runs `octet args` with `input` on stdin; its exit code, stdout and stderr.
+fn run(args: &[&str], input: &str) -> (i32, String, String) {
+    let (mut child, _temp) = octet(args);
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || tx.send(child.wait_with_output().unwrap()));
+    let output = rx.recv_timeout(LIMIT).expect("octet did not exit");
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn print_writes_the_reply_and_exits_zero() {
+    let (code, stdout, stderr) = run(&["--print", "hello"], "");
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "Hello fixture\n");
+}
+
+#[test]
+fn print_reads_the_prompt_from_stdin() {
+    let (code, stdout, stderr) = run(&["-p", "-"], "params\n");
+    assert_eq!(code, 0, "{stderr}");
+    // The fake echoes the turn it received: the prompt came from stdin.
+    assert!(stdout.contains(r#""text":"params""#), "{stdout}");
+}
+
+#[test]
+fn print_json_writes_event_lines() {
+    let (code, stdout, stderr) = run(&["--print", "hello", "--output", "json"], "");
+    assert_eq!(code, 0, "{stderr}");
+    let events: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(events.contains(&json!({"type":"user","data":"hello"})));
+    assert!(events.contains(&json!({"type":"text","data":"Hello fixture"})));
+    assert_eq!(
+        events.last(),
+        Some(&json!({"type":"finished","data":"completed"}))
+    );
+}
+
+#[test]
+fn print_denies_approvals_and_says_why() {
+    let (code, stdout, stderr) = run(&["--print", "approval"], "");
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("decline"), "{stdout}");
+    assert!(stderr.contains("--mode auto"), "{stderr}");
+}
+
+#[test]
+fn print_failed_turn_exits_one() {
+    let (code, _, stderr) = run(&["--print", "fail"], "");
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("You've hit your usage limit."), "{stderr}");
+}
+
+#[test]
+fn print_and_rpc_cannot_be_combined() {
+    let (code, _, stderr) = run(&["--print", "hello", "--rpc"], "");
+    assert_eq!(code, 1);
+    assert!(stderr.contains("--print and --rpc"), "{stderr}");
+}
+
+/// An RPC client: writes commands, reads event lines.
+struct Rpc {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    lines: mpsc::Receiver<String>,
+    _temp: octet_testkit::TempDir,
+}
+impl Rpc {
+    fn start() -> Self {
+        let (mut child, temp) = octet(&["--rpc"]);
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                if tx.send(line.unwrap()).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            child,
+            stdin,
+            lines,
+            _temp: temp,
+        }
+    }
+    fn send(&mut self, command: &Value) {
+        let stdin = self.stdin.as_mut().unwrap();
+        writeln!(stdin, "{command}").unwrap();
+        stdin.flush().unwrap();
+    }
+    /// Reads event lines until one matches `wanted`.
+    fn until(&self, wanted: impl Fn(&Value) -> bool) -> Value {
+        loop {
+            let line = self.lines.recv_timeout(LIMIT).expect("no matching line");
+            let event: Value = serde_json::from_str(&line).unwrap();
+            if wanted(&event) {
+                return event;
+            }
+        }
+    }
+    fn exit_code(mut self) -> i32 {
+        drop(self.stdin.take());
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || tx.send(self.child.wait().unwrap()));
+        rx.recv_timeout(LIMIT)
+            .expect("octet did not exit")
+            .code()
+            .unwrap_or(-1)
+    }
+}
+
+#[test]
+fn rpc_runs_prompts_and_answers_approvals() {
+    let mut rpc = Rpc::start();
+    rpc.until(|e| e["type"] == "ready");
+    rpc.send(&json!({"type":"prompt","text":"hello"}));
+    rpc.until(|e| e == &json!({"type":"text","data":"Hello fixture"}));
+    rpc.until(|e| e["type"] == "finished");
+    rpc.send(&json!({"type":"prompt","text":"approval"}));
+    let approval = rpc.until(|e| e["type"] == "approval");
+    let id = approval["data"]["id"].as_u64().unwrap();
+    rpc.send(&json!({"type":"answer","id":id,"allow":true}));
+    rpc.until(|e| e == &json!({"type":"text","data":"accept"}));
+    rpc.until(|e| e == &json!({"type":"finished","data":"completed"}));
+    rpc.send(&json!({"type":"nonsense"}));
+    let error = rpc.until(|e| e["type"] == "error");
+    assert!(
+        error["data"].as_str().unwrap().contains("nonsense"),
+        "{error}"
+    );
+    rpc.send(&json!({"type":"quit"}));
+    assert_eq!(rpc.exit_code(), 0);
+}
+
+#[test]
+fn rpc_quits_on_eof() {
+    let rpc = Rpc::start();
+    rpc.until(|e| e["type"] == "ready");
+    assert_eq!(rpc.exit_code(), 0);
+}
+
+#[test]
+fn print_sigint_interrupts_the_turn_and_exits_130() {
+    let (mut child, _temp) = octet(&["--print", "hold", "--output", "json"]);
+    drop(child.stdin.take());
+    let stdout = child.stdout.take().unwrap();
+    let (tx, lines) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if tx.send(line.unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+    loop {
+        let line = lines.recv_timeout(LIMIT).expect("the turn never started");
+        if line.contains(r#""type":"started""#) {
+            break;
+        }
+    }
+    let pid = libc::pid_t::try_from(child.id()).unwrap();
+    // SAFETY: kill only sends a signal to our own child process.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+    let last = std::iter::from_fn(|| lines.recv_timeout(LIMIT).ok()).last();
+    assert_eq!(
+        last.as_deref(),
+        Some(r#"{"data":"interrupted","type":"finished"}"#)
+    );
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || tx.send(child.wait().unwrap()));
+    assert_eq!(rx.recv_timeout(LIMIT).unwrap().code(), Some(130));
+}

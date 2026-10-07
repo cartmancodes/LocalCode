@@ -9,11 +9,11 @@ rust-version.workspace = true
 octet-tui = { path = "../octet-tui" }
 octet-core = { path = "../octet-core" }
 tokio.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 octet-testkit = { path = "../octet-testkit" }
 libc.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true
