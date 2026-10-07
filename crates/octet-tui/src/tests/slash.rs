@@ -518,3 +518,62 @@ async fn sessions_listing_runs_off_the_loop() {
     run_job(&mut app, action).await;
     assert!(app.entries_text().contains("No earlier vendor sessions"));
 }
+
+/// A job that ends with `done` after `delay`, or never.
+fn job_after(delay: Option<Duration>, done: fn() -> crate::jobs::Done) -> crate::jobs::Job {
+    crate::jobs::Job {
+        label: "Exporting the journal…",
+        work: Box::pin(async move {
+            match delay {
+                Some(delay) => tokio::time::sleep(delay).await,
+                None => std::future::pending().await,
+            }
+            done()
+        }),
+    }
+}
+fn exported() -> crate::jobs::Done {
+    crate::jobs::Done::Exported {
+        path: "out.jsonl".into(),
+        result: Ok(()),
+    }
+}
+#[tokio::test]
+async fn a_second_job_keeps_the_draft() {
+    let mut app = app();
+    let (_temp, session) = demo_session("octet-second-job").await;
+    app.job = Some(crate::jobs::Running::spawn(job_after(None, exported)));
+    assert!(app.composer.editor.insert("/sessions"));
+    key_action(&mut app, &session.handle, key(KeyCode::Enter)).await;
+    assert_eq!(app.composer.editor.text, "/sessions");
+    assert_eq!(app.status_line, "Wait for: Exporting the journal…");
+}
+#[tokio::test]
+async fn a_session_ending_waits_for_its_job_and_reports_it() {
+    let running = crate::jobs::Running::spawn(job_after(Some(Duration::from_millis(50)), exported));
+    let ended = crate::jobs::finish(Some(running), Duration::from_secs(5)).await;
+    // Shown in whichever interface comes next.
+    let mut next = app();
+    crate::jobs::apply(&mut next, ended.expect("a job was running"));
+    assert!(next
+        .entries_text()
+        .contains("Exported journal to out.jsonl"));
+}
+#[tokio::test]
+async fn a_job_that_outlives_its_session_is_stopped_with_a_note() {
+    let running = crate::jobs::Running::spawn(job_after(None, exported));
+    let started = std::time::Instant::now();
+    let ended = crate::jobs::finish(Some(running), Duration::from_millis(50)).await;
+    assert!(started.elapsed() < Duration::from_secs(2));
+    let mut next = app();
+    crate::jobs::apply(&mut next, ended.expect("a job was running"));
+    assert!(
+        next.entries_text()
+            .contains("Exporting the journal… did not finish"),
+        "{}",
+        next.entries_text()
+    );
+    assert!(crate::jobs::finish(None, Duration::from_secs(5))
+        .await
+        .is_none());
+}

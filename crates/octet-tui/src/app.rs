@@ -208,6 +208,8 @@ pub struct App {
     /// empty prompt.
     pub(crate) quit_armed: Option<tokio::time::Instant>,
     pub(crate) goals: octet_core::goal::GoalRunner,
+    /// The one job running off the loop.
+    pub(crate) job: Option<crate::jobs::Running>,
 }
 impl App {
     pub fn new(config: &octet_core::Config, journal: PathBuf) -> Self {
@@ -251,6 +253,7 @@ impl App {
             status_line: String::new(),
             quit_armed: None,
             goals: octet_core::goal::GoalRunner::default(),
+            job: None,
         }
     }
     pub fn connection(&mut self, config: &octet_core::Config, journal: PathBuf) {

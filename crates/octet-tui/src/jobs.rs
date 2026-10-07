@@ -1,8 +1,13 @@
 //! Work that reads the disk or runs programs, kept off the event loop so
-//! vendor events and approvals keep flowing. One job runs at a time.
+//! vendor events and approvals keep flowing. One job runs at a time, and a
+//! session that ends waits for it, so an export is never cut short.
 use crate::{app::App, remote};
 use octet_core::{ExportError, RecentSession};
-use std::{future::Future, path::PathBuf, pin::Pin};
+use std::{future::Future, path::PathBuf, pin::Pin, time::Duration};
+use tokio::task::JoinHandle;
+
+/// How long an ending session waits for its job.
+pub(crate) const GRACE: Duration = Duration::from_secs(5);
 
 /// What a finished job reports.
 pub(crate) enum Done {
@@ -49,8 +54,58 @@ impl Job {
     }
 }
 
-/// Shows what a finished job found.
-pub(crate) fn apply(app: &mut App, done: Done) {
+/// The job running off the loop.
+pub(crate) struct Running {
+    pub(crate) label: &'static str,
+    task: JoinHandle<Done>,
+}
+
+impl Running {
+    pub(crate) fn spawn(job: Job) -> Self {
+        Self {
+            label: job.label,
+            task: tokio::spawn(job.work),
+        }
+    }
+    /// Waits for the job to end.
+    pub(crate) async fn wait(&mut self) -> Ended {
+        match (&mut self.task).await {
+            Ok(done) => Ended::Done(done),
+            Err(error) => Ended::Failed(error.to_string()),
+        }
+    }
+}
+
+/// How a job ended.
+pub(crate) enum Ended {
+    Done(Done),
+    /// The task panicked or was cancelled.
+    Failed(String),
+    /// It outlived its session's grace period and was stopped.
+    Stopped(&'static str),
+}
+
+/// Waits up to `grace` for `running` to end, stopping it after that.
+pub(crate) async fn finish(running: Option<Running>, grace: Duration) -> Option<Ended> {
+    let mut running = running?;
+    Some(match tokio::time::timeout(grace, running.wait()).await {
+        Ok(ended) => ended,
+        Err(_) => {
+            running.task.abort();
+            Ended::Stopped(running.label)
+        }
+    })
+}
+
+/// Shows how a job ended.
+pub(crate) fn apply(app: &mut App, ended: Ended) {
+    let done = match ended {
+        Ended::Done(done) => done,
+        Ended::Failed(error) => return app.error(format!("A background task failed: {error}")),
+        Ended::Stopped(label) => {
+            return app.error(format!("{label} did not finish in time and was stopped"))
+        }
+    };
     match done {
         Done::Remote(checks) => {
             let report = remote::report(&checks);

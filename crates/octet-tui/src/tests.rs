@@ -14,7 +14,7 @@ async fn run_job(app: &mut App, action: Action) {
     let Action::Job(job) = action else {
         panic!("no job was started")
     };
-    crate::jobs::apply(app, job.work.await);
+    crate::jobs::apply(app, crate::jobs::Ended::Done(job.work.await));
 }
 /// Runs a command; what it sent the session.
 async fn sends(app: &mut App, input: &str) -> Vec<Command> {

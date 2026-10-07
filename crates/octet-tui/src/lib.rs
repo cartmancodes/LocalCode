@@ -100,6 +100,8 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     let mut opening_notice: Option<String> = None;
     let mut binaries = std::collections::HashMap::from([(config.engine, config.binary.clone())]);
     let goal_store = octet_core::goal::GoalStore::new(&directory, &config.cwd);
+    // How the last session's job ended, for whichever interface comes next.
+    let mut ended_job: Option<jobs::Ended> = None;
     loop {
         let mut session = Session::open(config.clone(), directory.clone())
             .await
@@ -110,11 +112,16 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         if let Some(notice) = opening_notice.take() {
             app.note(notice);
         }
+        if let Some(ended) = ended_job.take() {
+            jobs::apply(&mut app, ended);
+        }
         if !app.goals.is_attached() {
             attach_goal_store(&mut app, goal_store.clone()).await;
         }
         app.connection(&config, session.journal.clone());
         let result = run_session(&mut terminal, &guard, &mut app, &mut session).await;
+        // Every exit path: an export is finished, not cut short or orphaned.
+        ended_job = jobs::finish(app.job.take(), jobs::GRACE).await;
         session.shutdown().await;
         let ended = reconnect::Ended {
             session: &app.conn.session,
@@ -183,8 +190,6 @@ async fn run_session(
     let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
     let mut suspend =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(libc::SIGTSTP))?;
-    // The one job running off the loop, with its label.
-    let mut job: Option<(&'static str, tokio::task::JoinHandle<jobs::Done>)> = None;
     // The running `!` command, if any.
     let mut shell_task: Option<ShellTask> = None;
     // The @ index, built on a plain thread: a walk stuck on a dead mount
@@ -225,17 +230,14 @@ async fn run_session(
                 }
                 dirty = true;
             }
-            done = async {
-                match job.as_mut() {
-                    Some((_, task)) => task.await,
+            ended = async {
+                match app.job.as_mut() {
+                    Some(running) => running.wait().await,
                     None => std::future::pending().await,
                 }
             } => {
-                job = None;
-                match done {
-                    Ok(done) => jobs::apply(app, done),
-                    Err(error) => app.error(format!("A background task failed: {error}")),
-                }
+                app.job = None;
+                jobs::apply(app, ended);
                 dirty = true;
             }
             index = async {
@@ -305,13 +307,11 @@ async fn run_session(
                 };
                 match action {
                     Action::Continue => {}
-                    Action::Job(next) => match &job {
-                        Some((running, _)) => app.hint(format!("Wait for: {running}")),
-                        None => {
-                            app.hint(next.label);
-                            job = Some((next.label, tokio::spawn(next.work)));
-                        }
-                    },
+                    // The command checked that no job is running.
+                    Action::Job(next) => {
+                        app.hint(next.label);
+                        app.job = Some(jobs::Running::spawn(next));
+                    }
                     Action::ExternalEditor => {
                         match external::prepare(&app.composer.editor.text, external::editor_command()) {
                             Err(error) => app.error(error.to_string()),

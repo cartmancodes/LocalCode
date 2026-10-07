@@ -60,7 +60,7 @@ pub(crate) async fn try_command(app: &mut App, vendor: &dyn Vendor, input: &str)
         // A failed /image leaves the line in the prompt box to correct.
         Cmd::Image if !image_command(app, argument) => return None,
         Cmd::Image => {}
-        Cmd::Sessions => return Some(sessions_command(app)),
+        Cmd::Sessions => return start_job(app, sessions_job(app)),
         Cmd::Resume => return Some(resume_command(app, argument)),
         Cmd::Steer if argument.is_empty() => app.note("Use /steer <text>"),
         Cmd::Steer => steer(app, vendor, argument.to_owned()),
@@ -82,10 +82,10 @@ pub(crate) async fn try_command(app: &mut App, vendor: &dyn Vendor, input: &str)
         )),
         Cmd::Goal => goal_command(app, vendor, argument).await,
         Cmd::RemoteControl => match argument {
-            "" | "status" => return Some(Action::Job(Job::remote())),
+            "" | "status" => return start_job(app, Job::remote()),
             _ => app.note("Use /remote-control or /remote-control status"),
         },
-        Cmd::Export => return Some(export_command(app, argument)),
+        Cmd::Export => return start_job(app, export_job(app, argument)),
     }
     Some(Action::Continue)
 }
@@ -258,20 +258,25 @@ pub(crate) fn image_path(
 /// How many sessions `/sessions` lists.
 const SESSIONS_LISTED: usize = 20;
 
+/// Starts `job`, unless one is running: then the draft stays for later.
+fn start_job(app: &mut App, job: Job) -> Option<Action> {
+    if let Some(running) = &app.job {
+        app.hint(format!("Wait for: {}", running.label));
+        return None;
+    }
+    Some(Action::Job(job))
+}
+
 /// `/sessions`: this workspace's recent vendor sessions, from the journals
 /// beside this one.
-fn sessions_command(app: &App) -> Action {
+fn sessions_job(app: &App) -> Job {
     let directory = app
         .conn
         .journal
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_default();
-    Action::Job(Job::sessions(
-        directory,
-        app.composer.root.clone(),
-        SESSIONS_LISTED,
-    ))
+    Job::sessions(directory, app.composer.root.clone(), SESSIONS_LISTED)
 }
 
 /// Lists what `/sessions` found, keeping it for `/resume N`.
@@ -497,7 +502,7 @@ async fn goal_command(app: &mut App, vendor: &dyn Vendor, argument: &str) {
         },
     }
 }
-fn export_command(app: &App, argument: &str) -> Action {
+fn export_job(app: &App, argument: &str) -> Job {
     let path = if argument.trim().is_empty() {
         std::env::current_dir()
             .unwrap_or_default()
@@ -505,7 +510,7 @@ fn export_command(app: &App, argument: &str) -> Action {
     } else {
         PathBuf::from(argument.trim())
     };
-    Action::Job(Job::export(app.conn.journal.clone(), path))
+    Job::export(app.conn.journal.clone(), path)
 }
 pub(crate) async fn command(app: &mut App, vendor: &dyn Vendor, input: &str) -> Action {
     try_command(app, vendor, input)
