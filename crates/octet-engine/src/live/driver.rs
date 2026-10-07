@@ -176,7 +176,8 @@ impl<P: Protocol> Driver<P> {
             let Some(pending) = core.pending.remove(&id) else {
                 continue;
             };
-            core.send(core.answer(&pending.wire, false)).await?;
+            core.send(core.deny(&pending.wire, "No answer in time; denied"))
+                .await?;
             core.emit(Event::ApprovalClosed(id))?;
             core.emit(Event::Notice("Approval timed out and was denied".into()))?;
             core.resume_watchdog();

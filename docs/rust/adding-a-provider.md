@@ -63,7 +63,7 @@ impl Protocol for GeminiProtocol {
     async fn on_frame(&mut self, core: &mut Core, frame: Value) -> Result<(), DriverError> { … }
     fn answer(wire: &Value, allow: bool) -> Value { … }
     fn stray_reply(request: &Value) -> Option<Value> { … }
-    // Optional: is_progress, mode_change_pending, deadline, on_deadline, turn_started, steer.
+    // Optional: deny, is_progress, mode_change_pending, deadline, on_deadline, turn_started, steer.
 }
 ```
 
@@ -116,6 +116,7 @@ scenarios are per vendor.
 | `set_mode` | Switch a live session to `target`. The driver has refused full access, an unready session, a pending switch and a no-op. Emit `Event::ModeChanged` once the vendor confirms. |
 | `on_frame` | Turn vendor output into `Text`, `Tool`, `Usage`, `Approval` (through `core.queue_approval`, which denies a request too large to show or beyond the 8 already waiting) and, at the turn's end, `core.finish_turn(outcome, error)`, which closes the turn's approvals and makes the session idle. Ignore output for other sessions or turns. |
 | `answer` | The reply that allows or denies an approval request. The driver uses it for user answers, timeouts and oversized requests. |
+| `deny` | The reply denying an approval with a reason (the user's refusal, a timeout, the cap, a cancelled turn). Override it if the vendor passes a message on to the model, as Claude does; the default is `answer(wire, false)`. |
 | `stray_reply` | The reply to a request Octet will not show the user. Deny permissions; report anything else as unsupported. |
 | `mode_change_pending` | True while a mode switch waits for the vendor to confirm it. The driver then refuses another switch. |
 | `is_progress` | Whether a frame shows the turn is alive. Return false for another thread's output. |

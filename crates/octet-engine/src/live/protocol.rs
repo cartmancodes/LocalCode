@@ -71,6 +71,8 @@ pub(crate) struct Core {
     pub(super) pending: HashMap<u64, Pending>,
     /// The protocol's approval reply, for approvals denied here.
     answer: fn(&Value, bool) -> Value,
+    /// The protocol's deny with a reason, where the vendor takes one.
+    deny: fn(&Value, &str) -> Value,
 }
 
 impl Core {
@@ -92,6 +94,7 @@ impl Core {
             approval_id: 0,
             pending: HashMap::new(),
             answer: P::answer,
+            deny: P::deny,
         }
     }
 
@@ -106,9 +109,19 @@ impl Core {
             .map_err(|e| DriverError::from(e.to_string()))
     }
 
-    /// The wire reply allowing or denying a vendor approval.
+    /// The wire reply allowing a vendor approval, or the user denying it.
     pub(super) fn answer(&self, wire: &Value, allow: bool) -> Value {
-        (self.answer)(wire, allow)
+        if allow {
+            (self.answer)(wire, true)
+        } else {
+            self.deny(wire, "The user denied this request")
+        }
+    }
+
+    /// The wire reply denying a vendor approval, saying why where the vendor
+    /// passes a reason on to the model.
+    pub(super) fn deny(&self, wire: &Value, reason: &str) -> Value {
+        (self.deny)(wire, reason)
     }
 
     /// Restarts the silence watchdog once no approval is waiting on the user.
@@ -126,16 +139,20 @@ impl Core {
         detail: String,
     ) -> Result<(), DriverError> {
         let refusal = if detail.len() > EVENT_BYTES {
-            Some("Oversized approval denied: cannot show the complete request".to_owned())
+            Some((
+                "Oversized approval denied: cannot show the complete request".to_owned(),
+                "Too large to show the user; denied",
+            ))
         } else if self.pending.len() >= MAX_PENDING_APPROVALS {
-            Some(format!(
-                "Too many approvals are waiting ({MAX_PENDING_APPROVALS}); denied another"
+            Some((
+                format!("Too many approvals are waiting ({MAX_PENDING_APPROVALS}); denied another"),
+                "Too many approvals are waiting; denied",
             ))
         } else {
             None
         };
-        if let Some(notice) = refusal {
-            self.send(self.answer(&wire, false)).await?;
+        if let Some((notice, reason)) = refusal {
+            self.send(self.deny(&wire, reason)).await?;
             return self.emit(Event::Notice(notice));
         }
         self.approval_id += 1;
@@ -151,7 +168,8 @@ impl Core {
 
     pub(super) async fn deny_all_pending(&mut self) -> Result<(), DriverError> {
         for (id, pending) in std::mem::take(&mut self.pending) {
-            self.send(self.answer(&pending.wire, false)).await?;
+            self.send(self.deny(&pending.wire, "The turn was cancelled; denied"))
+                .await?;
             self.emit(Event::ApprovalClosed(id))?;
         }
         Ok(())
@@ -231,6 +249,11 @@ pub(crate) trait Protocol: Default + Send {
     ) -> impl Future<Output = Result<(), DriverError>> + Send;
     /// The reply allowing or denying the approval request `wire`.
     fn answer(wire: &Value, allow: bool) -> Value;
+    /// The reply denying `wire` because of `reason`. A vendor that passes a
+    /// reason on to the model overrides this; the default is a plain deny.
+    fn deny(wire: &Value, _reason: &str) -> Value {
+        Self::answer(wire, false)
+    }
     /// The reply to a request Octet will not put in front of the user.
     fn stray_reply(request: &Value) -> Option<Value>;
     /// Whether `frame` shows the turn is alive, resetting its silence

@@ -73,11 +73,20 @@ fn launch_args(config: &Config) -> Vec<OsString> {
 }
 
 fn answer_wire(wire: &Value, allow: bool) -> Value {
-    let response = if allow {
-        json!({"behavior":"allow","updatedInput":wire["request"]["input"]})
-    } else {
-        json!({"behavior":"deny","message":"Denied by Octet"})
-    };
+    if !allow {
+        return deny_wire(wire, "Denied by Octet");
+    }
+    let response = json!({"behavior":"allow","updatedInput":wire["request"]["input"]});
+    json!({
+        "type": "control_response",
+        "response": {"subtype": "success", "request_id": wire["request_id"], "response": response},
+    })
+}
+
+/// Claude passes the message on to the model, which can then tell a refusal
+/// from a timeout or the cap, and need not retry blindly.
+fn deny_wire(wire: &Value, reason: &str) -> Value {
+    let response = json!({"behavior":"deny","message":reason});
     json!({
         "type": "control_response",
         "response": {"subtype": "success", "request_id": wire["request_id"], "response": response},
@@ -111,6 +120,10 @@ impl Protocol for ClaudeProtocol {
 
     fn answer(wire: &Value, allow: bool) -> Value {
         answer_wire(wire, allow)
+    }
+
+    fn deny(wire: &Value, reason: &str) -> Value {
+        deny_wire(wire, reason)
     }
 
     fn stray_reply(request: &Value) -> Option<Value> {

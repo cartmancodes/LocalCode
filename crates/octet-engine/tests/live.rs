@@ -1288,7 +1288,7 @@ async fn claude_approval_allowed_passes_the_input_back() {
 async fn claude_approval_denied() {
     assert_eq!(
         answer_first_approval(claude(), scenario::APPROVAL, false).await,
-        "deny:"
+        "deny:The user denied this request"
     );
 }
 /// Sends `approvals-9`: the ninth request is denied at the cap, and the
@@ -1296,7 +1296,7 @@ async fn claude_approval_denied() {
 async fn approvals_before_the_cap(engine: Config) -> usize {
     let claude = engine.engine == Engine::CLAUDE;
     let (allow, deny) = if claude {
-        ("allow", "deny")
+        ("allow", "deny:Too many approvals are waiting; denied")
     } else {
         ("accept", "decline")
     };
@@ -1339,7 +1339,10 @@ async fn approvals_over_the_cap_are_denied_with_a_notice() {
 }
 #[tokio::test]
 async fn an_unanswered_approval_times_out_and_is_denied() {
-    for (mut engine, denied) in [(config(), "decline"), (claude(), "deny:")] {
+    for (mut engine, denied) in [
+        (config(), "decline"),
+        (claude(), "deny:No answer in time; denied"),
+    ] {
         engine.approval_timeout = Duration::from_millis(300);
         let (handle, mut events, task) = spawn_with_limits(engine, quick());
         wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;

@@ -457,12 +457,15 @@ fn interactive_claude() {
                 .is_some_and(|id| id.starts_with("cap-"))
         {
             // Each answer to an "approvals-9" request, as "answered cap-N:behavior".
+            let answer = &v["response"]["response"];
             let reply = format!(
-                "answered {}:{}",
+                "answered {}:{}{}",
                 v["response"]["request_id"].as_str().unwrap_or(""),
-                v["response"]["response"]["behavior"]
+                answer["behavior"].as_str().unwrap_or("?"),
+                answer["message"]
                     .as_str()
-                    .unwrap_or("?")
+                    .map(|reason| format!(":{reason}"))
+                    .unwrap_or_default()
             );
             emit(
                 &json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":reply}}}),
@@ -471,11 +474,15 @@ fn interactive_claude() {
             && v.pointer("/response/request_id") == Some(&json!("perm-1"))
         {
             // The answer to the "approval" script: echo what Octet sent.
+            // "allow:<command>" or "deny:<the reason Octet gave>".
             let answer = &v["response"]["response"];
             let reply = format!(
                 "{}:{}",
                 answer["behavior"].as_str().unwrap_or("?"),
-                answer["updatedInput"]["command"].as_str().unwrap_or("")
+                answer["updatedInput"]["command"]
+                    .as_str()
+                    .or(answer["message"].as_str())
+                    .unwrap_or("")
             );
             emit(
                 &json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":reply}}}),
