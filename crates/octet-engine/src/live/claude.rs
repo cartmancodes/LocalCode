@@ -60,6 +60,9 @@ fn launch_args(config: &Config) -> Vec<OsString> {
     }
     if let Some(session) = &config.resume {
         args.extend(["--resume".into(), session.into()]);
+        if config.fork {
+            args.push("--fork-session".into());
+        }
     }
     if let Some(effort) = &config.effort {
         args.extend(["--effort".into(), effort.into()]);
@@ -161,6 +164,11 @@ impl Protocol for ClaudeProtocol {
             "parent_tool_use_id": null,
         }))
         .await
+    }
+
+    /// Claude compacts when the user message is `/compact`.
+    async fn compact(&mut self, core: &mut Core) -> Result<(), DriverError> {
+        self.send_prompt(core, "/compact").await
     }
 
     async fn set_mode(&mut self, core: &mut Core, target: Mode) -> Result<(), DriverError> {

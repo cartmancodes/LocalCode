@@ -142,6 +142,8 @@ pub(crate) enum Action {
     Steer(String),
     /// Change the reasoning effort live (`/effort`, Codex).
     Effort(Option<String>),
+    /// Compact the vendor's context (`/compact`).
+    Compact,
     /// Hand the terminal to the user's editor for the draft.
     ExternalEditor,
     Exit(Exit),
@@ -155,6 +157,8 @@ pub(crate) enum Exit {
     Mode(octet_core::Mode),
     /// Reconnect with a new reasoning effort (providers that take it at launch).
     Effort(Option<String>),
+    /// Reconnect as a new vendor session continuing this one (`/fork`).
+    Fork,
 }
 /// Every slash command's name, for the CLI help.
 pub fn command_names() -> impl Iterator<Item = &'static str> {
@@ -194,6 +198,8 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         // Carry the last vendor-confirmed mode, never an unconfirmed pending one.
         config.mode = app.conn.mode;
         config.effort = app.conn.effort.clone();
+        // A fork happens once, at connect; later reconnects resume the fork.
+        config.fork = false;
         match result? {
             Exit::Model(selection) => {
                 pause_active_goal(&mut app, "model switch").await;
@@ -234,6 +240,16 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
                 if let Some(id) = resume_id(&app, &config) {
                     config.resume = Some(id);
                 }
+                retained_app = Some(app);
+            }
+            Exit::Fork => {
+                pause_active_goal(&mut app, "fork").await;
+                app.notice(format!(
+                    "Forked from {}. Continuing in a new vendor session…",
+                    app.conn.session
+                ));
+                config.resume = Some(app.conn.session.clone());
+                config.fork = true;
                 retained_app = Some(app);
             }
             Exit::New => config.resume = None,
@@ -440,6 +456,14 @@ async fn run_session(
                     Action::GoalPrompt(prompt) => send_goal_prompt(app, session, prompt).await,
                     Action::RemoteControl => start_remote_check(app, &mut remote_check),
                     Action::Steer(text) => steer(app, session, text),
+                    Action::Compact => match session.handle.send(Command::Compact) {
+                        Ok(()) => {
+                            app.goals.user_prompt_sent();
+                            app.conn.start_turn();
+                            app.conn.status = "compacting".into();
+                        }
+                        Err(error) => app.notice(error.to_string()),
+                    },
                     Action::Effort(level) => match session.handle.send(Command::SetEffort(level.clone())) {
                         Ok(()) => app.conn.effort = level,
                         Err(error) => app.notice(error.to_string()),

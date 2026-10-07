@@ -1044,3 +1044,85 @@ async fn claude_launches_with_effort() {
         .unwrap()
         .unwrap();
 }
+#[tokio::test]
+async fn codex_fork_opens_a_new_thread() {
+    let mut c = config();
+    c.resume = Some("fixture-thread".into());
+    c.fork = true;
+    let (handle, mut events, task) = spawn(c);
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::Ready { session } if session == "forked-thread"),
+    )
+    .await;
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn codex_compact_runs_as_a_turn() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Compact).unwrap();
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::User(t) if t == "/compact"),
+    )
+    .await;
+    wait_for(&mut events, |e| matches!(e, Event::Started)).await;
+    wait_for(&mut events, |e| {
+        matches!(
+            e,
+            Event::Finished {
+                outcome: Outcome::Completed
+            }
+        )
+    })
+    .await;
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn claude_fork_passes_fork_session() {
+    let mut c = config();
+    c.engine = Engine::CLAUDE;
+    c.resume = Some("claude-fixture".into());
+    c.fork = true;
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("argv".into())).unwrap();
+    let argv = turn_text(&mut events).await;
+    assert!(
+        argv.contains("--resume claude-fixture --fork-session"),
+        "{argv}"
+    );
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn claude_compact_sends_the_command() {
+    let mut c = config();
+    c.engine = Engine::CLAUDE;
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Compact).unwrap();
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::User(t) if t == "/compact"),
+    )
+    .await;
+    assert_eq!(turn_text(&mut events).await, "Compacted");
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}

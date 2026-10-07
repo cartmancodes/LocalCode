@@ -163,6 +163,7 @@ async fn run() -> Result<(), String> {
         mode,
         approval_timeout,
         effort,
+        fork: false,
     };
     octet_tui::run(config, directory)
         .await

@@ -61,6 +61,7 @@ impl Selection {
             mode: current.mode,
             approval_timeout: current.approval_timeout,
             effort: current.effort.clone(),
+            fork: false,
             engine: self.provider,
             model: self.model.clone(),
             cwd: current.cwd.clone(),

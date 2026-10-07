@@ -169,6 +169,8 @@ pub(crate) trait Protocol: Default + Send {
         core: &mut Core,
         text: &str,
     ) -> impl Future<Output = Result<(), DriverError>> + Send;
+    /// Asks the vendor to compact its context; the turn has already started.
+    fn compact(&mut self, core: &mut Core) -> impl Future<Output = Result<(), DriverError>> + Send;
     /// Asks the vendor to stop the running turn.
     fn interrupt(
         &mut self,

@@ -123,12 +123,14 @@ fn interactive_codex() {
                 }
             }
             Some("initialize") => emit(&json!({"id":v["id"],"result":{}})),
-            Some("thread/start" | "thread/resume") if v["params"]["model"] == "refuse-thread" => {
+            Some("thread/start" | "thread/resume" | "thread/fork")
+                if v["params"]["model"] == "refuse-thread" =>
+            {
                 emit(
                     &json!({"id":v["id"],"error":{"code":-32600,"message":"no rollout found for thread id fixture"}}),
                 );
             }
-            Some("thread/start" | "thread/resume") => {
+            Some("thread/start" | "thread/resume" | "thread/fork") => {
                 thread_params = v["params"].clone();
                 thread_params["method"] = v["method"].clone();
                 // Echo the policy like Codex does; "report-stricter" simulates a
@@ -149,9 +151,31 @@ fn interactive_codex() {
                     Some("read-only") => json!({"type":"readOnly"}),
                     _ => sandbox,
                 };
+                // A fork opens a new thread; the turns that follow still run
+                // on the fixture thread, which is all the fork tests need.
+                let thread = if v["method"] == "thread/fork" {
+                    "forked-thread"
+                } else {
+                    "fixture-thread"
+                };
                 emit(
-                    &json!({"id":v["id"],"result":{"thread":{"id":"fixture-thread"},"model":"fixture","sandbox":sandbox,"approvalPolicy":policy,"approvalsReviewer":reviewer}}),
+                    &json!({"id":v["id"],"result":{"thread":{"id":thread},"model":"fixture","sandbox":sandbox,"approvalPolicy":policy,"approvalsReviewer":reviewer}}),
                 )
+            }
+            Some("thread/compact/start") => {
+                // Codex runs compaction as a turn on the thread.
+                turn += 1;
+                active = format!("turn-{turn}");
+                emit(&json!({"id":v["id"],"result":{}}));
+                emit(
+                    &json!({"method":"turn/started","params":{"threadId":"fixture-thread","turn":{"id":active}}}),
+                );
+                emit(
+                    &json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":active,"item":{"id":"compact","type":"contextCompaction"}}}),
+                );
+                emit(
+                    &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"completed"}}}),
+                );
             }
             Some("turn/start") => {
                 turn += 1;
@@ -392,6 +416,8 @@ fn interactive_claude() {
             }
             let reply = if text == "argv" {
                 argv.join(" ")
+            } else if text == "/compact" {
+                "Compacted".to_owned()
             } else if text == "modes" {
                 modes.join(",")
             } else if let Some(reply) = goal_reply(text) {

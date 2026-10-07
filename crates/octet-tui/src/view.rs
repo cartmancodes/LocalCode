@@ -522,15 +522,18 @@ fn palette(frame: &mut Frame, area: Rect, selected: usize) {
         .max()
         .unwrap_or(0);
     // Width: borders, the marker and spaces around each column. Height:
-    // borders, a blank line above and below the list, and the key line.
+    // borders and a blank line above and below the list.
     let area = modal(
         area,
         cells(name_width + description_width + 7),
-        cells(palette_entries().count()).saturating_add(5),
+        cells(palette_entries().count()).saturating_add(4),
     );
     frame.render_widget(Clear, area);
+    // On a short screen the list scrolls to keep the selected row in sight.
+    let window = usize::from(area.height.saturating_sub(4)).max(1);
+    let first = selected.saturating_sub(window - 1);
     let mut lines = vec![Line::default()];
-    for (index, (command, description)) in palette_entries().enumerate() {
+    for (index, (command, description)) in palette_entries().enumerate().skip(first).take(window) {
         lines.push(Line::from(Span::styled(
             format!(
                 " {} {:<name_width$} {}",
@@ -543,11 +546,9 @@ fn palette(frame: &mut Frame, area: Rect, selected: usize) {
                 .bg(if index == selected { SELECTED } else { PANEL }),
         )));
     }
-    lines.push(Line::default());
-    lines.push(Line::from(" ↑ ↓ choose · Enter run · Esc close"));
     frame.render_widget(
         Paragraph::new(lines)
-            .block(card(" Commands "))
+            .block(card(" Commands · ↑ ↓ choose · Enter run · Esc close "))
             .style(Style::default().bg(PANEL)),
         area,
     );

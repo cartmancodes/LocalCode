@@ -97,6 +97,10 @@ pub(super) async fn demo(
                         emit(tx, Event::Notice("The offline demo has no reasoning effort".into()))?;
                         continue;
                     }
+                    Some(Command::Compact) => {
+                        emit(tx, Event::Notice("The offline demo has no context to compact".into()))?;
+                        continue;
+                    }
                     Some(Command::Prompt(text)) => (text.clone(), text),
                     Some(Command::PromptWithDisplay { wire, display }) => (wire, display),
                 };
@@ -216,6 +220,10 @@ impl DemoTurn<'_> {
                     Some(Command::SetEffort(_)) => emit(
                         self.tx,
                         Event::Notice("The offline demo has no reasoning effort".into()),
+                    )?,
+                    Some(Command::Compact) => emit(
+                        self.tx,
+                        Event::Notice("Wait for the current operation, or cancel it first".into()),
                     )?,
                     command => break matches!(command, Some(Command::Answer { id: 1, allow: true })),
                 },

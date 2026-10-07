@@ -123,6 +123,16 @@ impl Protocol for CodexProtocol {
             .await
     }
 
+    /// Compaction is a turn on the thread; an error reply fails it as a
+    /// rejected `turn/start` does.
+    async fn compact(&mut self, core: &mut Core) -> Result<(), DriverError> {
+        core.request_id += 1;
+        self.start_request = Some(core.request_id);
+        let params = json!({"threadId": core.session});
+        core.send(json!({"id":core.request_id,"method":"thread/compact/start","params":params}))
+            .await
+    }
+
     /// Codex applies a mode with the next turn's overrides, so no request is sent.
     async fn set_mode(&mut self, core: &mut Core, target: Mode) -> Result<(), DriverError> {
         core.mode = target;
@@ -268,7 +278,11 @@ impl CodexProtocol {
             let method = match &core.config.resume {
                 Some(id) => {
                     params["threadId"] = json!(id);
-                    "thread/resume"
+                    if core.config.fork {
+                        "thread/fork"
+                    } else {
+                        "thread/resume"
+                    }
                 }
                 None => "thread/start",
             };

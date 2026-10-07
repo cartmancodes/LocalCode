@@ -874,3 +874,48 @@ async fn effort_command_shows_and_sets() {
         Action::Continue
     ));
 }
+#[tokio::test]
+async fn fork_needs_an_idle_vendor_session() {
+    let mut app = app();
+    assert!(matches!(
+        command(&mut app, "/fork").await,
+        Action::Exit(Exit::Fork)
+    ));
+    app.conn.phase = ConnPhase::Running;
+    assert!(matches!(command(&mut app, "/fork").await, Action::Continue));
+    assert!(app.entries_text().contains("Cancel the active turn"));
+    let mut fresh = self::app();
+    fresh.conn.session.clear();
+    assert!(matches!(
+        command(&mut fresh, "/fork").await,
+        Action::Continue
+    ));
+    assert!(fresh
+        .entries_text()
+        .contains("No vendor session to fork yet"));
+    let mut demo = App::new(&Config::new(Engine::DEMO, "demo", "/tmp"), "journal".into());
+    demo.conn.phase = ConnPhase::Idle;
+    assert!(matches!(
+        command(&mut demo, "/fork").await,
+        Action::Continue
+    ));
+    assert!(demo
+        .entries_text()
+        .contains("The offline demo has no context to fork"));
+}
+#[tokio::test]
+async fn compact_needs_an_idle_session() {
+    let mut app = app();
+    assert!(matches!(
+        command(&mut app, "/compact").await,
+        Action::Compact
+    ));
+    app.conn.phase = ConnPhase::Running;
+    assert!(matches!(
+        command(&mut app, "/compact").await,
+        Action::Continue
+    ));
+    assert!(app
+        .entries_text()
+        .contains("Finish or cancel the turn before compacting"));
+}

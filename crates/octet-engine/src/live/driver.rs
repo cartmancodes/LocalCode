@@ -184,21 +184,40 @@ impl<P: Protocol> Driver<P> {
             Command::SetMode(target) => self.set_mode(target).await,
             Command::Steer(text) => self.steer(text).await,
             Command::SetEffort(effort) => self.set_effort(effort),
+            Command::Compact => self.compact().await,
         }
     }
 
     async fn start_turn(&mut self, wire: String, display: String) -> Result<(), DriverError> {
+        if self.begin_turn(display)? {
+            self.protocol.send_prompt(&mut self.core, &wire).await?;
+        }
+        Ok(())
+    }
+
+    /// Compaction runs as a turn, so Esc cancels it and its events stream.
+    async fn compact(&mut self) -> Result<(), DriverError> {
+        if self.begin_turn("/compact".into())? {
+            self.protocol.compact(&mut self.core).await?;
+        }
+        Ok(())
+    }
+
+    /// Starts a turn shown as `display`; false (with a notice) when the
+    /// session is not ready for one.
+    fn begin_turn(&mut self, display: String) -> Result<bool, DriverError> {
         if !self.core.phase.is_ready() || self.core.phase.is_running() {
-            return self.core.emit(Event::Notice(
+            self.core.emit(Event::Notice(
                 "Wait for the current operation, or cancel it first".into(),
-            ));
+            ))?;
+            return Ok(false);
         }
         self.core.phase = Phase::InTurn;
         self.protocol.turn_started();
         self.core.deadline = Instant::now() + self.core.limits.turn_idle;
         self.core.emit(Event::User(display))?;
         self.core.emit(Event::Started)?;
-        self.protocol.send_prompt(&mut self.core, &wire).await
+        Ok(true)
     }
 
     /// Live where the provider takes effort per turn; otherwise the

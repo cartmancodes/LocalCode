@@ -183,6 +183,9 @@ pub struct Config {
     pub approval_timeout: Duration,
     /// Reasoning effort to request; `None` takes the vendor's default.
     pub effort: Option<String>,
+    /// Open `resume` as a new vendor session that continues it, leaving the
+    /// original as it was.
+    pub fork: bool,
 }
 impl Config {
     /// Ask mode, the vendor's default model, a new vendor session.
@@ -196,6 +199,7 @@ impl Config {
             mode: Mode::Ask,
             approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
             effort: None,
+            fork: false,
         }
     }
 }
@@ -385,6 +389,8 @@ pub enum Command {
     Steer(String),
     /// Set the reasoning effort for later turns (`None`: vendor default).
     SetEffort(Option<String>),
+    /// Ask the vendor to compact its context; it runs as a turn.
+    Compact,
 }
 impl Command {
     /// The longest text a prompt command carries; 0 for other commands.
@@ -393,7 +399,10 @@ impl Command {
             Command::Prompt(text) => text.len(),
             Command::PromptWithDisplay { wire, display } => wire.len().max(display.len()),
             Command::Steer(text) => text.len(),
-            Command::Answer { .. } | Command::SetMode(_) | Command::SetEffort(_) => 0,
+            Command::Answer { .. }
+            | Command::SetMode(_)
+            | Command::SetEffort(_)
+            | Command::Compact => 0,
         }
     }
 }

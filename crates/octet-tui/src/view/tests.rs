@@ -149,9 +149,13 @@ fn the_palette_shows_every_command_and_its_keys() {
     let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.overlay.palette = true;
-    let rows = screen(80, 24, &mut app);
     let mut columns = Vec::new();
-    for (name, description) in palette_entries() {
+    // The list scrolls to keep the selected row in sight, so every entry
+    // is reachable at 80x24.
+    let mut rows = Vec::new();
+    for (index, (name, description)) in palette_entries().enumerate() {
+        app.overlay.selection = index;
+        rows = screen(80, 24, &mut app);
         // " /mode " must not match the "/model" row.
         let row = rows
             .iter()

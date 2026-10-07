@@ -19,6 +19,8 @@ pub enum Cmd {
     Queue,
     Steer,
     Effort,
+    Fork,
+    Compact,
     Quit,
 }
 
@@ -143,6 +145,18 @@ pub const COMMANDS: &[Spec] = &[
         "Reasoning effort",
     ),
     spec(
+        Cmd::Fork,
+        "/fork",
+        "/fork: continue this conversation in a new vendor session",
+        "Fork session",
+    ),
+    spec(
+        Cmd::Compact,
+        "/compact",
+        "/compact: ask the vendor to compact its context",
+        "Compact context",
+    ),
+    spec(
         Cmd::Quit,
         "/quit",
         "/quit or Ctrl+C twice: save and exit",
@@ -154,7 +168,7 @@ pub const COMMANDS: &[Spec] = &[
 impl Cmd {
     /// Every command, for the registry coverage test.
     #[cfg(test)]
-    pub(crate) const ALL: [Cmd; 14] = [
+    pub(crate) const ALL: [Cmd; 16] = [
         Cmd::Help,
         Cmd::Model,
         Cmd::Mode,
@@ -168,6 +182,8 @@ impl Cmd {
         Cmd::Queue,
         Cmd::Steer,
         Cmd::Effort,
+        Cmd::Fork,
+        Cmd::Compact,
         Cmd::Quit,
     ];
     /// The command a typed name (or alias) names.
@@ -217,6 +233,8 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
         Cmd::Help => app.overlay.help = true,
         Cmd::Queue => queue_command(app, argument),
         Cmd::Effort => return Some(effort_command(app, argument)),
+        Cmd::Fork => return Some(fork_command(app)),
+        Cmd::Compact => return Some(compact_command(app)),
         Cmd::Steer if argument.is_empty() => app.notice("Use /steer <text>"),
         Cmd::Steer => return Some(Action::Steer(argument.to_owned())),
         Cmd::Copy => copy_reply(app),
@@ -287,6 +305,32 @@ fn effort_command(app: &mut App, argument: &str) -> Action {
     } else {
         Action::Exit(Exit::Effort(level))
     }
+}
+
+/// `/fork`: reconnect as a new vendor session that continues this one.
+fn fork_command(app: &mut App) -> Action {
+    if app.conn.engine.offline() {
+        app.notice("The offline demo has no context to fork");
+    } else if app.conn.is_running() || !app.overlay.approvals.is_empty() {
+        app.notice("Cancel the active turn before forking");
+    } else if app.conn.session.is_empty() {
+        app.notice("No vendor session to fork yet; send a prompt first");
+    } else {
+        return Action::Exit(Exit::Fork);
+    }
+    Action::Continue
+}
+
+/// `/compact`: the vendor compacts its context in a turn of its own.
+fn compact_command(app: &mut App) -> Action {
+    if app.conn.engine.offline() {
+        app.notice("The offline demo has no context to compact");
+    } else if !app.is_idle() {
+        app.notice("Finish or cancel the turn before compacting");
+    } else {
+        return Action::Compact;
+    }
+    Action::Continue
 }
 
 /// `/queue`: list the prompts waiting for the running turn, or clear them.
