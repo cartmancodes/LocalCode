@@ -1,4 +1,4 @@
-.PHONY: help rust-check rust-build tui tui-demo
+.PHONY: help rust-check rust-build tui tui-demo gate
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"}{printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -16,3 +16,8 @@ tui: ## Open the terminal UI with Codex
 
 tui-demo: ## Preview the terminal UI offline
 	scripts/rust-env.sh cargo run --locked -p octet -- --engine demo
+
+ENGINE ?= claude
+SCENARIO ?= initialize
+gate: ## Run one protocol-gate scenario against a real CLI (ENGINE=claude SCENARIO=simple)
+	scripts/rust-env.sh cargo run --locked -p octet-gate --bin protocol-gate -- --engine $(ENGINE) --scenario $(SCENARIO)

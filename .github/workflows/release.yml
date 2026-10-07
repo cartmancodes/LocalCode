@@ -14,7 +14,7 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: The tag names the crate's version
         run: scripts/release-tag-check.sh "$TAG" crates/octet/Cargo.toml
   check:
@@ -42,11 +42,17 @@ jobs:
       TAG: ${{ github.ref_name }}
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       # rustup installs the toolchain that rust-toolchain.toml pins.
       - run: rustup show active-toolchain || rustup toolchain install
       - run: rustup target add "$TARGET"
       - run: cargo build --release --locked -p octet --target "$TARGET"
+      # The shipped binary must start on this runner: version, then one
+      # prompt to the offline demo (no terminal or vendor needed).
+      - name: Smoke-run the binary
+        run: |
+          "target/$TARGET/release/octet" --version
+          "target/$TARGET/release/octet" --engine demo --journal-dir "$RUNNER_TEMP/journals" -p hello
       - name: Pack
         run: |
           name="octet-$TAG-$TARGET"
@@ -54,7 +60,7 @@ jobs:
           cp "target/$TARGET/release/octet" README.md LICENSE-APACHE LICENSE-MIT CHANGELOG.md "$name/"
           tar -czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: octet-${{ matrix.target }}
           path: octet-*.tar.gz*
@@ -68,8 +74,8 @@ jobs:
       TAG: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true

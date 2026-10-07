@@ -5,6 +5,10 @@ use std::{io::IsTerminal, path::PathBuf};
 mod args;
 mod headless;
 
+/// Where journals and goals go under the data directory. Named when the Rust
+/// port was a preview; kept so existing journals and goals are still found.
+const JOURNAL_DIR: &str = "octet/rust-preview";
+
 /// `--help`: fixed usage and keys, then every command from the registry.
 fn help() -> String {
     const HEAD: &[&str] = &[
@@ -34,7 +38,7 @@ fn help() -> String {
         .map(|engine| engine.as_str())
         .collect();
     let mut text = format!(
-        "Octet — terminal coding workspace (Rust preview)\n\nUsage: octet [--engine {}] [--cwd PATH]\n",
+        "Octet — terminal coding workspace (preview)\n\nUsage: octet [--engine {}] [--cwd PATH]\n",
         engines.join("|")
     );
     text.push_str(&HEAD.join("\n"));
@@ -112,11 +116,11 @@ async fn run() -> Result<i32, CliError> {
             std::env::var_os("XDG_DATA_HOME")
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute())
-                .map(|p| p.join("octet/rust-preview"))
+                .map(|p| p.join(JOURNAL_DIR))
         })
         .or_else(|| {
             std::env::var_os("HOME")
-                .map(|p| PathBuf::from(p).join(".local/share/octet/rust-preview"))
+                .map(|p| PathBuf::from(p).join(".local/share").join(JOURNAL_DIR))
         })
         .ok_or_else(|| {
             CliError::Usage("Set --journal-dir or HOME to choose transcript storage".into())

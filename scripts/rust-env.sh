@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Prefer the optional workspace-local toolchain without changing shell profiles.
 set -eu
-rust_project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+rust_project_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 if [ -x "$rust_project_root/.superpowers/rust-tools/cargo/bin/cargo" ]; then
     export RUSTUP_HOME="$rust_project_root/.superpowers/rust-tools/rustup"
     export CARGO_HOME="$rust_project_root/.superpowers/rust-tools/cargo"

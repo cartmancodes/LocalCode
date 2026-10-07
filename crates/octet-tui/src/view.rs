@@ -365,7 +365,7 @@ fn banner(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("Octet", Style::default().fg(ACCENT).bold()),
             Span::styled(
-                format!(" v{} · Rust preview", env!("CARGO_PKG_VERSION")),
+                format!(" v{} · preview", env!("CARGO_PKG_VERSION")),
                 Style::default().fg(MUTED),
             ),
         ]),

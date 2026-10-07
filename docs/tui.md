@@ -1,4 +1,4 @@
-# Octet terminal UI — Rust preview
+# Octet terminal UI
 
 A native terminal application now runs against the official Codex and Claude
 CLIs. The harness uses Rust only: no browser, HTTP server or Python runtime.
@@ -341,7 +341,9 @@ Reconnection does not load the earlier local transcript into the viewport yet.
 `/new` starts fresh vendor context without deleting previous journals.
 
 Preview journals are separate append-only JSONL files under
-`$XDG_DATA_HOME/octet/rust-preview`, or `~/.local/share/octet/rust-preview`.
+`$XDG_DATA_HOME/octet/rust-preview`, or `~/.local/share/octet/rust-preview`
+(the name dates from the Rust port's preview and is kept so existing journals
+are still found).
 Use `--journal-dir PATH` to choose another location. Files are created exclusively
 with mode 0600. Completed turns and shutdown events are synced. `/export` writes a
 new JSONL file and refuses to overwrite an existing file. Journals may contain
@@ -447,7 +449,7 @@ size, in a banner modelled on Claude Code's. The banner is three rows tall:
 the 9 × 3-cell mini Octet, drawn with coloured Unicode half blocks, sits beside
 three lines:
 
-- `Octet vX.Y.Z · Rust preview`;
+- `Octet vX.Y.Z · preview`;
 - the permission mode, then the engine and model. The mode leads its line so
   a long model name cannot push it off a narrow screen;
 - the activity name, then the workspace path.

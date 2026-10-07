@@ -1,4 +1,4 @@
-//! Append-only preview journals, deliberately separate from existing v3 sessions.
+//! Append-only, owner-only session journals: one JSONL file per connection.
 use std::{
     io,
     path::{Path, PathBuf},

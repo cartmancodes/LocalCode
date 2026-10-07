@@ -13,6 +13,8 @@
 
 - [Features](rust/tui-features.md): what works today, feature by feature,
   and the preview's boundaries.
+- [The protocol gate](rust/protocol-gate.md): checking a vendor CLI's wire
+  protocol against the drivers with one live scenario (`make gate`).
 - [Adding a provider](rust/adding-a-provider.md): how to support another
   vendor CLI: one file and one row in the provider table.
 - [Parity matrix](rust/parity-matrix.md): the release requirements still

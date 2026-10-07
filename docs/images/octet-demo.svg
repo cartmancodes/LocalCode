@@ -28,7 +28,7 @@
 <rect x="90" y="70" width="9" height="9.0" fill="#161113"/>
 <rect x="99" y="70" width="9" height="9.0" fill="#f6debf"/>
 <text x="117" y="82.96" fill="#d87c82" font-weight="700" textLength="45" lengthAdjust="spacingAndGlyphs" xml:space="preserve">Octet</text>
-<text x="171" y="82.96" fill="#ae979a" textLength="189" lengthAdjust="spacingAndGlyphs" xml:space="preserve">v0.1.0 · Rust preview</text>
+<text x="171" y="82.96" fill="#ae979a" textLength="144" lengthAdjust="spacingAndGlyphs" xml:space="preserve">v0.1.0 · preview</text>
 <text x="990" y="82.96" fill="#d87c82" textLength="99" lengthAdjust="spacingAndGlyphs" xml:space="preserve">● completed</text>
 <rect x="27" y="88" width="9" height="9.0" fill="#161113"/>
 <rect x="36" y="88" width="9" height="9.0" fill="#c42b40"/>

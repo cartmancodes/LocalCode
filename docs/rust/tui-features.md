@@ -88,7 +88,7 @@ displayed messages for reference, but the new provider starts without them.
 - Fleet orchestration, quota routing, the vendors' plugin, hook and resource
   surfaces, and Octet-owned history with branching remain; the
   [acceptance matrix](parity-matrix.md) gives the reason for each.
-- The Rust preview does not execute Python extensions. This is an accepted
+- Octet does not execute Python extensions. This is an accepted
   compatibility break for the Rust design; the earlier Python application was
   removed from the repository on 2026-10-04.
 - The visible transcript is bounded to 160 blocks or 512 KiB, while the journal

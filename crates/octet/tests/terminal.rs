@@ -1,4 +1,4 @@
-//! Real PTY acceptance tests. No Python, browser, or vendor login is needed.
+//! Real PTY acceptance tests. No browser or vendor login is needed.
 #![cfg(unix)]
 // Test code: an unwrap that fails is the test failing.
 #![allow(clippy::unwrap_used)]
