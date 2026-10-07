@@ -64,6 +64,9 @@ fn main() {
             stdout.write_all(b"\"}\n").unwrap();
         }
         "malformed" => println!("{{invalid\n{{\"valid\":true}}"),
+        "blank-lines" => print!("{{\"a\":1}}\n\n  \r\n{{\"b\":2}}\n"),
+        "valid-then-invalid" => print!("{{\"a\":1}}\n{{\"b\":2}}\nnot json\n{{\"c\":3}}\n"),
+        "exit-at-once" => {}
         "partial" => {
             io::stdout().write_all(b"{\"unfinished\":").unwrap();
         }

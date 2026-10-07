@@ -60,9 +60,6 @@ pub enum ProcessError {
     /// A received line is not valid JSON.
     #[error("invalid JSON frame: {0}")]
     InvalidJson(#[from] serde_json::Error),
-    /// The reader stopped, so no more frames can arrive.
-    #[error("process output queue closed")]
-    QueueClosed,
     /// The child's stdin is gone: it exited, or shutdown began.
     #[error("process stdin is closed")]
     StdinClosed,
@@ -73,11 +70,25 @@ enum FrameEvent {
     Error(ProcessError),
 }
 
+/// How long shutdown waits for the stderr reader to reach EOF once the child
+/// is gone: a vendor's last words (why it rejected its arguments) may still
+/// be in the pipe. A descendant that left the group may hold the pipe open,
+/// hence the bound.
+const STDERR_DRAIN: Duration = Duration::from_millis(100);
+
 #[derive(Clone)]
 /// A cloneable handle that writes frames to the child's stdin.
 pub struct ProcessSender {
     stdin: Arc<AsyncMutex<Option<ChildStdin>>>,
     max_frame_bytes: usize,
+}
+
+impl std::fmt::Debug for ProcessSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProcessSender")
+            .field("max_frame_bytes", &self.max_frame_bytes)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ProcessSender {
@@ -164,10 +175,19 @@ pub struct Process {
     stderr_tail: Arc<Mutex<VecDeque<u8>>>,
     shutdown_grace: Duration,
     term_grace: Duration,
-    shutdown_complete: bool,
     shutdown_report: Option<ShutdownReport>,
     receive_failed: bool,
     process_group: libc::pid_t,
+}
+
+impl std::fmt::Debug for Process {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Process")
+            .field("process_group", &self.process_group)
+            .field("receive_failed", &self.receive_failed)
+            .field("shut_down", &self.shutdown_report.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Process {
@@ -181,7 +201,8 @@ impl Process {
     ///
     /// # Panics
     ///
-    /// Panics if the OS reports no process ID for the child it just started.
+    /// Panics outside a Tokio runtime (the reader tasks are spawned on it),
+    /// or if the OS reports no process ID for the child it just started.
     pub fn spawn(config: &ProcessConfig) -> Result<Self, ProcessError> {
         if config.max_frame_bytes == 0 || config.max_frame_bytes > config.queue_bytes {
             return Err(ProcessError::InvalidConfig(
@@ -247,7 +268,6 @@ impl Process {
             stderr_tail,
             shutdown_grace: config.shutdown_grace,
             term_grace: config.term_grace,
-            shutdown_complete: false,
             shutdown_report: None,
             receive_failed: false,
             process_group,
@@ -333,10 +353,10 @@ impl Process {
         if let Some(task) = self.reader_task.take() {
             let _ = task.await;
         }
-        if let Some(task) = &self.stderr_task {
+        if let Some(mut task) = self.stderr_task.take()
+            && timeout(STDERR_DRAIN, &mut task).await.is_err()
+        {
             task.abort();
-        }
-        if let Some(task) = self.stderr_task.take() {
             let _ = task.await;
         }
         let stderr_tail = self
@@ -347,7 +367,6 @@ impl Process {
             .copied()
             .collect();
         let descendants_stopped = !self.group_alive();
-        self.shutdown_complete = reaped && descendants_stopped;
         let report = ShutdownReport {
             reaped,
             stage,
@@ -356,6 +375,13 @@ impl Process {
         };
         self.shutdown_report = Some(report.clone());
         report
+    }
+
+    /// Shutdown ran and confirmed nothing is left running.
+    fn shutdown_complete(&self) -> bool {
+        self.shutdown_report
+            .as_ref()
+            .is_some_and(|report| report.reaped && report.descendants_stopped)
     }
 
     async fn wait_for_group_exit(&mut self) {
@@ -389,12 +415,10 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        // Last-resort synchronous cleanup when callers forget explicit shutdown.
-        if !self.shutdown_complete {
-            if self.group_alive() {
-                self.signal_group(libc::SIGKILL);
-            }
-            let _ = self.child.start_kill();
+        // Last-resort synchronous cleanup when callers forget explicit
+        // shutdown; `kill_on_drop` then covers the leader itself.
+        if !self.shutdown_complete() && self.group_alive() {
+            self.signal_group(libc::SIGKILL);
         }
         if let Some(task) = &self.reader_task {
             task.abort();
@@ -404,6 +428,10 @@ impl Drop for Process {
         }
     }
 }
+
+/// The most frame buffer kept between frames, so one huge frame does not
+/// hold its memory for the rest of the session.
+const FRAME_BUFFER_KEPT: usize = 64 * 1024;
 
 async fn read_frames<R: AsyncRead + Unpin>(
     mut stdout: R,
@@ -445,6 +473,11 @@ async fn read_frames<R: AsyncRead + Unpin>(
                         break;
                     };
                     rest = &rest[newline + 1..];
+                    // A blank line (or a stray CR) is no frame: JSONL readers skip it.
+                    if frame.iter().all(u8::is_ascii_whitespace) {
+                        frame.clear();
+                        continue;
+                    }
                     let size = frame.len();
                     let permit = match Arc::clone(&permits)
                         .acquire_many_owned(
@@ -456,7 +489,12 @@ async fn read_frames<R: AsyncRead + Unpin>(
                         Ok(permit) => permit,
                         Err(_) => return,
                     };
-                    let complete = std::mem::take(&mut frame).into_boxed_slice();
+                    // Copy out the exact bytes and keep the buffer for the next frame.
+                    let complete: Box<[u8]> = frame.as_slice().into();
+                    frame.clear();
+                    if frame.capacity() > FRAME_BUFFER_KEPT {
+                        frame.shrink_to(FRAME_BUFFER_KEPT);
+                    }
                     if tx.send(FrameEvent::Data(complete, permit)).await.is_err() {
                         return;
                     }
@@ -480,15 +518,12 @@ async fn read_stderr<R: AsyncRead + Unpin>(
         match stderr.read(&mut chunk).await {
             Ok(0) | Err(_) => break,
             Ok(n) => {
+                let read = &chunk[..n];
+                let keep = &read[read.len().saturating_sub(limit)..];
                 let mut ring = tail.lock().expect("stderr ring lock");
-                for byte in &chunk[..n] {
-                    if ring.len() == limit {
-                        ring.pop_front();
-                    }
-                    if limit > 0 {
-                        ring.push_back(*byte);
-                    }
-                }
+                let excess = (ring.len() + keep.len()).saturating_sub(limit);
+                ring.drain(..excess);
+                ring.extend(keep);
             }
         }
     }

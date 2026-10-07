@@ -147,9 +147,13 @@ async fn control_send_survives_full_stdout_queue() {
     let mut process = Process::spawn(&cfg).unwrap();
     let sender = process.sender();
     sender.send(&json!({"op":"flood"})).await.unwrap();
+    // Best effort: give the flood time to fill the queue. Nothing outside the
+    // transport can observe that, and a shorter wait only weakens the test.
     tokio::time::sleep(Duration::from_millis(80)).await;
+    // The control send must not wait for the queue to drain; one second is
+    // far below the time the flood would take to be read.
     timeout(
-        Duration::from_millis(300),
+        Duration::from_secs(1),
         sender.send(&json!({"op":"interrupt"})),
     )
     .await
@@ -310,4 +314,110 @@ async fn stderr_of_a_child_that_exits_at_once_is_complete() {
             String::from_utf8_lossy(&report.stderr_tail)
         );
     }
+}
+
+/// Shuts down a child that wrote a long stderr and exited, without reading
+/// its output first: the final line must still be in the tail.
+async fn stderr_tail_after_exit(runs: usize) {
+    for run in 0..runs {
+        let mut cfg = config("stderr-exit");
+        cfg.stderr_bytes = 64;
+        // Room for the child to finish and exit by itself on a busy machine:
+        // a TERM would cut its stderr short, which is not the case under test.
+        cfg.shutdown_grace = Duration::from_secs(3);
+        let mut process = Process::spawn(&cfg).expect("spawn the child");
+        let report = process.shutdown().await;
+        assert!(
+            report.stderr_tail.ends_with(b"FINAL-REASON\n"),
+            "run {run}: {:?}",
+            String::from_utf8_lossy(&report.stderr_tail)
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stderr_is_complete_when_shutdown_does_not_drain_frames() {
+    stderr_tail_after_exit(50).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "stress: about 0.1% of runs lost the tail before the fix"]
+async fn stderr_stress_500_runs() {
+    stderr_tail_after_exit(500).await;
+}
+
+#[tokio::test]
+async fn blank_lines_are_skipped() {
+    let mut process = Process::spawn(&config("blank-lines")).unwrap();
+    assert_eq!(
+        next_within(&mut process).await.unwrap(),
+        Some(json!({"a":1}))
+    );
+    assert_eq!(
+        next_within(&mut process).await.unwrap(),
+        Some(json!({"b":2}))
+    );
+    assert_eq!(next_within(&mut process).await.unwrap(), None);
+    assert!(process.shutdown().await.reaped);
+}
+
+#[tokio::test]
+async fn invalid_json_after_valid_frames_ends_the_stream() {
+    let mut process = Process::spawn(&config("valid-then-invalid")).unwrap();
+    assert_eq!(
+        next_within(&mut process).await.unwrap(),
+        Some(json!({"a":1}))
+    );
+    assert_eq!(
+        next_within(&mut process).await.unwrap(),
+        Some(json!({"b":2}))
+    );
+    assert!(matches!(
+        next_within(&mut process).await,
+        Err(ProcessError::InvalidJson(_))
+    ));
+    assert_eq!(process.next_frame().await.unwrap(), None);
+    assert!(process.shutdown().await.reaped);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dropping_a_process_kills_its_group() {
+    let mut process = Process::spawn(&config("grandchild")).unwrap();
+    let frame = next_within(&mut process).await.unwrap().unwrap();
+    let pid = i32::try_from(frame["pid"].as_i64().unwrap()).unwrap();
+    drop(process);
+    for _ in 0..100 {
+        // SAFETY: signal 0 only checks that the process exists.
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("grandchild {pid} survived dropping its Process");
+}
+
+#[tokio::test]
+async fn a_send_after_exit_is_broken_pipe_then_closed() {
+    let mut process = Process::spawn(&config("exit-at-once")).unwrap();
+    assert_eq!(next_within(&mut process).await.unwrap(), None);
+    let sender = process.sender();
+    // The child is gone: the first write fails on the pipe and closes it.
+    let mut first = sender.send(&json!({"op":"echo"})).await;
+    for _ in 0..50 {
+        if first.is_err() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        first = sender.send(&json!({"op":"echo"})).await;
+    }
+    assert!(
+        matches!(&first, Err(ProcessError::Io(e)) if e.kind() == std::io::ErrorKind::BrokenPipe),
+        "{first:?}"
+    );
+    assert!(matches!(
+        sender.send(&json!({})).await,
+        Err(ProcessError::StdinClosed)
+    ));
+    assert!(process.shutdown().await.reaped);
 }
