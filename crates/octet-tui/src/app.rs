@@ -13,6 +13,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 const MAX_BYTES: usize = 512 * 1024;
+/// Prompts that can wait for the running turn.
+pub(crate) const QUEUE_LIMIT: usize = 8;
 /// Prompts kept for Up/Down.
 const HISTORY_LIMIT: usize = 50;
 /// Shown when an edit would push the draft past the prompt limit.
@@ -122,12 +124,16 @@ pub(crate) struct Composer {
     pub(crate) completion: Option<crate::composer::Completion>,
     /// The workspace file index for `@`.
     pub(crate) files: crate::files::Files,
+    /// Prompts sent while a turn ran, sent in order as turns finish.
+    pub(crate) queue: VecDeque<octet_core::Command>,
 }
 /// Dialogs over the screen: help, the palette and approvals.
 pub(crate) struct Overlays {
     pub(crate) approvals: VecDeque<(u64, String)>,
     pub(crate) approval_scroll: u16,
     pub(crate) help: bool,
+    /// Lines scrolled past at the top of the help screen.
+    pub(crate) help_scroll: u16,
     pub(crate) palette: bool,
     pub(crate) selection: usize,
 }
@@ -183,11 +189,13 @@ impl App {
                 shell_running: false,
                 completion: None,
                 files: crate::files::Files::Unbuilt,
+                queue: VecDeque::new(),
             },
             overlay: Overlays {
                 approvals: VecDeque::new(),
                 approval_scroll: 0,
                 help: false,
+                help_scroll: 0,
                 palette: false,
                 selection: 0,
             },

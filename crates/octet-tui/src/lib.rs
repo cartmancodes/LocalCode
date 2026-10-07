@@ -538,8 +538,11 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
         return;
     };
     match app.goals.turn_finished(&outcome).await {
-        Ok(Next::Idle) => {}
-        Ok(Next::Stopped(summary)) => app.notice(summary),
+        Ok(Next::Idle) => send_queued(app, session),
+        Ok(Next::Stopped(summary)) => {
+            app.notice(summary);
+            send_queued(app, session);
+        }
         Ok(Next::Continue { prompt, display }) => {
             let command = Command::PromptWithDisplay {
                 wire: prompt,
@@ -555,6 +558,23 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
             }
         }
         Err(error) => app.notice(format!("Goal persistence failed; paused: {error}")),
+    }
+}
+/// Sends the next prompt queued behind the turn that just ended.
+fn send_queued(app: &mut App, session: &Session) {
+    if !app.is_idle() {
+        return;
+    }
+    let Some(command) = app.composer.queue.pop_front() else {
+        return;
+    };
+    match session.handle.send(command) {
+        Ok(()) => {
+            app.goals.user_prompt_sent();
+            app.conn.start_turn();
+            app.conn.status = "sending".into();
+        }
+        Err(error) => app.notice(format!("A queued prompt could not be sent: {error}")),
     }
 }
 /// Asks a running editor to quit, so it can put the terminal back, and

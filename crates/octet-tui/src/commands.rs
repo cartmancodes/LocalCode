@@ -16,6 +16,7 @@ pub enum Cmd {
     New,
     Reconnect,
     RemoteControl,
+    Queue,
     Quit,
 }
 
@@ -122,6 +123,12 @@ pub const COMMANDS: &[Spec] = &[
         "Check phone access (tmux, Tailscale, mosh)",
     ),
     spec(
+        Cmd::Queue,
+        "/queue",
+        "/queue · /queue clear: prompts waiting for the running turn",
+        "Show or clear queued prompts",
+    ),
+    spec(
         Cmd::Quit,
         "/quit",
         "/quit or Ctrl+C twice: save and exit",
@@ -133,7 +140,7 @@ pub const COMMANDS: &[Spec] = &[
 impl Cmd {
     /// Every command, for the registry coverage test.
     #[cfg(test)]
-    pub(crate) const ALL: [Cmd; 11] = [
+    pub(crate) const ALL: [Cmd; 12] = [
         Cmd::Help,
         Cmd::Model,
         Cmd::Mode,
@@ -144,6 +151,7 @@ impl Cmd {
         Cmd::New,
         Cmd::Reconnect,
         Cmd::RemoteControl,
+        Cmd::Queue,
         Cmd::Quit,
     ];
     /// The command a typed name (or alias) names.
@@ -191,6 +199,7 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
     match cmd {
         Cmd::Quit => return Some(Action::Exit(Exit::Quit)),
         Cmd::Help => app.overlay.help = true,
+        Cmd::Queue => queue_command(app, argument),
         Cmd::Copy => copy_reply(app),
         Cmd::Model => return Some(model_command(app, argument)),
         Cmd::Mode => return Some(mode_command(app, argument)),
@@ -225,6 +234,43 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
     }
     Some(Action::Continue)
 }
+/// `/queue`: list the prompts waiting for the running turn, or clear them.
+fn queue_command(app: &mut App, argument: &str) {
+    match argument {
+        "" if app.composer.queue.is_empty() => app.notice("No prompts are queued"),
+        "" => {
+            let lines: Vec<String> = app
+                .composer
+                .queue
+                .iter()
+                .enumerate()
+                .map(|(i, command)| format!("{}. {}", i + 1, queued_text(command)))
+                .collect();
+            app.notice(format!("Queued prompts:\n{}", lines.join("\n")));
+        }
+        "clear" => {
+            let dropped = std::mem::take(&mut app.composer.queue).len();
+            app.notice(format!("Cleared {dropped} queued prompts"));
+        }
+        _ => app.notice("Use /queue or /queue clear"),
+    }
+}
+
+/// A queued prompt as the transcript shows it, on one line.
+fn queued_text(command: &Command) -> String {
+    let text = match command {
+        Command::Prompt(text) => text.as_str(),
+        Command::PromptWithDisplay { display, .. } => display.as_str(),
+        _ => "",
+    };
+    let line = text.lines().next().unwrap_or("");
+    if line.chars().count() > 60 {
+        format!("{}…", line.chars().take(60).collect::<String>())
+    } else {
+        line.to_owned()
+    }
+}
+
 fn model_command(app: &mut App, argument: &str) -> Action {
     if argument.trim().is_empty() {
         app.show_models(1);

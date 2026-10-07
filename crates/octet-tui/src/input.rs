@@ -1,6 +1,6 @@
 //! Keys, paste and the prompt box's popups: what each key does in each state.
 use crate::{
-    app::{App, CANCELLING},
+    app::{App, CANCELLING, QUEUE_LIMIT},
     clipboard,
     commands::{command, try_command, COMMANDS},
     composer, files, text, view, write_terminal, Action, Exit, QUIT_HINT, QUIT_WINDOW,
@@ -181,8 +181,16 @@ fn ctrl(key: KeyEvent, c: char) -> bool {
 }
 fn help_key(app: &mut App, key: KeyEvent) {
     let ctrl_c = ctrl(key, 'c');
-    if matches!(key.code, KeyCode::Esc | KeyCode::F(1)) || ctrl_c {
-        app.overlay.help = false;
+    let help = &mut app.overlay;
+    match key.code {
+        KeyCode::PageDown | KeyCode::Down => help.help_scroll = help.help_scroll.saturating_add(8),
+        KeyCode::PageUp | KeyCode::Up => help.help_scroll = help.help_scroll.saturating_sub(8),
+        KeyCode::Esc | KeyCode::F(1) => help.help = false,
+        _ if ctrl_c => help.help = false,
+        _ => {}
+    }
+    if !help.help {
+        help.help_scroll = 0;
     }
 }
 async fn approval_key(app: &mut App, session: &Session, key: KeyEvent, id: u64) {
@@ -354,8 +362,14 @@ async fn composer_key(
                     None => Action::Continue,
                 };
             }
-            if !app.is_idle() {
-                app.notice = "Wait for the current turn, press Esc to cancel, or /reconnect".into();
+            if !app.is_idle() && !app.conn.is_running() {
+                app.notice = "Wait for the connection, or /reconnect".into();
+                return Action::Continue;
+            }
+            if app.conn.is_running() && app.composer.queue.len() >= QUEUE_LIMIT {
+                app.notice = format!(
+                    "The queue is full ({QUEUE_LIMIT} prompts); wait for the turn or press Esc"
+                );
                 return Action::Continue;
             }
             let command = if app.composer.attachments.is_empty() {
@@ -374,6 +388,15 @@ async fn composer_key(
                 }
                 Command::PromptWithDisplay { wire, display }
             };
+            if app.conn.is_running() {
+                // The running turn keeps going; this one goes when it ends.
+                app.composer.queue.push_back(command);
+                app.composer.attachments.clear();
+                app.composer.editor.take();
+                app.remember(draft);
+                app.notice = format!("Queued ({} waiting)", app.composer.queue.len());
+                return Action::Continue;
+            }
             match session.handle.send(command) {
                 Ok(()) => {
                     app.composer.attachments.clear();
@@ -440,10 +463,16 @@ async fn composer_key(
     refresh_completion(app);
     Action::Continue
 }
-/// Interrupts the turn; a goal working on it is paused first.
+/// Interrupts the turn; a goal working on it is paused first, and prompts
+/// queued behind it are dropped: stopping the agent stops what was lined up.
 pub(crate) async fn cancel_turn(app: &mut App, session: &Session) {
     if let Err(error) = app.goals.pause_running_turn().await {
         app.notice(format!("Goal persistence failed: {error}"));
+    }
+    let dropped = std::mem::take(&mut app.composer.queue).len();
+    if dropped > 0 {
+        let plural = if dropped == 1 { "" } else { "s" };
+        app.notice(format!("Dropped {dropped} queued prompt{plural}"));
     }
     session.handle.interrupt();
 }

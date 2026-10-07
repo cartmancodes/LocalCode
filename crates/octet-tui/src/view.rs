@@ -153,15 +153,7 @@ fn composer(
     app: &App,
     draft: (Vec<String>, (usize, usize)),
 ) -> (u16, u16) {
-    let base = if app.conn.is_running() {
-        " Compose next prompt · wait or Esc to cancel "
-    } else {
-        " Prompt "
-    };
-    let title = match crate::composer::chip(&app.composer.attachments) {
-        Some(chip) => format!("{} · {chip} ", base.trim_end()),
-        None => base.to_owned(),
-    };
+    let title = composer_title(app);
     let composer = card(&title).border_style(Style::default().fg(if app.conn.is_running() {
         EDGE
     } else {
@@ -237,9 +229,9 @@ fn status_line(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 /// Help, the palette or an approval over everything; else the cursor.
-fn overlays(frame: &mut Frame, area: Rect, app: &App, cursor: (u16, u16)) {
+fn overlays(frame: &mut Frame, area: Rect, app: &mut App, cursor: (u16, u16)) {
     if app.overlay.help {
-        help(frame, area);
+        help(frame, area, &mut app.overlay.help_scroll);
     } else if app.overlay.palette {
         palette(frame, area, app.overlay.selection);
     } else if let Some((id, detail)) = app.overlay.approvals.front() {
@@ -319,6 +311,19 @@ fn completion_popup(frame: &mut Frame, composer: Rect, app: &App) {
             .style(Style::default().bg(PANEL)),
         area,
     );
+}
+/// The prompt box's title: what Enter will do, then what waits to go.
+pub(crate) fn composer_title(app: &App) -> String {
+    let mut parts = vec![if app.conn.is_running() {
+        "Next prompt · Enter queues it · Esc cancels the turn".to_owned()
+    } else {
+        "Prompt".to_owned()
+    }];
+    parts.extend(crate::composer::chip(&app.composer.attachments));
+    if !app.composer.queue.is_empty() {
+        parts.push(format!("+{} queued", app.composer.queue.len()));
+    }
+    format!(" {} ", parts.join(" · "))
 }
 /// The width the draft wraps at: margin, border and padding take three
 /// columns on each side.
@@ -465,10 +470,11 @@ pub fn help_lines() -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
-fn help(frame: &mut Frame, area: Rect) {
+/// The help screen: as tall as its wrapped lines allow, scrolled when the
+/// terminal is shorter. How to scroll and close is on the border, so it
+/// shows at any size.
+fn help(frame: &mut Frame, area: Rect, scroll: &mut u16) {
     let lines = help_lines();
-    // Tall enough for every line as wrapped, so a narrow terminal still
-    // shows the last one.
     let width = 76.min(area.width.saturating_sub(4));
     let inner = usize::from(width.saturating_sub(2));
     let rows: usize = lines
@@ -476,13 +482,20 @@ fn help(frame: &mut Frame, area: Rect) {
         .map(|line| crate::app::wrap(line, inner).len())
         .sum();
     let area = modal(area, 76, cells(rows).saturating_add(2));
+    let visible = area.height.saturating_sub(2);
+    *scroll = (*scroll).min(cells(rows).saturating_sub(visible));
     frame.render_widget(Clear, area);
-    let text = lines.join("\n");
+    let title = if cells(rows) > visible {
+        " Help · PgUp/PgDn scroll · Esc closes "
+    } else {
+        " Help · Esc closes "
+    };
     frame.render_widget(
-        Paragraph::new(text)
-            .block(card(" Help "))
+        Paragraph::new(lines.join("\n"))
+            .block(card(title))
             .style(Style::default().bg(PANEL).fg(FG))
-            .wrap(Wrap { trim: false }),
+            .wrap(Wrap { trim: false })
+            .scroll((*scroll, 0)),
         area,
     );
 }

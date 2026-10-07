@@ -755,3 +755,72 @@ async fn reconnect_pauses_an_active_goal_and_names_the_previous_journal() {
         "{fresh}"
     );
 }
+#[tokio::test]
+async fn enter_while_running_queues_the_prompt() {
+    let mut app = app();
+    let (_temp, session) = demo_session("octet-queue-enter").await;
+    app.conn.phase = ConnPhase::Running;
+    assert!(app.composer.editor.insert("next please"));
+    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    assert_eq!(app.composer.queue.len(), 1);
+    assert!(app.composer.editor.text.is_empty());
+    assert!(crate::view::composer_title(&app).contains("+1 queued"));
+}
+#[tokio::test]
+async fn a_finished_turn_sends_the_next_queued_prompt() {
+    let mut app = app();
+    let (_temp, mut session) = demo_session("octet-queue-send").await;
+    app.conn.phase = ConnPhase::Running;
+    app.composer
+        .queue
+        .push_back(Command::Prompt("queued one".into()));
+    session_event(
+        &mut app,
+        &session,
+        octet_core::Event::Finished {
+            outcome: octet_core::Outcome::Completed,
+        },
+    )
+    .await;
+    assert_eq!(next_user_text(&mut session).await, "queued one");
+    assert!(app.composer.queue.is_empty());
+    assert!(app.conn.is_running());
+}
+#[tokio::test]
+async fn cancel_drops_the_queue() {
+    let mut app = app();
+    let (_temp, session) = demo_session("octet-queue-cancel").await;
+    app.conn.phase = ConnPhase::Running;
+    app.composer.queue.push_back(Command::Prompt("a".into()));
+    app.composer.queue.push_back(Command::Prompt("b".into()));
+    key_action(&mut app, &session, key(KeyCode::Esc)).await;
+    assert!(app.composer.queue.is_empty());
+    assert!(app.entries_text().contains("Dropped 2 queued prompts"));
+}
+#[tokio::test]
+async fn the_queue_is_bounded() {
+    let mut app = app();
+    let (_temp, session) = demo_session("octet-queue-bound").await;
+    app.conn.phase = ConnPhase::Running;
+    for i in 0..8 {
+        app.composer
+            .queue
+            .push_back(Command::Prompt(format!("p{i}")));
+    }
+    assert!(app.composer.editor.insert("one more"));
+    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    assert_eq!(app.composer.queue.len(), 8);
+    assert_eq!(app.composer.editor.text, "one more");
+    assert!(app.notice.contains("queue is full"), "{}", app.notice);
+}
+#[tokio::test]
+async fn slash_queue_lists_and_clears() {
+    let mut app = app();
+    app.composer
+        .queue
+        .push_back(Command::Prompt("first queued".into()));
+    command(&mut app, "/queue").await;
+    assert!(app.entries_text().contains("first queued"));
+    command(&mut app, "/queue clear").await;
+    assert!(app.composer.queue.is_empty());
+}

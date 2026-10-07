@@ -97,11 +97,21 @@ fn help_keeps_its_last_line_on_narrow_and_short_terminals() {
     let config = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
     let mut app = App::new(&config, "journal".into());
     app.overlay.help = true;
-    for (width, height) in [(100, 30), (75, 40), (70, 40), (60, 40), (100, 32)] {
+    for (width, height) in [(100, 30), (75, 40), (70, 40), (60, 40), (100, 32), (80, 24)] {
+        // How to close is always on the border, whatever fits inside.
+        app.overlay.help_scroll = 0;
+        let rows = screen(width, height, &mut app);
+        assert!(
+            rows.iter().any(|row| row.contains("Esc closes")),
+            "{width}x{height}:\n{}",
+            rows.join("\n")
+        );
+        // Scrolling reaches the last line.
+        app.overlay.help_scroll = u16::MAX;
         let rows = screen(width, height, &mut app);
         assert!(
             rows.iter().any(|row| row.contains("Esc or F1 closes help")),
-            "{width}x{height}:\n{}",
+            "{width}x{height} scrolled:\n{}",
             rows.join("\n")
         );
     }
