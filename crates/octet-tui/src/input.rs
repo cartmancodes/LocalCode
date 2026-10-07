@@ -402,21 +402,21 @@ async fn composer_key(
                 // The running turn keeps going; this one goes when it ends.
                 app.composer.queue.push_back(command);
                 app.composer.attachments.clear();
-                app.composer.images.clear();
+                let images = std::mem::take(&mut app.composer.images);
                 app.composer.editor.take();
-                app.remember(draft);
+                app.remember_with(draft, images);
                 app.notice = format!("Queued ({} waiting)", app.composer.queue.len());
                 return Action::Continue;
             }
             match session.handle.send(command) {
                 Ok(()) => {
                     app.composer.attachments.clear();
-                    app.composer.images.clear();
+                    let images = std::mem::take(&mut app.composer.images);
                     app.goals.user_prompt_sent();
                     app.composer.editor.take();
                     app.conn.start_turn();
                     app.conn.status = "sending".into();
-                    app.remember(draft);
+                    app.remember_with(draft, images);
                 }
                 Err(error) => app.notice = error.to_string(),
             }

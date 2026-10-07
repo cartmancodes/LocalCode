@@ -116,12 +116,19 @@ pub(crate) struct Transcript {
     /// A new turn started; the last reply stays copyable until its first text.
     pub(crate) reply_stale: bool,
 }
+/// A prompt as history keeps it: its text and the images sent with it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Sent {
+    pub(crate) text: String,
+    pub(crate) images: Vec<octet_core::ImageAttachment>,
+}
 /// The prompt box: the draft, history, attachments and popups.
 pub(crate) struct Composer {
     pub(crate) editor: Editor,
-    pub(crate) history: VecDeque<String>,
+    pub(crate) history: VecDeque<Sent>,
     pub(crate) history_index: Option<usize>,
-    pub(crate) saved_draft: String,
+    /// The draft being written when history browsing began.
+    pub(crate) saved_draft: Sent,
     /// The workspace, where `!` commands run and `@` looks for files.
     pub(crate) root: PathBuf,
     /// `!` outputs waiting to go with the next prompt.
@@ -196,7 +203,7 @@ impl App {
                 editor: Editor::default(),
                 history: VecDeque::new(),
                 history_index: None,
-                saved_draft: String::new(),
+                saved_draft: Sent::default(),
                 root: config.cwd.clone(),
                 attachments: Vec::new(),
                 images: Vec::new(),
@@ -640,9 +647,14 @@ impl App {
     }
     /// A sent draft joins the history unless it repeats the last one.
     pub fn remember(&mut self, draft: String) {
+        self.remember_with(draft, Vec::new());
+    }
+    /// A sent draft and the images sent with it, recalled together.
+    pub(crate) fn remember_with(&mut self, text: String, images: Vec<octet_core::ImageAttachment>) {
         self.composer.history_index = None;
-        if self.composer.history.back() != Some(&draft) {
-            self.composer.history.push_back(draft);
+        let sent = Sent { text, images };
+        if self.composer.history.back() != Some(&sent) {
+            self.composer.history.push_back(sent);
             if self.composer.history.len() > HISTORY_LIMIT {
                 self.composer.history.pop_front();
             }
@@ -674,24 +686,29 @@ impl App {
                 .history_index
                 .map(|i| i.saturating_sub(1))
                 .unwrap_or_else(|| {
-                    self.composer.saved_draft = self.composer.editor.text.clone();
+                    self.composer.saved_draft = Sent {
+                        text: self.composer.editor.text.clone(),
+                        images: std::mem::take(&mut self.composer.images),
+                    };
                     self.composer.history.len() - 1
                 });
             self.composer.history_index = Some(index);
-            self.composer
-                .editor
-                .set(self.composer.history[index].clone());
+            self.show(self.composer.history[index].clone());
         } else if let Some(i) = self.composer.history_index {
             if i + 1 < self.composer.history.len() {
                 self.composer.history_index = Some(i + 1);
-                self.composer
-                    .editor
-                    .set(self.composer.history[i + 1].clone());
+                self.show(self.composer.history[i + 1].clone());
             } else {
                 self.composer.history_index = None;
-                self.composer.editor.set(self.composer.saved_draft.clone());
+                let saved = std::mem::take(&mut self.composer.saved_draft);
+                self.show(saved);
             }
         }
+    }
+    /// Puts a sent (or saved) draft back in the prompt box with its images.
+    fn show(&mut self, sent: Sent) {
+        self.composer.editor.set(sent.text);
+        self.composer.images = sent.images;
     }
     pub(crate) fn visible_lines(&mut self, width: u16, height: usize) -> Vec<Line<'static>> {
         if let Some(entries) = self.chat.catalog_focus.take() {

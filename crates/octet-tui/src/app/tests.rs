@@ -105,7 +105,10 @@ fn history_skips_repeats_and_keeps_fifty() {
         app.remember(format!("p{i}"));
     }
     assert_eq!(app.composer.history.len(), 50);
-    assert_eq!(app.composer.history.back().map(String::as_str), Some("p59"));
+    assert_eq!(
+        app.composer.history.back().map(|sent| sent.text.as_str()),
+        Some("p59")
+    );
 }
 #[test]
 fn a_full_prompt_warns_instead_of_inserting() {

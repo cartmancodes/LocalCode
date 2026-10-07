@@ -283,7 +283,7 @@ async fn bang_lines_run_locally_and_double_bang_does_not_attach() {
     ));
     assert!(app.composer.editor.text.is_empty());
     assert_eq!(
-        app.composer.history.back().map(String::as_str),
+        app.composer.history.back().map(|sent| sent.text.as_str()),
         Some("!echo hi")
     );
     app.composer.editor.set("!!  pwd ".into());
@@ -709,7 +709,7 @@ async fn unknown_command_keeps_the_draft() {
         app.notice
     );
     assert_eq!(
-        app.composer.history.back().map(String::as_str),
+        app.composer.history.back().map(|sent| sent.text.as_str()),
         Some("/usr/lib is where this breaks, please look")
     );
     app.conn.phase = ConnPhase::Idle;
@@ -720,7 +720,7 @@ async fn unknown_command_keeps_the_draft() {
         Action::Continue
     ));
     assert_eq!(
-        app.composer.history.back().map(String::as_str),
+        app.composer.history.back().map(|sent| sent.text.as_str()),
         Some("界 means world")
     );
     app.conn.phase = ConnPhase::Idle;
@@ -1171,4 +1171,24 @@ async fn steer_while_cancelling_queues_it() {
         outcome: octet_core::Outcome::Interrupted,
     });
     assert!(!app.conn.cancelling);
+}
+#[tokio::test]
+async fn up_recalls_a_prompt_with_its_images() {
+    let dir = image_workspace("octet-image-recall", &["shot.png"]);
+    let mut app = app();
+    app.composer.root = dir.path().to_path_buf();
+    let (_temp, session) = demo_session("octet-image-recall-session").await;
+    command(&mut app, "/image shot.png").await;
+    app.conn.phase = ConnPhase::Running;
+    assert!(app.composer.editor.insert("look"));
+    key_action(&mut app, &session, key(KeyCode::Enter)).await;
+    assert!(app.composer.images.is_empty());
+    app.recall(true);
+    assert_eq!(app.composer.editor.text, "look");
+    assert_eq!(app.composer.images.len(), 1);
+    assert!(crate::view::composer_title(&app).contains("+ image shot.png"));
+    // Back down: the empty draft, without the recalled images.
+    app.recall(false);
+    assert!(app.composer.editor.text.is_empty());
+    assert!(app.composer.images.is_empty());
 }
