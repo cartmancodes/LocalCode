@@ -138,6 +138,8 @@ pub(crate) enum Action {
     CancelShell,
     /// Run the `/remote-control` checks off the event loop.
     RemoteControl,
+    /// Add text to the running turn, queue it, or send it (`/steer`).
+    Steer(String),
     /// Hand the terminal to the user's editor for the draft.
     ExternalEditor,
     Exit(Exit),
@@ -420,6 +422,7 @@ async fn run_session(
                     Action::Continue => {}
                     Action::GoalPrompt(prompt) => send_goal_prompt(app, session, prompt).await,
                     Action::RemoteControl => start_remote_check(app, &mut remote_check),
+                    Action::Steer(text) => steer(app, session, text),
                     Action::ExternalEditor => {
                         match external::prepare(&app.composer.editor.text, external::editor_command()) {
                             Err(error) => app.notice(error.to_string()),
@@ -558,6 +561,40 @@ async fn session_event(app: &mut App, session: &Session, event: octet_core::Even
             }
         }
         Err(error) => app.notice(format!("Goal persistence failed; paused: {error}")),
+    }
+}
+/// `/steer`: adds `text` to the running turn where the provider can, queues
+/// it as a follow-up where it cannot, and sends it as a prompt when idle.
+fn steer(app: &mut App, session: &Session, text: String) {
+    if app.conn.is_running() {
+        if app.conn.engine.provider().steer {
+            if let Err(error) = session.handle.send(Command::Steer(text)) {
+                app.notice(error.to_string());
+            }
+        } else if app.composer.queue.len() >= app::QUEUE_LIMIT {
+            app.notice(format!(
+                "The queue is full ({} prompts); wait for the turn or press Esc",
+                app::QUEUE_LIMIT
+            ));
+        } else {
+            app.composer.queue.push_back(Command::Prompt(text));
+            let title = app.conn.engine.title();
+            app.notice(format!(
+                "{title} cannot steer a running turn; queued as a follow-up"
+            ));
+        }
+    } else if app.is_idle() {
+        match session.handle.send(Command::Prompt(text.clone())) {
+            Ok(()) => {
+                app.goals.user_prompt_sent();
+                app.conn.start_turn();
+                app.conn.status = "sending".into();
+                app.remember(text);
+            }
+            Err(error) => app.notice(error.to_string()),
+        }
+    } else {
+        app.notice("Wait for the connection, or /reconnect");
     }
 }
 /// Sends the next prompt queued behind the turn that just ended.

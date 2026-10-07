@@ -965,3 +965,45 @@ async fn spawn_uses_the_configured_approval_window() {
     handle.shutdown();
     task.await.unwrap();
 }
+
+#[tokio::test]
+async fn codex_steer_adds_to_the_running_turn() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Prompt("hold".into())).unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::Started)).await;
+    handle
+        .send(Command::Steer("look at tests too".into()))
+        .unwrap();
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::User(t) if t == "[steer] look at tests too"),
+    )
+    .await;
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::Text(t) if t == "steered:look at tests too"),
+    )
+    .await;
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+#[tokio::test]
+async fn steer_without_a_turn_is_refused() {
+    let (handle, mut events, task) = spawn(config());
+    wait_for(&mut events, |e| matches!(e, Event::Ready { .. })).await;
+    handle.send(Command::Steer("anything".into())).unwrap();
+    wait_for(
+        &mut events,
+        |e| matches!(e, Event::Notice(n) if n.contains("No turn is running")),
+    )
+    .await;
+    handle.shutdown();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}

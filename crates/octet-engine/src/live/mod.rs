@@ -66,6 +66,8 @@ pub struct Provider {
     pub offline: bool,
     /// `/mode` descriptions, in `Mode::ALL` order.
     pub modes: [&'static str; 4],
+    /// Text can be added to a running turn (`/steer`).
+    pub steer: bool,
     /// Runs one session until it stops.
     pub start: StartFn,
 }
@@ -358,6 +360,8 @@ pub enum Command {
     },
     /// Switch the permission mode.
     SetMode(Mode),
+    /// Add to the running turn, where the provider supports it.
+    Steer(String),
 }
 impl Command {
     /// The longest text a prompt command carries; 0 for other commands.
@@ -365,6 +369,7 @@ impl Command {
         match self {
             Command::Prompt(text) => text.len(),
             Command::PromptWithDisplay { wire, display } => wire.len().max(display.len()),
+            Command::Steer(text) => text.len(),
             Command::Answer { .. } | Command::SetMode(_) => 0,
         }
     }

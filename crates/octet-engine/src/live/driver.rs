@@ -182,6 +182,7 @@ impl<P: Protocol> Driver<P> {
             Command::PromptWithDisplay { wire, display } => self.start_turn(wire, display).await,
             Command::Answer { id, allow } => self.answer_approval(id, allow).await,
             Command::SetMode(target) => self.set_mode(target).await,
+            Command::Steer(text) => self.steer(text).await,
         }
     }
 
@@ -197,6 +198,22 @@ impl<P: Protocol> Driver<P> {
         self.core.emit(Event::User(display))?;
         self.core.emit(Event::Started)?;
         self.protocol.send_prompt(&mut self.core, &wire).await
+    }
+
+    async fn steer(&mut self, text: String) -> Result<(), DriverError> {
+        if self.core.phase != Phase::InTurn {
+            return self.core.emit(Event::Notice(
+                "No turn is running; send it as a prompt".into(),
+            ));
+        }
+        if self.protocol.steer(&mut self.core, &text).await? {
+            self.core.emit(Event::User(format!("[steer] {text}")))
+        } else {
+            let title = self.core.config.engine.title();
+            self.core.emit(Event::Notice(format!(
+                "{title} cannot steer the running turn"
+            )))
+        }
     }
 
     async fn answer_approval(&mut self, id: u64, allow: bool) -> Result<(), DriverError> {

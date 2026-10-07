@@ -24,6 +24,7 @@ pub(super) const PROVIDER: Provider = Provider {
         "Claude's classifier approves or blocks each action (auto)",
         "No permission checks at all (bypassPermissions)",
     ],
+    steer: false,
     start,
 };
 

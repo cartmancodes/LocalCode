@@ -23,6 +23,7 @@ pub(super) const PROVIDER: Provider = Provider {
         "Workspace sandbox; Codex's auto-review agent decides escalations (auto_review)",
         "No sandbox; never asks (danger-full-access)",
     ],
+    steer: true,
     start,
 };
 
@@ -45,6 +46,8 @@ pub(super) struct CodexProtocol {
     catalog: Vec<ModelInfo>,
     catalog_pages: usize,
     catalog_cursors: HashSet<String>,
+    /// Steering sent before Codex named the turn; sent once it does.
+    pending_steer: Vec<String>,
 }
 
 impl Protocol for CodexProtocol {
@@ -72,6 +75,17 @@ impl Protocol for CodexProtocol {
     fn turn_started(&mut self) {
         self.turn = None;
         self.text_items.clear();
+        self.pending_steer.clear();
+    }
+
+    /// Steers the turn, or holds the text until Codex names the turn.
+    async fn steer(&mut self, core: &mut Core, text: &str) -> Result<bool, DriverError> {
+        if self.turn.is_none() {
+            self.pending_steer.push(text.to_owned());
+            return Ok(true);
+        }
+        self.send_steer(core, text).await?;
+        Ok(true)
     }
 
     async fn initialize(&mut self, core: &mut Core) -> Result<(), DriverError> {
@@ -133,6 +147,10 @@ impl Protocol for CodexProtocol {
                 .map(str::to_owned);
             if core.phase == Phase::Interrupting {
                 self.request_interrupt(core).await?;
+            } else {
+                for text in std::mem::take(&mut self.pending_steer) {
+                    self.send_steer(core, &text).await?;
+                }
             }
         }
         if method == "thread/tokenUsage/updated" {
@@ -208,6 +226,17 @@ impl Protocol for CodexProtocol {
 }
 
 impl CodexProtocol {
+    async fn send_steer(&self, core: &mut Core, text: &str) -> Result<(), DriverError> {
+        core.request_id += 1;
+        let params = json!({
+            "threadId": core.session,
+            "expectedTurnId": self.turn,
+            "input": [{"type": "text", "text": text}],
+        });
+        core.send(json!({"id": core.request_id, "method": "turn/steer", "params": params}))
+            .await
+    }
+
     async fn request_interrupt(&mut self, core: &mut Core) -> Result<(), DriverError> {
         core.request_id += 1;
         self.interrupt_request = Some(core.request_id);

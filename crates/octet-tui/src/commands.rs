@@ -17,6 +17,7 @@ pub enum Cmd {
     Reconnect,
     RemoteControl,
     Queue,
+    Steer,
     Quit,
 }
 
@@ -129,6 +130,12 @@ pub const COMMANDS: &[Spec] = &[
         "Show or clear queued prompts",
     ),
     spec(
+        Cmd::Steer,
+        "/steer",
+        "/steer <text>: add to the running turn (Codex), else queue it",
+        "Add to the running turn",
+    ),
+    spec(
         Cmd::Quit,
         "/quit",
         "/quit or Ctrl+C twice: save and exit",
@@ -140,7 +147,7 @@ pub const COMMANDS: &[Spec] = &[
 impl Cmd {
     /// Every command, for the registry coverage test.
     #[cfg(test)]
-    pub(crate) const ALL: [Cmd; 12] = [
+    pub(crate) const ALL: [Cmd; 13] = [
         Cmd::Help,
         Cmd::Model,
         Cmd::Mode,
@@ -152,6 +159,7 @@ impl Cmd {
         Cmd::Reconnect,
         Cmd::RemoteControl,
         Cmd::Queue,
+        Cmd::Steer,
         Cmd::Quit,
     ];
     /// The command a typed name (or alias) names.
@@ -200,6 +208,8 @@ pub(crate) async fn try_command(app: &mut App, input: &str) -> Option<Action> {
         Cmd::Quit => return Some(Action::Exit(Exit::Quit)),
         Cmd::Help => app.overlay.help = true,
         Cmd::Queue => queue_command(app, argument),
+        Cmd::Steer if argument.is_empty() => app.notice("Use /steer <text>"),
+        Cmd::Steer => return Some(Action::Steer(argument.to_owned())),
         Cmd::Copy => copy_reply(app),
         Cmd::Model => return Some(model_command(app, argument)),
         Cmd::Mode => return Some(mode_command(app, argument)),

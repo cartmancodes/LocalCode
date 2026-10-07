@@ -246,6 +246,23 @@ fn interactive_codex() {
                     &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"completed"}}}),
                 );
             }
+            Some("turn/steer") => {
+                // Steering adds to the running turn; a stale turn ID is refused.
+                if v["params"]["expectedTurnId"] == active.as_str() {
+                    let text = v
+                        .pointer("/params/input/0/text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    emit(
+                        &json!({"method":"item/agentMessage/delta","params":{"threadId":"fixture-thread","turnId":active,"itemId":"steer","delta":format!("steered:{text}")}}),
+                    );
+                    emit(&json!({"id":v["id"],"result":{"turnId":active}}));
+                } else {
+                    emit(
+                        &json!({"id":v["id"],"error":{"code":-32600,"message":"no active turn to steer"}}),
+                    );
+                }
+            }
             Some("turn/interrupt") => {
                 emit(
                     &json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":active,"status":"interrupted"}}}),

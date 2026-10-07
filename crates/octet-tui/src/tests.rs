@@ -824,3 +824,26 @@ async fn slash_queue_lists_and_clears() {
     command(&mut app, "/queue clear").await;
     assert!(app.composer.queue.is_empty());
 }
+#[tokio::test]
+async fn steer_on_claude_queues_a_follow_up() {
+    let config = Config::new(Engine::CLAUDE, "claude", "/tmp");
+    let mut app = App::new(&config, "journal".into());
+    let (_temp, session) = demo_session("octet-steer-claude").await;
+    app.conn.phase = ConnPhase::Running;
+    steer(&mut app, &session, "also check docs".into());
+    assert_eq!(app.composer.queue.len(), 1);
+    assert!(
+        app.entries_text().contains("Claude cannot steer"),
+        "{}",
+        app.entries_text()
+    );
+}
+#[tokio::test]
+async fn steer_when_idle_sends_a_prompt() {
+    let mut app = app();
+    let (_temp, mut session) = demo_session("octet-steer-idle").await;
+    app.conn.phase = ConnPhase::Idle;
+    steer(&mut app, &session, "plain prompt".into());
+    assert_eq!(next_user_text(&mut session).await, "plain prompt");
+    assert!(app.conn.is_running());
+}

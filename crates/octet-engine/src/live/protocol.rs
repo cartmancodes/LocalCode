@@ -213,6 +213,15 @@ pub(crate) trait Protocol: Default + Send {
     }
     /// A turn is starting: clears per-turn protocol state.
     fn turn_started(&mut self) {}
+    /// Adds `text` to the running turn. `Ok(false)` means the protocol cannot
+    /// steer; the driver says so.
+    fn steer(
+        &mut self,
+        _core: &mut Core,
+        _text: &str,
+    ) -> impl Future<Output = Result<bool, DriverError>> + Send {
+        async { Ok(false) }
+    }
 }
 
 #[cfg(test)]
