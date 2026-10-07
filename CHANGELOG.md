@@ -28,6 +28,9 @@ Claude Code and Codex CLIs.
 - Private, append-only JSONL journals for every session, `/session` to show
   the path and `/export` to copy one without overwriting.
 - `/new`, `/reconnect` and `--resume` for vendor sessions.
+- A provider switch carries the conversation: the first prompt to the new
+  provider includes a transcript of what was shown (at most 64 KiB, newest
+  turns and the first prompt kept), while you see only what you typed.
 - Phone access over tmux, Tailscale SSH and mosh, with a step-by-step guide
   and `/remote-control`, a read-only check that names each fix and prints the
   phone command.

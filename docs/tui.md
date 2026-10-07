@@ -299,10 +299,23 @@ passes the name to that CLI; it does not maintain a hard-coded catalog or guaran
 that every name is available. Vendor errors remain visible in the conversation.
 
 Model changes require an idle session. Changing models within one provider
-reconnects with the existing vendor session ID. Switching providers starts fresh
-vendor context; the old conversation is not automatically sent to the new provider.
-A notice marks this boundary. Earlier messages and prompt history remain visible,
-and the previous journal is retained; the new connection writes a new journal.
+reconnects with the existing vendor session ID. Switching providers starts a new
+vendor session, so Octet carries the conversation across: your next prompt goes
+to the new provider with a transcript of the conversation shown so far, and a
+notice says how much went ("Carried the earlier conversation to codex (3 turns,
+2.1 KiB)"). You still see only what you typed.
+
+The transcript holds your prompts, each reply labelled with the provider that
+wrote it, one line per tool call and one line per `!` command (`$ cmd · exit 0`).
+It leaves out Octet's own notices and errors, image bytes, and the full output of
+tools and `!` commands. It is at most 64 KiB: the newest turns are kept, your
+first prompt always stays, and a marker says how many turns between them were
+dropped. It then lives in the new vendor's own history, so `/reconnect`,
+`/effort`, `/fork` and `/compact` keep it. If the first send is refused, the next
+prompt carries it instead. A same-provider switch resumes the vendor session and
+carries nothing; `/new` starts fresh, and `/resume N` reopens that session's own
+history. Earlier messages and prompt history remain visible, and the previous
+journal is retained; the new connection writes a new journal.
 The header and sidebar show the provider-reported name and full ID where space
 permits. `/session` and `/model` print complete, scrollable details: requested
 selection, catalog ID, confirmed session model ID, name and description. An alias

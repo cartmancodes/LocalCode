@@ -63,7 +63,8 @@ running across turns, and pick the session up from your phone.
   IDs and descriptions. Octet keeps no hard-coded catalogue.
 - Change model within a provider (the vendor session continues), or switch
   provider mid-session with `/model claude` or `/model codex`. The transcript
-  stays on screen.
+  stays on screen, and your next prompt carries it to the new provider (at
+  most 64 KiB, newest turns first).
 
 **Permissions and approvals**
 

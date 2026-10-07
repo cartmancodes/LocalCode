@@ -15,7 +15,7 @@ removed from the repository on 2026-10-04.
 | Provider sessions | Start a multi-turn conversation with Codex or Claude. Responses stream into the transcript alongside tool activity, usage, and errors. An offline `demo` engine exercises the interface without a vendor login, and shows the full text a model would receive when `!` attachments or a goal change it. |
 | Model discovery | `/model` lists the models advertised by the **active installed CLI**, with names, full model IDs, descriptions, and selection commands. Codex pages through `model/list`; Claude uses its initialization catalog. `/model list N` opens another page. |
 | Model selection | Start with `--model ID`, or use `/model ID`, `/model codex ID`, or `/model claude ID`. `/model default` selects the current provider's default. `/session` shows the requested selection, catalog ID, and confirmed session model ID separately. Custom IDs may be entered even when absent from the catalog. |
-| Provider switching | `/model claude` and `/model codex` switch the active engine. The visible transcript and prompt history remain on screen. A same-provider switch resumes the vendor session; switching providers opens a fresh vendor context and a new journal. |
+| Provider switching | `/model claude` and `/model codex` switch the active engine. The visible transcript and prompt history remain on screen. A same-provider switch resumes the vendor session; switching providers opens a new vendor session and a new journal, and the next prompt carries a transcript of the conversation (at most 64 KiB, newest turns and the first prompt kept). |
 | Prompt editor | Multiline input, Unicode-aware cursor movement, bracketed paste, a 50-prompt history, and a 64 KiB prompt limit. Enter sends; Alt+Enter or Ctrl+J inserts a newline. The prompt box grows with the draft, from 4 rows up to 7. `@` file mentions with fuzzy search, Tab completion for paths and commands, Ctrl+G to edit in `$EDITOR`, and `!`/`!!` shell commands whose output can be attached to the next prompt. |
 | Conversation view | Scrollback, cached word wrapping, a responsive workspace panel, a help view, and a command palette that also offers Ctrl+G, `@` and `!`. The interface accepts terminals as small as 38 by 12 cells and respects `NO_COLOR`. |
 | Permission modes | `ask`, `accept-edits`, `auto` (the vendor's own reviewer decides) and `full-access`, mapped onto each vendor's settings. Set with `--mode`, `/mode` or Shift+Tab; `full-access` has to be typed and reconnects with every check off. The header shows the mode the vendor confirmed. |
@@ -81,8 +81,8 @@ Once the TUI is open, a typical sequence is:
 
 Switching to Claude does **not** send the earlier Codex conversation to Claude.
 Only one provider runs as the active conversation at a time. The two engines do
-not yet collaborate on one shared task. Switching providers preserves the
-displayed messages for reference, but the new provider starts without them.
+not yet collaborate on one shared task. Switching providers keeps the displayed
+messages, and the new provider receives them as a transcript with your next prompt.
 
 ## Preview boundaries
 
