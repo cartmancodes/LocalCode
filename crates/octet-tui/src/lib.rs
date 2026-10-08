@@ -106,7 +106,10 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     // A job still running when a session ended, for whichever interface
     // comes next.
     let mut carried_job: Option<jobs::Running> = None;
+    // Ended sessions whose CLIs are still exiting while the next one runs.
+    let mut stopping: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     loop {
+        stopping.retain(|stop| !stop.is_finished());
         if signals.stop_pending().await {
             jobs::on_quit(carried_job.take()).await;
             break;
@@ -130,10 +133,11 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         let result =
             event_loop::run_session(&mut terminal, &guard, &mut app, &mut session, &mut signals)
                 .await;
-        session.shutdown().await;
         let exit = match result {
             Ok(exit) => exit,
             Err(error) => {
+                session.shutdown().await;
+                stopped(stopping).await;
                 jobs::on_quit(app.job.take()).await;
                 return Err(error);
             }
@@ -145,9 +149,19 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
             effort: app.conn.effort.clone(),
         };
         let Some(plan) = reconnect::plan(exit, &config, &ended, &mut binaries) else {
+            session.shutdown().await;
             jobs::on_quit(app.job.take()).await;
             break;
         };
+        if plan.stop_in_background() {
+            // The next session starts while this CLI finishes exiting.
+            stopping.push(tokio::spawn(session.shutdown()));
+        } else {
+            // The next session resumes a vendor session: no CLI may still
+            // be writing one.
+            session.shutdown().await;
+            stopped(std::mem::take(&mut stopping)).await;
+        }
         if let Some(why) = plan.pause {
             pause_active_goal(&mut app, why).await;
         }
@@ -165,9 +179,16 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         }
         retained_app = plan.keep_app.then_some(app);
     }
+    stopped(stopping).await;
     drop(terminal);
     drop(guard);
     Ok(())
+}
+/// Waits until every ended session's CLI has exited.
+async fn stopped(stopping: Vec<tokio::task::JoinHandle<()>>) {
+    for stop in stopping {
+        let _ = stop.await;
+    }
 }
 /// Whether a panic on this thread should restore the terminal: only one on
 /// the event loop's thread (`owner`) ends the interface. A background job or

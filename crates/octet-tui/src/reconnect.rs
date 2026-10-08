@@ -35,6 +35,14 @@ pub(crate) struct Plan {
     pub(crate) carry_conversation: bool,
 }
 
+impl Plan {
+    /// The ended session's CLI may stop while the next one starts: the next
+    /// resumes no vendor session, so the two never share one.
+    pub(crate) fn stop_in_background(&self) -> bool {
+        self.config.resume.is_none()
+    }
+}
+
 /// The plan after `exit`, or `None` to quit. `binaries` remembers each
 /// provider's CLI for this run.
 #[expect(
@@ -270,6 +278,32 @@ mod tests {
         plan(exit, config, &ended(session), &mut HashMap::new()).unwrap()
     }
 
+    #[test]
+    fn the_old_session_stops_in_the_background_only_when_nothing_resumes_it() {
+        let to = |provider| {
+            Exit::Model(Selection {
+                provider,
+                model: None,
+            })
+        };
+        assert!(plan_for(to(Engine::CLAUDE), &codex(), "t-1").stop_in_background());
+        assert!(plan_for(Exit::New, &codex(), "t-1").stop_in_background());
+        let resume = Exit::Resume {
+            engine: Engine::CLAUDE,
+            session: "c-1".into(),
+            model: None,
+        };
+        for exit in [
+            to(Engine::CODEX),
+            Exit::Reconnect,
+            Exit::Fork,
+            Exit::Mode(Mode::FullAccess),
+            Exit::Effort(Some("high".into())),
+            resume,
+        ] {
+            assert!(!plan_for(exit, &codex(), "t-1").stop_in_background());
+        }
+    }
     #[test]
     fn a_cross_provider_switch_carries_the_conversation() {
         let to = |provider| {
