@@ -92,7 +92,10 @@ impl<P: Protocol> Driver<P> {
             let tx = &self.core.tx;
             tokio::select! {
                 biased;
-                _ = stopping.changed() => break,
+                _ = stopping.changed() => {
+                    self.interrupt_before_stop().await;
+                    break;
+                }
                 changed = cancel.changed() => {
                     if changed.is_err() {
                         break;
@@ -150,6 +153,15 @@ impl<P: Protocol> Driver<P> {
         core.phase.watchdog_applies()
             || !core.pending.is_empty()
             || self.protocol.deadline().is_some()
+    }
+
+    /// A turn still running when the session stops is interrupted first, so
+    /// the vendor does not carry on with it while it exits. Best effort: the
+    /// shutdown that follows stops it either way.
+    async fn interrupt_before_stop(&mut self) {
+        if self.core.phase.is_running() && self.core.phase != Phase::Interrupting {
+            let _ = self.protocol.interrupt(&mut self.core).await;
+        }
     }
 
     async fn on_cancel(&mut self) -> Result<(), DriverError> {

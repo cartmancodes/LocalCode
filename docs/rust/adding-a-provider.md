@@ -34,6 +34,9 @@ pub(super) const PROVIDER: Provider = Provider {
     inline_images: false,           // true if images go in the prompt as base64
     effort_live: false,             // true if effort is sent per turn, not at launch
     efforts: &[],                   // the effort levels it takes; empty passes any word
+    // How long the CLI may take to exit once its input closes, before
+    // SIGTERM: time how long it really takes and allow some margin.
+    shutdown_grace: Duration::from_millis(150),
     launch_args: <GeminiProtocol as Protocol>::launch_args, // shared with the protocol gate
     start,
 };

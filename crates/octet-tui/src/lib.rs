@@ -114,9 +114,18 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
             jobs::on_quit(carried_job.take()).await;
             break;
         }
-        let mut session = Session::open(config.clone(), directory.clone())
-            .await
-            .map_err(io::Error::other)?;
+        let mut session = match Session::open(config.clone(), directory.clone()).await {
+            Ok(session) => session,
+            Err(error) => {
+                // An earlier CLI may still be exiting: never leave it running.
+                stopped(stopping).await;
+                let job = carried_job
+                    .take()
+                    .or_else(|| retained_app.take().and_then(|mut app| app.job.take()));
+                jobs::on_quit(job).await;
+                return Err(io::Error::other(error));
+            }
+        };
         let mut app = retained_app
             .take()
             .unwrap_or_else(|| App::new(&config, session.journal().to_path_buf()));

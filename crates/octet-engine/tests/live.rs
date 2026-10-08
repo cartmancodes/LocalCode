@@ -1870,3 +1870,24 @@ async fn odd_codex_frames_are_ignored() {
     );
     stop(&handle, task).await;
 }
+#[tokio::test]
+async fn stopping_mid_turn_interrupts_the_turn_first() {
+    // The fake Claude, with everything Octet writes to it logged.
+    let child = octet_testkit::protocol_child();
+    let (dir, script) = script_vendor(
+        "octet-stop-mid-turn",
+        &format!(
+            "tee \"$(dirname \"$0\")/sent.log\" | '{}' \"$@\"",
+            child.display()
+        ),
+    );
+    let mut c = claude();
+    c.binary = script;
+    let (handle, mut events, task) = spawn(c);
+    wait_for(&mut events, |e| matches!(e, Event::ModeChanged(Mode::Ask))).await;
+    handle.send(Command::Prompt(scenario::HOLD.into())).unwrap();
+    wait_for(&mut events, |e| matches!(e, Event::Started)).await;
+    stop(&handle, task).await;
+    let sent = std::fs::read_to_string(dir.path().join("sent.log")).unwrap();
+    assert!(sent.contains(r#""subtype":"interrupt""#), "{sent}");
+}

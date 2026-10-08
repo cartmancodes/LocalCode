@@ -43,21 +43,26 @@ pub(crate) struct Entry {
     /// wrote each reply.
     pub(crate) engine: octet_core::Engine,
     pub(crate) text: String,
-    pub(crate) width: u16,
+    /// The width `cache` was wrapped at; `None` until it is.
+    pub(crate) width: Option<u16>,
     pub(crate) cache: Vec<Line<'static>>,
     /// Where appended text starts re-wrapping.
     pub(crate) tail: crate::view::transcript::Tail,
 }
 impl Entry {
-    pub(crate) fn new(role: Role, engine: octet_core::Engine, text: &str) -> Self {
+    pub(crate) fn new(role: Role, engine: octet_core::Engine, text: String) -> Self {
         Self {
             role,
             engine,
-            text: text.into(),
-            width: 0,
+            text,
+            width: None,
             cache: Vec::new(),
             tail: crate::view::transcript::Tail::default(),
         }
+    }
+    /// Its text changed other than at the end: wrap it whole next time.
+    pub(crate) fn invalidate(&mut self) {
+        self.width = None;
     }
     /// Adds streamed text to the end.
     pub(crate) fn append(&mut self, text: &str) {
@@ -506,7 +511,7 @@ impl App {
         self.chat.bytes += text.len();
         self.chat
             .entries
-            .push_back(Entry::new(role, self.conn.engine, &text));
+            .push_back(Entry::new(role, self.conn.engine, text));
         self.trim();
     }
     fn trim(&mut self) {
@@ -637,7 +642,7 @@ impl App {
                     e.text.drain(..remove);
                     self.chat.bytes -= remove;
                     // Its start moved: the next paint wraps it whole.
-                    e.width = 0;
+                    e.invalidate();
                 }
                 self.trim();
             }

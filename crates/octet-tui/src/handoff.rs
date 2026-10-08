@@ -166,7 +166,7 @@ mod tests {
     use octet_core::Engine;
 
     fn entry(role: Role, engine: Engine, text: &str) -> Entry {
-        Entry::new(role, engine, text)
+        Entry::new(role, engine, text.into())
     }
     fn user(text: &str) -> Entry {
         entry(Role::User, Engine::CLAUDE, text)

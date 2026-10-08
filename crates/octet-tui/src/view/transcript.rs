@@ -69,11 +69,11 @@ impl crate::app::Entry {
     /// Its rows at `width`, wrapped only as far as they changed: appended
     /// text re-wraps the last source line onwards.
     pub(crate) fn rows(&mut self, width: u16) -> &[Line<'static>] {
-        if self.width != width {
+        if self.width != Some(width) {
             let (lines, tail) = wrapped(self.role, &self.text, width);
             self.cache = lines;
             self.tail = tail;
-            self.width = width;
+            self.width = Some(width);
         } else if self.tail.grown {
             self.cache.truncate(self.cache.len() - self.tail.rows);
             let Tail { start, code, .. } = self.tail;
@@ -240,7 +240,7 @@ mod tests {
 
     fn streamed(text: &str, chunk: usize, widths: [u16; 2]) {
         let chars: Vec<char> = text.chars().collect();
-        let mut entry = Entry::new(Role::Assistant, Engine::CLAUDE, "");
+        let mut entry = Entry::new(Role::Assistant, Engine::CLAUDE, String::new());
         for (n, piece) in chars.chunks(chunk).enumerate() {
             entry.append(&piece.iter().collect::<String>());
             // Halfway, the view changes width.
@@ -268,11 +268,25 @@ mod tests {
     }
 
     #[test]
+    fn a_dropped_start_rewraps_at_any_width() {
+        for width in [0, 40] {
+            let mut entry =
+                Entry::new(Role::Assistant, Engine::CLAUDE, "first line\nsecond".into());
+            let _ = entry.rows(width);
+            entry.append(" line");
+            entry.text.drain(..6);
+            entry.invalidate();
+            let full = entry_lines(entry.role, &entry.text, width);
+            assert_eq!(entry.rows(width), full.as_slice(), "width {width}");
+        }
+    }
+
+    #[test]
     fn appending_rewraps_only_the_last_line() {
         let mut entry = Entry::new(
             Role::Assistant,
             Engine::CLAUDE,
-            &"word ".repeat(12_000).replace("word word ", "word\nword "),
+            "word ".repeat(12_000).replace("word word ", "word\nword "),
         );
         let _ = entry.rows(80);
         WRAPPED.set(0);

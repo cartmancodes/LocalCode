@@ -293,6 +293,12 @@ mod tests {
             session: "c-1".into(),
             model: None,
         };
+        // A fresh Claude session has no ID until its first turn: nothing to resume.
+        assert!(plan_for(Exit::Reconnect, &codex(), "").stop_in_background());
+        // A fork of a resumed session not yet named still opens the original.
+        let mut resumed = codex();
+        resumed.resume = Some("t-0".into());
+        assert!(!plan_for(Exit::Fork, &resumed, "").stop_in_background());
         for exit in [
             to(Engine::CODEX),
             Exit::Reconnect,
