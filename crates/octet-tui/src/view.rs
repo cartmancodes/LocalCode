@@ -620,7 +620,7 @@ fn approval(frame: &mut Frame, area: Rect, id: u64, detail: &str, scroll: &mut u
     );
 }
 
-mod transcript;
+pub(crate) mod transcript;
 
 #[cfg(test)]
 mod tests;

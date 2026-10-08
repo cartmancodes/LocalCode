@@ -18,6 +18,9 @@ const HISTORY_LIMIT: usize = 50;
 /// Shown when an edit would push the draft past the prompt limit.
 pub(crate) const PROMPT_FULL: &str = "Prompt limit reached";
 const BLOCK_BYTES: usize = 64 * 1024;
+/// How far a streaming reply may outgrow `BLOCK_BYTES` before its start is
+/// dropped: each drop re-wraps the whole reply, so it happens in steps.
+const BLOCK_SLACK: usize = 16 * 1024;
 /// Transcript entries kept on screen; older ones are in the journal.
 const MAX_ENTRIES: usize = 160;
 /// Models listed per `/model` page.
@@ -42,6 +45,25 @@ pub(crate) struct Entry {
     pub(crate) text: String,
     pub(crate) width: u16,
     pub(crate) cache: Vec<Line<'static>>,
+    /// Where appended text starts re-wrapping.
+    pub(crate) tail: crate::view::transcript::Tail,
+}
+impl Entry {
+    pub(crate) fn new(role: Role, engine: octet_core::Engine, text: &str) -> Self {
+        Self {
+            role,
+            engine,
+            text: text.into(),
+            width: 0,
+            cache: Vec::new(),
+            tail: crate::view::transcript::Tail::default(),
+        }
+    }
+    /// Adds streamed text to the end.
+    pub(crate) fn append(&mut self, text: &str) {
+        self.text.push_str(text);
+        self.tail.grown = true;
+    }
 }
 /// The vendor connection and what it reported.
 pub(crate) struct Connection {
@@ -482,13 +504,9 @@ impl App {
             text = format!("[Earlier output is in the journal]\n{}", &text[start..]);
         }
         self.chat.bytes += text.len();
-        self.chat.entries.push_back(Entry {
-            role,
-            engine: self.conn.engine,
-            text,
-            width: 0,
-            cache: Vec::new(),
-        });
+        self.chat
+            .entries
+            .push_back(Entry::new(role, self.conn.engine, &text));
         self.trim();
     }
     fn trim(&mut self) {
@@ -612,13 +630,14 @@ impl App {
                     .entries
                     .back_mut()
                     .expect("an assistant entry was just ensured");
-                e.text.push_str(&text);
+                e.append(&text);
                 self.chat.bytes += text.len();
-                e.width = 0;
-                if e.text.len() > BLOCK_BYTES {
+                if e.text.len() > BLOCK_BYTES + BLOCK_SLACK {
                     let remove = e.text.ceil_char_boundary(e.text.len() - BLOCK_BYTES);
                     e.text.drain(..remove);
                     self.chat.bytes -= remove;
+                    // Its start moved: the next paint wraps it whole.
+                    e.width = 0;
                 }
                 self.trim();
             }

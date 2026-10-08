@@ -162,3 +162,20 @@ fn the_catalog_hint_names_every_vendor() {
         "/model <ID or alias> · /model codex <ID> · /model claude <ID> · /model gemini <ID>"
     );
 }
+#[test]
+fn a_long_streamed_reply_rewraps_in_steps() {
+    let mut app = crate::test_support::app_for(octet_core::Engine::DEMO);
+    app.event(Event::Started);
+    let chunk = format!("{}\n", "streamed words ".repeat(68));
+    crate::view::transcript::WRAPPED.set(0);
+    for _ in 0..200 {
+        app.event(Event::Text(chunk.clone()));
+        let _ = app.visible_lines(80, 20);
+    }
+    let reply = &app.chat.entries.back().unwrap().text;
+    assert!(reply.len() <= BLOCK_BYTES + BLOCK_SLACK, "{}", reply.len());
+    assert!(reply.ends_with(&chunk));
+    // Re-wrapping the whole reply on every chunk would be about 10 MB.
+    let wrapped = crate::view::transcript::WRAPPED.get();
+    assert!(wrapped < 2 * 1024 * 1024, "re-wrapped {wrapped} bytes");
+}
