@@ -111,6 +111,14 @@ Claude Code and Codex CLIs.
 - Vendors come from one provider table, and each vendor's wire protocol is
   its own `Protocol` implementation, so adding a vendor CLI is one file and
   one row ([guide](docs/rust/adding-a-provider.md)). No behaviour change.
+- Switching provider (`/model claude`, `/model codex`) or `/new` starts the
+  next CLI while the old one exits, instead of after it. Commands that
+  resume a session still wait, so two CLIs never share one.
+- Claude Code gets 1.5 seconds to exit on its own (it needs about 0.9)
+  rather than being killed after 0.4; Codex keeps 150 ms.
+- A streaming reply re-wraps only its last line on each update. A reply
+  over 64 KiB drops its start in 16 KiB steps, so it may briefly show up
+  to 80 KiB.
 
 ### Fixed
 
