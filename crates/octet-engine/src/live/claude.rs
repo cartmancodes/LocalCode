@@ -9,7 +9,7 @@ use super::{
     push_bounded, valid_identifier,
 };
 use serde_json::{Value, json};
-use std::{collections::VecDeque, ffi::OsString};
+use std::{collections::VecDeque, ffi::OsString, time::Duration};
 use tokio::{sync::mpsc, time::Instant};
 
 /// Claude Code's row in the provider table.
@@ -28,6 +28,8 @@ pub(super) const PROVIDER: Provider = Provider {
     inline_images: true,
     effort_live: false,
     efforts: &["low", "medium", "high", "xhigh", "max"],
+    // It takes about 0.9 s to exit, saving its session; a kill could cut that.
+    shutdown_grace: Duration::from_millis(1500),
     launch_args: <ClaudeProtocol as Protocol>::launch_args,
     start,
 };

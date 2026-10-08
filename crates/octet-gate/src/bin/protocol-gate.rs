@@ -727,6 +727,7 @@ async fn claude_request(
 /// second process. The status, the evidence and whether every child stopped.
 async fn run_scenario(opt: &Opt, cwd: &Path, deadline: Instant) -> (String, Evidence, bool) {
     let mut gate = match GateProcess::spawn(
+        opt.engine,
         opt.binary.clone(),
         vendor_args(opt, cwd, None),
         cwd.to_owned(),
@@ -758,6 +759,7 @@ async fn run_scenario(opt: &Opt, cwd: &Path, deadline: Instant) -> (String, Evid
         return ("failed: first session id missing".into(), evidence, cleaned);
     };
     let mut second = match GateProcess::spawn(
+        opt.engine,
         opt.binary.clone(),
         vendor_args(opt, cwd, Some(&first)),
         cwd.to_owned(),

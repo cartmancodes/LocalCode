@@ -100,12 +100,15 @@ impl GateProcess {
     ///
     /// Fails if the vendor cannot start.
     pub fn spawn(
+        engine: octet_engine::live::Engine,
         executable: PathBuf,
         args: Vec<OsString>,
         cwd: PathBuf,
         deadline: Instant,
     ) -> Result<Self, GateError> {
-        let process = Process::spawn(&octet_engine::live::vendor_process(executable, args, cwd))?;
+        let process = Process::spawn(&octet_engine::live::vendor_process(
+            engine, executable, args, cwd,
+        ))?;
         let sender = process.sender();
         Ok(Self {
             process,

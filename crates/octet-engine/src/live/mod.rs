@@ -110,6 +110,9 @@ pub struct Provider {
     /// The reasoning effort levels the vendor takes; empty passes any word
     /// on (Codex's levels depend on the model).
     pub efforts: &'static [&'static str],
+    /// How long the CLI may take to exit once its input closes, before it
+    /// is sent SIGTERM.
+    pub shutdown_grace: Duration,
     /// The vendor CLI's arguments for `config` (none for the demo).
     pub(crate) launch_args: fn(&Config) -> Vec<OsString>,
     /// Runs one session until it stops.
@@ -140,9 +143,14 @@ pub fn launch_args(config: &Config) -> Vec<OsString> {
     (config.engine.provider().launch_args)(config)
 }
 
-/// How Octet runs a vendor CLI: its limits on frames, queued output and
+/// How Octet runs `engine`'s CLI: its limits on frames, queued output and
 /// stderr, and its shutdown graces. The protocol gate uses the same.
-pub fn vendor_process(executable: PathBuf, args: Vec<OsString>, cwd: PathBuf) -> ProcessConfig {
+pub fn vendor_process(
+    engine: Engine,
+    executable: PathBuf,
+    args: Vec<OsString>,
+    cwd: PathBuf,
+) -> ProcessConfig {
     ProcessConfig {
         executable,
         args,
@@ -150,7 +158,7 @@ pub fn vendor_process(executable: PathBuf, args: Vec<OsString>, cwd: PathBuf) ->
         max_frame_bytes: 8 * 1024 * 1024,
         queue_bytes: 16 * 1024 * 1024,
         stderr_bytes: 4096,
-        shutdown_grace: Duration::from_millis(150),
+        shutdown_grace: engine.provider().shutdown_grace,
         term_grace: Duration::from_millis(250),
     }
 }
@@ -740,6 +748,19 @@ pub fn spawn_with_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn claude_has_time_to_exit_on_its_own() {
+        let process = |engine| vendor_process(engine, "cli".into(), Vec::new(), ".".into());
+        // Claude Code takes about 0.9 s to exit once its input closes.
+        assert_eq!(
+            process(Engine::CLAUDE).shutdown_grace,
+            Duration::from_millis(1500)
+        );
+        assert_eq!(
+            process(Engine::CODEX).shutdown_grace,
+            Duration::from_millis(150)
+        );
+    }
     #[test]
     fn the_turn_gate_stops_only_turns_sent_before_a_cancel() {
         let (cancel_tx, cancel) = watch::channel(0u64);

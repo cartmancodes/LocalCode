@@ -37,6 +37,7 @@ pub(super) async fn run<P: Protocol>(
     } = channels;
     let engine = config.engine;
     let process = Process::spawn(&vendor_process(
+        engine,
         config.binary.clone(),
         P::launch_args(&config),
         config.cwd.clone(),

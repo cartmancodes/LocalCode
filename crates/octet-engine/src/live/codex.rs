@@ -11,6 +11,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
     fmt::Write as _,
+    time::Duration,
 };
 
 /// Codex's row in the provider table.
@@ -29,6 +30,7 @@ pub(super) const PROVIDER: Provider = Provider {
     inline_images: false,
     effort_live: true,
     efforts: &[],
+    shutdown_grace: Duration::from_millis(150),
     launch_args: <CodexProtocol as Protocol>::launch_args,
     start,
 };

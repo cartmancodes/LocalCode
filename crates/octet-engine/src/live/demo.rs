@@ -22,6 +22,8 @@ pub(super) const PROVIDER: Provider = Provider {
     inline_images: false,
     effort_live: false,
     efforts: &[],
+    // No process to stop.
+    shutdown_grace: Duration::ZERO,
     launch_args: |_| Vec::new(),
     start,
 };
