@@ -635,3 +635,22 @@ fn the_model_list_merges_every_provider() {
     let codex = text.find("GPT-6-Astra · codex").unwrap();
     assert!(claude < codex, "the current provider first");
 }
+#[test]
+fn the_demo_lists_only_the_vendors() {
+    let c = octet_core::Config::new(octet_core::Engine::DEMO, "demo", "/tmp");
+    let mut a = App::new(&c, "journal".into());
+    a.models.catalogs.set(
+        octet_core::Engine::CODEX,
+        vec![octet_core::ModelInfo {
+            selection: "gpt-6-astra".into(),
+            id: None,
+            name: "GPT-6-Astra".into(),
+            description: String::new(),
+        }],
+        std::time::SystemTime::now(),
+    );
+    a.show_models(1);
+    let text = a.entries_text();
+    assert!(!text.contains("demo 0"), "{text}");
+    assert!(text.contains("codex 1 (cached just now)"), "{text}");
+}

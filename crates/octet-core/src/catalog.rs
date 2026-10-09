@@ -48,7 +48,11 @@ impl Catalogs {
             let Some(engine) = Engine::parse(name).filter(|engine| engine.is_vendor()) else {
                 continue;
             };
-            let Some(seconds) = entry["fetched"].as_u64() else {
+            // A time the clock cannot hold is a bad entry, not a crash.
+            let Some(fetched) = entry["fetched"]
+                .as_u64()
+                .and_then(|seconds| UNIX_EPOCH.checked_add(Duration::from_secs(seconds)))
+            else {
                 continue;
             };
             let models = entry["models"]
@@ -58,13 +62,7 @@ impl Catalogs {
                 .filter_map(model_from_json)
                 .take(MAX_MODELS)
                 .collect();
-            lists.insert(
-                engine,
-                Listed {
-                    models,
-                    fetched: UNIX_EPOCH + Duration::from_secs(seconds),
-                },
-            );
+            lists.insert(engine, Listed { models, fetched });
         }
         Self { lists }
     }
@@ -309,6 +307,19 @@ mod tests {
         assert_eq!(codex.models[0].selection, "gpt-ok");
         assert!(loaded.get(Engine::CLAUDE).is_none());
         assert!(loaded.get(Engine::DEMO).is_none());
+    }
+
+    #[test]
+    fn a_time_past_the_clock_is_skipped() {
+        let dir = octet_testkit::TempDir::new("octet-catalog-far");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let path = dir.path().join(FILE);
+        std::fs::write(
+            &path,
+            r#"{"codex":{"fetched":18446744073709551615,"models":[{"selection":"gpt-ok"}]}}"#,
+        )
+        .unwrap();
+        assert!(Catalogs::load(&path).get(Engine::CODEX).is_none());
     }
 
     #[test]

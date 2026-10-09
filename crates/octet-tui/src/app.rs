@@ -519,6 +519,7 @@ impl App {
             let active = self.conn.engine;
             let now = std::time::SystemTime::now();
             let counts: Vec<String> = std::iter::once(active)
+                .filter(|engine| engine.is_vendor())
                 .chain(
                     octet_core::Engine::ALL
                         .iter()

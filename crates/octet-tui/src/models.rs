@@ -70,8 +70,12 @@ impl Models {
     }
 
     /// Probes every other provider whose list is missing or stale, unless a
-    /// probe of it failed this run.
+    /// probe of it failed this run. The offline demo starts no CLI: there,
+    /// only `/model refresh` fetches.
     pub(crate) fn probe_stale(&mut self, active: Engine, now: SystemTime) {
+        if !active.is_vendor() {
+            return;
+        }
         for engine in others(active) {
             if self.catalogs.stale(engine, now) && !self.failed.contains_key(&engine) {
                 self.probe(engine);
@@ -262,6 +266,15 @@ mod tests {
         // Fresh now: no probe.
         models.probe_stale(Engine::CLAUDE, SystemTime::now());
         assert!(models.probing.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_offline_demo_probes_nothing() {
+        let dir = octet_testkit::TempDir::new("octet-models-demo");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let mut models = attached(dir.path());
+        models.probe_stale(Engine::DEMO, SystemTime::now());
+        assert!(models.probing.is_empty(), "{:?}", models.probing);
     }
 
     #[test]
