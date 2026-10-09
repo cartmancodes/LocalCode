@@ -113,6 +113,8 @@ pub struct Provider {
     /// How long the CLI may take to exit once its input closes, before it
     /// is sent SIGTERM.
     pub shutdown_grace: Duration,
+    /// The CLI can list its models without opening a session (`probe`).
+    pub lists_models: bool,
     /// The vendor CLI's arguments for `config` (none for the demo).
     pub(crate) launch_args: fn(&Config) -> Vec<OsString>,
     /// Runs one session until it stops.
@@ -273,6 +275,9 @@ pub struct Config {
     /// Open `resume` as a new vendor session that continues it, leaving the
     /// original as it was.
     pub fork: bool,
+    /// Open the CLI only far enough to list its models: no vendor session,
+    /// no prompt. Used by `probe`.
+    pub catalog_only: bool,
 }
 impl Config {
     /// Ask mode, the vendor's default model, a new vendor session.
@@ -287,6 +292,7 @@ impl Config {
             approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
             effort: None,
             fork: false,
+            catalog_only: false,
         }
     }
 }
@@ -702,6 +708,63 @@ fn limited(text: &str) -> String {
         format!("{}\n[detail exceeds preview limit]", &text[..end])
     }
 }
+/// How long a probe may take before it gives up.
+pub const PROBE_LIMIT: Duration = Duration::from_secs(20);
+
+/// The models `engine`'s CLI lists, read without opening a vendor session
+/// or sending a prompt: the CLI starts catalog-only and is stopped once it
+/// has listed them (Codex sends `Ready` after its last page; Claude before
+/// its list).
+///
+/// # Errors
+///
+/// The provider cannot list its models, or its CLI could not start,
+/// failed, or did not list them within `limit`.
+pub async fn probe(
+    engine: Engine,
+    binary: PathBuf,
+    cwd: PathBuf,
+    limit: Duration,
+) -> Result<Vec<ModelInfo>, String> {
+    let title = engine.title();
+    if !engine.provider().lists_models {
+        return Err(format!("{title} cannot list its models"));
+    }
+    let mut config = Config::new(engine, binary, cwd);
+    config.catalog_only = true;
+    let (handle, mut events, task) = spawn(config);
+    let listed = timeout(limit, async {
+        let (mut ready, mut models) = (false, None);
+        while let Some(event) = events.recv().await {
+            match event {
+                Event::Ready { .. } => ready = true,
+                Event::Models(list) => models = Some(list),
+                Event::Error(error) => return Err(error),
+                _ => {}
+            }
+            if ready && let Some(list) = models.take() {
+                return Ok(list);
+            }
+        }
+        Err(format!("{title} stopped before listing its models"))
+    })
+    .await
+    .unwrap_or_else(|_| {
+        Err(format!(
+            "{title} did not list its models within {} s",
+            limit.as_secs()
+        ))
+    });
+    handle.shutdown();
+    // Let the session stop its CLI; bounded, like any shutdown.
+    let _ = timeout(Duration::from_secs(5), async {
+        while events.recv().await.is_some() {}
+        let _ = task.await;
+    })
+    .await;
+    listed
+}
+
 /// Starts a session for `config` with the default time limits. Returns
 /// the command handle, the event stream and the driver task.
 pub fn spawn(config: Config) -> (Handle, mpsc::Receiver<Event>, tokio::task::JoinHandle<()>) {

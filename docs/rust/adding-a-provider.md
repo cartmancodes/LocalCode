@@ -37,6 +37,7 @@ pub(super) const PROVIDER: Provider = Provider {
     // How long the CLI may take to exit once its input closes, before
     // SIGTERM: time how long it really takes and allow some margin.
     shutdown_grace: Duration::from_millis(150),
+    lists_models: false,            // true if the CLI can list its models without opening a session
     launch_args: <GeminiProtocol as Protocol>::launch_args, // shared with the protocol gate
     start,
 };

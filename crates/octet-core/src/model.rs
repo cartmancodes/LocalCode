@@ -68,6 +68,7 @@ impl Selection {
             // A fork the vendor has not named yet stays a fork; resuming
             // the original instead would write into it.
             fork: same && session.is_empty() && current.fork,
+            catalog_only: false,
             engine: self.provider,
             model: self.model.clone(),
             cwd: current.cwd.clone(),

@@ -30,6 +30,7 @@ pub(super) const PROVIDER: Provider = Provider {
     efforts: &["low", "medium", "high", "xhigh", "max"],
     // It takes about 0.9 s to exit, saving its session; a kill could cut that.
     shutdown_grace: Duration::from_millis(1500),
+    lists_models: true,
     launch_args: <ClaudeProtocol as Protocol>::launch_args,
     start,
 };

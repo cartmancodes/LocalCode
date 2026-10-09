@@ -24,6 +24,7 @@ pub(super) const PROVIDER: Provider = Provider {
     efforts: &[],
     // No process to stop.
     shutdown_grace: Duration::ZERO,
+    lists_models: false,
     launch_args: |_| Vec::new(),
     start,
 };

@@ -31,6 +31,7 @@ pub(super) const PROVIDER: Provider = Provider {
     effort_live: true,
     efforts: &[],
     shutdown_grace: Duration::from_millis(150),
+    lists_models: true,
     launch_args: <CodexProtocol as Protocol>::launch_args,
     start,
 };
@@ -354,6 +355,10 @@ impl CodexProtocol {
         core.phase = Phase::Handshaken;
         core.send(json!({"method":"initialized","params":{}}))
             .await?;
+        if core.config.catalog_only {
+            // Only the model list: no thread, so nothing in Codex's history.
+            return self.request_models(core, None).await;
+        }
         let mut params = codex_thread_params(core.mode);
         params["cwd"] = json!(core.config.cwd);
         let method = match &core.config.resume {
@@ -414,7 +419,10 @@ impl CodexProtocol {
 
     async fn catalog_page(&mut self, core: &Core, v: &Value) -> Result<(), DriverError> {
         self.catalog_pages += 1;
-        if v.get("error").is_some() {
+        if let Some(error) = v.get("error") {
+            if core.config.catalog_only {
+                return Err(format!("Codex did not list its models: {}", error_text(error)).into());
+            }
             return core.emit(Event::Notice(
                 "Model catalog unavailable from this CLI; explicit model IDs remain supported"
                     .into(),
@@ -427,6 +435,7 @@ impl CodexProtocol {
                 self.catalog.push(model);
             }
         }
+        let mut more = false;
         if let Some(cursor) = v["result"]["nextCursor"].as_str().filter(|c| !c.is_empty()) {
             if self.catalog_pages < 8
                 && self.catalog.len() < 256
@@ -434,13 +443,21 @@ impl CodexProtocol {
                 && self.catalog_cursors.insert(cursor.to_owned())
             {
                 self.request_models(core, Some(cursor)).await?;
+                more = true;
             } else {
                 core.emit(Event::Notice(
                     "Model catalog exceeds discovery limits; showing partial results".into(),
                 ))?;
             }
         }
-        core.emit(Event::Models(self.catalog.clone()))
+        core.emit(Event::Models(self.catalog.clone()))?;
+        if core.config.catalog_only && !more {
+            // The whole list is in: a probe takes it now.
+            core.emit(Event::Ready {
+                session: String::new(),
+            })?;
+        }
+        Ok(())
     }
 
     /// A request from Codex: an approval for the running turn is shown to the

@@ -5,8 +5,8 @@
     reason = "test code: an unwrap that fails is the test failing"
 )]
 use octet_engine::live::{
-    Command, Config, Engine, Event, ImageAttachment, Limits, Mode, Outcome, spawn,
-    spawn_with_limits,
+    Command, Config, Engine, Event, ImageAttachment, Limits, Mode, Outcome, PROBE_LIMIT, probe,
+    spawn, spawn_with_limits,
 };
 use octet_testkit::scenario;
 use std::{fmt::Write as _, time::Duration};
@@ -1890,4 +1890,69 @@ async fn stopping_mid_turn_interrupts_the_turn_first() {
     stop(&handle, task).await;
     let sent = std::fs::read_to_string(dir.path().join("sent.log")).unwrap();
     assert!(sent.contains(r#""subtype":"interrupt""#), "{sent}");
+}
+
+/// A vendor whose input is logged to `sent.log` beside it.
+fn logged(name: &str) -> (octet_testkit::TempDir, std::path::PathBuf) {
+    let child = octet_testkit::protocol_child();
+    script_vendor(
+        name,
+        &format!(
+            "tee \"$(dirname \"$0\")/sent.log\" | '{}' \"$@\"",
+            child.display()
+        ),
+    )
+}
+
+#[tokio::test]
+async fn a_codex_probe_lists_every_page_and_opens_no_thread() {
+    let (dir, script) = logged("octet-probe-codex");
+    let models = probe(Engine::CODEX, script, std::env::temp_dir(), PROBE_LIMIT)
+        .await
+        .unwrap();
+    let names: Vec<&str> = models.iter().map(|m| m.selection.as_str()).collect();
+    assert_eq!(names, ["fixture", "other-full-id"]);
+    let sent = std::fs::read_to_string(dir.path().join("sent.log")).unwrap();
+    assert!(sent.contains("model/list"), "{sent}");
+    assert!(!sent.contains("thread/"), "{sent}");
+}
+
+#[tokio::test]
+async fn a_claude_probe_lists_its_models_and_sends_no_prompt() {
+    let (dir, script) = logged("octet-probe-claude");
+    let models = probe(Engine::CLAUDE, script, std::env::temp_dir(), PROBE_LIMIT)
+        .await
+        .unwrap();
+    assert_eq!(models[0].selection, "sonnet");
+    let sent = std::fs::read_to_string(dir.path().join("sent.log")).unwrap();
+    assert!(!sent.contains(r#""type":"user""#), "{sent}");
+}
+
+#[tokio::test]
+async fn a_silent_cli_gives_up_at_the_limit() {
+    let (_dir, script) = script_vendor("octet-probe-silent", "exec sleep 30");
+    let started = std::time::Instant::now();
+    let error = probe(
+        Engine::CODEX,
+        script,
+        std::env::temp_dir(),
+        Duration::from_millis(300),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("did not list its models"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+#[tokio::test]
+async fn a_provider_without_a_list_is_not_probed() {
+    let error = probe(
+        Engine::DEMO,
+        "demo".into(),
+        std::env::temp_dir(),
+        PROBE_LIMIT,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("cannot list its models"), "{error}");
 }
