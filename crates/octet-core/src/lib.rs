@@ -240,6 +240,7 @@ pub async fn export_journal(
 
 mod error;
 pub use error::{ExportError, GoalError, SelectionError, SessionError};
+pub mod catalog;
 pub mod goal;
 pub mod model;
 pub mod sessions;
