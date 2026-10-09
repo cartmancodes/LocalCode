@@ -59,8 +59,10 @@ running across turns, and pick the session up from your phone.
 
 **Models and providers**
 
-- `/model` lists the models your installed CLI advertises, with names, full
-  IDs and descriptions. Octet keeps no hard-coded catalogue.
+- `/model` lists every provider's models in one list, as each installed CLI
+  reports them (fetched when needed and cached; Octet keeps no hard-coded
+  catalogue). `/model NAME` switches to whichever provider lists NAME, and Tab
+  completes model names.
 - Change model within a provider (the vendor session continues), or switch
   provider mid-session with `/model claude` or `/model codex`. The transcript
   stays on screen, and your next prompt carries it to the new provider (at

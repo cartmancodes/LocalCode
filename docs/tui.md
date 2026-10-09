@@ -284,9 +284,10 @@ session with all checks off. Leaving it reconnects again.
 ## Switch models and providers
 
 ```text
-/model                         Show full model details and live catalog
-/model list 2                  Show the second catalog page
-/model MODEL_NAME              Change model within the current provider
+/model                         Show model details and every provider's models
+/model list 2                  Show the second page of the list
+/model MODEL_NAME              Select a model; switches provider if another lists it
+/model refresh                 Fetch the other providers' model lists again
 /model codex MODEL_NAME        Select a Codex model
 /model claude MODEL_NAME       Select a Claude model
 /model claude/MODEL_NAME        Equivalent provider-qualified form
@@ -322,13 +323,31 @@ selection, catalog ID, confirmed session model ID, name and description. An alia
 or default is marked unconfirmed until the runtime reports the active model.
 Names unavailable in the catalog are explicitly marked as not reported.
 
-Codex discovery uses paginated `model/list`; Claude discovery uses initialization
-`models` metadata, including `resolvedModel` when supplied. Reconnecting refreshes
-the catalog; `/model list <page>` pages through 20 entries at a time. Catalogs are
-bounded to 256 entries and eight Codex pages, with a notice on partial results.
-Discovery uses the existing CLI process and does not make inference calls or add
-an idle polling timer. Provider model metadata is also recorded in the journal.
-A missing catalog does not prevent entering a custom model ID.
+`/model` lists every provider's models in one list, the current provider's
+first; each entry names its provider and the line that selects it. A bare
+`/model NAME` goes to the provider whose list holds NAME (`/model opus` from
+Codex switches to Claude, carrying the conversation as any provider switch
+does); a name in no list goes to the provider whose listed IDs share its
+leading word (`gpt-5.5` to the provider listing `gpt-…` models), else stays
+with the current provider as a custom ID. `default` is always the current
+provider's, and the explicit forms (`/model codex X`, `claude/X`) work as
+before. After `/model ` Tab completes a model name from every list
+(`name · provider` in the popup).
+
+The current provider's list comes live from its CLI with each connection
+(Codex's paginated `model/list`; Claude's initialization `models`, with
+`resolvedModel` when supplied). Every other provider's list comes from a cache,
+`models.json` in the journal directory (private, written atomically). When a
+cached list is missing or more than 24 hours old, Octet fetches it in the
+background once the session is ready, by starting that provider's CLI just far
+enough to list its models: no vendor session (Codex opens no thread), no
+prompt, no tokens, at most 20 seconds. `/model refresh` fetches every other
+list now; a provider whose fetch failed is not tried again until then. The
+list's header shows each provider's count and freshness (`live`,
+`cached 2 h ago`, `probing…`, `unavailable: …`); `/model list <page>` pages
+through 20 entries at a time. Lists are bounded to 256 entries per provider
+and eight Codex pages, with a notice on partial results. A missing list does
+not prevent entering a custom model ID.
 
 Providers come from one table; adding a vendor CLI is one file and one row
 ([Adding a provider](rust/adding-a-provider.md)).
