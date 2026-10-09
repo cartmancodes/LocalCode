@@ -600,3 +600,135 @@ fn accepting_a_model_suggestion_inserts_only_the_name() {
     crate::input::accept_completion(&mut app);
     assert_eq!(app.composer.editor.text(), "/model gpt-6-astra ");
 }
+
+/// A Claude interface on `opus`, with Claude's live list and Codex's cached one.
+fn picker_app() -> App {
+    let mut app = crate::test_support::app_for(octet_core::Engine::CLAUDE);
+    crate::test_support::idle(&mut app);
+    let m = |s: &str, name: &str| octet_core::ModelInfo {
+        selection: s.into(),
+        id: Some(s.into()),
+        name: name.into(),
+        description: String::new(),
+    };
+    app.event(octet_core::Event::Models(vec![
+        m("default", "Default"),
+        m("opus", "Opus 5.5"),
+    ]));
+    app.conn.requested_model = Some("opus".into());
+    app.models.catalogs.set(
+        octet_core::Engine::CODEX,
+        vec![
+            m("gpt-6-astra", "GPT-6-Astra"),
+            m("gpt-5.6-sol", "GPT-5.6-Sol"),
+        ],
+        std::time::SystemTime::now(),
+    );
+    app
+}
+async fn type_keys(app: &mut App, vendor: &RecordingVendor, text: &str) {
+    for c in text.chars() {
+        key_action(app, vendor, key(KeyCode::Char(c))).await;
+    }
+}
+fn picker(app: &App) -> &composer::Completion {
+    let completion = app.composer.completion.as_ref().expect("picker open");
+    assert_eq!(completion.kind, composer::Kind::Model);
+    completion
+}
+#[tokio::test]
+async fn model_and_enter_opens_the_picker_on_the_current_model() {
+    let mut app = picker_app();
+    let vendor = RecordingVendor::default();
+    type_keys(&mut app, &vendor, "/model").await;
+    key_action(&mut app, &vendor, key(KeyCode::Enter)).await;
+    assert_eq!(app.composer.editor.text(), "/model ");
+    let picker = picker(&app);
+    assert_eq!(
+        picker.items,
+        [
+            "default · claude · Default",
+            "opus · claude · Opus 5.5 ●",
+            "gpt-6-astra · codex · GPT-6-Astra",
+            "gpt-5.6-sol · codex · GPT-5.6-Sol",
+        ]
+    );
+    assert_eq!(picker.selected, 1, "the current model starts highlighted");
+}
+#[tokio::test]
+async fn typing_after_model_filters_the_picker() {
+    let mut app = picker_app();
+    let vendor = RecordingVendor::default();
+    type_keys(&mut app, &vendor, "/model gp").await;
+    let picker = picker(&app);
+    assert_eq!(
+        picker.items,
+        [
+            "gpt-6-astra · codex · GPT-6-Astra",
+            "gpt-5.6-sol · codex · GPT-5.6-Sol"
+        ]
+    );
+    assert_eq!(picker.selected, 0);
+}
+#[tokio::test]
+async fn enter_on_a_picked_model_switches_to_its_provider() {
+    let mut app = picker_app();
+    let vendor = RecordingVendor::default();
+    type_keys(&mut app, &vendor, "/model").await;
+    key_action(&mut app, &vendor, key(KeyCode::Enter)).await;
+    key_action(&mut app, &vendor, key(KeyCode::Down)).await;
+    let action = key_action(&mut app, &vendor, key(KeyCode::Enter)).await;
+    let Action::Exit(Exit::Model(selection)) = action else {
+        panic!("expected a model switch");
+    };
+    assert_eq!(selection.provider, octet_core::Engine::CODEX);
+    assert_eq!(selection.model.as_deref(), Some("gpt-6-astra"));
+}
+#[tokio::test]
+async fn a_busy_session_refuses_the_pick_and_keeps_the_picker() {
+    let mut app = picker_app();
+    let vendor = RecordingVendor::default();
+    type_keys(&mut app, &vendor, "/model gp").await;
+    app.conn.start_turn();
+    let action = key_action(&mut app, &vendor, key(KeyCode::Enter)).await;
+    assert!(matches!(action, Action::Continue));
+    assert!(app.composer.completion.is_some(), "the picker stays open");
+    assert!(!app.status_line.is_empty(), "the refusal is shown");
+}
+#[tokio::test]
+async fn esc_closes_the_picker() {
+    let mut app = picker_app();
+    let vendor = RecordingVendor::default();
+    type_keys(&mut app, &vendor, "/model op").await;
+    assert!(app.composer.completion.is_some());
+    key_action(&mut app, &vendor, key(KeyCode::Esc)).await;
+    assert!(app.composer.completion.is_none());
+}
+#[tokio::test]
+async fn tab_in_the_picker_inserts_only_the_name() {
+    let mut app = picker_app();
+    let vendor = RecordingVendor::default();
+    type_keys(&mut app, &vendor, "/model gp").await;
+    key_action(&mut app, &vendor, key(KeyCode::Down)).await;
+    let action = key_action(&mut app, &vendor, key(KeyCode::Tab)).await;
+    assert!(matches!(action, Action::Continue));
+    assert_eq!(app.composer.editor.text(), "/model gpt-5.6-sol ");
+}
+#[tokio::test]
+async fn an_unlisted_name_is_sent_as_typed() {
+    let mut app = picker_app();
+    let vendor = RecordingVendor::default();
+    type_keys(&mut app, &vendor, "/model gpt-5.5").await;
+    assert!(picker(&app).items.is_empty());
+    let Action::Exit(Exit::Model(selection)) =
+        key_action(&mut app, &vendor, key(KeyCode::Enter)).await
+    else {
+        panic!("expected a model switch");
+    };
+    assert_eq!(
+        selection.provider,
+        octet_core::Engine::CODEX,
+        "by its gpt- prefix"
+    );
+    assert_eq!(selection.model.as_deref(), Some("gpt-5.5"));
+}

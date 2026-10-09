@@ -110,6 +110,47 @@ pub(crate) fn refresh_completion(app: &mut App) {
         _ => app.composer.completion = None,
     }
 }
+/// Opens, refilters or closes the model picker as the draft is, or stops
+/// being, `/model <word>`.
+pub(crate) fn refresh_model_picker(app: &mut App) {
+    let text = app.composer.editor.text();
+    match composer::model_query(text, app.composer.editor.cursor()) {
+        Some((start, query)) => {
+            let query = query.to_owned();
+            let entries = app.model_entries();
+            let current = app.current_model();
+            let (items, selected) = composer::picker_items(
+                &entries,
+                current.as_ref().map(|(engine, s)| (*engine, s.as_str())),
+                &query,
+            );
+            app.composer.completion = Some(composer::Completion {
+                kind: composer::Kind::Model,
+                items,
+                selected,
+                start,
+            });
+        }
+        None => {
+            if app
+                .composer
+                .completion
+                .as_ref()
+                .is_some_and(|c| c.kind == composer::Kind::Model)
+            {
+                app.composer.completion = None;
+            }
+        }
+    }
+}
+/// The command a picked model line sends: the explicit form, so the line's
+/// provider is the one used.
+fn picked(item: &str) -> Option<String> {
+    let mut parts = item.split(" · ");
+    let selection = parts.next()?;
+    let provider = parts.next()?;
+    Some(format!("/model {provider} {selection}"))
+}
 /// Puts the selected suggestion into the draft and closes the popup.
 pub(crate) fn accept_completion(app: &mut App) {
     let Some(completion) = app.composer.completion.take() else {
@@ -278,6 +319,22 @@ async fn palette_press(app: &mut App, vendor: &dyn Vendor, key: KeyEvent) -> Act
 /// Keys an open popup takes; `None` lets the key reach the draft.
 fn completion_key(app: &mut App, key: KeyEvent) -> Option<Action> {
     let completion = app.composer.completion.as_mut()?;
+    if key.code == KeyCode::Enter && completion.kind == composer::Kind::Model {
+        // Enter on a model switches to it: the draft becomes its explicit
+        // `/model` line and the key goes on to send it.
+        let pick = completion
+            .items
+            .get(completion.selected)
+            .and_then(|item| picked(item));
+        if let Err(refusal) = crate::commands::can_reconnect(app) {
+            app.hint(refusal);
+            return Some(Action::Continue);
+        }
+        app.composer.completion = None;
+        let line = pick?;
+        app.composer.editor.set(line);
+        return None;
+    }
     match key.code {
         KeyCode::Up => completion.selected = completion.selected.saturating_sub(1),
         KeyCode::Down => {
@@ -371,6 +428,12 @@ async fn submit_draft(app: &mut App, vendor: &dyn Vendor) -> Action {
         .next()
         .and_then(|first| first.strip_prefix('/'))
         .is_some_and(|name| name.contains('/'));
+    if draft == "/model" {
+        // `/model` alone opens the picker.
+        app.composer.editor.set("/model ".into());
+        refresh_model_picker(app);
+        return Action::Continue;
+    }
     if draft.starts_with('/') && draft != octet_core::APPROVAL_DEMO && !path_like {
         return match try_command(app, vendor, &draft).await {
             Some(action) => {
@@ -495,6 +558,7 @@ async fn composer_key(
         open_mentions(app, start);
     }
     refresh_completion(app);
+    refresh_model_picker(app);
     Action::Continue
 }
 /// Interrupts the turn; a goal working on it is paused first, and prompts

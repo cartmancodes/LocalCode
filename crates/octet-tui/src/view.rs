@@ -293,6 +293,9 @@ fn completion_popup(frame: &mut Frame, composer: Rect, app: &App) {
         let message = match (&completion.kind, &app.composer.files) {
             (crate::composer::Kind::File, crate::files::Files::Ready(_)) => " No matching files",
             (crate::composer::Kind::File, _) => " Indexing files…",
+            (crate::composer::Kind::Model, _) if app.model_entries().is_empty() => {
+                " No model list yet · /model refresh"
+            }
             _ => " No matches",
         };
         lines.push(Line::from(Span::styled(

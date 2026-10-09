@@ -134,7 +134,7 @@ fn effort_command(app: &mut App, vendor: &dyn Vendor, argument: &str) -> Action 
 
 /// Whether a command may end this session to reconnect: not while a turn
 /// runs or an approval waits, nor while connecting. The refusal otherwise.
-fn can_reconnect(app: &App) -> Result<(), &'static str> {
+pub(crate) fn can_reconnect(app: &App) -> Result<(), &'static str> {
     if app.turn_open() {
         Err(TURN_OPEN)
     } else if app.is_connecting() {

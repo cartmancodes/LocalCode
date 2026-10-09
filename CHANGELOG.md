@@ -15,6 +15,8 @@ Claude Code and Codex CLIs.
   fetched from each CLI when missing or a day old (no session, no tokens) and
   cached in `models.json`; `/model refresh` fetches them now. `/model NAME`
   switches to the provider that lists NAME, and Tab completes model names.
+- A model picker: `/model` (or typing `/model `) lists every provider's models
+  above the prompt; Up/Down choose, typing filters, Enter switches.
 - Multi-turn sessions with Claude Code or Codex, with streamed replies, tool
   activity, usage and errors in one transcript.
 - An offline `demo` engine that needs no vendor CLI or login.

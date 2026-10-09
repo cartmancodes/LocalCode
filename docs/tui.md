@@ -105,6 +105,7 @@ is respected. The minimum usable size is 38 columns by 12 rows.
 | Esc / Ctrl+C | Cancel the active operation. Ctrl+C also closes help or the palette, and clears a draft when idle |
 | Ctrl+P | Command palette (also offers Ctrl+G, `@` and `!`) |
 | `@` | Mention a workspace file; a popup suggests paths as you type (Enter or Tab inserts, Esc closes) |
+| `/model` | Model picker: Up/Down choose, Enter switches, Tab inserts the name, Esc closes |
 | Tab | Complete a path, or a `/command` at the start of the prompt |
 | Ctrl+G | Write the prompt in `$VISUAL` or `$EDITOR` (default `vi`), run by the shell as git runs it: quote a path with spaces |
 | Ctrl+X | Copy the last reply to the clipboard (same as `/copy`) |
@@ -284,7 +285,8 @@ session with all checks off. Leaving it reconnects again.
 ## Switch models and providers
 
 ```text
-/model                         Show model details and every provider's models
+/model                         Pick a model with Up/Down; Enter switches to it
+/model list                    Show model details and every provider's models
 /model list 2                  Show the second page of the list
 /model MODEL_NAME              Select a model; switches provider if another lists it
 /model refresh                 Fetch the other providers' model lists again
@@ -331,8 +333,17 @@ does); a name in no list goes to the provider whose listed IDs share its
 leading word (`gpt-5.5` to the provider listing `gpt-…` models), else stays
 with the current provider as a custom ID. `default` is always the current
 provider's, and the explicit forms (`/model codex X`, `claude/X`) work as
-before. After `/model ` Tab completes a model name from every list
-(`name · provider` in the popup).
+before.
+
+`/model` alone, or typing `/model ` (with the space), opens the model picker
+above the prompt box: every provider's models, the current provider's first,
+each as `name · provider · display name`, with the model in use marked `●`
+and highlighted. Typing after `/model ` filters it (by selection, full ID or
+name). Up/Down move, Enter switches to the highlighted model at once (it
+sends `/model <provider> <name>`, so the provider shown is the one used), Tab
+puts just the name in the draft, and Esc closes the picker. While a turn runs,
+Enter is refused with the usual hint and the picker stays open. A typed name
+that matches nothing is sent as typed.
 
 The current provider's list comes live from its CLI with each connection
 (Codex's paginated `model/list`; Claude's initialization `models`, with

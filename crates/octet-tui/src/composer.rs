@@ -99,6 +99,52 @@ pub(crate) fn tab(text: &str, cursor: usize, root: &Path, home: Option<&Path>) -
     Tab::Nothing
 }
 
+/// The `/model` argument being typed, when the draft is `/model <word>` with
+/// the cursor at its end: where the word starts, and the word.
+pub(crate) fn model_query(text: &str, cursor: usize) -> Option<(usize, &str)> {
+    let start = word_start(text, cursor);
+    let before = &text[..start];
+    (before.trim_end() == "/model"
+        && before.ends_with(char::is_whitespace)
+        && text[cursor..].trim().is_empty())
+    .then(|| (start, &text[start..cursor]))
+}
+
+/// The model picker's lines for `query`: `selection · provider · name`, the
+/// model in use marked `●`. With nothing typed every model is listed and the
+/// one in use is highlighted; otherwise those whose selection or ID starts
+/// with `query`, or whose name contains it, and the first is highlighted.
+pub(crate) fn picker_items(
+    entries: &[(octet_core::Engine, octet_core::ModelInfo)],
+    current: Option<(octet_core::Engine, &str)>,
+    query: &str,
+) -> (Vec<String>, usize) {
+    let lower = query.to_lowercase();
+    let mut selected = 0;
+    let items = entries
+        .iter()
+        .filter(|(_, m)| {
+            m.selection.starts_with(query)
+                || m.id.as_deref().is_some_and(|id| id.starts_with(query))
+                || m.name.to_lowercase().contains(&lower)
+        })
+        .enumerate()
+        .map(|(index, (engine, m))| {
+            let here = current == Some((*engine, m.selection.as_str()));
+            if here && query.is_empty() {
+                selected = index;
+            }
+            format!(
+                "{} · {engine} · {}{}",
+                m.selection,
+                crate::text::clean(&m.name),
+                if here { " ●" } else { "" }
+            )
+        })
+        .collect();
+    (items, selected)
+}
+
 /// Tab after `/model `: completes a model name from every provider's list
 /// (`names`, the current provider's first). `None` when the draft is not a
 /// `/model` argument.

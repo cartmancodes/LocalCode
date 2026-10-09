@@ -399,6 +399,11 @@ impl App {
             ),
         };
     }
+    /// The model in use, as its provider and list selection, when its list has it.
+    pub(crate) fn current_model(&self) -> Option<(octet_core::Engine, String)> {
+        self.catalog_selection()
+            .map(|m| (self.conn.engine, m.selection.clone()))
+    }
     fn catalog_selection(&self) -> Option<&octet_core::ModelInfo> {
         if let Some(id) = &self.conn.resolved_model {
             self.conn.models.iter().find(|m| m.id.as_ref() == Some(id))
@@ -455,7 +460,7 @@ impl App {
     }
     /// The current provider's models first (its live list, else its cache),
     /// then every other provider's cached list, in table order.
-    fn model_entries(&self) -> Vec<(octet_core::Engine, octet_core::ModelInfo)> {
+    pub(crate) fn model_entries(&self) -> Vec<(octet_core::Engine, octet_core::ModelInfo)> {
         let active = self.conn.engine;
         let first = if self.conn.models.is_empty() {
             self.models

@@ -61,8 +61,9 @@ running across turns, and pick the session up from your phone.
 
 - `/model` lists every provider's models in one list, as each installed CLI
   reports them (fetched when needed and cached; Octet keeps no hard-coded
-  catalogue). `/model NAME` switches to whichever provider lists NAME, and Tab
-  completes model names.
+  catalogue). `/model` opens a picker: Up/Down choose a model and Enter
+  switches to it, provider and all. `/model NAME` switches to whichever
+  provider lists NAME.
 - Change model within a provider (the vendor session continues), or switch
   provider mid-session with `/model claude` or `/model codex`. The transcript
   stays on screen, and your next prompt carries it to the new provider (at
