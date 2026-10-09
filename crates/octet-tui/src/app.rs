@@ -275,6 +275,8 @@ pub(crate) struct App {
     pub(crate) job: Option<crate::jobs::Running>,
     /// The running `!` command, if any.
     pub(crate) shell: Option<crate::shell::Running>,
+    /// Every provider's model list, its cache and the probes refreshing it.
+    pub(crate) models: crate::models::Models,
     /// The conversation so far, waiting to go with the next prompt to a
     /// provider that took over from another.
     pub(crate) pending_handoff: Option<crate::handoff::Handoff>,
@@ -324,6 +326,7 @@ impl App {
             goals: octet_core::goal::GoalRunner::default(),
             job: None,
             shell: None,
+            models: crate::models::Models::default(),
             pending_handoff: None,
         }
     }
@@ -450,8 +453,57 @@ impl App {
             selected.map_or("", |m| m.description.as_str())
         )
     }
+    /// The current provider's models first (its live list, else its cache),
+    /// then every other provider's cached list, in table order.
+    fn model_entries(&self) -> Vec<(octet_core::Engine, octet_core::ModelInfo)> {
+        let active = self.conn.engine;
+        let first = if self.conn.models.is_empty() {
+            self.models
+                .catalogs
+                .get(active)
+                .map(|listed| listed.models.clone())
+                .unwrap_or_default()
+        } else {
+            self.conn.models.clone()
+        };
+        first
+            .into_iter()
+            .map(|model| (active, model))
+            .chain(
+                octet_core::Engine::ALL
+                    .iter()
+                    .copied()
+                    .filter(|engine| engine.is_vendor() && *engine != active)
+                    .flat_map(|engine| {
+                        self.models
+                            .catalogs
+                            .get(engine)
+                            .map(|listed| listed.models.clone())
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(move |model| (engine, model))
+                    }),
+            )
+            .collect()
+    }
+    /// `/model <selection>` when that resolves to `engine`, else the
+    /// explicit form.
+    fn select_line(&self, engine: octet_core::Engine, selection: &str) -> String {
+        let plain = octet_core::model::Selection::resolve(
+            selection,
+            self.conn.engine,
+            &self.models.catalogs,
+        )
+        .is_ok_and(|resolved| resolved.selection.provider == engine);
+        if plain {
+            format!("/model {selection}")
+        } else {
+            format!("/model {engine} {selection}")
+        }
+    }
     pub(crate) fn show_models(&mut self, page: usize) {
-        let pages = self.conn.models.len().div_ceil(CATALOG_PAGE).max(1);
+        let entries = self.model_entries();
+        let pages = entries.len().div_ceil(CATALOG_PAGE).max(1);
         if page == 0 || page > pages {
             self.note(format!(
                 "Choose a catalog page from 1 to {pages}: /model list <page>"
@@ -459,47 +511,59 @@ impl App {
             return;
         }
         self.note(self.model_details());
-        if self.conn.models.is_empty() {
+        if entries.is_empty() {
             self.note(
-                "No catalog reported yet. Explicit model IDs remain supported; /reconnect refreshes discovery.",
+                "No model list yet. Explicit model IDs remain supported; /model refresh fetches the lists.",
             );
         } else {
-            let engine = self.conn.engine;
-            let count = self.conn.models.len();
+            let active = self.conn.engine;
+            let now = std::time::SystemTime::now();
+            let counts: Vec<String> = std::iter::once(active)
+                .chain(
+                    octet_core::Engine::ALL
+                        .iter()
+                        .copied()
+                        .filter(|engine| engine.is_vendor() && *engine != active),
+                )
+                .map(|engine| {
+                    let count = entries.iter().filter(|(e, _)| *e == engine).count();
+                    let live = engine == active && !self.conn.models.is_empty();
+                    let fresh = self.models.freshness(engine, live, now);
+                    format!("{engine} {count} ({fresh})")
+                })
+                .collect();
             self.note(format!(
-                "{engine} catalog · {count} entries · page {page}/{pages}. \
-                 PgUp/PgDn scroll; /model list <page>. Account access may vary."
+                "{} · page {page}/{pages}. PgUp/PgDn scroll; /model list <page>. Account access may vary.",
+                counts.join(" · ")
             ));
-            // Page the catalog so large lists do not evict current details from scrollback.
-            let entries: Vec<String> = self
-                .conn
-                .models
+            // Page the list so large lists do not evict current details from scrollback.
+            let shown: Vec<String> = entries
                 .iter()
                 .skip((page - 1) * CATALOG_PAGE)
                 .take(CATALOG_PAGE)
-                .map(|model| {
+                .map(|(engine, model)| {
                     format!(
-                        "{}\nModel ID: {}\n{}\nSelect: /model {} {}",
+                        "{} · {engine}\nModel ID: {}\n{}\nSelect: {}",
                         model.name,
                         model.id.as_deref().unwrap_or("unresolved alias"),
                         model.description,
-                        self.conn.engine,
-                        model.selection
+                        self.select_line(*engine, &model.selection)
                     )
                 })
                 .collect();
-            for entry in entries {
+            for entry in shown {
                 self.note(entry);
             }
         }
         let vendors = octet_core::model::vendor_names();
         self.note(format!(
-            "{}\n/model default uses the provider default. Switching providers starts fresh context.",
+            "{}\n/model <name> switches provider when needed; the conversation goes with you. \
+             /model refresh fetches the lists again.",
             catalog_hint(&vendors)
         ));
-        if !self.conn.models.is_empty() {
+        if !entries.is_empty() {
             self.chat.catalog_focus =
-                Some((self.conn.models.len() - (page - 1) * CATALOG_PAGE).min(CATALOG_PAGE) + 2);
+                Some((entries.len() - (page - 1) * CATALOG_PAGE).min(CATALOG_PAGE) + 2);
         }
     }
     fn add(&mut self, role: Role, text: &str) {
@@ -572,6 +636,10 @@ impl App {
     pub(crate) fn event(&mut self, event: Event) {
         match event {
             Event::Models(models) => {
+                let now = std::time::SystemTime::now();
+                if let Some(note) = self.models.live(self.conn.engine, models.clone(), now) {
+                    self.note(note);
+                }
                 self.conn.models = models;
                 self.refresh_model_label();
             }

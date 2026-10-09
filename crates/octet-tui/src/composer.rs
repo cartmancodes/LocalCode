@@ -8,6 +8,8 @@ pub(crate) enum Kind {
     File,
     Path,
     Command,
+    /// A model name; items read `name · provider`.
+    Model,
 }
 
 /// The suggestion popup above the prompt box.
@@ -95,6 +97,60 @@ pub(crate) fn tab(text: &str, cursor: usize, root: &Path, home: Option<&Path>) -
         );
     }
     Tab::Nothing
+}
+
+/// Tab after `/model `: completes a model name from every provider's list
+/// (`names`, the current provider's first). `None` when the draft is not a
+/// `/model` argument.
+pub(crate) fn model_tab(
+    text: &str,
+    cursor: usize,
+    names: &[(String, octet_core::Engine)],
+) -> Option<Tab> {
+    let start = word_start(text, cursor);
+    if text[..start].trim_end() != "/model" {
+        return None;
+    }
+    let word = &text[start..cursor];
+    // Nothing typed yet: the current provider's names (they come first).
+    let active = names.first().map(|(_, engine)| *engine);
+    let matches: Vec<&(String, octet_core::Engine)> = names
+        .iter()
+        .filter(|(name, engine)| {
+            name.starts_with(word) && (!word.is_empty() || Some(*engine) == active)
+        })
+        .collect();
+    Some(match matches.as_slice() {
+        [] => Tab::Nothing,
+        [(name, _)] => Tab::Replace {
+            start,
+            text: format!("{name} "),
+            popup: None,
+        },
+        _ => {
+            let plain: Vec<String> = matches.iter().map(|(name, _)| name.clone()).collect();
+            let prefix = common_prefix(&plain);
+            let popup = Completion {
+                kind: Kind::Model,
+                items: matches
+                    .iter()
+                    .take(crate::files::SHOWN)
+                    .map(|(name, engine)| format!("{name} · {engine}"))
+                    .collect(),
+                selected: 0,
+                start,
+            };
+            if prefix.len() > word.len() {
+                Tab::Replace {
+                    start,
+                    text: prefix,
+                    popup: Some(popup),
+                }
+            } else {
+                Tab::Popup(popup)
+            }
+        }
+    })
 }
 
 /// One candidate fills in; several fill their common prefix and open the
@@ -292,6 +348,32 @@ mod tests {
     fn mentions_quote_paths_with_spaces() {
         assert_eq!(mention("src/main.rs"), "@src/main.rs ");
         assert_eq!(mention("my notes.md"), "@\"my notes.md\" ");
+    }
+    #[test]
+    fn model_names_complete_across_providers() {
+        let names = vec![
+            ("opus".to_owned(), octet_core::Engine::CLAUDE),
+            ("gpt-6-astra".to_owned(), octet_core::Engine::CODEX),
+            ("gpt-5.6-sol".to_owned(), octet_core::Engine::CODEX),
+        ];
+        let tab = |text: &str| model_tab(text, text.len(), &names);
+        assert!(matches!(
+            tab("/model op"),
+            Some(Tab::Replace { start: 7, ref text, popup: None }) if text == "opus "
+        ));
+        assert!(matches!(
+            tab("/model gpt"),
+            Some(Tab::Replace { ref text, popup: Some(Completion { kind: Kind::Model, ref items, .. }), .. })
+                if text == "gpt-" && items == &["gpt-6-astra · codex", "gpt-5.6-sol · codex"]
+        ));
+        assert!(tab("/mode op").is_none());
+        assert!(tab("hello /model op").is_none());
+        assert!(matches!(tab("/model zz"), Some(Tab::Nothing)));
+        // Nothing typed: only the current provider's (first) names.
+        assert!(matches!(
+            tab("/model "),
+            Some(Tab::Replace { ref text, popup: None, .. }) if text == "opus "
+        ));
     }
     #[test]
     fn tab_completes_commands_paths_and_mentions() {

@@ -719,3 +719,64 @@ async fn commands_split_on_any_whitespace() {
         app.status_line
     );
 }
+
+fn listed(selection: &str) -> octet_core::ModelInfo {
+    octet_core::ModelInfo {
+        selection: selection.into(),
+        id: Some(selection.into()),
+        name: selection.into(),
+        description: String::new(),
+    }
+}
+#[tokio::test]
+async fn a_bare_model_name_switches_to_the_provider_that_lists_it() {
+    let mut app = app();
+    crate::test_support::idle(&mut app);
+    app.models.catalogs.set(
+        octet_core::Engine::CLAUDE,
+        vec![listed("opus")],
+        std::time::SystemTime::now(),
+    );
+    let Action::Exit(Exit::Model(selection)) = command(&mut app, "/model opus").await else {
+        panic!("expected a model switch");
+    };
+    assert_eq!(selection.provider, octet_core::Engine::CLAUDE);
+    assert!(
+        app.entries_text()
+            .contains("opus is in Claude's model list"),
+        "{}",
+        app.entries_text()
+    );
+}
+#[tokio::test]
+async fn model_refresh_without_a_data_directory_says_so() {
+    let mut app = app();
+    assert!(matches!(
+        command(&mut app, "/model refresh").await,
+        Action::Continue
+    ));
+    assert!(
+        app.entries_text()
+            .contains("No other provider's model list to fetch")
+    );
+}
+#[test]
+fn a_live_list_is_cached() {
+    let dir = octet_testkit::TempDir::new("octet-live-list");
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let mut app = crate::test_support::app_for(octet_core::Engine::CLAUDE);
+    app.models.attach(
+        dir.path(),
+        crate::models::Prober {
+            cwd: std::env::temp_dir(),
+            binary: |_| octet_testkit::protocol_child(),
+            limit: octet_core::PROBE_LIMIT,
+        },
+    );
+    app.event(octet_core::Event::Models(vec![listed("opus")]));
+    let cached = octet_core::catalog::Catalogs::load(&dir.path().join(octet_core::catalog::FILE));
+    assert_eq!(
+        cached.get(octet_core::Engine::CLAUDE).unwrap().models[0].selection,
+        "opus"
+    );
+}

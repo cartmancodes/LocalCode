@@ -34,6 +34,8 @@ enum Wake {
     Vendor(Option<Event>),
     /// The background job ended.
     Job(jobs::Ended),
+    /// A model-list probe ended.
+    Probed(crate::models::Probed),
     /// The `@` index was built, or its thread went away.
     Index(Option<files::Index>),
     /// The `!` command ended.
@@ -122,6 +124,7 @@ impl Loop<'_> {
             files::Files::Building(index) => Some(index),
             _ => None,
         };
+        let models = &mut app.models;
         let editing = &mut self.editing;
         let input = &mut self.input;
         tokio::select! {
@@ -136,6 +139,7 @@ impl Loop<'_> {
                 }
             } => Wake::Job(ended),
             built = maybe(index) => Wake::Index(built.ok()),
+            probed = models.next() => Wake::Probed(probed),
             ran = async {
                 match shell.as_mut() {
                     Some(running) => running.wait().await,
@@ -188,6 +192,11 @@ impl Loop<'_> {
             Wake::Job(ended) => {
                 app.job = None;
                 jobs::apply(app, ended);
+            }
+            Wake::Probed(probed) => {
+                if let Some(note) = app.models.probed(probed, std::time::SystemTime::now()) {
+                    app.note(note);
+                }
             }
             Wake::Index(built) => {
                 app.composer.files = built.map_or(files::Files::Unbuilt, files::Files::Ready);

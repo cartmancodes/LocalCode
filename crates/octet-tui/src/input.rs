@@ -122,6 +122,7 @@ pub(crate) fn accept_completion(app: &mut App) {
         composer::Kind::File => composer::mention(item),
         composer::Kind::Path => item.clone(),
         composer::Kind::Command => format!("{item} "),
+        composer::Kind::Model => format!("{} ", item.split(" · ").next().unwrap_or(item)),
     };
     app.replace_or_warn(completion.start, &text);
 }
@@ -387,6 +388,15 @@ async fn submit_draft(app: &mut App, vendor: &dyn Vendor) -> Action {
 }
 /// Tab: completes a path or a command, off the loop.
 async fn tab_key(app: &mut App) {
+    let names = app.models.names(app.conn.engine);
+    if let Some(tab) = composer::model_tab(
+        app.composer.editor.text(),
+        app.composer.editor.cursor(),
+        &names,
+    ) {
+        apply_tab(app, tab);
+        return;
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from);
     app.composer.listing.store(true, Ordering::SeqCst);
     let listing = Listing(Arc::clone(&app.composer.listing));
@@ -401,10 +411,15 @@ async fn tab_key(app: &mut App) {
         composer::tab(&text, cursor, &root, home.as_deref())
     })
     .await;
-    match tab.unwrap_or_else(|| {
+    let tab = tab.unwrap_or_else(|| {
         app.hint("That folder is slow to read; Tab gave up");
         composer::Tab::Nothing
-    }) {
+    });
+    apply_tab(app, tab);
+}
+/// Puts what Tab found into the draft or the popup.
+fn apply_tab(app: &mut App, tab: composer::Tab) {
+    match tab {
         composer::Tab::Replace { start, text, popup } => {
             if app.replace_or_warn(start, &text) {
                 app.composer.completion = popup;

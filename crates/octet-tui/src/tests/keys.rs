@@ -587,3 +587,16 @@ async fn cancel_interrupts_before_saving_the_goal() {
         vendor.seen.borrow()
     );
 }
+#[test]
+fn accepting_a_model_suggestion_inserts_only_the_name() {
+    let mut app = crate::test_support::app_for(octet_core::Engine::CLAUDE);
+    app.composer.editor.set("/model gpt".into());
+    app.composer.completion = Some(composer::Completion {
+        kind: composer::Kind::Model,
+        items: vec!["gpt-6-astra · codex".into()],
+        selected: 0,
+        start: 7,
+    });
+    crate::input::accept_completion(&mut app);
+    assert_eq!(app.composer.editor.text(), "/model gpt-6-astra ");
+}

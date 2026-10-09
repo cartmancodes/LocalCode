@@ -446,15 +446,49 @@ fn model_command(app: &mut App, argument: &str) -> Action {
                 Err(_) => app.note("Use /model list <page number>"),
             },
         }
+    } else if argument == "refresh" {
+        let started = app.models.refresh(app.conn.engine);
+        if started.is_empty() {
+            app.note("No other provider's model list to fetch");
+        } else {
+            let names: Vec<&str> = started.iter().map(|engine| engine.as_str()).collect();
+            app.note(format!("Fetching the model lists of {}…", names.join(", ")));
+        }
     } else if let Err(refusal) = can_reconnect(app) {
         app.hint(refusal);
     } else {
-        match octet_core::model::Selection::parse(argument, app.conn.engine) {
-            Ok(selection) => return Action::Exit(Exit::Model(selection)),
+        match octet_core::model::Selection::resolve(argument, app.conn.engine, &app.models.catalogs)
+        {
+            Ok(resolved) => {
+                if let Some(note) = found_note(&resolved, app.conn.engine) {
+                    app.note(note);
+                }
+                return Action::Exit(Exit::Model(resolved.selection));
+            }
             Err(error) => app.note(error.to_string()),
         }
     }
     Action::Continue
+}
+/// Says where a name was found when it moves to another provider.
+fn found_note(
+    resolved: &octet_core::model::Resolved,
+    current: octet_core::Engine,
+) -> Option<String> {
+    use octet_core::model::Found;
+    let selection = &resolved.selection;
+    if selection.provider == current {
+        return None;
+    }
+    let model = selection.model.as_deref()?;
+    let title = selection.provider.title();
+    match &resolved.found {
+        Found::Listed => Some(format!("{model} is in {title}'s model list")),
+        Found::Prefix(word) => Some(format!(
+            "{model} goes to {title}: its listed models start with {word}-"
+        )),
+        Found::Named | Found::Current => None,
+    }
 }
 fn mode_command(app: &mut App, vendor: &dyn Vendor, argument: &str) -> Action {
     if argument.is_empty() {

@@ -313,6 +313,7 @@ fn completion_popup(frame: &mut Frame, composer: Rect, app: &App) {
         crate::composer::Kind::File => " Files · Enter choose · Esc close ",
         crate::composer::Kind::Path => " Paths ",
         crate::composer::Kind::Command => " Commands ",
+        crate::composer::Kind::Model => " Models ",
     };
     // On a short screen the popup is clipped; scroll so the selected row
     // stays in sight.

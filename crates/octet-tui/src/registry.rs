@@ -97,7 +97,7 @@ pub(crate) const COMMANDS: &[Spec] = &[
     spec(
         Cmd::Model,
         "/model",
-        "/model [provider] <name> · /model default",
+        "/model [provider] <name> · /model default · /model refresh",
         "Switch model or provider",
     )
     .quick("Switch model"),

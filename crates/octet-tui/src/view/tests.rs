@@ -431,8 +431,7 @@ mod model_detail_tests {
             .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(visible.contains("claude catalog"));
-        assert!(visible.contains("256 entries"));
+        assert!(visible.contains("claude 256 (live)"), "{visible}");
         assert!(visible.contains("Name 240"));
         assert!(a.chat.scroll > 0);
         assert!(
@@ -598,4 +597,41 @@ fn an_approval_hidden_behind_help_is_armed_only_once_seen() {
         !app.overlay.approval_armed(),
         "re-shown dialog was armed at once"
     );
+}
+#[test]
+fn the_model_list_merges_every_provider() {
+    let c = octet_core::Config::new(octet_core::Engine::CLAUDE, "claude", "/tmp");
+    let mut a = App::new(&c, "journal".into());
+    let model = |s: &str, name: &str| octet_core::ModelInfo {
+        selection: s.into(),
+        id: Some(s.into()),
+        name: name.into(),
+        description: String::new(),
+    };
+    a.event(octet_core::Event::Models(vec![
+        model("default", "Default"),
+        model("opus", "Opus 5.5"),
+    ]));
+    a.models.catalogs.set(
+        octet_core::Engine::CODEX,
+        vec![model("gpt-6-astra", "GPT-6-Astra")],
+        std::time::SystemTime::now() - std::time::Duration::from_hours(2),
+    );
+    a.show_models(1);
+    let text = a.entries_text();
+    assert!(
+        text.contains("claude 2 (live) · codex 1 (cached 2 h ago)"),
+        "{text}"
+    );
+    assert!(text.contains("Opus 5.5 · claude"), "{text}");
+    assert!(text.contains("Select: /model opus"), "{text}");
+    assert!(text.contains("GPT-6-Astra · codex"), "{text}");
+    assert!(text.contains("Select: /model gpt-6-astra"), "{text}");
+    // `default` names the current provider, so it is plain here.
+    assert!(text.contains("Select: /model default"), "{text}");
+    assert!(text.contains("switches provider when needed"), "{text}");
+    assert!(!text.contains("starts fresh context"), "{text}");
+    let claude = text.find("Opus 5.5 · claude").unwrap();
+    let codex = text.find("GPT-6-Astra · codex").unwrap();
+    assert!(claude < codex, "the current provider first");
 }
