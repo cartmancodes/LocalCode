@@ -143,6 +143,28 @@ pub(crate) fn refresh_model_picker(app: &mut App) {
         }
     }
 }
+/// The model picker is open on a draft that already names a model exactly:
+/// `default`, or a name or full ID some provider lists.
+fn typed_a_model(app: &App) -> bool {
+    if app
+        .composer
+        .completion
+        .as_ref()
+        .is_none_or(|c| c.kind != composer::Kind::Model)
+    {
+        return false;
+    }
+    let Some((_, query)) =
+        composer::model_query(app.composer.editor.text(), app.composer.editor.cursor())
+    else {
+        return false;
+    };
+    query == "default"
+        || app
+            .model_entries()
+            .iter()
+            .any(|(_, m)| m.selection == query || m.id.as_deref() == Some(query))
+}
 /// The command a picked model line sends: the explicit form, so the line's
 /// provider is the one used.
 fn picked(item: &str) -> Option<String> {
@@ -318,6 +340,12 @@ async fn palette_press(app: &mut App, vendor: &dyn Vendor, key: KeyEvent) -> Act
 }
 /// Keys an open popup takes; `None` lets the key reach the draft.
 fn completion_key(app: &mut App, key: KeyEvent) -> Option<Action> {
+    if key.code == KeyCode::Enter && typed_a_model(app) {
+        // An exact name, or `default`, means what typing it always meant:
+        // the draft goes as typed, resolved like any `/model NAME`.
+        app.composer.completion = None;
+        return None;
+    }
     let completion = app.composer.completion.as_mut()?;
     if key.code == KeyCode::Enter && completion.kind == composer::Kind::Model {
         // Enter on a model switches to it: the draft becomes its explicit

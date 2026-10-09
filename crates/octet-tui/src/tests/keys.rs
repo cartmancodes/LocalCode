@@ -732,3 +732,50 @@ async fn an_unlisted_name_is_sent_as_typed() {
     );
     assert_eq!(selection.model.as_deref(), Some("gpt-5.5"));
 }
+/// A Codex interface whose list has no `default`, beside Claude's that does.
+fn codex_picker_app() -> App {
+    let mut app = crate::test_support::app_for(octet_core::Engine::CODEX);
+    crate::test_support::idle(&mut app);
+    let m = |s: &str, name: &str| octet_core::ModelInfo {
+        selection: s.into(),
+        id: Some(s.into()),
+        name: name.into(),
+        description: String::new(),
+    };
+    app.event(octet_core::Event::Models(vec![m(
+        "gpt-6-astra",
+        "GPT-6-Astra",
+    )]));
+    app.models.catalogs.set(
+        octet_core::Engine::CLAUDE,
+        vec![m("default", "Default"), m("opus", "Opus 5.5")],
+        std::time::SystemTime::now(),
+    );
+    app
+}
+#[tokio::test]
+async fn a_typed_default_stays_with_the_current_provider() {
+    let mut app = codex_picker_app();
+    let vendor = RecordingVendor::default();
+    type_keys(&mut app, &vendor, "/model default").await;
+    let Action::Exit(Exit::Model(selection)) =
+        key_action(&mut app, &vendor, key(KeyCode::Enter)).await
+    else {
+        panic!("expected a model switch");
+    };
+    assert_eq!(selection.provider, octet_core::Engine::CODEX);
+    assert_eq!(selection.model, None);
+}
+#[tokio::test]
+async fn a_partial_name_takes_the_highlighted_model() {
+    let mut app = codex_picker_app();
+    let vendor = RecordingVendor::default();
+    type_keys(&mut app, &vendor, "/model op").await;
+    let Action::Exit(Exit::Model(selection)) =
+        key_action(&mut app, &vendor, key(KeyCode::Enter)).await
+    else {
+        panic!("expected a model switch");
+    };
+    assert_eq!(selection.provider, octet_core::Engine::CLAUDE);
+    assert_eq!(selection.model.as_deref(), Some("opus"));
+}
