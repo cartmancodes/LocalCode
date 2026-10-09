@@ -73,6 +73,14 @@ pub enum SelectionError {
     /// The model name is empty, too long, or has control characters.
     #[error("Model must be a non-empty vendor model name, at most 256 bytes")]
     InvalidModel,
+    /// The name is in several providers' lists, none of them the current one.
+    #[error("{name} is in the {providers} model lists; choose one: /model <provider> {name}")]
+    Ambiguous {
+        /// The model name.
+        name: String,
+        /// The providers listing it, "claude and codex".
+        providers: String,
+    },
 }
 
 /// A session's journal could not be started.

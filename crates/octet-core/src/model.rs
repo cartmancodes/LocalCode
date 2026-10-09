@@ -1,5 +1,5 @@
 //! Model names remain vendor-owned; no stale hard-coded model catalog.
-use crate::{Config, Engine, SelectionError};
+use crate::{Config, Engine, SelectionError, catalog::Catalogs};
 use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A `/model` choice: which provider, and which of its models.
@@ -91,6 +91,93 @@ impl Selection {
         }
     }
 }
+/// Where `/model`'s name was found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Found {
+    /// The provider was named: `/model codex X`, `codex/X`, `/model claude`.
+    Named,
+    /// In the chosen provider's list.
+    Listed,
+    /// By a leading word its listed IDs share (`gpt` for `gpt-5.5`).
+    Prefix(String),
+    /// Nowhere else: the current provider (and always for `default`).
+    Current,
+}
+
+/// A `/model` argument resolved against every provider's list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    /// The provider and model.
+    pub selection: Selection,
+    /// Where the name was found.
+    pub found: Found,
+}
+
+impl Selection {
+    /// Resolves a `/model` argument. A bare name goes to the provider whose
+    /// list holds it, else to the one whose listed IDs share its leading
+    /// word, else to `current`; `default` and the explicit forms
+    /// (`PROVIDER [NAME]`, `PROVIDER/NAME`) resolve as `parse` does.
+    ///
+    /// # Errors
+    ///
+    /// As `parse`; and a bare name in several providers' lists, none of
+    /// them `current`, is ambiguous.
+    pub fn resolve(
+        input: &str,
+        current: Engine,
+        catalogs: &Catalogs,
+    ) -> Result<Resolved, SelectionError> {
+        let named = |word: &str| Engine::parse(word).is_some_and(Engine::is_vendor);
+        let words: Vec<&str> = input.split_whitespace().collect();
+        let bare = match words.as_slice() {
+            [word]
+                if !named(word)
+                    && word
+                        .split_once('/')
+                        .is_none_or(|(prefix, _)| !named(prefix)) =>
+            {
+                *word
+            }
+            _ => {
+                return Self::parse(input, current).map(|selection| Resolved {
+                    selection,
+                    found: Found::Named,
+                });
+            }
+        };
+        let owners = catalogs.owners(bare);
+        let (provider, found) = if bare == "default" {
+            (current, Found::Current)
+        } else if owners.contains(&current) {
+            (current, Found::Listed)
+        } else if let [owner] = owners.as_slice() {
+            (*owner, Found::Listed)
+        } else if !owners.is_empty() {
+            return Err(ambiguous(bare, &owners));
+        } else if let [owner] = catalogs.prefix_owners(bare).as_slice() {
+            let word = bare.split_once('-').map_or("", |(word, _)| word);
+            (*owner, Found::Prefix(word.to_owned()))
+        } else {
+            (current, Found::Current)
+        };
+        let selection = Self::parse(&format!("{provider} {bare}"), current)?;
+        Ok(Resolved { selection, found })
+    }
+}
+
+/// The refusal for a name several other providers list.
+fn ambiguous(name: &str, owners: &[Engine]) -> SelectionError {
+    SelectionError::Ambiguous {
+        name: name.to_owned(),
+        providers: owners
+            .iter()
+            .map(|engine| engine.as_str())
+            .collect::<Vec<_>>()
+            .join(" and "),
+    }
+}
+
 /// The providers `/model` can select, from the provider table: every vendor,
 /// not the offline demo.
 pub fn vendor_names() -> Vec<&'static str> {
@@ -267,5 +354,112 @@ mod tests {
         assert_eq!(selected.resume, None);
         assert_eq!(selected.binary, PathBuf::from("claude"));
         assert_eq!(selected.cwd, PathBuf::from("/workspace"));
+    }
+
+    fn lists() -> crate::catalog::Catalogs {
+        let mut c = crate::catalog::Catalogs::default();
+        let model = |s: &str| crate::ModelInfo {
+            selection: s.into(),
+            id: Some(s.into()),
+            name: s.into(),
+            description: String::new(),
+        };
+        let now = std::time::SystemTime::now();
+        c.set(
+            Engine::CLAUDE,
+            vec![
+                model("default"),
+                model("opus"),
+                model("claude-opus-5-5"),
+                model("shared"),
+            ],
+            now,
+        );
+        c.set(
+            Engine::CODEX,
+            vec![model("gpt-6-astra"), model("gpt-5.6-sol"), model("shared")],
+            now,
+        );
+        c
+    }
+    fn resolved(input: &str, current: Engine) -> (Engine, Option<String>, Found) {
+        let r = Selection::resolve(input, current, &lists()).unwrap();
+        (r.selection.provider, r.selection.model, r.found)
+    }
+
+    #[test]
+    fn a_listed_name_picks_its_provider() {
+        assert_eq!(
+            resolved("opus", Engine::CODEX),
+            (Engine::CLAUDE, Some("opus".into()), Found::Listed)
+        );
+        assert_eq!(
+            resolved("gpt-6-astra", Engine::CLAUDE),
+            (Engine::CODEX, Some("gpt-6-astra".into()), Found::Listed)
+        );
+    }
+
+    #[test]
+    fn default_and_unknown_names_stay_with_the_current_provider() {
+        assert_eq!(
+            resolved("default", Engine::CODEX),
+            (Engine::CODEX, None, Found::Current)
+        );
+        assert_eq!(
+            resolved("my-custom", Engine::CLAUDE),
+            (Engine::CLAUDE, Some("my-custom".into()), Found::Current)
+        );
+    }
+
+    #[test]
+    fn an_unlisted_name_goes_by_its_learned_prefix() {
+        assert_eq!(
+            resolved("gpt-5.5", Engine::CLAUDE),
+            (
+                Engine::CODEX,
+                Some("gpt-5.5".into()),
+                Found::Prefix("gpt".into())
+            )
+        );
+    }
+
+    #[test]
+    fn a_name_in_several_lists_stays_current_or_is_refused() {
+        assert_eq!(resolved("shared", Engine::CODEX).0, Engine::CODEX);
+        assert_eq!(resolved("shared", Engine::CLAUDE).0, Engine::CLAUDE);
+        let mut only_others = lists();
+        only_others.set(Engine::CLAUDE, Vec::new(), std::time::SystemTime::now());
+        only_others.set(Engine::CODEX, Vec::new(), std::time::SystemTime::now());
+        // With no list holding it, it is the current provider's custom name.
+        assert_eq!(
+            Selection::resolve("shared", Engine::CODEX, &only_others)
+                .unwrap()
+                .found,
+            Found::Current
+        );
+    }
+
+    #[test]
+    fn explicit_forms_are_unchanged() {
+        for (input, provider, model) in [
+            ("codex opus", Engine::CODEX, Some("opus")),
+            ("claude/gpt-6-astra", Engine::CLAUDE, Some("gpt-6-astra")),
+            ("claude", Engine::CLAUDE, None),
+        ] {
+            let r = Selection::resolve(input, Engine::CODEX, &lists()).unwrap();
+            assert_eq!(
+                (r.selection.provider, r.selection.model.as_deref(), r.found),
+                (provider, model, Found::Named)
+            );
+        }
+    }
+
+    #[test]
+    fn several_other_lists_are_refused_with_a_hint() {
+        let error = ambiguous("shared", &[Engine::CLAUDE, Engine::CODEX]);
+        assert_eq!(
+            error.to_string(),
+            "shared is in the claude and codex model lists; choose one: /model <provider> shared"
+        );
     }
 }
