@@ -151,7 +151,7 @@ impl Models {
         self.save()
     }
 
-    fn save(&self) -> Option<String> {
+    fn save(&mut self) -> Option<String> {
         let path = self.path.as_ref()?;
         self.catalogs
             .save(path)

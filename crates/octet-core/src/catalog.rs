@@ -8,6 +8,7 @@ use std::{
     io::{self, Write as _},
     os::unix::fs::OpenOptionsExt as _,
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -17,6 +18,8 @@ pub const FILE: &str = "models.json";
 pub const STALE_AFTER: Duration = Duration::from_hours(24);
 /// The most models kept per provider, as the drivers cap a live list.
 const MAX_MODELS: usize = 256;
+/// Saves made by this process, so each writes its own temporary file.
+static SAVES: AtomicU64 = AtomicU64::new(0);
 
 /// One provider's list and when it was fetched.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,12 +71,22 @@ impl Catalogs {
     }
 
     /// Writes the lists to `path`: a private temporary file renamed over it,
-    /// so a reader or another window never sees half a file.
+    /// so a reader or another window never sees half a file. A list another
+    /// window saved there more recently is kept, and adopted here too.
     ///
     /// # Errors
     ///
     /// The file could not be written or renamed.
-    pub fn save(&self, path: &Path) -> io::Result<()> {
+    pub fn save(&mut self, path: &Path) -> io::Result<()> {
+        for (engine, theirs) in Self::load(path).lists {
+            if self
+                .lists
+                .get(&engine)
+                .is_none_or(|mine| mine.fetched < theirs.fetched)
+            {
+                self.lists.insert(engine, theirs);
+            }
+        }
         let mut root = Map::new();
         for (engine, listed) in &self.lists {
             let seconds = listed
@@ -87,11 +100,11 @@ impl Catalogs {
             );
         }
         let bytes = serde_json::to_vec(&Value::Object(root)).map_err(io::Error::other)?;
-        // One temporary name per process and thread: parallel savers never share it.
+        // One temporary name per save: parallel savers never share it.
         let temporary = path.with_extension(format!(
-            "json.{}.{:?}.tmp",
+            "json.{}.{}.tmp",
             std::process::id(),
-            std::thread::current().id()
+            SAVES.fetch_add(1, Ordering::Relaxed)
         ));
         let written = std::fs::OpenOptions::new()
             .write(true)
@@ -183,18 +196,23 @@ fn vendors() -> impl Iterator<Item = Engine> {
 fn model_from_json(value: &Value) -> Option<ModelInfo> {
     let valid = |s: &&str| octet_engine::live::valid_identifier(s);
     let selection = value["selection"].as_str().filter(valid)?;
+    // As the drivers keep a live list's text: control characters become
+    // spaces, and over-long text is cut rather than lost.
     let text = |key: &str, limit: usize| {
-        value[key]
+        let mut text: String = value[key]
             .as_str()
-            .filter(|s| s.len() <= limit && !s.chars().any(char::is_control))
             .unwrap_or_default()
-            .to_owned()
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        text.truncate(text.floor_char_boundary(limit));
+        text
     };
     Some(ModelInfo {
         selection: selection.to_owned(),
         id: value["id"].as_str().filter(valid).map(str::to_owned),
-        name: text("name", 256),
-        description: text("description", 1024),
+        name: text("name", 512),
+        description: text("description", 2048),
     })
 }
 
@@ -307,6 +325,58 @@ mod tests {
         assert_eq!(codex.models[0].selection, "gpt-ok");
         assert!(loaded.get(Engine::CLAUDE).is_none());
         assert!(loaded.get(Engine::DEMO).is_none());
+    }
+
+    #[test]
+    fn a_save_keeps_a_newer_list_from_another_window() {
+        let dir = octet_testkit::TempDir::new("octet-catalog-merge");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let path = dir.path().join(FILE);
+        let old = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let newer = old + Duration::from_secs(100);
+        // Another window saved a newer Codex list.
+        let mut other = Catalogs::default();
+        other.set(Engine::CODEX, vec![model("gpt-new", None)], newer);
+        other.save(&path).unwrap();
+        // This window still holds the older one, and a Claude list.
+        let mut mine = sample();
+        mine.save(&path).unwrap();
+        let saved = Catalogs::load(&path);
+        assert_eq!(
+            saved.get(Engine::CODEX).unwrap().models[0].selection,
+            "gpt-new"
+        );
+        assert!(saved.get(Engine::CLAUDE).is_some());
+        assert_eq!(
+            mine.get(Engine::CODEX).unwrap().fetched,
+            newer,
+            "and this window learns it"
+        );
+    }
+
+    #[test]
+    fn long_and_multiline_text_is_kept_cleaned() {
+        let dir = octet_testkit::TempDir::new("octet-catalog-long");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let path = dir.path().join(FILE);
+        let name = format!("{}\nsecond line", "n".repeat(400));
+        let description = "d".repeat(1500);
+        let mut c = Catalogs::default();
+        c.set(
+            Engine::CODEX,
+            vec![ModelInfo {
+                selection: "gpt-x".into(),
+                id: None,
+                name: name.clone(),
+                description: description.clone(),
+            }],
+            UNIX_EPOCH + Duration::from_secs(5),
+        );
+        c.save(&path).unwrap();
+        let loaded = Catalogs::load(&path);
+        let m = &loaded.get(Engine::CODEX).unwrap().models[0];
+        assert_eq!(m.name, name.replace('\n', " "));
+        assert_eq!(m.description, description);
     }
 
     #[test]
