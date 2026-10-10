@@ -175,11 +175,26 @@ const PROGRAMS: Programs<'static> = Programs {
 
 /// Runs every check concurrently, each bounded by the check timeout.
 pub(crate) async fn probe() -> Checks {
-    probe_with(&PROGRAMS, std::env::var_os("TMUX").is_some()).await
+    probe_with(
+        &PROGRAMS,
+        std::env::var_os("TMUX").is_some(),
+        Limits {
+            check: CHECK_TIMEOUT,
+            ssh: SSH_TIMEOUT,
+        },
+    )
+    .await
 }
 
-async fn probe_with(programs: &Programs<'_>, inside_tmux: bool) -> Checks {
-    let deadline = Instant::now() + CHECK_TIMEOUT;
+/// How long the checks may take: the commands together, then the SSH checks.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    check: Duration,
+    ssh: Duration,
+}
+
+async fn probe_with(programs: &Programs<'_>, inside_tmux: bool, limits: Limits) -> Checks {
+    let deadline = Instant::now() + limits.check;
     let tmux = async {
         if !inside_tmux {
             return (Tmux::Outside, None);
@@ -228,7 +243,7 @@ async fn probe_with(programs: &Programs<'_>, inside_tmux: bool) -> Checks {
             let connect = async {
                 matches!(
                     timeout(
-                        SSH_TIMEOUT,
+                        limits.ssh,
                         TcpStream::connect((tailnet.address.as_str(), 22))
                     )
                     .await,
@@ -240,7 +255,7 @@ async fn probe_with(programs: &Programs<'_>, inside_tmux: bool) -> Checks {
                 if tailnet.app_store {
                     return false;
                 }
-                run_until(Instant::now() + SSH_TIMEOUT, program, &["debug", "prefs"])
+                run_until(Instant::now() + limits.ssh, program, &["debug", "prefs"])
                     .await
                     .as_deref()
                     .and_then(parse_run_ssh)
@@ -608,7 +623,11 @@ mod tests {
             mosh_server: hang,
         };
         let started = std::time::Instant::now();
-        let checks = probe_with(&programs, true).await;
+        let limits = Limits {
+            check: CHECK_TIMEOUT,
+            ssh: SSH_TIMEOUT,
+        };
+        let checks = probe_with(&programs, true, limits).await;
         let elapsed = started.elapsed();
         assert!(
             // "Bounded", not "fast": a busy machine may add a second or so.
@@ -643,15 +662,21 @@ esac
             tailscale: &[tool],
             mosh_server: tool,
         };
+        // Room for the fake Tailscale to answer on a busy machine, where
+        // starting even a shell script can take most of a second.
+        let limits = Limits {
+            check: Duration::from_secs(5),
+            ssh: SSH_TIMEOUT,
+        };
         let started = std::time::Instant::now();
-        let checks = probe_with(&programs, true).await;
+        let checks = probe_with(&programs, true, limits).await;
         let elapsed = started.elapsed();
         assert!(checks.tailnet.is_some(), "tailscale answered");
         assert!(!checks.ssh && !checks.tailscale_ssh);
         assert!(matches!(checks.tmux, Tmux::NoAnswer));
         assert!(
-            elapsed >= CHECK_TIMEOUT
-                && elapsed < CHECK_TIMEOUT + SSH_TIMEOUT + Duration::from_millis(1500),
+            elapsed >= limits.check
+                && elapsed < limits.check + limits.ssh + Duration::from_millis(1500),
             "the interface waits {elapsed:?}"
         );
     }
