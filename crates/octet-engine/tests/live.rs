@@ -1956,3 +1956,76 @@ async fn a_provider_without_a_list_is_not_probed() {
     .unwrap_err();
     assert!(error.contains("cannot list its models"), "{error}");
 }
+
+/// A fake Codex app server in shell: logs what it is sent to `sent.log`,
+/// answers `initialize`, and answers each `model/list` with `listing`.
+fn scripted_codex(name: &str, listing: &str) -> (octet_testkit::TempDir, std::path::PathBuf) {
+    script_vendor(
+        name,
+        &format!(
+            r#"log="$(dirname "$0")/sent.log"
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$log"
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) printf '{{"id":%s,"result":{{}}}}\n' "$id" ;;
+    *'"model/list"'*) printf '{{"id":%s,{listing}}}\n' "$id" ;;
+  esac
+done"#
+        ),
+    )
+}
+
+#[tokio::test]
+async fn a_codex_probe_whose_listing_fails_opens_no_thread() {
+    let (dir, script) = scripted_codex(
+        "octet-probe-list-error",
+        r#""error":{"code":-1,"message":"no models for you"}"#,
+    );
+    let error = probe(Engine::CODEX, script, std::env::temp_dir(), PROBE_LIMIT)
+        .await
+        .unwrap_err();
+    assert!(error.contains("no models for you"), "{error}");
+    let sent = std::fs::read_to_string(dir.path().join("sent.log")).unwrap();
+    assert!(!sent.contains("thread/"), "{sent}");
+}
+
+#[tokio::test]
+async fn a_codex_probe_that_pages_forever_ends_without_a_thread() {
+    let (dir, script) = scripted_codex(
+        "octet-probe-paging",
+        r#""result":{"data":[{"id":"loop","model":"loop-model","displayName":"Loop"}],"nextCursor":"again"}"#,
+    );
+    let models = probe(Engine::CODEX, script, std::env::temp_dir(), PROBE_LIMIT)
+        .await
+        .unwrap();
+    assert_eq!(models.len(), 1);
+    let sent = std::fs::read_to_string(dir.path().join("sent.log")).unwrap();
+    assert_eq!(sent.matches("model/list").count(), 2, "{sent}");
+    assert!(!sent.contains("thread/"), "{sent}");
+}
+
+#[tokio::test]
+async fn a_silent_cli_is_gone_after_the_probe_gives_up() {
+    let (dir, script) = script_vendor(
+        "octet-probe-silent-pid",
+        r#"echo $$ > "$(dirname "$0")/pid"; exec sleep 30"#,
+    );
+    // Long enough for the shell to start and write its PID on a busy machine.
+    let error = probe(
+        Engine::CODEX,
+        script,
+        std::env::temp_dir(),
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("did not list its models"), "{error}");
+    let pid = std::fs::read_to_string(dir.path().join("pid")).unwrap();
+    let alive = std::process::Command::new("kill")
+        .args(["-0", pid.trim()])
+        .status()
+        .unwrap()
+        .success();
+    assert!(!alive, "the CLI {pid} is still running");
+}
