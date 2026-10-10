@@ -161,6 +161,10 @@ impl Selection {
         } else {
             (current, Found::Current)
         };
+        if !provider.is_vendor() {
+            // The demo has no models of its own: point to a real provider.
+            return Err(SelectionError::Demo);
+        }
         let selection = Self::parse(&format!("{provider} {bare}"), current)?;
         Ok(Resolved { selection, found })
     }
@@ -461,5 +465,18 @@ mod tests {
             error.to_string(),
             "shared is in the claude and codex model lists; choose one: /model <provider> shared"
         );
+    }
+
+    #[test]
+    fn the_demo_still_points_to_a_real_provider() {
+        for name in ["default", "my-model"] {
+            assert_eq!(
+                Selection::resolve(name, Engine::DEMO, &lists()),
+                Err(SelectionError::Demo),
+                "{name}"
+            );
+        }
+        // A model a provider lists is that provider's, from the demo too.
+        assert_eq!(resolved("opus", Engine::DEMO).0, Engine::CLAUDE);
     }
 }
