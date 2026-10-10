@@ -769,7 +769,7 @@ fn a_live_list_is_cached() {
         dir.path(),
         crate::models::Prober {
             cwd: std::env::temp_dir(),
-            binary: |_| octet_testkit::protocol_child(),
+            binaries: std::collections::HashMap::new(),
             limit: octet_core::PROBE_LIMIT,
         },
     );

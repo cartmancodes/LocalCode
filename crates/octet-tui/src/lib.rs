@@ -104,22 +104,21 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
     // Registered once: a signal that arrives while one session ends and the
     // next opens is kept for the check below, not lost.
     let mut signals = Signals::new()?;
-    // A job still running when a session ended, and the model lists, for
-    // whichever interface comes next.
-    let mut carried_job: Option<jobs::Running> = None;
-    let mut carried_models: Option<models::Models> = None;
+    // What a replaced interface hands the next one.
+    let mut carried = Carried::default();
     // Ended sessions whose CLIs are still exiting while the next one runs.
     let mut stopping: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     loop {
         stopping.retain(|stop| !stop.is_finished());
         if signals.stop_pending().await {
-            jobs::on_quit(carried_job.take()).await;
+            jobs::on_quit(carried.job.take()).await;
             break;
         }
         let mut session = match Session::open(config.clone(), directory.clone()).await {
             Ok(session) => session,
             Err(error) => {
-                let job = carried_job
+                let job = carried
+                    .job
                     .take()
                     .or_else(|| retained_app.take().and_then(|mut app| app.job.take()));
                 return Err(open_failed(stopping, job, error).await);
@@ -131,10 +130,8 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         if let Some(notice) = opening_notice.take() {
             app.note(notice);
         }
-        if let Some(job) = carried_job.take() {
-            app.job = Some(job);
-        }
-        attach_models(&mut app, carried_models.take(), &directory, &config.cwd);
+        carried.give(&mut app);
+        attach_models(&mut app, &directory, &config, &binaries);
         if !app.goals.is_attached() {
             attach_goal_store(&mut app, goal_store.clone()).await;
         }
@@ -182,10 +179,10 @@ pub async fn run(mut config: Config, directory: PathBuf) -> io::Result<()> {
         }
         opening_notice = plan.opening;
         config = plan.config;
-        // A job moves with the interface: a fresh one takes it over.
+        // A job and the model lists move with the interface: a fresh one
+        // takes them over.
         if !plan.keep_app {
-            carried_job = app.job.take();
-            carried_models = Some(std::mem::take(&mut app.models));
+            carried.take(&mut app);
         }
         retained_app = plan.keep_app.then_some(app);
     }
@@ -211,23 +208,44 @@ async fn stopped(stopping: Vec<tokio::task::JoinHandle<()>>) {
         let _ = stop.await;
     }
 }
-/// Gives the interface the model lists: those an earlier interface held, or
-/// the cache in `directory`, with probes started in `cwd`.
+/// What an interface that is replaced hands the next: its running job and
+/// its model lists.
+#[derive(Default)]
+struct Carried {
+    job: Option<jobs::Running>,
+    models: Option<models::Models>,
+}
+impl Carried {
+    /// Takes what moves on from `app`, which is about to be replaced.
+    fn take(&mut self, app: &mut App) {
+        self.job = app.job.take();
+        self.models = Some(std::mem::take(&mut app.models));
+    }
+    /// Hands it all to the new `app`.
+    fn give(&mut self, app: &mut App) {
+        if let Some(job) = self.job.take() {
+            app.job = Some(job);
+        }
+        if let Some(models) = self.models.take() {
+            app.models = models;
+        }
+    }
+}
+/// Gives the interface its model lists from the cache in `directory`, with
+/// probes started in the workspace, unless it already has them.
 fn attach_models(
     app: &mut App,
-    carried: Option<models::Models>,
     directory: &std::path::Path,
-    cwd: &std::path::Path,
+    config: &Config,
+    binaries: &std::collections::HashMap<octet_core::Engine, PathBuf>,
 ) {
-    if let Some(models) = carried {
-        app.models = models;
-    }
     if !app.models.is_attached() {
         app.models.attach(
             directory,
             models::Prober {
-                cwd: cwd.to_owned(),
-                binary: |engine| PathBuf::from(engine.provider().default_binary),
+                cwd: config.cwd.clone(),
+                // Each provider's CLI as Octet runs it: a `--binary` override, else its default.
+                binaries: binaries.clone(),
                 limit: octet_core::PROBE_LIMIT,
             },
         );

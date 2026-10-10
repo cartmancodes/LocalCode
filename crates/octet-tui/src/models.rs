@@ -22,8 +22,27 @@ pub(crate) struct Probed {
 #[derive(Debug, Clone)]
 pub(crate) struct Prober {
     pub(crate) cwd: PathBuf,
-    pub(crate) binary: fn(Engine) -> PathBuf,
+    /// The CLI a provider runs when it is not its default (`--binary`).
+    pub(crate) binaries: HashMap<Engine, PathBuf>,
     pub(crate) limit: Duration,
+}
+
+impl Prober {
+    /// The CLI to start for `engine`.
+    fn binary(&self, engine: Engine) -> PathBuf {
+        self.binaries
+            .get(&engine)
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from(engine.provider().default_binary))
+    }
+}
+
+/// What `/model refresh` did: the probes it started, and those already
+/// running.
+#[derive(Debug, Default)]
+pub(crate) struct Refreshed {
+    pub(crate) started: Vec<Engine>,
+    pub(crate) running: Vec<Engine>,
 }
 
 /// The lists, their cache file and the probes in flight.
@@ -83,15 +102,19 @@ impl Models {
         }
     }
 
-    /// `/model refresh`: probes every other provider now. The providers it
-    /// started probing.
-    pub(crate) fn refresh(&mut self, active: Engine) -> Vec<Engine> {
-        others(active)
-            .filter(|engine| {
-                self.failed.remove(engine);
-                self.probe(*engine)
-            })
-            .collect()
+    /// `/model refresh`: probes every other provider now, forgetting any
+    /// earlier failure.
+    pub(crate) fn refresh(&mut self, active: Engine) -> Refreshed {
+        let mut refreshed = Refreshed::default();
+        for engine in others(active) {
+            self.failed.remove(&engine);
+            if self.probing.contains(&engine) {
+                refreshed.running.push(engine);
+            } else if self.probe(engine) {
+                refreshed.started.push(engine);
+            }
+        }
+        refreshed
     }
 
     /// Starts a probe of `engine`; false when one runs, the provider cannot
@@ -105,7 +128,7 @@ impl Models {
         }
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let binary = (prober.binary)(engine);
+            let binary = prober.binary(engine);
             let result = octet_core::probe(engine, binary, prober.cwd, prober.limit).await;
             let _ = tx.send(Probed { engine, result });
         });
@@ -144,7 +167,21 @@ impl Models {
         models: Vec<ModelInfo>,
         now: SystemTime,
     ) -> Option<String> {
-        if models.is_empty() {
+        // The demo's list is no provider's, and an empty one is nothing.
+        if models.is_empty() || !engine.is_vendor() {
+            return None;
+        }
+        // The same list, cached not long ago: no need to write it again (a
+        // Codex catalog arrives page by page, with every reconnect).
+        let fresh = |listed: &catalog::Listed| {
+            now.duration_since(listed.fetched)
+                .is_ok_and(|age| age < catalog::STALE_AFTER / 2)
+        };
+        if self
+            .catalogs
+            .get(engine)
+            .is_some_and(|listed| listed.models == models && fresh(listed))
+        {
             return None;
         }
         self.catalogs.set(engine, models, now);
@@ -233,17 +270,26 @@ mod tests {
             description: String::new(),
         }
     }
+    /// Probes run the fake vendor for every provider.
+    fn fake_prober() -> Prober {
+        Prober {
+            cwd: std::env::temp_dir(),
+            binaries: Engine::ALL
+                .iter()
+                .map(|engine| (*engine, octet_testkit::protocol_child()))
+                .collect(),
+            limit: octet_core::PROBE_LIMIT,
+        }
+    }
     fn attached(dir: &Path) -> Models {
         let mut models = Models::default();
-        models.attach(
-            dir,
-            Prober {
-                cwd: std::env::temp_dir(),
-                binary: |_| octet_testkit::protocol_child(),
-                limit: octet_core::PROBE_LIMIT,
-            },
-        );
+        models.attach(dir, fake_prober());
         models
+    }
+    fn temp(name: &str) -> octet_testkit::TempDir {
+        let dir = octet_testkit::TempDir::new(name);
+        std::fs::create_dir_all(dir.path()).unwrap();
+        dir
     }
 
     #[tokio::test]
@@ -253,7 +299,7 @@ mod tests {
         let mut models = attached(dir.path());
         models.probe_stale(Engine::CLAUDE, SystemTime::now());
         // A second request while one runs starts nothing.
-        assert!(models.refresh(Engine::CLAUDE).is_empty());
+        assert!(models.refresh(Engine::CLAUDE).started.is_empty());
         let probed = models.next().await;
         assert_eq!(probed.engine, Engine::CODEX);
         assert!(models.probed(probed, SystemTime::now()).is_none());
@@ -266,6 +312,64 @@ mod tests {
         // Fresh now: no probe.
         models.probe_stale(Engine::CLAUDE, SystemTime::now());
         assert!(models.probing.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_binary_override_is_the_cli_probed() {
+        let dir = temp("octet-models-binary");
+        let mut models = Models::default();
+        // Only Codex has an override; Claude would run its default CLI.
+        let mut prober = fake_prober();
+        prober.binaries.retain(|engine, _| *engine == Engine::CODEX);
+        models.attach(dir.path(), prober);
+        models.probe_stale(Engine::CLAUDE, SystemTime::now());
+        let probed = models.next().await;
+        assert_eq!(probed.engine, Engine::CODEX);
+        assert_eq!(probed.result.unwrap()[0].selection, "fixture");
+    }
+
+    #[tokio::test]
+    async fn refresh_says_which_lists_are_already_on_their_way() {
+        let dir = temp("octet-models-refresh");
+        let mut models = attached(dir.path());
+        models.probe_stale(Engine::CLAUDE, SystemTime::now());
+        let refreshed = models.refresh(Engine::CLAUDE);
+        assert!(refreshed.started.is_empty());
+        assert_eq!(refreshed.running, [Engine::CODEX]);
+    }
+
+    #[test]
+    fn an_unchanged_live_list_is_not_saved_again() {
+        let dir = temp("octet-models-unchanged");
+        let mut models = attached(dir.path());
+        let file = dir.path().join(octet_core::catalog::FILE);
+        let now = SystemTime::now();
+        assert!(
+            models
+                .live(Engine::CLAUDE, vec![model("opus")], now)
+                .is_none()
+        );
+        assert!(file.exists());
+        std::fs::remove_file(&file).unwrap();
+        assert!(
+            models
+                .live(Engine::CLAUDE, vec![model("opus")], now)
+                .is_none()
+        );
+        assert!(!file.exists(), "the same list was written again");
+    }
+
+    #[test]
+    fn the_demo_list_is_not_cached() {
+        let dir = temp("octet-models-demo-live");
+        let mut models = attached(dir.path());
+        assert!(
+            models
+                .live(Engine::DEMO, vec![model("demo")], SystemTime::now())
+                .is_none()
+        );
+        assert!(models.catalogs.get(Engine::DEMO).is_none());
+        assert!(!dir.path().join(octet_core::catalog::FILE).exists());
     }
 
     #[tokio::test]

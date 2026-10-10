@@ -447,12 +447,28 @@ fn model_command(app: &mut App, argument: &str) -> Action {
             },
         }
     } else if argument == "refresh" {
-        let started = app.models.refresh(app.conn.engine);
-        if started.is_empty() {
+        let refreshed = app.models.refresh(app.conn.engine);
+        let names = |engines: &[octet_core::Engine]| {
+            engines
+                .iter()
+                .map(|engine| engine.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        if !refreshed.started.is_empty() {
+            app.note(format!(
+                "Fetching the model lists of {}…",
+                names(&refreshed.started)
+            ));
+        }
+        if !refreshed.running.is_empty() {
+            app.note(format!(
+                "Already fetching the model lists of {}…",
+                names(&refreshed.running)
+            ));
+        }
+        if refreshed.started.is_empty() && refreshed.running.is_empty() {
             app.note("No other provider's model list to fetch");
-        } else {
-            let names: Vec<&str> = started.iter().map(|engine| engine.as_str()).collect();
-            app.note(format!("Fetching the model lists of {}…", names.join(", ")));
         }
     } else if let Err(refusal) = can_reconnect(app) {
         app.hint(refusal);
