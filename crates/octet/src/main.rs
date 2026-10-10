@@ -64,16 +64,19 @@ fn help() -> String {
     text.push_str("\nJournals are separate JSONL files; see --journal-dir.\n");
     text
 }
+/// Returns the exit code rather than calling `process::exit`: the runtime is
+/// dropped first, so every task's vendor process (a session, a model-list
+/// probe) is stopped by its drop guard instead of outliving Octet.
 #[tokio::main]
-async fn main() {
-    match run().await {
-        Ok(0) => {}
-        Ok(code) => std::process::exit(code),
+async fn main() -> std::process::ExitCode {
+    let code = match run().await {
+        Ok(code) => code,
         Err(error) => {
             headless::warn(&error.to_string());
-            std::process::exit(error.code());
+            error.code()
         }
-    }
+    };
+    std::process::ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
 /// Reads the options and runs; the process's exit code.
 async fn run() -> Result<i32, CliError> {
