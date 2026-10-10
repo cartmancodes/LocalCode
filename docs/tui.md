@@ -341,7 +341,10 @@ each as `name · provider · display name`, with the model in use marked `●`
 and highlighted. Typing after `/model ` filters it (by selection, full ID or
 name). Up/Down move, Enter switches to the highlighted model at once (it
 sends `/model <provider> <name>`, so the provider shown is the one used), Tab
-puts just the name in the draft, and Esc closes the picker. While a turn runs,
+puts the name in the draft (as `provider name` when the name alone would go to
+another provider), and Esc closes the picker. Without the picker, Tab after
+`/model ` completes from the current provider's names, and after
+`/model PROVIDER ` from that provider's. While a turn runs,
 Enter is refused with the usual hint and the picker stays open. A name typed
 in full (one a list holds, or `default`) is sent as typed and resolved like any
 `/model NAME`, so `default` stays the current provider's; so is a name that
@@ -355,8 +358,13 @@ The current provider's list comes live from its CLI with each connection
 cached list is missing or more than 24 hours old, Octet fetches it in the
 background once the session is ready, by starting that provider's CLI just far
 enough to list its models: no vendor session (Codex opens no thread), no
-prompt, no tokens, at most 20 seconds. `/model refresh` fetches every other
-list now; a provider whose fetch failed is not tried again until then. The
+prompt, no tokens, at most 20 seconds. It runs the CLI Octet runs for that
+provider (a `--binary` override, else the one on PATH). Claude Code backs up
+its own settings each time it starts (`~/.claude/backups/`), so a fetch of
+Claude's list adds one such backup. `/model refresh` fetches every other list
+now, and says which are already on their way; a provider whose fetch failed is
+not tried again until then. A save keeps any list another window saved more
+recently. The
 list's header shows each provider's count and freshness (`live`,
 `cached 2 h ago`, `probing…`, `unavailable: …`); `/model list <page>` pages
 through 20 entries at a time. Lists are bounded to 256 entries per provider
