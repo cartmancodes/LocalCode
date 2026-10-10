@@ -654,3 +654,36 @@ fn the_demo_lists_only_the_vendors() {
     assert!(!text.contains("demo 0"), "{text}");
     assert!(text.contains("codex 1 (cached just now)"), "{text}");
 }
+#[test]
+fn the_popup_draws_items_cleaned() {
+    let mut app = crate::test_support::app_for(octet_core::Engine::CODEX);
+    app.composer.editor.set("/model ".into());
+    app.composer.completion = Some(crate::composer::Completion {
+        kind: crate::composer::Kind::Model,
+        items: vec!["evil\u{202e}name · codex · Evil".into()],
+        selected: 0,
+        start: 7,
+    });
+    let rows = screen(100, 30, &mut app).join("\n");
+    assert!(rows.contains("evilname · codex"), "{rows}");
+    assert!(!rows.contains('\u{202e}'));
+}
+#[test]
+fn a_model_named_like_a_subcommand_gets_the_explicit_line() {
+    let c = octet_core::Config::new(octet_core::Engine::CODEX, "codex", "/tmp");
+    let mut a = App::new(&c, "journal".into());
+    let model = |s: &str| octet_core::ModelInfo {
+        selection: s.into(),
+        id: None,
+        name: s.into(),
+        description: String::new(),
+    };
+    a.event(octet_core::Event::Models(vec![
+        model("list"),
+        model("refresh"),
+    ]));
+    a.show_models(1);
+    let text = a.entries_text();
+    assert!(text.contains("Select: /model codex list"), "{text}");
+    assert!(text.contains("Select: /model codex refresh"), "{text}");
+}

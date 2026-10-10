@@ -590,6 +590,17 @@ async fn cancel_interrupts_before_saving_the_goal() {
 #[test]
 fn accepting_a_model_suggestion_inserts_only_the_name() {
     let mut app = crate::test_support::app_for(octet_core::Engine::CLAUDE);
+    // Codex lists it, so the plain name goes there: no provider needed.
+    app.models.catalogs.set(
+        octet_core::Engine::CODEX,
+        vec![octet_core::ModelInfo {
+            selection: "gpt-6-astra".into(),
+            id: None,
+            name: "GPT-6-Astra".into(),
+            description: String::new(),
+        }],
+        std::time::SystemTime::now(),
+    );
     app.composer.editor.set("/model gpt".into());
     app.composer.completion = Some(composer::Completion {
         kind: composer::Kind::Model,
@@ -778,4 +789,24 @@ async fn a_partial_name_takes_the_highlighted_model() {
     };
     assert_eq!(selection.provider, octet_core::Engine::CLAUDE);
     assert_eq!(selection.model.as_deref(), Some("opus"));
+}
+#[tokio::test]
+async fn scrolling_keeps_the_picker_highlight() {
+    let mut app = picker_app();
+    let vendor = RecordingVendor::default();
+    type_keys(&mut app, &vendor, "/model").await;
+    key_action(&mut app, &vendor, key(KeyCode::Enter)).await;
+    key_action(&mut app, &vendor, key(KeyCode::Down)).await;
+    key_action(&mut app, &vendor, key(KeyCode::Down)).await;
+    key_action(&mut app, &vendor, key(KeyCode::PageUp)).await;
+    assert_eq!(picker(&app).selected, 3);
+}
+#[tokio::test]
+async fn tab_on_another_providers_line_keeps_its_provider() {
+    let mut app = codex_picker_app();
+    let vendor = RecordingVendor::default();
+    type_keys(&mut app, &vendor, "/model def").await;
+    assert_eq!(picker(&app).items, ["default · claude · Default"]);
+    key_action(&mut app, &vendor, key(KeyCode::Tab)).await;
+    assert_eq!(app.composer.editor.text(), "/model claude default ");
 }

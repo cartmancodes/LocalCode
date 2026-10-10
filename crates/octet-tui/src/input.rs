@@ -119,11 +119,19 @@ pub(crate) fn refresh_model_picker(app: &mut App) {
             let query = query.to_owned();
             let entries = app.model_entries();
             let current = app.current_model();
-            let (items, selected) = composer::picker_items(
+            let (items, mut selected) = composer::picker_items(
                 &entries,
                 current.as_ref().map(|(engine, s)| (*engine, s.as_str())),
                 &query,
             );
+            // The same list: keep the highlight where the arrows left it.
+            if let Some(open) =
+                app.composer.completion.as_ref().filter(|c| {
+                    c.kind == composer::Kind::Model && c.start == start && c.items == items
+                })
+            {
+                selected = open.selected;
+            }
             app.composer.completion = Some(composer::Completion {
                 kind: composer::Kind::Model,
                 items,
@@ -185,9 +193,27 @@ pub(crate) fn accept_completion(app: &mut App) {
         composer::Kind::File => composer::mention(item),
         composer::Kind::Path => item.clone(),
         composer::Kind::Command => format!("{item} "),
-        composer::Kind::Model => format!("{} ", item.split(" · ").next().unwrap_or(item)),
+        composer::Kind::Model => model_text(app, item),
     };
     app.replace_or_warn(completion.start, &text);
+}
+/// What Tab puts in the draft for a model line (`name · provider …`): the
+/// name, or `provider name` when the name alone would go to another provider.
+fn model_text(app: &App, item: &str) -> String {
+    let mut parts = item.split(" · ");
+    let name = parts.next().unwrap_or(item);
+    let line_provider = parts
+        .next()
+        .and_then(octet_core::Engine::parse)
+        .filter(|engine| engine.is_vendor());
+    let resolves_there = |provider| {
+        octet_core::model::Selection::resolve(name, app.conn.engine, &app.models.catalogs)
+            .is_ok_and(|resolved| resolved.selection.provider == provider)
+    };
+    match line_provider {
+        Some(provider) if !resolves_there(provider) => format!("{provider} {name} "),
+        _ => format!("{name} "),
+    }
 }
 /// `/copy` and Ctrl+X: the last reply to the clipboard.
 pub(crate) fn copy_reply(app: &mut App) {
@@ -372,9 +398,12 @@ fn completion_key(app: &mut App, key: KeyEvent) -> Option<Action> {
         KeyCode::Tab | KeyCode::Enter => accept_completion(app),
         KeyCode::Esc => app.composer.completion = None,
         // Path and command popups close on any other key; the file popup
-        // follows the edit below.
+        // and the model picker follow the edit below.
         _ => {
-            if completion.kind != composer::Kind::File {
+            if !matches!(
+                completion.kind,
+                composer::Kind::File | composer::Kind::Model
+            ) {
                 app.composer.completion = None;
             }
             return None;
@@ -484,6 +513,7 @@ async fn tab_key(app: &mut App) {
         app.composer.editor.text(),
         app.composer.editor.cursor(),
         &names,
+        app.conn.engine,
     ) {
         apply_tab(app, tab);
         return;

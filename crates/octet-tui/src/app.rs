@@ -494,12 +494,14 @@ impl App {
     /// `/model <selection>` when that resolves to `engine`, else the
     /// explicit form.
     fn select_line(&self, engine: octet_core::Engine, selection: &str) -> String {
-        let plain = octet_core::model::Selection::resolve(
-            selection,
-            self.conn.engine,
-            &self.models.catalogs,
-        )
-        .is_ok_and(|resolved| resolved.selection.provider == engine);
+        // `/model list` and `/model refresh` are subcommands, not these models.
+        let plain = !matches!(selection, "list" | "refresh")
+            && octet_core::model::Selection::resolve(
+                selection,
+                self.conn.engine,
+                &self.models.catalogs,
+            )
+            .is_ok_and(|resolved| resolved.selection.provider == engine);
         if plain {
             format!("/model {selection}")
         } else {

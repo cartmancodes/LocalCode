@@ -152,18 +152,35 @@ pub(crate) fn model_tab(
     text: &str,
     cursor: usize,
     names: &[(String, octet_core::Engine)],
+    active: octet_core::Engine,
 ) -> Option<Tab> {
-    let start = word_start(text, cursor);
-    if text[..start].trim_end() != "/model" {
+    // Only a word the cursor ends: completing inside one would mangle it.
+    if text[cursor..]
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_whitespace())
+    {
         return None;
     }
+    let start = word_start(text, cursor);
+    let before = text[..start].trim_end();
+    // `/model NAME`, or `/model PROVIDER NAME` for that provider's names.
+    let only = if before == "/model" {
+        None
+    } else {
+        let provider = before.strip_prefix("/model ")?.trim();
+        Some(octet_core::Engine::parse(provider).filter(|engine| engine.is_vendor())?)
+    };
     let word = &text[start..cursor];
-    // Nothing typed yet: the current provider's names (they come first).
-    let active = names.first().map(|(_, engine)| *engine);
     let matches: Vec<&(String, octet_core::Engine)> = names
         .iter()
         .filter(|(name, engine)| {
-            name.starts_with(word) && (!word.is_empty() || Some(*engine) == active)
+            name.starts_with(word)
+                && match only {
+                    Some(provider) => *engine == provider,
+                    // Nothing typed yet: the current provider's names.
+                    None => !word.is_empty() || *engine == active,
+                }
         })
         .collect();
     Some(match matches.as_slice() {
@@ -402,7 +419,7 @@ mod tests {
             ("gpt-6-astra".to_owned(), octet_core::Engine::CODEX),
             ("gpt-5.6-sol".to_owned(), octet_core::Engine::CODEX),
         ];
-        let tab = |text: &str| model_tab(text, text.len(), &names);
+        let tab = |text: &str| model_tab(text, text.len(), &names, octet_core::Engine::CLAUDE);
         assert!(matches!(
             tab("/model op"),
             Some(Tab::Replace { start: 7, ref text, popup: None }) if text == "opus "
@@ -420,6 +437,29 @@ mod tests {
             tab("/model "),
             Some(Tab::Replace { ref text, popup: None, .. }) if text == "opus "
         ));
+    }
+    #[test]
+    fn model_tab_uses_the_active_provider_and_the_named_one() {
+        let names = vec![
+            ("gpt-6-astra".to_owned(), octet_core::Engine::CODEX),
+            ("gpt-5.6-sol".to_owned(), octet_core::Engine::CODEX),
+            ("gpt-claude-x".to_owned(), octet_core::Engine::CLAUDE),
+        ];
+        // Claude is active but listed nothing first: `/model ` + Tab offers
+        // Claude's names only, not Codex's.
+        let tab =
+            |text: &str, cursor: usize| model_tab(text, cursor, &names, octet_core::Engine::CLAUDE);
+        assert!(matches!(
+            tab("/model ", 7),
+            Some(Tab::Replace { ref text, .. }) if text == "gpt-claude-x "
+        ));
+        // `/model codex gp`: only Codex's names.
+        assert!(matches!(
+            tab("/model codex gp", 15),
+            Some(Tab::Replace { start: 13, ref text, popup: Some(_) }) if text == "gpt-"
+        ));
+        // The cursor inside a word: no model completion there.
+        assert!(tab("/model gpt-x", 9).is_none());
     }
     #[test]
     fn tab_completes_commands_paths_and_mentions() {
